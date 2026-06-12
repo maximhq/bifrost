@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -722,12 +723,13 @@ func isRealtimeTransportEndpoint(path string) bool {
 
 // AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
-	store             configstore.ConfigStore
-	whitelistedRoutes atomic.Pointer[[]string]
-	authConfig        atomic.Pointer[configstore.AuthConfig]
-	wsTicketStore     *WSTicketStore
-	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
-	tempTokensEnabled atomic.Bool
+	store                  configstore.ConfigStore
+	whitelistedRoutes      atomic.Pointer[[]string]
+	authConfig             atomic.Pointer[configstore.AuthConfig]
+	wsTicketStore          *WSTicketStore
+	tempTokensService      *temptoken.Service // optional; when nil, temp-token fallback is disabled
+	tempTokensEnabled      atomic.Bool
+	enforceAuthOnInference atomic.Bool
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
@@ -755,10 +757,12 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
 		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
+		am.enforceAuthOnInference.Store(clientConfig.EnforceAuthOnInference)
 	} else {
 		emptyRoutes := []string{}
 		am.whitelistedRoutes.Store(&emptyRoutes)
 		am.tempTokensEnabled.Store(false)
+		am.enforceAuthOnInference.Store(false)
 	}
 
 	return am, nil
@@ -776,6 +780,11 @@ func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 // UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
 func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
 	m.tempTokensEnabled.Store(enabled)
+}
+
+// UpdateEnforceAuthOnInference updates whether auth is enforced on inference endpoints.
+func (m *AuthMiddleware) UpdateEnforceAuthOnInference(enforce bool) {
+	m.enforceAuthOnInference.Store(enforce)
 }
 
 // tryTempTokenOrUnauthorized is the last-resort auth path: a request that
@@ -806,10 +815,13 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 }
 
-// InferenceMiddleware is for inference requests (including MCP routes) if authConfig is set, it will skip authentication if disableAuthOnInference is true.
+// InferenceMiddleware is for inference requests (including MCP routes). It skips
+// authentication when the ClientConfig.EnforceAuthOnInference switch is disabled.
+// That switch is config/Helm-driven and survives restarts. Inference auth is open
+// by default (raw binary); the Helm chart enables enforcement for production.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		return authConfig.DisableAuthOnInference
+		return !m.enforceAuthOnInference.Load()
 	})
 }
 
@@ -897,7 +909,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				next(ctx)
 				return
 			}
-			if isRealtimeTransportEndpoint(string(ctx.Path())) {
+			if isRealtimeTransportEndpoint(url) {
 				next(ctx)
 				return
 			}
@@ -1072,20 +1084,25 @@ type TracingMiddleware struct {
 	tracer atomic.Pointer[tracing.Tracer]
 }
 
-func attachDimensionAttributesToHTTPSpan(ctx *fasthttp.RequestCtx, setAttribute func(key string, value any)) {
-	if ctx == nil || setAttribute == nil {
-		return
+// collectDimensionHeaders gathers x-bf-dim-* request headers into a map keyed by
+// the bare dimension name. TracingMiddleware runs before ConvertToBifrostContext,
+// so it reads the headers directly rather than BifrostContextKeyDimensions.
+func collectDimensionHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	if ctx == nil {
+		return nil
 	}
-	// Root HTTP span starts before ConvertToBifrostContext, so read x-bf-dim-* directly.
+	var dims map[string]string
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
-			if labelName != "path" && labelName != "method" {
-				setAttribute(labelName, string(value))
+			if dims == nil {
+				dims = make(map[string]string)
 			}
+			dims[labelName] = string(value)
 		}
 		return true
 	})
+	return dims
 }
 
 // NewTracingMiddleware creates a new tracing middleware
@@ -1131,6 +1148,18 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
+			// Store dimensions and session ID at the trace level (not as span
+			// attributes) so connectors like BigQuery can export them without
+			// changing the OTEL/Datadog span payloads.
+			dimensions := collectDimensionHeaders(ctx)
+			if len(dimensions) > 0 {
+				// Hand the trace its own copy — connectors read the attribute
+				// asynchronously and must never observe later mutations.
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, maps.Clone(dimensions))
+			}
+			if sessionID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id"))); sessionID != "" {
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
+			}
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
 			// Extract parent span ID from W3C traceparent header (if present)
@@ -1163,9 +1192,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
-				attachDimensionAttributesToHTTPSpan(ctx, func(key string, value any) {
-					tracer.SetAttribute(rootSpan, key, value)
-				})
+				for name, value := range dimensions {
+					// "path" and "method" stay reserved for the standard http.* attributes.
+					if name != "path" && name != "method" {
+						tracer.SetAttribute(rootSpan, name, value)
+					}
+				}
 				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
 				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
 				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))

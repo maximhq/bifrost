@@ -1429,6 +1429,7 @@ type AnthropicUsage struct {
 	OutputTokens             int                          `json:"output_tokens"`
 	ServerToolUse            *AnthropicServerToolUseUsage `json:"server_tool_use,omitempty"` // Server tool use statistics (e.g., web search)
 	ServiceTier              *string                      `json:"service_tier,omitempty"`    // "standard", "priority", or "batch"
+	Speed                    *string                      `json:"speed,omitempty"`           // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                      `json:"inference_geo,omitempty"`   // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage             `json:"iterations,omitempty"`      // Iterations statistics
 }

@@ -10,6 +10,55 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// resolveVertexProjectID returns the GCP project ID for the current attempt.
+// Priority: alias-level VertexAliasCfg.ProjectID > key-level
+// VertexKeyConfig.ProjectID. Per-alias override lets one Vertex credential
+// span deployments across distinct GCP projects (e.g. Anthropic models in
+// one project, Gemini in another).
+func resolveVertexProjectID(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectID != nil {
+		if v := ra.Config.VertexAliasCfg.ProjectID.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.ProjectID.GetValue()
+	}
+	return ""
+}
+
+// resolveVertexProjectNumber returns the GCP project number for the current
+// attempt. Same precedence as resolveVertexProjectID.
+func resolveVertexProjectNumber(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectNumber != nil {
+		if v := ra.Config.VertexAliasCfg.ProjectNumber.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.ProjectNumber.GetValue()
+	}
+	return ""
+}
+
+// resolveVertexRegion returns the Vertex region for the current attempt.
+// Priority: alias-level AliasConfig.Region (top-level, shared with other
+// providers) > key-level VertexKeyConfig.Region. Different Vertex model
+// families publish in different regions (Anthropic on us-east5, Gemini on
+// us-central1, …), so per-alias overrides let one credential reach all of
+// them.
+func resolveVertexRegion(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.Region != nil {
+		if v := ra.Config.Region.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.Region.GetValue()
+	}
+	return ""
+}
+
 // getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Vertex AI.
 // Compared to the native Anthropic path, it strips model/region fields, remaps tool versions, injects beta headers
 // into the request body (rather than HTTP headers), and pins the Anthropic API version to DefaultVertexAnthropicVersion.
@@ -242,7 +291,7 @@ func vertexServiceTierHeaderValue(region string, model string, tier schemas.Bifr
 
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used when the user has explicitly configured which models they want to use.
-func buildResponseFromConfig(deployments map[string]string, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
@@ -272,7 +321,7 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 		modelEntry := schemas.Model{
 			ID:    modelID,
 			Name:  schemas.Ptr(modelName),
-			Alias: schemas.Ptr(deploymentValue),
+			Alias: schemas.Ptr(deploymentValue.ModelID),
 		}
 
 		response.Data = append(response.Data, modelEntry)

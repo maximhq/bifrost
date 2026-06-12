@@ -395,7 +395,7 @@ func (request *GeminiVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 	// Use the first instance for the main input
 	instance := request.Instances[0]
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	bifrostReq := &schemas.BifrostVideoGenerationRequest{
 		Provider: provider,

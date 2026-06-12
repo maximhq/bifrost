@@ -24,14 +24,14 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
-	ID                uint                `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID      string              `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider          string              `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight            *float64            `json:"weight"`
-	AllowedModels     schemas.WhiteList   `gorm:"type:text;serializer:json" json:"allowed_models"`         // ["*"] allows all models; empty denies all (deny-by-default)
-	BlacklistedModels schemas.BlackList   `gorm:"type:text;serializer:json" json:"blacklisted_models"`     // ["*"] blocks all models; empty blocks none
-	AllowAllKeys      bool                `gorm:"default:false" json:"allow_all_keys"`                     // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
-	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	ID                uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID      string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider          string            `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight            *float64          `json:"weight"`
+	AllowedModels     schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"`     // ["*"] allows all models; empty denies all (deny-by-default)
+	BlacklistedModels schemas.BlackList `gorm:"type:text;serializer:json" json:"blacklisted_models"` // ["*"] blocks all models; empty blocks none
+	AllowAllKeys      bool              `gorm:"default:false" json:"allow_all_keys"`                 // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	RateLimitID       *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
@@ -267,7 +267,14 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	if vk.Value != "" {
 		vk.ValueHash = encrypt.HashSHA256(vk.Value)
 	}
-	if encrypt.IsEnabled() && vk.Value != "" {
+	if VaultIsEnabled() && vk.Value != "" {
+		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
+		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
+		if err := vaultString(tx.Statement.Context, path, &vk.Value); err != nil {
+			return fmt.Errorf("failed to vault virtual key value: %w", err)
+		}
+		vk.EncryptionStatus = EncryptionStatusVault
+	} else if encrypt.IsEnabled() && vk.Value != "" {
 		if err := encryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
 		}
@@ -282,7 +289,12 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 // The reset path reads the stamped value; Update*InMemory paths re-stamp on
 // every VK update.
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
-	if vk.EncryptionStatus == EncryptionStatusEncrypted {
+	switch vk.EncryptionStatus {
+	case EncryptionStatusVault:
+		if err := resolveVaultString(tx.Statement.Context, &vk.Value); err != nil {
+			return fmt.Errorf("failed to resolve vault virtual key value: %w", err)
+		}
+	case EncryptionStatusEncrypted:
 		if err := decryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
 		}
@@ -302,5 +314,16 @@ func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 			pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
 		}
 	}
+	return nil
+}
+
+// AfterDelete hook for best-effort vault cleanup on row deletion.
+func (vk *TableVirtualKey) AfterDelete(tx *gorm.DB) error {
+	if vk.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
+		return nil
+	}
+	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
+	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
+	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }

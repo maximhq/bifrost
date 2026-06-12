@@ -54,8 +54,9 @@ This generates a `.so` file that exports specific functions matching Bifrost's p
     - `GetName() string` - Return the plugin name
     - `HTTPTransportPreHook()` - Intercept HTTP requests before they enter Bifrost core (HTTP transport only)
     - `HTTPTransportPostHook()` - Intercept HTTP responses after they exit Bifrost core (HTTP transport only)
-    - `PreLLMHook()` - Intercept requests before they reach providers
-    - `PostLLMHook()` - Process responses after provider calls
+    - `PreRequestHook()` <sup>v1.6.x+</sup> - Once-per-request routing phase: decide provider/model/fallbacks
+    - `PreLLMHook()` - Intercept requests before they reach providers (runs per provider attempt)
+    - `PostLLMHook()` - Process responses after provider calls (runs per provider attempt)
     - `Cleanup() error` - Clean up resources on shutdown
   </Tab>
   <Tab title="v1.3.x">
@@ -83,7 +84,7 @@ This means if you're running Bifrost on Linux AMD64, you must build your plugin 
 
 1. **Load** - Bifrost loads the `.so` file using Go's `plugin.Open()`
 2. **Initialize** - Calls `Init()` with configuration from `config.json`
-3. **Hook Execution** - Calls `PreLLMHook()` and `PostLLMHook()` for each request
+3. **Hook Execution** - Calls `PreRequestHook()`, `PreLLMHook()` and `PostLLMHook()` for each request
 4. **Cleanup** - Calls `Cleanup()` when Bifrost shuts down
 
 Plugins execute in a specific order:
@@ -91,10 +92,11 @@ Plugins execute in a specific order:
 <Tabs>
   <Tab title="v1.4.x+">
     1. `HTTPTransportPreHook` - Intercept HTTP requests (HTTP transport only)
-    2. `PreLLMHook`/`PreMCPHook` - Executes in registration order, can short-circuit requests
-    3. Provider call (if not short-circuited)
-    4. `PostLLMHook`/`PostMCPHook` - Executes in reverse order of PreHooks
-    5. `HTTPTransportPostHook` - Intercept HTTP responses (HTTP transport only, reverse order)
+    2. `PreRequestHook` <sup>v1.6.x+</sup> - **Once per request**, before any provider call. Routing decisions (provider/model/fallbacks) happen here and propagate to every attempt.
+    3. `PreLLMHook`/`PreMCPHook` - Per provider attempt, registration order, can short-circuit requests
+    4. Provider call (if not short-circuited)
+    5. `PostLLMHook`/`PostMCPHook` - Per provider attempt, reverse order of PreHooks
+    6. `HTTPTransportPostHook` - Intercept HTTP responses (HTTP transport only, reverse order)
   </Tab>
   <Tab title="v1.3.x">
     1. `TransportInterceptor` - Modifies raw HTTP requests (HTTP transport only)

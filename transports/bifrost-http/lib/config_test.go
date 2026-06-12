@@ -374,6 +374,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -388,6 +389,7 @@ type MockConfigStore struct {
 	governanceConfig *configstore.GovernanceConfig
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
+	configEntries    map[string]string
 	vectorConfig     *vectorstore.Config
 	logsConfig       *logstore.Config
 	plugins          []*tables.TablePlugin
@@ -413,7 +415,8 @@ type MockConfigStore struct {
 // NewMockConfigStore creates a new mock config store
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
-		providers: make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		providers:     make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		configEntries: make(map[string]string),
 	}
 }
 
@@ -633,6 +636,35 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 
 func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params configstore.MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
 	return nil, 0, nil
+}
+
+func (m *MockConfigStore) GetMCPLibraryPaginated(ctx context.Context, params configstore.MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*configstore.MCPLibraryFilterData, error) {
+	return &configstore.MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}, nil
+}
+
+func (m *MockConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
+	return nil
+}
+
+func (m *MockConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
+	return []string{}, nil
 }
 
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
@@ -936,10 +968,37 @@ func (m *MockConfigStore) GetLogsStoreConfig(ctx context.Context) (*logstore.Con
 
 // Config
 func (m *MockConfigStore) GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error) {
-	return nil, nil
+	if value, ok := m.configEntries[key]; ok {
+		return &tables.TableGovernanceConfig{Key: key, Value: value}, nil
+	}
+	return nil, configstore.ErrNotFound
 }
 
 func (m *MockConfigStore) UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error {
+	if m.configEntries == nil {
+		m.configEntries = make(map[string]string)
+	}
+	m.configEntries[config.Key] = config.Value
+	return nil
+}
+
+func (m *MockConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*configstore.ComplexityAnalyzerConfig, error) {
+	if m.governanceConfig == nil {
+		return nil, nil
+	}
+	return m.governanceConfig.ComplexityAnalyzerConfig, nil
+}
+
+func (m *MockConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *configstore.ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if m.governanceConfig == nil {
+		m.governanceConfig = &configstore.GovernanceConfig{}
+	}
+	if config != nil && config.ConfigHashes.Empty() && m.governanceConfig.ComplexityAnalyzerConfig != nil {
+		copy := *config
+		copy.ConfigHashes = m.governanceConfig.ComplexityAnalyzerConfig.ConfigHashes
+		config = &copy
+	}
+	m.governanceConfig.ComplexityAnalyzerConfig = config
 	return nil
 }
 
@@ -1404,6 +1463,329 @@ func (m *MockConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Ta
 
 func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
+}
+
+func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbGovernance := &configstore.GovernanceConfig{}
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.11,
+			MediumComplex:    0.33,
+			ComplexReasoning: 0.77,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{" Function ", "api", "API", "file-code-seed"},
+			ReasoningKeywords: []string{"tradeoffs", "file-reason-seed"},
+			TechnicalKeywords: []string{"latency", "file-tech-seed"},
+			SimpleKeywords:    []string{"hello", "file-simple-seed"},
+		},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
+	defaults := complexity.DefaultAnalyzerConfig()
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.CodeKeywords, fileConfig.Keywords.CodeKeywords), stored.Keywords.CodeKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ReasoningKeywords, fileConfig.Keywords.ReasoningKeywords), stored.Keywords.ReasoningKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.TechnicalKeywords, fileConfig.Keywords.TechnicalKeywords), stored.Keywords.TechnicalKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.SimpleKeywords, fileConfig.Keywords.SimpleKeywords), stored.Keywords.SimpleKeywords)
+	require.False(t, stored.ConfigHashes.Empty())
+	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
+}
+
+func TestMergeGovernanceConfig_BackfillsLegacyComplexityHashesWithoutApplyingFileValues(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.TierBoundaries.SimpleMedium = 0.12
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.12, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func expectedMergedComplexityKeywords(base, overlay []string) []string {
+	seen := make(map[string]struct{}, len(base)+len(overlay))
+	out := make([]string, 0, len(base)+len(overlay))
+	for _, value := range append(append([]string{}, base...), overlay...) {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashesMatch(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = fileHashes
+	dbConfig.TierBoundaries.SimpleMedium = 0.21
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "old-tier-hash",
+		CodeKeywords:      "old-code-hash",
+		ReasoningKeywords: "old-reason-hash",
+		TechnicalKeywords: "old-tech-hash",
+		SimpleKeywords:    "old-simple-hash",
+	}
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.ElementsMatch(t, []string{"file-reason", "ui-reason"}, stored.Keywords.ReasoningKeywords)
+	require.ElementsMatch(t, []string{"file-tech", "ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-simple", "ui-simple"}, stored.Keywords.SimpleKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	oldFileConfig := testFileComplexityAnalyzerConfig()
+	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(oldFileConfig)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = oldFileHashes
+	dbConfig.TierBoundaries.SimpleMedium = 0.21
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+
+	newFileConfig := testFileComplexityAnalyzerConfig()
+	newFileConfig.Keywords.CodeKeywords = []string{"file-code", "file-code-new"}
+	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(newFileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: newFileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
+	require.ElementsMatch(t, []string{"file-code", "file-code-new", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"ui-reason"}, stored.Keywords.ReasoningKeywords)
+	require.Equal(t, []string{"ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.Equal(t, []string{"ui-simple"}, stored.Keywords.SimpleKeywords)
+	require.Equal(t, oldFileHashes.TierBoundaries, stored.ConfigHashes.TierBoundaries)
+	require.Equal(t, newFileHashes.CodeKeywords, stored.ConfigHashes.CodeKeywords)
+	require.Equal(t, oldFileHashes.ReasoningKeywords, stored.ConfigHashes.ReasoningKeywords)
+	require.Equal(t, oldFileHashes.TechnicalKeywords, stored.ConfigHashes.TechnicalKeywords)
+	require.Equal(t, oldFileHashes.SimpleKeywords, stored.ConfigHashes.SimpleKeywords)
+}
+
+func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "old-tier-hash",
+		CodeKeywords:      "old-code-hash",
+		ReasoningKeywords: "old-reason-hash",
+		TechnicalKeywords: "old-tech-hash",
+		SimpleKeywords:    "old-simple-hash",
+	}
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.Equal(t, []string{"file-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "old-tier-hash",
+		CodeKeywords:      "old-code-hash",
+		ReasoningKeywords: "old-reason-hash",
+		TechnicalKeywords: "old-tech-hash",
+		SimpleKeywords:    "old-simple-hash",
+	}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	store.configEntries[tables.ConfigComplexityAnalyzerConfigKey] = "stored"
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance:    &configstore.GovernanceConfig{},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	require.Same(t, dbConfig, config.GovernanceConfig.ComplexityAnalyzerConfig)
+	entry, err := store.GetConfig(context.Background(), tables.ConfigComplexityAnalyzerConfigKey)
+	require.NoError(t, err)
+	require.Equal(t, "stored", entry.Value)
+}
+
+func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
+	return &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.10,
+			MediumComplex:    0.30,
+			ComplexReasoning: 0.70,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"runtime-code"},
+			ReasoningKeywords: []string{"runtime-reason"},
+			TechnicalKeywords: []string{"runtime-tech"},
+			SimpleKeywords:    []string{"runtime-simple"},
+		},
+	}
+}
+
+func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
+	return &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.20,
+			MediumComplex:    0.40,
+			ComplexReasoning: 0.80,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"file-code"},
+			ReasoningKeywords: []string{"file-reason"},
+			TechnicalKeywords: []string{"file-tech"},
+			SimpleKeywords:    []string{"file-simple"},
+		},
+	}
 }
 
 // Prompt Repository - Folders
@@ -2695,7 +3077,7 @@ func TestGenerateKeyHash(t *testing.T) {
 		Value:   *schemas.NewEnvVar("sk-123"),
 		Models:  []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight:  1.5,
-		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 	}
 
 	hashWithAliases, err := configstore.GenerateKeyHash(keyWithAliases)
@@ -5139,7 +5521,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5150,7 +5532,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5172,7 +5554,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5183,7 +5565,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Changed!
 			},
@@ -5205,7 +5587,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5216,7 +5598,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-3.5-turbo": "gpt-35-turbo-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-3.5-turbo": {ModelID: "gpt-35-turbo-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5304,7 +5686,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5317,7 +5699,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5341,7 +5723,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5354,7 +5736,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"), // Changed!
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5378,7 +5760,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5391,7 +5773,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("differentSecretKey/NEWKEY/bPxRfiCYEXAMPLEKEY"), // Changed!
@@ -5415,7 +5797,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5428,7 +5810,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5452,7 +5834,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5466,7 +5848,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5491,7 +5873,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5504,7 +5886,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile", "claude-3.5": "claude-35-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}, "claude-3.5": {ModelID: "claude-35-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5594,7 +5976,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5608,7 +5990,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey:    *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey:    *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5634,7 +6016,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar(""),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
 				SecretKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
@@ -5648,7 +6030,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar(""),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5674,7 +6056,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Name:    "azure-openai-key",
 		Value:   *schemas.NewEnvVar("azure-api-key-initial"),
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
@@ -5708,7 +6090,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Name:    "azure-openai-key",
 		Value:   *schemas.NewEnvVar("azure-api-key-dashboard-edited"), // Changed via dashboard!
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
@@ -5740,7 +6122,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-initial"), // Original value from file
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
@@ -5776,7 +6158,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-initial"),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
 				},
@@ -5882,7 +6264,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 		Name:    "aws-bedrock-key",
 		Value:   *schemas.NewEnvVar(""), // Empty for Bedrock with IAM or AccessKey auth
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5917,7 +6299,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 		Name:    "aws-bedrock-key-eu",
 		Value:   *schemas.NewEnvVar(""),
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"),
@@ -5944,7 +6326,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5983,7 +6365,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0", "claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -6111,7 +6493,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0", "claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -6154,7 +6536,7 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-123"),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
@@ -6220,7 +6602,7 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -6289,7 +6671,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
@@ -6317,7 +6699,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("original-key-from-file"), // Different value than DB!
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
 				},
@@ -6373,7 +6755,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
 					SecretKey: *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
@@ -6403,7 +6785,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
@@ -6491,7 +6873,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-123"),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4o": "gpt-4o-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
 				},
@@ -6575,7 +6957,7 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -12243,6 +12625,10 @@ type mockLLMPlugin struct {
 	mockPlugin
 }
 
+func (p *mockLLMPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *mockLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
@@ -13007,6 +13393,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			nil, nil, // pricing overrides
 			modelAdds, modelUpdates,
 			providerAdds, providerUpdates,
+			nil,
 		)
 	}
 
@@ -14033,7 +14420,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          *schemas.NewEnvVar("azure-key-value"),
 			Weight:         ptrFloat64(1.0),
 			AzureKeyConfig: azureConfig,
-			Aliases:        schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases:        schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		}
 
 		schemaKey := schemas.Key{
@@ -14985,7 +15372,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
@@ -14999,7 +15386,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
@@ -15129,7 +15516,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15141,7 +15528,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15528,7 +15915,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15539,7 +15926,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15559,7 +15946,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15570,7 +15957,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15590,7 +15977,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment-v1"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment-v1"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15601,7 +15988,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment-v2"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment-v2"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15631,7 +16018,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15654,7 +16041,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15667,7 +16054,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3", "claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}, "claude-3.5": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15689,7 +16076,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3", "claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}, "claude-3.5": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15702,7 +16089,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15724,7 +16111,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15737,7 +16124,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15762,7 +16149,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15774,7 +16161,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15795,7 +16182,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15807,7 +16194,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15828,7 +16215,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint-v1"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint-v1"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15840,7 +16227,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint-v2"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint-v2"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15872,7 +16259,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15940,6 +16327,9 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"governance.virtual_keys.provider_configs", reflect.TypeOf(tables.TableVirtualKeyProviderConfig{}), true},
 		{"governance.virtual_keys.mcp_configs", reflect.TypeOf(tables.TableVirtualKeyMCPConfig{}), true},
 		{"governance.auth_config", reflect.TypeOf(configstore.AuthConfig{}), false},
+		{"governance.complexity_analyzer_config", reflect.TypeOf(configstore.ComplexityAnalyzerConfig{}), false},
+		{"governance.complexity_analyzer_config.tier_boundaries", reflect.TypeOf(configstore.ComplexityTierBoundaries{}), false},
+		{"governance.complexity_analyzer_config.keywords", reflect.TypeOf(configstore.ComplexityEditableKeywordConfig{}), false},
 
 		// Plugins
 		{"plugins", reflect.TypeOf(schemas.PluginConfig{}), true},
@@ -16073,6 +16463,12 @@ var excludedSchemaFields = map[string]map[string]bool{
 	},
 	"governance": {
 		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
+	},
+	"auth_config": {
+		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
+	},
+	"governance.auth_config": {
+		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
 	},
 	"governance.teams": {
 		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
@@ -16399,6 +16795,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	defaultURL := modelcatalog.DefaultPricingURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 	defaultModelParamsURL := modelcatalog.DefaultModelParametersURL
+	defaultMCPLibraryURL := modelcatalog.DefaultMCPLibraryURL
 	fileURL := "https://example.com/pricing.json"
 	fileSyncSeconds := int64((12 * time.Hour).Seconds())
 	dbURL := "https://db.example.com/pricing.json"
@@ -16439,11 +16836,13 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		uiEditedURL := "https://ui-edited.example.com/pricing.json"
 		uiEditedSync := int64((24 * time.Hour).Seconds())
 		dbConfig := &tables.TableFrameworkConfig{
-			ID:                  8,
-			PricingURL:          &uiEditedURL,
-			PricingSyncInterval: &uiEditedSync,
-			ModelParametersURL:  &defaultModelParamsURL,
-			ConfigHash:          storedHash, // hash of last file-applied values
+			ID:                     8,
+			PricingURL:             &uiEditedURL,
+			PricingSyncInterval:    &uiEditedSync,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &defaultSyncSeconds,
+			ConfigHash:             storedHash, // hash of last file-applied values
 		}
 		fileConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
@@ -16525,8 +16924,118 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.False(t, needsDBUpdate)
 		require.Equal(t, defaultURL, *normalizedTable.PricingURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, defaultMCPLibraryURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
 		require.Equal(t, defaultURL, *normalizedModelCatalog.PricingURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		require.Equal(t, defaultMCPLibraryURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file values override defaults", func(t *testing.T) {
+		mcpURL := "https://example.com/mcp-library.json"
+		mcpSyncSeconds := int64((2 * time.Hour).Seconds())
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &mcpURL,
+				MCPLibrarySyncInterval: &mcpSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file values override db when file hash changed", func(t *testing.T) {
+		mcpURL := "https://file.example.com/mcp-library.json"
+		mcpSyncSeconds := int64((2 * time.Hour).Seconds())
+		dbMCPURL := modelcatalog.DefaultMCPLibraryURL
+		dbMCPSyncSeconds := int64((24 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     11,
+			MCPLibraryURL:          &dbMCPURL,
+			MCPLibrarySyncInterval: &dbMCPSyncSeconds,
+			ConfigHash:             "old-hash",
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &mcpURL,
+				MCPLibrarySyncInterval: &mcpSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library db wins when file hash matches stored hash", func(t *testing.T) {
+		fileMCPURL := "https://file.example.com/mcp-library.json"
+		fileMCPSyncSeconds := int64((2 * time.Hour).Seconds())
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{
+			MCPLibraryURL:          &fileMCPURL,
+			MCPLibrarySyncInterval: &fileMCPSyncSeconds,
+		})
+		require.NoError(t, err)
+		uiEditedMCPURL := "https://ui.example.com/mcp-library.json"
+		uiEditedMCPSyncSeconds := int64((3 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     12,
+			PricingURL:             &defaultURL,
+			PricingSyncInterval:    &defaultSyncSeconds,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &uiEditedMCPURL,
+			MCPLibrarySyncInterval: &uiEditedMCPSyncSeconds,
+			ConfigHash:             storedHash,
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &fileMCPURL,
+				MCPLibrarySyncInterval: &fileMCPSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, uiEditedMCPURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, uiEditedMCPSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, uiEditedMCPURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, uiEditedMCPSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file interval below minimum is clamped", func(t *testing.T) {
+		tooLow := int64(1800)
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibrarySyncInterval: &tooLow,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library invalid db interval falls back and requests db update", func(t *testing.T) {
+		invalidDBSync := int64(0)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     10,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &invalidDBSync,
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
 	t.Run("invalid db interval (zero) falls back and requests db update", func(t *testing.T) {
@@ -16671,10 +17180,14 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			require.NotNil(t, tableOut.PricingURL, "PricingURL must never be nil")
 			require.NotNil(t, tableOut.PricingSyncInterval, "PricingSyncInterval must never be nil")
 			require.NotNil(t, tableOut.ModelParametersURL, "ModelParametersURL must never be nil")
+			require.NotNil(t, tableOut.MCPLibraryURL, "MCPLibraryURL must never be nil")
+			require.NotNil(t, tableOut.MCPLibrarySyncInterval, "MCPLibrarySyncInterval must never be nil")
 			require.NotNil(t, catalogOut, "modelcatalog.Config must never be nil")
 			require.NotNil(t, catalogOut.PricingURL, "Config.PricingURL must never be nil")
 			require.NotNil(t, catalogOut.PricingSyncInterval, "Config.PricingSyncInterval must never be nil")
 			require.NotNil(t, catalogOut.ModelParametersURL, "Config.ModelParametersURL must never be nil")
+			require.NotNil(t, catalogOut.MCPLibraryURL, "Config.MCPLibraryURL must never be nil")
+			require.NotNil(t, catalogOut.MCPLibrarySyncInterval, "Config.MCPLibrarySyncInterval must never be nil")
 		}
 	})
 
@@ -16874,21 +17387,17 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 
 		mockStore.authConfig = &configstore.AuthConfig{
-			AdminUserName:          schemas.NewEnvVar("sameadmin"),
-			AdminPassword:          schemas.NewEnvVar(hashedPassword),
-			IsEnabled:              true,
-			DisableAuthOnInference: false,
-		}
+			AdminUserName: schemas.NewEnvVar("sameadmin"),
+			AdminPassword: schemas.NewEnvVar(hashedPassword),
+			IsEnabled:     true}
 		config := &Config{
 			ConfigStore: mockStore,
 		}
 		configData := &ConfigData{
 			AuthConfig: &configstore.AuthConfig{
-				AdminUserName:          schemas.NewEnvVar("sameadmin"),
-				AdminPassword:          schemas.NewEnvVar(plainPassword),
-				IsEnabled:              true,
-				DisableAuthOnInference: false,
-			},
+				AdminUserName: schemas.NewEnvVar("sameadmin"),
+				AdminPassword: schemas.NewEnvVar(plainPassword),
+				IsEnabled:     true},
 		}
 
 		loadAuthConfig(ctx, config, configData)
@@ -17090,21 +17599,17 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 
 		mockStore.authConfig = &configstore.AuthConfig{
-			AdminUserName:          schemas.NewEnvVar("admin"),
-			AdminPassword:          schemas.NewEnvVar(hashedPassword),
-			IsEnabled:              true,
-			DisableAuthOnInference: false,
-		}
+			AdminUserName: schemas.NewEnvVar("admin"),
+			AdminPassword: schemas.NewEnvVar(hashedPassword),
+			IsEnabled:     true}
 		config := &Config{
 			ConfigStore: mockStore,
 		}
 		configData := &ConfigData{
 			AuthConfig: &configstore.AuthConfig{
-				AdminUserName:          schemas.NewEnvVar("admin"),
-				AdminPassword:          schemas.NewEnvVar(plainPassword),
-				IsEnabled:              true,
-				DisableAuthOnInference: false,
-			},
+				AdminUserName: schemas.NewEnvVar("admin"),
+				AdminPassword: schemas.NewEnvVar(plainPassword),
+				IsEnabled:     true},
 		}
 
 		loadAuthConfig(ctx, config, configData)

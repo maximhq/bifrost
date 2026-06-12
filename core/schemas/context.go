@@ -26,6 +26,7 @@ var reservedKeys = []any{
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
 	BifrostContextKeyAttemptTrail,
+	BifrostContextKeyMCPHealthCheckRequest,
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -450,18 +451,20 @@ func (bc *BifrostContext) GetRoutingEngineLogs() []RoutingEngineLogEntry {
 	return nil
 }
 
-// AppendToContextList appends a value to the context list value.
-// Parameters:
-//   - ctx: The Bifrost context
-//   - key: The key to append the value to
-//   - value: The value to append
-func AppendToContextList[T any](ctx *BifrostContext, key BifrostContextKey, value T) {
+// AppendToContextList appends value to the context list at key, skipping the
+// append when value already exists in the list. Downstream consumers of these
+// lists (notably `routing_engines_used` → Prometheus labels) treat duplicate
+// entries as bugs, so set semantics are enforced at the write site.
+func AppendToContextList[T comparable](ctx *BifrostContext, key BifrostContextKey, value T) {
 	if ctx == nil {
 		return
 	}
 	existingValues, ok := ctx.Value(key).([]T)
 	if !ok {
 		existingValues = []T{}
+	}
+	if slices.Contains(existingValues, value) {
+		return
 	}
 	ctx.SetValue(key, append(existingValues, value))
 }

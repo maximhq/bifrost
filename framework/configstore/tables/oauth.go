@@ -46,8 +46,28 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	// Encrypt sensitive fields (skip if value is an env var reference — the reference itself is not sensitive)
-	if encrypt.IsEnabled() {
+	if VaultIsEnabled() {
+		vaulted := false
+		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && c.ClientSecret.Val != "" {
+			path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ID,
+				tx.Statement.DB.NamingStrategy.ColumnName("", "ClientSecret"))
+			if err := vaultEnvVar(tx.Statement.Context, path, c.ClientSecret); err != nil {
+				return fmt.Errorf("failed to vault oauth client secret: %w", err)
+			}
+			vaulted = true
+		}
+		if c.CodeVerifier != "" {
+			path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ID,
+				tx.Statement.DB.NamingStrategy.ColumnName("", "CodeVerifier"))
+			if err := vaultString(tx.Statement.Context, path, &c.CodeVerifier); err != nil {
+				return fmt.Errorf("failed to vault oauth code verifier: %w", err)
+			}
+			vaulted = true
+		}
+		if vaulted {
+			c.EncryptionStatus = EncryptionStatusVault
+		}
+	} else if encrypt.IsEnabled() {
 		encrypted := false
 		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && c.ClientSecret.Val != "" {
 			if err := encryptString(&c.ClientSecret.Val); err != nil {
@@ -70,7 +90,15 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 
 // AfterFind hook to decrypt sensitive fields
 func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
-	if c.EncryptionStatus == EncryptionStatusEncrypted {
+	switch c.EncryptionStatus {
+	case EncryptionStatusVault:
+		if err := resolveVaultEnvVar(tx.Statement.Context, c.ClientSecret); err != nil {
+			return fmt.Errorf("failed to resolve vault oauth client secret: %w", err)
+		}
+		if err := resolveVaultString(tx.Statement.Context, &c.CodeVerifier); err != nil {
+			return fmt.Errorf("failed to resolve vault oauth code verifier: %w", err)
+		}
+	case EncryptionStatusEncrypted:
 		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && c.ClientSecret.Val != "" {
 			if err := decryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
@@ -80,6 +108,18 @@ func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 			return fmt.Errorf("failed to decrypt oauth code verifier: %w", err)
 		}
 	}
+	return nil
+}
+
+// AfterDelete hook for best-effort vault cleanup on row deletion.
+func (c *TableOauthConfig) AfterDelete(tx *gorm.DB) error {
+	if c.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
+		return nil
+	}
+	secretField := tx.Statement.DB.NamingStrategy.ColumnName("", "ClientSecret")
+	verifierField := tx.Statement.DB.NamingStrategy.ColumnName("", "CodeVerifier")
+	_ = VaultHooks.Remove(tx.Statement.Context, fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ID, secretField))
+	_ = VaultHooks.Remove(tx.Statement.Context, fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ID, verifierField))
 	return nil
 }
 
@@ -124,8 +164,6 @@ func (t *TableOauthToken) BeforeSave(tx *gorm.DB) error {
 	if t.TokenType == "" {
 		t.TokenType = "Bearer"
 	}
-
-	// Encrypt sensitive fields
 	if encrypt.IsEnabled() {
 		if err := encryptString(&t.AccessToken); err != nil {
 			return fmt.Errorf("failed to encrypt oauth access token: %w", err)

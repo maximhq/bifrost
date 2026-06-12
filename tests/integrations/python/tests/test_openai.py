@@ -90,6 +90,7 @@ Batch API uses OpenAI SDK with x-model-provider header to route to different pro
 import json
 import os
 import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -178,8 +179,11 @@ from .utils.common import (
     get_content_string,
     get_provider_voice,
     get_provider_voices,
+    get_vertex_batch_dest_uri,
+    get_vertex_gcs_config,
     mock_tool_response,
     skip_if_no_api_key,
+    skip_if_no_vertex_gcs,
     # Citation utilities
     assert_valid_openai_annotation,
     # WebSocket utilities
@@ -267,6 +271,43 @@ def get_provider_openai_client(provider, vk_enabled=False):
         timeout=api_config.get("timeout", 300),
         default_headers=default_headers if default_headers else None,
     )
+
+
+def get_file_storage_config(provider):
+    """Resolve the storage_config sent to the Files API for a provider.
+
+    Bedrock stores files in S3; Vertex stores them in a customer-owned GCS bucket.
+    Both are passed to the OpenAI SDK via storage_config (s3 / gcs) and the
+    returned file id round-trips through every endpoint. Skips the test when the
+    backing bucket is not configured.
+
+    Returns the storage_config dict to pass via extra_body (upload) / extra_query (list).
+    """
+    if provider == "vertex":
+        skip_if_no_vertex_gcs()
+        cfg = get_vertex_gcs_config()
+        # Use a unique sub-prefix per call so list() returns exactly the files this
+        # test uploaded. The bucket/prefix is shared with batch-staging objects, and
+        # GCS list is prefix + lexicographic with a page limit, so a shared prefix can
+        # page past a freshly uploaded object. Both upload and list in a given test
+        # reuse the same returned config, so the unique prefix stays consistent.
+        base = (cfg.get("prefix") or "").rstrip("/")
+        unique = f"file-api-tests/{uuid.uuid4()}"
+        prefix = f"{base}/{unique}" if base else unique
+        return {"gcs": {"bucket": cfg["bucket"], "prefix": prefix}}
+
+    # Default: S3-backed (Bedrock)
+    settings = get_config().get_integration_settings("bedrock")
+    s3_bucket = settings.get("s3_bucket")
+    if not s3_bucket:
+        pytest.skip("S3 bucket not configured for file tests")
+    return {
+        "s3": {
+            "bucket": s3_bucket,
+            "region": settings.get("region", "us-west-2"),
+            "prefix": settings.get("output_s3_prefix", "bifrost-batch-output"),
+        }
+    }
 
 
 def _wait_for_video_terminal_status(
@@ -2817,22 +2858,15 @@ class TestOpenAIIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("batch_file_upload"),
+        get_cross_provider_params_with_vk_for_scenario("file_upload"),
     )
     def test_41_file_upload(self, test_config, provider, model, vk_enabled):
-        """Test Case 41: Upload a file for batch processing"""
+        """Test Case 41: Direct file upload (S3-backed for Bedrock, GCS-backed for Vertex)"""
         if provider == "_no_providers_" or model == "_no_model_":
-            pytest.skip("No providers configured for batch_file_upload scenario")
+            pytest.skip("No providers configured for file_upload scenario")
 
-        # Get S3 settings from config (bedrock uses S3 for file storage)
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # Get provider-specific client
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
@@ -2846,13 +2880,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -2866,13 +2894,7 @@ class TestOpenAIIntegration:
             list_response = client.files.list(
                 extra_query={
                     "provider": provider,
-                    "storage_config": {
-                        "s3": {
-                            "bucket": s3_bucket,
-                            "region": s3_region,
-                            "prefix": s3_prefix,
-                        },
-                    },
+                    "storage_config": storage_config,
                 }
             )
             assert_valid_file_list_response(list_response, min_count=1)
@@ -2900,16 +2922,10 @@ class TestOpenAIIntegration:
         """Test Case 42: List uploaded files"""
 
         if provider == "_no_providers_" or model == "_no_model_":
-            pytest.skip("No providers configured for batch_file_upload scenario")
+            pytest.skip("No providers configured for file_list scenario")
 
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # First upload a file to ensure we have at least one
         jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
@@ -2921,13 +2937,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -2936,13 +2946,7 @@ class TestOpenAIIntegration:
             response = client.files.list(
                 extra_query={
                     "provider": provider,
-                    "storage_config": {
-                        "s3": {
-                            "bucket": s3_bucket,
-                            "region": s3_region,
-                            "prefix": s3_prefix,
-                        },
-                    },
+                    "storage_config": storage_config,
                 }
             )
 
@@ -2973,14 +2977,8 @@ class TestOpenAIIntegration:
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for file_retrieve scenario")
 
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # First upload a file
         jsonl_content = create_batch_jsonl_content(model=model, provider=provider, num_requests=1)
@@ -2992,13 +2990,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -3028,32 +3020,23 @@ class TestOpenAIIntegration:
     )
     def test_44_file_delete(self, test_config, provider, model, vk_enabled):
         """Test Case 44: Delete an uploaded file"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_delete scenario")
+
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
+
         # First upload a file
         jsonl_content = create_batch_jsonl_content(model=model, provider=provider, num_requests=1)
 
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
-
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
 
         uploaded_file = client.files.create(
             file=("test_delete.jsonl", jsonl_content.encode(), "application/jsonl"),
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -3076,16 +3059,10 @@ class TestOpenAIIntegration:
         """Test Case 45: Download file content"""
 
         if provider == "_no_providers_" or model == "_no_model_":
-            pytest.skip("No providers configured for file_download scenario")
+            pytest.skip("No providers configured for file_content scenario")
 
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # Get provider-specific client
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
@@ -3098,13 +3075,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -3203,6 +3174,48 @@ class TestOpenAIIntegration:
                         )
                     except Exception as e:
                         print(f"Info: Could not cancel batch (may already be processed): {e}")
+            return
+
+        # Vertex uses a customer-owned GCS bucket for input and an output_folder (gs:// prefix)
+        # instead of Bedrock's S3 role/URI. The uploaded file id is base64-encoded by the
+        # integration; the batch routes decode it back to gs:// before reaching the provider.
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+            uploaded_file = client.files.create(
+                file=("batch_create_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body={"provider": provider, "storage_config": storage_config},
+            )
+            batch = None
+            try:
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                assert_valid_batch_response(batch)
+                assert (
+                    batch.input_file_id == uploaded_file.id
+                ), f"Input file ID should round-trip: expected {uploaded_file.id}, got {batch.input_file_id}"
+                print(
+                    f"Success: Created file-based batch with ID: {batch.id}, status: {batch.status} for provider {provider}"
+                )
+            finally:
+                if batch:
+                    try:
+                        client.batches.cancel(batch.id, extra_body={"provider": provider})
+                    except Exception as e:
+                        print(f"Info: Could not cancel batch (may already be processed): {e}")
+                try:
+                    client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
             return
 
         # File-based batching for other providers (Bedrock, OpenAI)
@@ -3359,6 +3372,49 @@ class TestOpenAIIntegration:
                         pass
             return
 
+        # Vertex: GCS-backed file input + output_folder (gs:// prefix).
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            batch_id = None
+            uploaded_file = None
+            try:
+                jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+                uploaded_file = client.files.create(
+                    file=("batch_retrieve_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                    purpose="batch",
+                    extra_body={"provider": provider, "storage_config": storage_config},
+                )
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                batch_id = batch.id
+
+                retrieved_batch = client.batches.retrieve(batch_id, extra_query={"provider": provider})
+                assert_valid_batch_response(retrieved_batch)
+                assert retrieved_batch.id == batch_id
+                print(
+                    f"Success: Retrieved batch {batch_id}, status: {retrieved_batch.status} for provider {provider}"
+                )
+            finally:
+                if batch_id:
+                    try:
+                        client.batches.cancel(batch_id, extra_body={"provider": provider})
+                    except Exception:
+                        pass
+                if uploaded_file:
+                    try:
+                        client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                    except Exception:
+                        pass
+            return
+
         # File-based batching for other providers (Bedrock, OpenAI)
         config = get_config()
         integration_settings = config.get_integration_settings("bedrock")
@@ -3480,6 +3536,42 @@ class TestOpenAIIntegration:
                 pass
             return
 
+        # Vertex: GCS-backed file input + output_folder (gs:// prefix).
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            uploaded_file = None
+            try:
+                jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+                uploaded_file = client.files.create(
+                    file=("batch_cancel_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                    purpose="batch",
+                    extra_body={"provider": provider, "storage_config": storage_config},
+                )
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                cancelled_batch = client.batches.cancel(batch.id, extra_body={"provider": provider})
+                assert cancelled_batch is not None
+                assert cancelled_batch.id == batch.id
+                assert cancelled_batch.status in ["cancelling", "cancelled"]
+                print(
+                    f"Success: Cancelled batch {batch.id}, status: {cancelled_batch.status} for provider {provider}"
+                )
+            finally:
+                if uploaded_file:
+                    try:
+                        client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                    except Exception:
+                        pass
+            return
+
         # File-based batching for other providers (Bedrock, OpenAI)
         config = get_config()
         integration_settings = config.get_integration_settings("bedrock")
@@ -3566,6 +3658,70 @@ class TestOpenAIIntegration:
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for batch_file_upload scenario")
 
+        # Get provider-specific client
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        # Vertex: GCS-backed e2e (upload -> create -> poll -> verify in list). Handled before
+        # the Bedrock S3 config/skip below, since Vertex uses its own GCS bucket. Vertex batches
+        # are long-running, so we poll a few times but do not wait for a terminal state.
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+            print(f"Step 1: Uploading batch input file for provider {provider}...")
+            uploaded_file = client.files.create(
+                file=("batch_e2e_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body={"provider": provider, "storage_config": storage_config},
+            )
+            assert_valid_file_response(uploaded_file, expected_purpose="batch")
+            print(f"  Uploaded file: {uploaded_file.id}")
+            batch = None
+            try:
+                print("Step 2: Creating batch job with file ID...")
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    metadata={"test": "e2e_file", "source": "bifrost-integration-tests"},
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                assert_valid_batch_response(batch)
+                print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+                print("Step 3: Polling batch status...")
+                for i in range(5):
+                    retrieved_batch = client.batches.retrieve(
+                        batch.id, extra_query={"provider": provider}
+                    )
+                    print(f"  Poll {i+1}: status = {retrieved_batch.status}")
+                    if retrieved_batch.status in ["completed", "failed", "expired", "cancelled"]:
+                        break
+                    time.sleep(2)
+
+                print("Step 4: Verifying batch in list...")
+                batch_list = client.batches.list(limit=20, extra_query={"provider": provider})
+                assert batch.id in [
+                    b.id for b in batch_list.data
+                ], f"Batch {batch.id} should be in the batch list"
+                print(f"Success: File API E2E completed for batch {batch.id} (provider: {provider})")
+            finally:
+                if batch:
+                    try:
+                        client.batches.cancel(batch.id, extra_body={"provider": provider})
+                        print(f"Cleanup: Cancelled batch {batch.id}")
+                    except Exception as e:
+                        print(f"Cleanup info: Could not cancel batch: {e}")
+                try:
+                    client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                    print(f"Cleanup: Deleted file {uploaded_file.id}")
+                except Exception as e:
+                    print(f"Cleanup info: Could not delete file: {e}")
+            return
+
         config = get_config()
         integration_settings = config.get_integration_settings("bedrock")
         s3_bucket = integration_settings.get("s3_bucket")
@@ -3574,9 +3730,6 @@ class TestOpenAIIntegration:
 
         if not s3_bucket:
             pytest.skip("S3 bucket not configured for file tests")
-
-        # Get provider-specific client
-        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
 
         # Anthropic uses inline requests instead of file-based batching
         if provider == "anthropic":

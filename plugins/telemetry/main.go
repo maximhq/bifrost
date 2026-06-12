@@ -613,6 +613,11 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *PrometheusPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook records the start time of the request in the context.
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {

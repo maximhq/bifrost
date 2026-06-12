@@ -30,8 +30,8 @@ type TableMCPClient struct {
 	ToolSyncInterval        int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
-	DiscoveredToolsJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]schemas.ChatTool
-	ToolNameMappingJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
+	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers"
@@ -57,13 +57,13 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig               *schemas.MCPStdioConfig    `gorm:"-" json:"stdio_config,omitempty"`
-	TLSConfig                 *schemas.MCPTLSConfig      `gorm:"-" json:"tls_config,omitempty"`
-	ToolsToExecute            schemas.WhiteList          `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute        schemas.WhiteList          `gorm:"-" json:"tools_to_auto_execute"`
-	Headers                   map[string]schemas.EnvVar  `gorm:"-" json:"headers"`
-	AllowedExtraHeaders       schemas.WhiteList          `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing               map[string]float64         `gorm:"-" json:"tool_pricing"`
+	StdioConfig               *schemas.MCPStdioConfig     `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig       `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute            schemas.WhiteList           `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute        schemas.WhiteList           `gorm:"-" json:"tools_to_auto_execute"`
+	Headers                   map[string]schemas.EnvVar   `gorm:"-" json:"headers"`
+	AllowedExtraHeaders       schemas.WhiteList           `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing               map[string]float64          `gorm:"-" json:"tool_pricing"`
 	DiscoveredTools           map[string]schemas.ChatTool `gorm:"-" json:"-"`
 	DiscoveredToolNameMapping map[string]string           `gorm:"-" json:"-"`
 	PerUserHeaderKeys         []string                    `gorm:"-" json:"per_user_header_keys"`
@@ -221,7 +221,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 // AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
 // and deserializes JSON columns back into runtime structs after reading from the database.
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
-	if c.EncryptionStatus == "encrypted" {
+	if c.EncryptionStatus == EncryptionStatusEncrypted {
 		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
 			decrypted, err := encrypt.Decrypt(c.HeadersJSON)
 			if err != nil {

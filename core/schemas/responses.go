@@ -129,6 +129,7 @@ type BifrostResponsesResponse struct {
 	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
 	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
+	Speed                *string                             `json:"speed,omitempty"` // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	Status               *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason           *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers

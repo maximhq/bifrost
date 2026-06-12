@@ -311,6 +311,10 @@ func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPostHook(_ *schemas.B
 	return nil
 }
 
+func (m *mockRealtimeMintingGovernancePlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (m *mockRealtimeMintingGovernancePlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }

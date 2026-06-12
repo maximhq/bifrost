@@ -1,3 +1,10 @@
+{{- if .Values.ingress }}
+{{- $isLegacy := true }}
+{{- range $k, $v := .Values.ingress }}
+{{- if and (kindIs "map" $v) (hasKey $v "enabled") }}{{- $isLegacy = false }}{{- end }}
+{{- end }}
+{{- if $isLegacy }}
+{{- /* Single ingress (legacy format) — no non-legacy keys present */}}
 {{- if .Values.ingress.enabled -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -39,4 +46,55 @@ spec:
                   number: {{ $.Values.service.port }}
           {{- end }}
     {{- end }}
+{{- end }}
+{{- else }}
+{{- /* Named ingresses map (new format) */}}
+{{- range (keys .Values.ingress | sortAlpha) }}
+{{- $name := . }}
+{{- $ing := index $.Values.ingress $name }}
+{{- if and (kindIs "map" $ing) $ing.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "bifrost.fullname" $ }}-{{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" $ | nindent 4 }}
+  {{- with $ing.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if $ing.className }}
+  ingressClassName: {{ $ing.className }}
+  {{- end }}
+  {{- if $ing.tls }}
+  tls:
+    {{- range $ing.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range $ing.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "bifrost.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}

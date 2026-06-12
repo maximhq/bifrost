@@ -229,6 +229,11 @@ func (plugin *Plugin) getOrCreateLogger(logRepoID string) (*logging.Logger, erro
 	return logger, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook is called before a request is processed by Bifrost.
 // It manages trace and generation tracking for incoming requests by either:
 // - Creating a new trace if none exists

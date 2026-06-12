@@ -2498,6 +2498,192 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				assert.Contains(t, responseStr, "Google", "Response should contain tab content")
 			},
 		},
+		{
+			name: "ResponsesAPI_FunctionCallOutput_MultimodalBlocks_ImagePreserved",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-3-pro-preview",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("What color is the image the tool returned?"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("c1"),
+							Name:      schemas.Ptr("read_file"),
+							Arguments: schemas.Ptr(`{}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("c1"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								// Mixed text + image blocks (OpenAI Responses API format)
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeText,
+										Text: schemas.Ptr("result:"),
+									},
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+										ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+											// 1x1 red PNG
+											ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				var fr *gemini.FunctionResponse
+				for i := range result.Contents {
+					for _, p := range result.Contents[i].Parts {
+						if p.FunctionResponse != nil {
+							fr = p.FunctionResponse
+							break
+						}
+					}
+				}
+				require.NotNil(t, fr, "Should have a functionResponse")
+				assert.Equal(t, "read_file", fr.Name)
+
+				// Text block preserved in the structured response
+				responseStr := string(fr.Response)
+				assert.Contains(t, responseStr, "result:", "Text output should be preserved")
+
+				// Image block preserved as a nested inlineData part (NOT dropped) on Gemini 3+
+				require.Len(t, fr.Parts, 1, "Image block should be attached as a functionResponse part")
+				require.NotNil(t, fr.Parts[0].InlineData, "Media part must carry inlineData")
+				assert.Equal(t, "image/png", fr.Parts[0].InlineData.MIMEType)
+				assert.NotEmpty(t, fr.Parts[0].InlineData.Data, "Image base64 data must be present")
+				assert.NotEmpty(t, fr.Parts[0].InlineData.DisplayName, "Blob should have a displayName")
+
+				// No $ref must be emitted: the Gemini Developer API rejects the $ref form
+				// ("does not match to a display_name"); Gemini 3 reads media directly from parts.
+				assert.NotContains(t, responseStr, "$ref", "Response must NOT contain a $ref placeholder")
+			},
+		},
+		{
+			name: "ResponsesAPI_FunctionCallOutput_MultimodalBlocks_DroppedForOlderModel",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.5-flash", // not Gemini 3 → multimodal tool output unsupported
+				Input: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("c1"),
+							Name:      schemas.Ptr("read_file"),
+							Arguments: schemas.Ptr(`{}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("c1"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeText,
+										Text: schemas.Ptr("result:"),
+									},
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+										ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+											ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				var fr *gemini.FunctionResponse
+				for i := range result.Contents {
+					for _, p := range result.Contents[i].Parts {
+						if p.FunctionResponse != nil {
+							fr = p.FunctionResponse
+							break
+						}
+					}
+				}
+				require.NotNil(t, fr, "Should have a functionResponse")
+				// Text is still preserved, but the image is dropped (older models reject
+				// multimodal function responses with a hard 400), so no parts are emitted.
+				assert.Contains(t, string(fr.Response), "result:", "Text output should be preserved")
+				assert.Empty(t, fr.Parts, "Media must be dropped for non-Gemini-3 models (no 400)")
+			},
+		},
+		{
+			name: "ResponsesAPI_FunctionCallOutput_MultimodalBlocks_VertexEmitsRef",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Vertex, // Vertex AI supports (and requires) the $ref form
+				Model:    "gemini-3-pro-preview",
+				Input: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("c1"),
+							Name:      schemas.Ptr("read_file"),
+							Arguments: schemas.Ptr(`{}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("c1"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeText,
+										Text: schemas.Ptr("result:"),
+									},
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+										ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+											ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				var fr *gemini.FunctionResponse
+				for i := range result.Contents {
+					for _, p := range result.Contents[i].Parts {
+						if p.FunctionResponse != nil {
+							fr = p.FunctionResponse
+							break
+						}
+					}
+				}
+				require.NotNil(t, fr, "Should have a functionResponse")
+				require.Len(t, fr.Parts, 1, "Image must be attached as a functionResponse part on Vertex")
+				require.NotNil(t, fr.Parts[0].InlineData)
+				dn := fr.Parts[0].InlineData.DisplayName
+				require.NotEmpty(t, dn, "Blob must have a displayName")
+
+				// Vertex DOES emit the $ref, pointing at the blob's displayName.
+				responseStr := string(fr.Response)
+				assert.Contains(t, responseStr, "result:", "Text output should be preserved")
+				assert.Contains(t, responseStr, "$ref", "Vertex must emit a $ref into the response")
+				assert.Contains(t, responseStr, dn, "The $ref must point at the blob displayName")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -3811,6 +3997,148 @@ func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
 			assert.Equal(t, tt.wantAllowedNames, got.AllowedFunctionNames, "AllowedFunctionNames must survive round-trip")
 		})
 	}
+}
+
+// TestMultimodalFunctionResponse_RoundTrip verifies that an image returned by a tool
+// inside functionResponse.parts survives the full
+// GeminiGenerationRequest → BifrostResponsesRequest → GeminiGenerationRequest round-trip
+// (Gemini 3 multimodal function responses), instead of being dropped or collapsed to text.
+func TestMultimodalFunctionResponse_RoundTrip(t *testing.T) {
+	const redPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3-flash-preview",
+		Contents: []gemini.Content{
+			{Role: "user", Parts: []*gemini.Part{{Text: "What color is the tool image?"}}},
+			{Role: "model", Parts: []*gemini.Part{{
+				FunctionCall: &gemini.FunctionCall{ID: "c1", Name: "read_file", Args: json.RawMessage(`{}`)},
+			}}},
+			{Role: "user", Parts: []*gemini.Part{{
+				FunctionResponse: &gemini.FunctionResponse{
+					ID:       "c1",
+					Name:     "read_file",
+					Response: json.RawMessage(`{"media_0":{"$ref":"media_0"},"output":"result:"}`),
+					Parts: []*gemini.Part{{
+						InlineData: &gemini.Blob{MIMEType: "image/png", DisplayName: "media_0", Data: redPNG},
+					}},
+				},
+			}}},
+		},
+	}
+
+	// --- Gemini -> Bifrost: image must be reconstructed as content blocks ---
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq)
+
+	var outputMsg *schemas.ResponsesMessage
+	for i := range bifrostReq.Input {
+		m := &bifrostReq.Input[i]
+		if m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
+			outputMsg = m
+			break
+		}
+	}
+	require.NotNil(t, outputMsg, "Should have a function_call_output message")
+	require.NotNil(t, outputMsg.ResponsesToolMessage.Output)
+	blocks := outputMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+	require.NotEmpty(t, blocks, "Output must be reconstructed as content blocks (not collapsed to a string)")
+
+	var hasText, hasImage bool
+	for _, b := range blocks {
+		if b.Type == schemas.ResponsesInputMessageContentBlockTypeText && b.Text != nil {
+			assert.Equal(t, "result:", *b.Text)
+			hasText = true
+		}
+		if b.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
+			b.ResponsesInputMessageContentBlockImage != nil &&
+			b.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+			assert.Contains(t, *b.ResponsesInputMessageContentBlockImage.ImageURL, redPNG, "Image base64 must be preserved")
+			hasImage = true
+		}
+	}
+	assert.True(t, hasText, "Text block must be preserved")
+	assert.True(t, hasImage, "Image block must be preserved")
+
+	// --- Bifrost -> Gemini: image must land back in functionResponse.parts ---
+	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, roundTrip)
+
+	var fr *gemini.FunctionResponse
+	for i := range roundTrip.Contents {
+		for _, p := range roundTrip.Contents[i].Parts {
+			if p.FunctionResponse != nil {
+				fr = p.FunctionResponse
+				break
+			}
+		}
+	}
+	require.NotNil(t, fr, "Round-trip must still have a functionResponse")
+	require.Len(t, fr.Parts, 1, "Image must round-trip back into functionResponse.parts")
+	require.NotNil(t, fr.Parts[0].InlineData)
+	assert.Equal(t, "image/png", fr.Parts[0].InlineData.MIMEType)
+	assert.NotEmpty(t, fr.Parts[0].InlineData.Data, "Image data must survive the full round-trip")
+	assert.Contains(t, string(fr.Response), "result:", "Text output must survive the full round-trip")
+}
+
+// TestMultimodalFunctionResponse_PreservesNonRefFields verifies that non-$ref fields in a
+// multimodal functionResponse.response (the Gemini spec allows any keys, not just "output")
+// survive the Gemini -> Bifrost -> Gemini round-trip instead of being dropped, while the
+// $ref placeholders (which point at the media parts) are not re-emitted.
+func TestMultimodalFunctionResponse_PreservesNonRefFields(t *testing.T) {
+	const redPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3-flash-preview",
+		Contents: []gemini.Content{
+			{Role: "user", Parts: []*gemini.Part{{Text: "weather?"}}},
+			{Role: "model", Parts: []*gemini.Part{{
+				FunctionCall: &gemini.FunctionCall{ID: "c1", Name: "get_weather", Args: json.RawMessage(`{}`)},
+			}}},
+			{Role: "user", Parts: []*gemini.Part{{
+				FunctionResponse: &gemini.FunctionResponse{
+					ID:   "c1",
+					Name: "get_weather",
+					// Tool returns real data fields (temp, unit) plus an image reference.
+					Response: json.RawMessage(`{"temp":72,"unit":"F","chart_ref":{"$ref":"chart.png"}}`),
+					Parts: []*gemini.Part{{
+						InlineData: &gemini.Blob{MIMEType: "image/png", DisplayName: "chart.png", Data: redPNG},
+					}},
+				},
+			}}},
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq)
+
+	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, roundTrip)
+
+	var fr *gemini.FunctionResponse
+	for i := range roundTrip.Contents {
+		for _, p := range roundTrip.Contents[i].Parts {
+			if p.FunctionResponse != nil {
+				fr = p.FunctionResponse
+				break
+			}
+		}
+	}
+	require.NotNil(t, fr, "Round-trip must still have a functionResponse")
+
+	// Image survives as a part.
+	require.Len(t, fr.Parts, 1, "Image must round-trip into functionResponse.parts")
+	require.NotNil(t, fr.Parts[0].InlineData)
+
+	// Non-$ref data fields survive; the $ref placeholder is not re-emitted.
+	responseStr := string(fr.Response)
+	assert.Contains(t, responseStr, "72", "temp must survive the round-trip")
+	assert.Contains(t, responseStr, `"F"`, "unit must survive the round-trip")
+	assert.NotContains(t, responseStr, "$ref", "the $ref placeholder must not be re-emitted (Gemini provider)")
+	assert.NotContains(t, responseStr, "chart_ref", "the media-ref key must not leak into the response")
 }
 
 // TestImageSizeRoundtrip verifies that imageSize and aspectRatio survive the

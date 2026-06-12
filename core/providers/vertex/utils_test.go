@@ -354,3 +354,146 @@ func TestVertexRegionToPool(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveVertexProjectID_AliasOverride verifies the per-alias ProjectID
+// override lets one Vertex credential serve deployments across distinct GCP
+// projects.
+func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
+	keyProject := "key-level-project"
+	aliasProject := "alias-level-project"
+	key := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewEnvVar(keyProject),
+		},
+	}
+
+	if got := resolveVertexProjectID(nil, key); got != keyProject {
+		t.Errorf("nil ctx: got %q, want key-level %q", got, keyProject)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexProjectID(ctx, key); got != keyProject {
+		t.Errorf("empty ctx: got %q, want key-level %q", got, keyProject)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID: "claude-sonnet-4-5",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectID: schemas.NewEnvVar(aliasProject),
+			},
+		},
+	})
+	if got := resolveVertexProjectID(ctx, key); got != aliasProject {
+		t.Errorf("alias override should win: got %q, want %q", got, aliasProject)
+	}
+
+	// Empty alias ProjectID falls through to key-level.
+	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectID: schemas.NewEnvVar(""),
+			},
+		},
+	})
+	if got := resolveVertexProjectID(ctx2, key); got != keyProject {
+		t.Errorf("empty alias ProjectID should fall through: got %q, want %q", got, keyProject)
+	}
+}
+
+// TestResolveVertexRegion_AliasOverride verifies the top-level
+// AliasConfig.Region override for Vertex.
+func TestResolveVertexRegion_AliasOverride(t *testing.T) {
+	keyRegion := "us-central1"
+	aliasRegion := "us-east5"
+	key := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			Region: *schemas.NewEnvVar(keyRegion),
+		},
+	}
+
+	if got := resolveVertexRegion(nil, key); got != keyRegion {
+		t.Errorf("nil ctx: got %q, want %q", got, keyRegion)
+	}
+
+	ctx0 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexRegion(ctx0, key); got != keyRegion {
+		t.Errorf("empty ctx: got %q, want key-level %q", got, keyRegion)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID: "claude-sonnet-4-5",
+			Region:  schemas.NewEnvVar(aliasRegion),
+		},
+	})
+	if got := resolveVertexRegion(ctx, key); got != aliasRegion {
+		t.Errorf("alias Region should win: got %q, want %q", got, aliasRegion)
+	}
+
+	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			Region:  schemas.NewEnvVar(""),
+		},
+	})
+	if got := resolveVertexRegion(ctx2, key); got != keyRegion {
+		t.Errorf("empty alias Region should fall through: got %q, want %q", got, keyRegion)
+	}
+}
+
+// TestResolveVertexProjectNumber_AliasOverride mirrors the ProjectID test.
+func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
+	keyNumber := "111111"
+	aliasNumber := "222222"
+	key := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectNumber: *schemas.NewEnvVar(keyNumber),
+		},
+	}
+
+	if got := resolveVertexProjectNumber(nil, key); got != keyNumber {
+		t.Errorf("nil ctx: got %q, want %q", got, keyNumber)
+	}
+
+	ctx0 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexProjectNumber(ctx0, key); got != keyNumber {
+		t.Errorf("empty ctx: got %q, want key-level %q", got, keyNumber)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectNumber: schemas.NewEnvVar(aliasNumber),
+			},
+		},
+	})
+	if got := resolveVertexProjectNumber(ctx, key); got != aliasNumber {
+		t.Errorf("alias ProjectNumber should win: got %q, want %q", got, aliasNumber)
+	}
+
+	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectNumber: schemas.NewEnvVar(""),
+			},
+		},
+	})
+	if got := resolveVertexProjectNumber(ctx2, key); got != keyNumber {
+		t.Errorf("empty alias ProjectNumber should fall through: got %q, want %q", got, keyNumber)
+	}
+}
