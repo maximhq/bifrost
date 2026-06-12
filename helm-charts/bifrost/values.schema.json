@@ -108,47 +108,109 @@
       }
     },
     "ingress": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "className": {
-          "type": "string"
-        },
-        "annotations": {
-          "type": "object"
-        },
-        "hosts": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "host": {
-                "type": "string"
-              },
-              "paths": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string"
-                    },
-                    "pathType": {
-                      "type": "string",
-                      "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+      "description": "Ingress configuration. Either a single ingress (legacy, with top-level 'enabled') or a map of named ingresses (new format, each key becomes a separate Ingress resource named <release>-<key>).",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Single ingress (legacy format).",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "className": {
+              "type": "string"
+            },
+            "annotations": {
+              "type": "object"
+            },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["host", "paths"],
+                "properties": {
+                  "host": {
+                    "type": "string"
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "pathType"],
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "pathType": {
+                          "type": "string",
+                          "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+                        }
+                      }
                     }
                   }
                 }
               }
+            },
+            "tls": {
+              "type": "array"
             }
-          }
+          },
+          "required": ["enabled"]
         },
-        "tls": {
-          "type": "array"
+        {
+          "type": "object",
+          "description": "Named ingresses map. Each key produces a separate Ingress named <release>-<key>. Keys must be valid DNS-1123 label segments (lowercase alphanumeric and hyphens only, no underscores or uppercase) so the resulting Ingress name is a valid Kubernetes resource name.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "className": {
+                "type": "string"
+              },
+              "annotations": {
+                "type": "object"
+              },
+              "hosts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["host", "paths"],
+                  "properties": {
+                    "host": {
+                      "type": "string"
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["path", "pathType"],
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "pathType": {
+                            "type": "string",
+                            "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "tls": {
+                "type": "array"
+              }
+            },
+            "required": ["enabled"]
+          },
+          "not": {
+            "required": ["enabled"]
+          }
         }
-      }
+      ]
     },
     "resources": {
       "type": "object",

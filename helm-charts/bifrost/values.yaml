@@ -75,6 +75,7 @@ service:
   port: 8080
   annotations: {}
 
+# Single ingress (legacy format):
 ingress:
   enabled: false
   className: ""
@@ -85,6 +86,30 @@ ingress:
         - path: /
           pathType: Prefix
   tls: []
+# Named ingresses map (new format) — replaces the single ingress above.
+# Each key becomes a separate Ingress resource named "<release>-<key>".
+# Use this when you need multiple ingress controllers (e.g. public + internal).
+# ingress:
+#   public:
+#     enabled: true
+#     className: nginx-public
+#     annotations: {}
+#     hosts:
+#       - host: bifrost.example.com
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#     tls: []
+#   internal:
+#     enabled: true
+#     className: nginx-internal
+#     annotations: {}
+#     hosts:
+#       - host: bifrost.internal.example.com
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#     tls: []
 
 resources:
   limits:
