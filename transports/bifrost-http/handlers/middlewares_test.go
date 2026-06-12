@@ -738,10 +738,6 @@ func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *tes
 		AdminPassword: schemas.NewEnvVar("hashedpassword"),
 		IsEnabled:     true,
 	})
-	// Enforce auth on inference; realtime transport endpoints must still bypass it
-	// because browser clients connect with an ephemeral key, not admin credentials.
-	am.UpdateEnforceAuthOnInference(true)
-
 	routes := []string{
 		"/v1/realtime",
 		"/openai/v1/realtime",
@@ -769,7 +765,14 @@ func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *tes
 	}
 }
 
-func TestAuthMiddleware_InferenceMiddleware_RealtimeMintingStillRequiresAuth(t *testing.T) {
+// TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance verifies that the
+// inference middleware passes every inference request through — including realtime minting
+// endpoints and credential-less requests — even with dashboard auth enabled. Inference
+// authentication is owned by the governance plugin downstream (the authoritative VK
+// validator), not by this dashboard-auth middleware. Re-introducing a credential check
+// here would reject virtual-key callers and break inference auth, so the middleware must
+// never short-circuit an inference request.
+func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	am := &AuthMiddleware{}
@@ -778,37 +781,65 @@ func TestAuthMiddleware_InferenceMiddleware_RealtimeMintingStillRequiresAuth(t *
 		AdminPassword: schemas.NewEnvVar("hashedpassword"),
 		IsEnabled:     true,
 	})
-	// Enforce auth on inference. Minting endpoints follow the inference auth toggle with
-	// no exception (unlike the transport carve-out), so they require auth when enforced.
-	am.UpdateEnforceAuthOnInference(true)
 
-	routes := []string{
-		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
-		"/openai/v1/realtime/client_secrets",
-		"/openai/v1/realtime/sessions",
+	cases := []struct {
+		name      string
+		uri       string
+		headerKey string
+		headerVal string
+	}{
+		{name: "chat completion with virtual key", uri: "/v1/chat/completions", headerKey: "x-bf-vk", headerVal: "sk-bf-abc123"},
+		{name: "chat completion without credentials", uri: "/v1/chat/completions"},
+		{name: "realtime minting (client_secrets)", uri: "/v1/realtime/client_secrets"},
+		{name: "realtime minting (sessions)", uri: "/openai/v1/realtime/sessions"},
 	}
 
-	for _, route := range routes {
-		t.Run(route, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx := &fasthttp.RequestCtx{}
-			ctx.Request.SetRequestURI(route)
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.headerKey != "" {
+				ctx.Request.Header.Set(tc.headerKey, tc.headerVal)
+			}
 
 			nextCalled := false
-			next := func(ctx *fasthttp.RequestCtx) {
-				nextCalled = true
-			}
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
 
-			handler := am.InferenceMiddleware()(next)
-			handler(ctx)
+			am.InferenceMiddleware()(next)(ctx)
 
-			if nextCalled {
-				t.Fatalf("expected realtime minting route %s to still require auth", route)
-			}
-			if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
-				t.Fatalf("expected %d for route %s, got %d", fasthttp.StatusUnauthorized, route, ctx.Response.StatusCode())
+			if !nextCalled {
+				t.Fatalf("expected inference request %q to pass the middleware (governance enforces auth downstream), got %d", tc.name, ctx.Response.StatusCode())
 			}
 		})
+	}
+}
+
+// TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass guards against the privilege-
+// escalation loophole: a virtual key must never grant access to admin/dashboard routes.
+func TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/config")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-abc123")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+	am.APIMiddleware()(next)(ctx)
+
+	if nextCalled {
+		t.Fatal("virtual key must not bypass auth on admin/dashboard routes")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected %d for admin route with VK, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	}
 }
 

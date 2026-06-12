@@ -20,6 +20,9 @@ description: "v1.5.12 changelog - 2026-06-12"
 <Warning>
 The `disable_auth_on_inference` (`DisableAuthOnInference`) config field, deprecated in v1.4.0, has been completely removed. Use `enforce_auth_on_inference` (`EnforceAuthOnInference`) instead, which enforces API key authentication on inference endpoints.
 </Warning>
+<Warning>
+Known issue: with `enforce_auth_on_inference` enabled alongside dashboard password auth, virtual-key-authenticated inference requests are incorrectly rejected with `401 Unauthorized`. Fixed in v1.5.13 — upgrade to v1.5.13 or later.
+</Warning>
 
 ## ✨ Features
 
