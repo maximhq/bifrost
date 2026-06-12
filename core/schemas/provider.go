@@ -104,6 +104,10 @@ type ProviderNetworkConfigOverride struct {
 	RetryBackoffMax            *time.Duration `json:"retry_backoff_max,omitempty"`
 	StreamIdleTimeoutInSeconds *int           `json:"stream_idle_timeout_in_seconds,omitempty"`
 	AllowPrivateNetwork        *bool          `json:"allow_private_network,omitempty"`
+	// BetaHeaderOverrides merges with the provider's configured BetaHeaderOverrides.
+	// Keys present in both maps use the override value; keys absent from the override
+	// keep the provider default. Mirrors the ExtraHeaders merge semantics.
+	BetaHeaderOverrides map[string]bool `json:"beta_header_overrides,omitempty"`
 }
 
 // ApplyProviderNetworkConfigOverride returns base with request-scoped overrides
@@ -134,6 +138,14 @@ func ApplyProviderNetworkConfigOverride(base NetworkConfig, override *ProviderNe
 	}
 	if override.AllowPrivateNetwork != nil {
 		base.AllowPrivateNetwork = *override.AllowPrivateNetwork
+	}
+	if override.BetaHeaderOverrides != nil {
+		merged := maps.Clone(base.BetaHeaderOverrides)
+		if merged == nil {
+			merged = map[string]bool{}
+		}
+		maps.Copy(merged, override.BetaHeaderOverrides)
+		base.BetaHeaderOverrides = merged
 	}
 	return base
 }

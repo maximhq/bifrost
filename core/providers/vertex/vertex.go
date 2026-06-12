@@ -456,7 +456,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides)); len(betaHeaders) > 0 {
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
@@ -782,7 +782,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides)); len(betaHeaders) > 0 {
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
@@ -850,7 +850,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
@@ -1010,7 +1010,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if schemas.IsAnthropicModel(request.Model) {
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, false, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides), provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1042,7 +1042,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides)); len(betaHeaders) > 0 {
 			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 		} else {
 			req.Header.Del(anthropic.AnthropicBetaHeader)
@@ -1301,7 +1301,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
 
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, false, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides), provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1335,7 +1335,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
@@ -2683,7 +2683,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	)
 
 	if schemas.IsAnthropicModel(request.Model) {
-		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, true, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, true, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides), provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}

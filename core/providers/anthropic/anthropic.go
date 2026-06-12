@@ -201,7 +201,7 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
-	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Anthropic, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Anthropic, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides)); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 	} else {
 		req.Header.Del(AnthropicBetaHeader)
@@ -573,7 +573,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
-		provider.networkConfig.BetaHeaderOverrides,
+		providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -1047,7 +1047,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
-		provider.networkConfig.BetaHeaderOverrides,
+		providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),

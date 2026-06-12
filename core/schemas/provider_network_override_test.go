@@ -26,6 +26,7 @@ func TestApplyProviderNetworkConfigOverride_PartialOverrideKeepsDefaults(t *test
 		ExtraHeaders:        map[string]string{"x-tenant": "org1"},
 		MaxRetries:          &maxRetries,
 		AllowPrivateNetwork: &allowPrivateNetwork,
+		BetaHeaderOverrides: map[string]bool{"redact-thinking-": false},
 	})
 
 	if got.DefaultRequestTimeoutInSeconds != base.DefaultRequestTimeoutInSeconds {
@@ -46,6 +47,65 @@ func TestApplyProviderNetworkConfigOverride_PartialOverrideKeepsDefaults(t *test
 	if got.ExtraHeaders["x-static"] != "yes" || got.ExtraHeaders["x-tenant"] != "org1" {
 		t.Fatalf("ExtraHeaders = %+v, want merged static and tenant headers", got.ExtraHeaders)
 	}
+	if v, ok := got.BetaHeaderOverrides["redact-thinking-"]; !ok || v != false {
+		t.Fatalf("BetaHeaderOverrides[\"redact-thinking-\"] = %v, want false", got.BetaHeaderOverrides["redact-thinking-"])
+	}
+}
+
+// TestApplyProviderNetworkConfigOverride_BetaHeaderOverridesMerge verifies the
+// three important cases for BetaHeaderOverrides merging in ApplyProviderNetworkConfigOverride.
+func TestApplyProviderNetworkConfigOverride_BetaHeaderOverridesMerge(t *testing.T) {
+	t.Run("nil override leaves base intact", func(t *testing.T) {
+		base := NetworkConfig{BetaHeaderOverrides: map[string]bool{"tool-examples-2025-10-29": true}}
+		got := ApplyProviderNetworkConfigOverride(base, &ProviderNetworkConfigOverride{})
+		if got.BetaHeaderOverrides["tool-examples-2025-10-29"] != true {
+			t.Fatalf("BetaHeaderOverrides changed when override was nil: %v", got.BetaHeaderOverrides)
+		}
+	})
+
+	t.Run("override key wins over base", func(t *testing.T) {
+		base := NetworkConfig{BetaHeaderOverrides: map[string]bool{"redact-thinking-": true}}
+		got := ApplyProviderNetworkConfigOverride(base, &ProviderNetworkConfigOverride{
+			BetaHeaderOverrides: map[string]bool{"redact-thinking-": false},
+		})
+		if got.BetaHeaderOverrides["redact-thinking-"] != false {
+			t.Fatalf("override key did not win: got true, want false")
+		}
+	})
+
+	t.Run("base key absent from override is preserved", func(t *testing.T) {
+		base := NetworkConfig{BetaHeaderOverrides: map[string]bool{"tool-examples-2025-10-29": true}}
+		got := ApplyProviderNetworkConfigOverride(base, &ProviderNetworkConfigOverride{
+			BetaHeaderOverrides: map[string]bool{"redact-thinking-": false},
+		})
+		if got.BetaHeaderOverrides["tool-examples-2025-10-29"] != true {
+			t.Fatalf("base-only key was dropped after merge: %v", got.BetaHeaderOverrides)
+		}
+		if got.BetaHeaderOverrides["redact-thinking-"] != false {
+			t.Fatalf("override key missing after merge: %v", got.BetaHeaderOverrides)
+		}
+	})
+
+	t.Run("nil base gets override keys", func(t *testing.T) {
+		base := NetworkConfig{}
+		got := ApplyProviderNetworkConfigOverride(base, &ProviderNetworkConfigOverride{
+			BetaHeaderOverrides: map[string]bool{"redact-thinking-": true},
+		})
+		if got.BetaHeaderOverrides["redact-thinking-"] != true {
+			t.Fatalf("override not applied onto nil base: %v", got.BetaHeaderOverrides)
+		}
+	})
+
+	t.Run("merge does not mutate base map", func(t *testing.T) {
+		baseMap := map[string]bool{"tool-examples-2025-10-29": true}
+		base := NetworkConfig{BetaHeaderOverrides: baseMap}
+		ApplyProviderNetworkConfigOverride(base, &ProviderNetworkConfigOverride{
+			BetaHeaderOverrides: map[string]bool{"redact-thinking-": false},
+		})
+		if _, ok := baseMap["redact-thinking-"]; ok {
+			t.Fatal("ApplyProviderNetworkConfigOverride mutated the caller's base BetaHeaderOverrides map")
+		}
+	})
 }
 
 func TestBifrostRequestClone_ProviderNetworkConfigOverrideHeadersAreIndependent(t *testing.T) {
@@ -148,6 +208,65 @@ func TestBifrostRequestClone_AllRequestTypesAreIndependentlyCovered(t *testing.T
 	// only guards against the reflection filter silently matching nothing.
 	if covered < 40 {
 		t.Fatalf("only %d *Request fields matched; reflection filter is broken", covered)
+	}
+}
+
+// TestNetworkConfig_AllFieldsAccountedForInOverrideOrExclusionList enforces that
+// every NetworkConfig field is either per-request-overridable (present in
+// ProviderNetworkConfigOverride) or explicitly listed as construction-time-only
+// (cannot change without rebuilding the HTTP client). Adding a field to
+// NetworkConfig without updating ProviderNetworkConfigOverride or the exclusion
+// list below fails this test — the author must consciously classify the new field.
+func TestNetworkConfig_AllFieldsAccountedForInOverrideOrExclusionList(t *testing.T) {
+	// constructionTimeOnly: NetworkConfig fields baked into the fasthttp.Client
+	// (or TLS config) at NewProvider time. They cannot be overridden per-request
+	// without rebuilding the client. The value is the reason — purely
+	// documentation, but required: a blank reason is a sign the reviewer skipped
+	// the classification.
+	//
+	// To add a new per-request-overridable field instead, add it to
+	// ProviderNetworkConfigOverride + ApplyProviderNetworkConfigOverride.
+	constructionTimeOnly := map[string]string{
+		"base_url":                           "HTTP client BaseURL baked in at construction",
+		"default_request_timeout_in_seconds": "transport ReadTimeout set at construction; per-request variant is ProviderNetworkConfigOverride.RequestTimeoutInSeconds",
+		"insecure_skip_verify":               "TLS config applied at construction via ConfigureTLS",
+		"ca_cert_pem":                        "TLS CA cert applied at construction via ConfigureTLS",
+		"max_conns_per_host":                 "connection pool limit set at construction",
+		"enforce_http2":                      "HTTP/2 protocol selection set at construction",
+	}
+
+	// Sanity: every exclusion entry must have a non-empty reason.
+	for field, reason := range constructionTimeOnly {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("constructionTimeOnly[%q] has an empty reason; document why it cannot be per-request-overridable", field)
+		}
+	}
+
+	overrideFields := make(map[string]bool)
+	overrideType := reflect.TypeOf(ProviderNetworkConfigOverride{})
+	for i := 0; i < overrideType.NumField(); i++ {
+		tag := overrideType.Field(i).Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name != "" && name != "-" {
+			overrideFields[name] = true
+		}
+	}
+
+	ncType := reflect.TypeOf(NetworkConfig{})
+	for i := 0; i < ncType.NumField(); i++ {
+		tag := ncType.Field(i).Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		_, inOverride := overrideFields[name]
+		_, inExclusion := constructionTimeOnly[name]
+		if !inOverride && !inExclusion {
+			t.Errorf("NetworkConfig field %q is unaccounted for.\n"+
+				"Either:\n"+
+				"  (a) add it to ProviderNetworkConfigOverride + ApplyProviderNetworkConfigOverride if it can be overridden per-request, or\n"+
+				"  (b) add it to constructionTimeOnly in this test with a reason if it is baked into the HTTP client at construction.", name)
+		}
 	}
 }
 

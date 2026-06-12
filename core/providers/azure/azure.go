@@ -259,7 +259,7 @@ func (provider *AzureProvider) completeRequest(
 		url = fmt.Sprintf("%s/%s", endpoint, path)
 
 		// Merge ExtraHeaders + context anthropic-beta, filter for Azure, then set as HTTP header
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Azure, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Azure, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides)); len(betaHeaders) > 0 {
 			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 		} else {
 			req.Header.Del(anthropic.AnthropicBetaHeader)
@@ -623,7 +623,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
@@ -776,7 +776,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
