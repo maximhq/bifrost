@@ -335,6 +335,121 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	}
 }
 
+// NormalizeRawMidConversationSystem mirrors the typed conversion path for raw
+// Anthropic bodies: providers/models that do not support role:"system" inside
+// messages must receive that content through the top-level system field.
+func NormalizeRawMidConversationSystem(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+	if len(jsonBody) == 0 || SupportsMidConversationSystem(provider, model) {
+		return jsonBody, nil
+	}
+
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return jsonBody, nil
+	}
+
+	messages := messagesResult.Array()
+	movedSystemBlocks := []interface{}{}
+	deleteIndexes := []int{}
+
+	for i, msg := range messages {
+		role := msg.Get("role").String()
+		if role != string(AnthropicMessageRoleSystem) && role != "developer" {
+			continue
+		}
+		blocks, err := rawContentResultToSystemBlocks(msg.Get("content"))
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw mid-conversation system content: %w", err)
+		}
+		deleteIndexes = append(deleteIndexes, i)
+		movedSystemBlocks = append(movedSystemBlocks, blocks...)
+	}
+
+	if len(deleteIndexes) == 0 {
+		return jsonBody, nil
+	}
+
+	existingSystemBlocks, err := rawSystemContentBlocks(providerUtils.GetJSONField(jsonBody, "system"))
+	if err != nil {
+		return nil, fmt.Errorf("normalize raw mid-conversation system field: %w", err)
+	}
+
+	promotedOnlySystemMessage := false
+	if len(messages) == len(deleteIndexes) && len(movedSystemBlocks) > 0 {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "messages", []map[string]interface{}{{
+			"role":    string(AnthropicMessageRoleUser),
+			"content": movedSystemBlocks,
+		}})
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw mid-conversation system messages: %w", err)
+		}
+		promotedOnlySystemMessage = true
+	} else {
+		for i := len(deleteIndexes) - 1; i >= 0; i-- {
+			jsonBody, err = sjson.DeleteBytes(jsonBody, fmt.Sprintf("messages.%d", deleteIndexes[i]))
+			if err != nil {
+				return nil, fmt.Errorf("normalize raw mid-conversation system messages: %w", err)
+			}
+		}
+	}
+
+	systemBlocks := existingSystemBlocks
+	if !promotedOnlySystemMessage {
+		systemBlocks = append(systemBlocks, movedSystemBlocks...)
+	}
+	if len(systemBlocks) == 0 {
+		return jsonBody, nil
+	}
+	jsonBody, err = providerUtils.SetJSONField(jsonBody, "system", systemBlocks)
+	if err != nil {
+		return nil, fmt.Errorf("normalize raw mid-conversation system field: %w", err)
+	}
+	return jsonBody, nil
+}
+
+func rawSystemContentBlocks(systemResult gjson.Result) ([]interface{}, error) {
+	if !systemResult.Exists() {
+		return nil, nil
+	}
+	return rawContentResultToSystemBlocks(systemResult)
+}
+
+func rawContentResultToSystemBlocks(contentResult gjson.Result) ([]interface{}, error) {
+	if !contentResult.Exists() || contentResult.Type == gjson.Null {
+		return nil, nil
+	}
+	if contentResult.Type == gjson.String {
+		return rawContentToSystemBlocks(contentResult.String()), nil
+	}
+	if contentResult.Type != gjson.JSON {
+		return nil, fmt.Errorf("unsupported raw system content type %s", contentResult.Type.String())
+	}
+	var raw interface{}
+	if err := sonic.UnmarshalString(contentResult.Raw, &raw); err != nil {
+		return nil, err
+	}
+	return rawContentToSystemBlocks(raw), nil
+}
+
+func rawContentToSystemBlocks(content interface{}) []interface{} {
+	switch v := content.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		return []interface{}{map[string]interface{}{
+			"type": "text",
+			"text": v,
+		}}
+	case []interface{}:
+		return append([]interface{}{}, v...)
+	case map[string]interface{}:
+		return []interface{}{v}
+	default:
+		return nil
+	}
+}
+
 // StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
 // StripUnsupportedAnthropicFields. It mutates the request body bytes using
 // sjson/gjson (preserving key order for prompt caching) so the raw-body
