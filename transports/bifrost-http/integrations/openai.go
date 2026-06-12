@@ -2358,6 +2358,24 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 		uploadReq.Provider = schemas.ModelProvider(providerValues[0])
 	}
 
+	// Extract expiration config (bracket notation: expires_after[anchor], expires_after[seconds])
+	if anchorValues := form.Value["expires_after[anchor]"]; len(anchorValues) > 0 && anchorValues[0] != "" {
+		if uploadReq.ExpiresAfter == nil {
+			uploadReq.ExpiresAfter = &schemas.FileExpiresAfter{}
+		}
+		uploadReq.ExpiresAfter.Anchor = anchorValues[0]
+	}
+	if secondsValues := form.Value["expires_after[seconds]"]; len(secondsValues) > 0 && secondsValues[0] != "" {
+		seconds, err := strconv.Atoi(secondsValues[0])
+		if err != nil {
+			return errors.New("invalid expires_after[seconds] value: " + secondsValues[0])
+		}
+		if uploadReq.ExpiresAfter == nil {
+			uploadReq.ExpiresAfter = &schemas.FileExpiresAfter{}
+		}
+		uploadReq.ExpiresAfter.Seconds = seconds
+	}
+
 	// Extract S3 storage config from extra_body (form fields)
 	// OpenAI client sends nested objects as bracket notation: storage_config[s3][bucket]
 	if uploadReq.Provider == schemas.Bedrock {
