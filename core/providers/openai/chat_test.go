@@ -107,8 +107,14 @@ func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 }
 
 func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
+	// DeepSeek is configured as a custom OpenAI-compatible provider, which registers
+	// itself so ParseModelString can strip its prefix from "deepseek/deepseek-v4-pro".
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+
 	tests := []struct {
 		name     string
+		provider schemas.ModelProvider
 		model    string
 		effort   string
 		expected string
@@ -167,12 +173,37 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "high",
 		},
+		{
+			name:     "preserves max for deepseek-v4-pro",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
 			req := &schemas.BifrostChatRequest{
-				Provider: schemas.OpenAI,
+				Provider: provider,
 				Model:    tt.model,
 				Input: []schemas.ChatMessage{{
 					Role: schemas.ChatMessageRoleUser,
@@ -280,6 +311,10 @@ func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 }
 
 func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort(t *testing.T) {
+	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+
 	tests := []struct {
 		name     string
 		model    string
@@ -339,6 +374,24 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 			model:    "gpt-5.1",
 			effort:   "max",
 			expected: "high",
+		},
+		{
+			name:     "preserves max for deepseek-v4-pro",
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
 		},
 	}
 
