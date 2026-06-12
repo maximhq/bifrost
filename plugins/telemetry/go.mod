@@ -4,8 +4,8 @@ go 1.26.4
 
 require (
 	github.com/bytedance/sonic v1.15.1
-	github.com/maximhq/bifrost/core v1.5.18
-	github.com/maximhq/bifrost/framework v1.3.18
+	github.com/maximhq/bifrost/core v1.5.19
+	github.com/maximhq/bifrost/framework v1.3.19
 	github.com/prometheus/client_golang v1.23.2
 	github.com/valyala/fasthttp v1.71.0
 )
