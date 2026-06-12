@@ -183,10 +183,10 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/maximhq/bifrost/core v1.5.19 h1:WO9jq2u2M5LIu+Ip/h9ni9Ryl//WKaKVNvPNKuuBUe8=
 github.com/maximhq/bifrost/core v1.5.19/go.mod h1:J3pVZzL8jTRCeUcQh4iGmpoBmul9aICd0/YRLqvQSFs=
-github.com/maximhq/bifrost/framework v1.3.18 h1:74f7Do5cSsjvqqBKq/s1OMSebt/7VUNf/Wosa37X8Wc=
-github.com/maximhq/bifrost/framework v1.3.18/go.mod h1:8L+vIF+0zFixHsmS1GZF+WbZZu0GBSKsGhnbBbTYIJw=
 github.com/maximhq/bifrost/plugins/mocker v1.5.19 h1:AJOAJwj6vko0wyPnYmb75VQVYFv1dsHtZla4bSDmpxA=
 github.com/maximhq/bifrost/plugins/mocker v1.5.19/go.mod h1:5OXRnEiqWbRz+yoB6bbuLxh4nYxP6w/kbTDsHUKDJW8=
+github.com/maximhq/bifrost/framework v1.3.19 h1:m8opPeElM4ifakESAj8zCgl/irkUZ8VmmmLsF9RbB9w=
+github.com/maximhq/bifrost/framework v1.3.19/go.mod h1:pdjCMzVaGwRNqnwW2K5cmM6UB0ic80Padt5VHRo6SFE=
 github.com/oapi-codegen/runtime v1.1.1 h1:EXLHh0DXIJnWhdRPN2w4MXAzFyE4CskzhNLUmtpMYro=
 github.com/oapi-codegen/runtime v1.1.1/go.mod h1:SK9X900oXmPWilYR5/WKPzt3Kqxn/uS/+lbpREv+eCg=
 github.com/oklog/ulid v1.3.1 h1:EGfNDEx6MqHz8B3uNV6QAib1UR2Lm97sHi3ocA6ESJ4=
