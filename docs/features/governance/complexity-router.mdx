@@ -182,7 +182,7 @@ Each keyword list requires at least one entry. Keywords are normalized to lowerc
 </Note>
 
 <Warning>
-If `governance.complexity_analyzer_config` is present in `config.json`, the file remains authoritative on restart. UI and API edits apply immediately, but the file values are re-applied on the next startup unless you update `config.json` too.
+When `governance.complexity_analyzer_config` is present in `config.json`, the default split mode preserves UI and API edits across restarts while the matching file section is unchanged. When a section changes, tier boundaries are replaced from `config.json`, while keyword lists are merged additively with stored runtime keywords (union with duplicates removed). Set top-level `source_of_truth` to `"config.json"` in `config.json`, or `bifrost.governance.sourceOfTruth: config.json` in Helm values, only when the file should replace the stored analyzer config.
 </Warning>
 
 </Tab>

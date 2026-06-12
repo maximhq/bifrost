@@ -55,15 +55,15 @@ type MCPClientsQueryParams struct {
 // parameters for MCP library catalog queries. All fields are optional — an
 // empty struct returns the first default-sized page ordered by name.
 type MCPLibraryQueryParams struct {
-	Limit          int
-	Offset         int
-	Search         string   // matches name/description/publisher (case-insensitive)
-	Categories     []string // exact category filter(s), OR semantics
+	Limit           int
+	Offset          int
+	Search          string   // matches name/description/publisher (case-insensitive)
+	Categories      []string // exact category filter(s), OR semantics
 	ConnectionTypes []string // exact connection_type filter(s) (http | stdio | sse)
-	AuthTypes      []string // exact auth_type filter(s)
-	Tags           []string // match rows carrying any of these tags
-	SortBy         string // name, category, publisher, created_at, updated_at (default: name)
-	Order          string // asc, desc (default: asc)
+	AuthTypes       []string // exact auth_type filter(s)
+	Tags            []string // match rows carrying any of these tags
+	SortBy          string   // name, category, publisher, created_at, updated_at (default: name)
+	Order           string   // asc, desc (default: asc)
 }
 
 // MCPLibraryFilterData holds the distinct facet values surfaced by the filter

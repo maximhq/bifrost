@@ -5011,17 +5011,30 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 
 // GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config.
 func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
-	configEntry, err := s.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigKey)
+	return s.getComplexityAnalyzerConfigWithDB(ctx, s.DB())
+}
+
+func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, db *gorm.DB) (*ComplexityAnalyzerConfig, error) {
+	if db == nil {
+		db = s.DB()
+	}
+
+	var configEntry tables.TableGovernanceConfig
+	err := db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if configEntry == nil || strings.TrimSpace(configEntry.Value) == "" {
+	if strings.TrimSpace(configEntry.Value) == "" {
 		return nil, nil
 	}
-	return DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
+	decoded, err := DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 // UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed analyzer config.
@@ -5035,11 +5048,25 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 		return err
 	}
 
-	raw, err := json.Marshal(normalized)
-	if err != nil {
-		return fmt.Errorf("failed to marshal complexity analyzer config: %w", err)
+	txDB := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		txDB = tx[0]
 	}
 
+	if normalized.ConfigHashes.Empty() {
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, txDB)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			normalized.ConfigHashes = existing.ConfigHashes
+		}
+	}
+
+	raw, err := encodeComplexityAnalyzerConfig(normalized)
+	if err != nil {
+		return err
+	}
 	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
 		Key:   tables.ConfigComplexityAnalyzerConfigKey,
 		Value: string(raw),

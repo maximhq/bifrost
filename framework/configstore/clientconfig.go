@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hash"
 	"maps"
 	"math"
@@ -1112,6 +1113,58 @@ func GenerateProviderGovernanceHash(p tables.TableProvider) (string, error) {
 	writeHashField(hash, "budget_id", derefStr(p.BudgetID))
 	writeHashField(hash, "rate_limit_id", derefStr(p.RateLimitID))
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateComplexityAnalyzerConfigHashes returns stable section hashes for
+// config.json-sourced analyzer config.
+func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (ComplexityAnalyzerConfigHashes, error) {
+	if config == nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	normalized.ConfigHashes = ComplexityAnalyzerConfigHashes{}
+	if err := normalized.Validate(); err != nil {
+		return ComplexityAnalyzerConfigHashes{}, err
+	}
+
+	tierHash, err := hashComplexityValue(normalized.TierBoundaries)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
+	}
+	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
+	}
+	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
+	}
+	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
+	}
+	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
+	}
+
+	return ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    tierHash,
+		CodeKeywords:      codeHash,
+		ReasoningKeywords: reasoningHash,
+		TechnicalKeywords: technicalHash,
+		SimpleKeywords:    simpleHash,
+	}, nil
+}
+
+func hashComplexityValue(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // writeHashField writes a field identifier and a length-prefixed value so the

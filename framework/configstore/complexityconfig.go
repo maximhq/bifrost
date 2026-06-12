@@ -39,10 +39,46 @@ type ComplexityEditableKeywordConfig struct {
 	SimpleKeywords    []string `json:"simple_keywords"`
 }
 
+// ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
+// analyzer section. It is persisted with the config row, but not exposed through
+// API responses or config.json.
+type ComplexityAnalyzerConfigHashes struct {
+	TierBoundaries    string `json:"tier_boundaries,omitempty"`
+	CodeKeywords      string `json:"code_keywords,omitempty"`
+	ReasoningKeywords string `json:"reasoning_keywords,omitempty"`
+	TechnicalKeywords string `json:"technical_keywords,omitempty"`
+	SimpleKeywords    string `json:"simple_keywords,omitempty"`
+}
+
+// Empty reports whether no file-backed section hashes are present.
+func (h ComplexityAnalyzerConfigHashes) Empty() bool {
+	return h.TierBoundaries == "" &&
+		h.CodeKeywords == "" &&
+		h.ReasoningKeywords == "" &&
+		h.TechnicalKeywords == "" &&
+		h.SimpleKeywords == ""
+}
+
+// Equal reports whether all section hashes match.
+func (h ComplexityAnalyzerConfigHashes) Equal(other ComplexityAnalyzerConfigHashes) bool {
+	return h.TierBoundaries == other.TierBoundaries &&
+		h.CodeKeywords == other.CodeKeywords &&
+		h.ReasoningKeywords == other.ReasoningKeywords &&
+		h.TechnicalKeywords == other.TechnicalKeywords &&
+		h.SimpleKeywords == other.SimpleKeywords
+}
+
 // ComplexityAnalyzerConfig is the persisted runtime configuration for the complexity analyzer.
 type ComplexityAnalyzerConfig struct {
 	TierBoundaries ComplexityTierBoundaries        `json:"tier_boundaries"`
 	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
+	ConfigHashes   ComplexityAnalyzerConfigHashes  `json:"-"`
+}
+
+type complexityAnalyzerConfigRecord struct {
+	TierBoundaries ComplexityTierBoundaries        `json:"tier_boundaries"`
+	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
+	ConfigHashes   ComplexityAnalyzerConfigHashes  `json:"_config_hashes,omitempty"`
 }
 
 // Validate checks that the config is internally consistent.
@@ -86,7 +122,96 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 			TechnicalKeywords: normalizeComplexityKeywordList(c.Keywords.TechnicalKeywords),
 			SimpleKeywords:    normalizeComplexityKeywordList(c.Keywords.SimpleKeywords),
 		},
+		ConfigHashes: c.ConfigHashes,
 	}
+}
+
+// MergeComplexityAnalyzerConfig overlays file boundaries and additively merges keyword lists.
+func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error) {
+	if file == nil {
+		if base == nil {
+			return nil, nil
+		}
+		normalized := base.Normalized()
+		if err := normalized.Validate(); err != nil {
+			return nil, err
+		}
+		return &normalized, nil
+	}
+
+	normalizedFile := file.Normalized()
+	if err := normalizedFile.Validate(); err != nil {
+		return nil, err
+	}
+
+	var normalizedBase ComplexityAnalyzerConfig
+	if base != nil {
+		normalizedBase = base.Normalized()
+		if err := normalizedBase.Validate(); err != nil {
+			return nil, err
+		}
+	}
+
+	merged := ComplexityAnalyzerConfig{
+		TierBoundaries: normalizedFile.TierBoundaries,
+		Keywords: ComplexityEditableKeywordConfig{
+			CodeKeywords:      mergeComplexityKeywordLists(normalizedBase.Keywords.CodeKeywords, normalizedFile.Keywords.CodeKeywords),
+			ReasoningKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ReasoningKeywords, normalizedFile.Keywords.ReasoningKeywords),
+			TechnicalKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.TechnicalKeywords, normalizedFile.Keywords.TechnicalKeywords),
+			SimpleKeywords:    mergeComplexityKeywordLists(normalizedBase.Keywords.SimpleKeywords, normalizedFile.Keywords.SimpleKeywords),
+		},
+		ConfigHashes: normalizedFile.ConfigHashes,
+	}
+	if err := merged.Validate(); err != nil {
+		return nil, err
+	}
+	return &merged, nil
+}
+
+// MergeComplexityAnalyzerConfigByHashes overlays only file-backed sections whose
+// config.json hash changed. Keyword sections are additive; tier boundaries replace.
+func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error) {
+	if file == nil {
+		return MergeComplexityAnalyzerConfig(base, nil)
+	}
+
+	normalizedFile := file.Normalized()
+	if err := normalizedFile.Validate(); err != nil {
+		return nil, err
+	}
+
+	var merged ComplexityAnalyzerConfig
+	if base != nil {
+		merged = base.Normalized()
+		if err := merged.Validate(); err != nil {
+			return nil, err
+		}
+	}
+
+	if merged.ConfigHashes.TierBoundaries != normalizedFile.ConfigHashes.TierBoundaries {
+		merged.TierBoundaries = normalizedFile.TierBoundaries
+		merged.ConfigHashes.TierBoundaries = normalizedFile.ConfigHashes.TierBoundaries
+	}
+	if merged.ConfigHashes.CodeKeywords != normalizedFile.ConfigHashes.CodeKeywords {
+		merged.Keywords.CodeKeywords = mergeComplexityKeywordLists(merged.Keywords.CodeKeywords, normalizedFile.Keywords.CodeKeywords)
+		merged.ConfigHashes.CodeKeywords = normalizedFile.ConfigHashes.CodeKeywords
+	}
+	if merged.ConfigHashes.ReasoningKeywords != normalizedFile.ConfigHashes.ReasoningKeywords {
+		merged.Keywords.ReasoningKeywords = mergeComplexityKeywordLists(merged.Keywords.ReasoningKeywords, normalizedFile.Keywords.ReasoningKeywords)
+		merged.ConfigHashes.ReasoningKeywords = normalizedFile.ConfigHashes.ReasoningKeywords
+	}
+	if merged.ConfigHashes.TechnicalKeywords != normalizedFile.ConfigHashes.TechnicalKeywords {
+		merged.Keywords.TechnicalKeywords = mergeComplexityKeywordLists(merged.Keywords.TechnicalKeywords, normalizedFile.Keywords.TechnicalKeywords)
+		merged.ConfigHashes.TechnicalKeywords = normalizedFile.ConfigHashes.TechnicalKeywords
+	}
+	if merged.ConfigHashes.SimpleKeywords != normalizedFile.ConfigHashes.SimpleKeywords {
+		merged.Keywords.SimpleKeywords = mergeComplexityKeywordLists(merged.Keywords.SimpleKeywords, normalizedFile.Keywords.SimpleKeywords)
+		merged.ConfigHashes.SimpleKeywords = normalizedFile.ConfigHashes.SimpleKeywords
+	}
+	if err := merged.Validate(); err != nil {
+		return nil, err
+	}
+	return &merged, nil
 }
 
 // DecodeComplexityAnalyzerConfig decodes raw JSON into a normalized, validated config.
@@ -95,16 +220,34 @@ func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, err
 		return nil, nil
 	}
 
-	var cfg ComplexityAnalyzerConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var record complexityAnalyzerConfigRecord
+	if err := json.Unmarshal(data, &record); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal complexity analyzer config: %w", err)
 	}
 
+	cfg := ComplexityAnalyzerConfig{
+		TierBoundaries: record.TierBoundaries,
+		Keywords:       record.Keywords,
+		ConfigHashes:   record.ConfigHashes,
+	}
 	normalized := cfg.Normalized()
 	if err := normalized.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid complexity analyzer config: %w", err)
 	}
 	return &normalized, nil
+}
+
+func encodeComplexityAnalyzerConfig(config ComplexityAnalyzerConfig) ([]byte, error) {
+	record := complexityAnalyzerConfigRecord{
+		TierBoundaries: config.TierBoundaries,
+		Keywords:       config.Keywords,
+		ConfigHashes:   config.ConfigHashes,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal complexity analyzer config: %w", err)
+	}
+	return data, nil
 }
 
 func normalizeComplexityKeywordList(values []string) []string {
@@ -127,4 +270,11 @@ func normalizeComplexityKeywordList(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func mergeComplexityKeywordLists(base, overlay []string) []string {
+	values := make([]string, 0, len(base)+len(overlay))
+	values = append(values, base...)
+	values = append(values, overlay...)
+	return normalizeComplexityKeywordList(values)
 }
