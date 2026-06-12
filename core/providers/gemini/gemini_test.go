@@ -4547,6 +4547,46 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		assert.Equal(t, "Source C", annotations[0].URLCitation.Title)
 		assert.Equal(t, 0, annotations[0].URLCitation.StartIndex)
 		assert.Equal(t, 0, annotations[0].URLCitation.EndIndex)
+		require.NotNil(t, annotations[0].URLCitation.URL, "URL must not be nil")
+		assert.NotEmpty(t, *annotations[0].URLCitation.URL, "URL must not be empty")
+	})
+
+	t.Run("web chunk with empty URI in fallback is skipped", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "", Title: "No URI"}},
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/d", Title: "Source D"}},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 1, "empty-URI chunk must be skipped")
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/d", *annotations[0].URLCitation.URL)
+	})
+
+	t.Run("web chunk with empty URI in supports loop is skipped", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "", Title: "No URI"}},
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/e", Title: "Source E"}},
+			},
+			GroundingSupports: []*gemini.GroundingSupport{
+				{
+					Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 10},
+					GroundingChunkIndices: []int32{0, 1},
+				},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 1, "empty-URI chunk must be skipped in supports loop")
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/e", *annotations[0].URLCitation.URL)
 	})
 
 	t.Run("non-web chunks are ignored", func(t *testing.T) {

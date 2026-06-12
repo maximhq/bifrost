@@ -273,6 +273,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			ContentBlocks: contentBlocks,
 		}
 
+		// Grounding metadata is only emitted here when there are content parts.
+		// Google Search grounding responses always include content, so this is fine;
+		// grounding metadata without content parts would be silently dropped.
 		annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
 		if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
 			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
@@ -606,8 +609,17 @@ func createErrorResponse(response *GenerateContentResponse, finishReason string,
 
 // convertGroundingMetadataToChatAnnotations converts Gemini grounding metadata
 // (Google Search results) into OpenAI-style url_citation annotations.
-// One annotation per (support, web chunk) pair; falls back to bare web sources
-// (no segment indices) when no usable supports are present.
+//
+// Unlike emitAnnotationsFromGroundingSupports in responses.go which picks only
+// index [0] per support, this function emits one annotation per (support, web
+// chunk) pair, iterating ALL GroundingChunkIndices of each support.
+//
+// Segment indices from Gemini are byte offsets; OpenAI expects character offsets.
+// This skew is a known pre-existing limitation shared with the Responses path and
+// is left unresolved here.
+//
+// Falls back to bare web sources (no segment indices) when no usable supports are
+// present.
 func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []schemas.ChatAssistantMessageAnnotation {
 	if metadata == nil {
 		return nil
@@ -624,7 +636,7 @@ func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []sc
 				continue
 			}
 			chunk := metadata.GroundingChunks[chunkIdx]
-			if chunk == nil || chunk.Web == nil {
+			if chunk == nil || chunk.Web == nil || chunk.Web.URI == "" {
 				continue
 			}
 			annotations = append(annotations, schemas.ChatAssistantMessageAnnotation{
@@ -641,7 +653,7 @@ func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []sc
 
 	if len(annotations) == 0 {
 		for _, chunk := range metadata.GroundingChunks {
-			if chunk == nil || chunk.Web == nil {
+			if chunk == nil || chunk.Web == nil || chunk.Web.URI == "" {
 				continue
 			}
 			annotations = append(annotations, schemas.ChatAssistantMessageAnnotation{
