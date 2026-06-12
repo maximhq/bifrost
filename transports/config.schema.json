@@ -10,6 +10,17 @@
       "description": "The schema version. This should be set to \"https://www.getbifrost.ai/schema\"",
       "const": "https://www.getbifrost.ai/schema"
     },
+    "server": {
+      "type": "object",
+      "properties": {
+        "read_buffer_size": {
+          "type": "integer",
+          "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
+          "default": 65536
+        }
+      },
+      "required": ["read_buffer_size"]
+    },
     "version": {
       "type": "integer",
       "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",

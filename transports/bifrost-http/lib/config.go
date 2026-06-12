@@ -146,6 +146,10 @@ type pluginOrderInfo struct {
 	Order     int
 }
 
+type ServerConfig struct {
+	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+}
+
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
 // It contains the client configuration, provider configurations, MCP configuration,
 // vector store configuration, config store configuration, and logs store configuration.
@@ -155,6 +159,7 @@ type ConfigData struct {
 	// empty = deny all, ["*"] = allow all. Setting it to 1 restores v1.4.x semantics:
 	// empty = allow all (equivalent to ["*"]).
 	Version       int                       `json:"version,omitempty"`
+	Server        *ServerConfig             `json:"server,omitempty"`
 	SourceOfTruth string                    `json:"source_of_truth,omitempty"`
 	Client        *configstore.ClientConfig `json:"client"`
 	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
@@ -337,6 +342,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Version           int                                   `json:"version,omitempty"`
 		SourceOfTruth     string                                `json:"source_of_truth,omitempty"`
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
+		Server            *ServerConfig                         `json:"server,omitempty"`
 		Client            *configstore.ClientConfig             `json:"client"`
 		EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
@@ -360,6 +366,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Version = temp.Version
 	cd.SourceOfTruth = normalizeSourceOfTruth(temp.SourceOfTruth)
 	cd.Client = temp.Client
+	cd.Server = temp.Server
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
 	cd.Providers = temp.Providers
@@ -445,6 +452,7 @@ type Config struct {
 	LogsStore   logstore.LogStore
 
 	// In-memory storage
+	ServerConfig     *ServerConfig
 	ClientConfig     *configstore.ClientConfig
 	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	MCPConfig        *schemas.MCPConfig
@@ -780,10 +788,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			fmt.Println("")
 			logger.Warn("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
 		}
-		// Validate config file against the schema
-		if err := ValidateConfigSchema(data); err != nil {
-			logger.Error("config validation failed: %v. You can find the official schema at https://www.getbifrost.ai/schema. Some features may not work as expected unless you fix the config file.", err)
-		}
 		// Parse config data
 		if err := json.Unmarshal(data, &configData); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
@@ -845,6 +849,14 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		wsConfig := &schemas.WebSocketConfig{}
 		wsConfig.CheckAndSetDefaults()
 		config.WebSocketConfig = wsConfig
+	}
+	// 13. Server config
+	if configData.Server != nil {
+		config.ServerConfig = configData.Server
+	} else {
+		config.ServerConfig = &ServerConfig{
+			ReadBufferSize: 1024 * 64,
+		}
 	}
 	return config, nil
 }

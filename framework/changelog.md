@@ -1,0 +1,14 @@
+- feat: added canonical_model_name and alias_model_family columns to logs
+- feat: added request metadata to LLM logs in object storage
+- feat: added MCP server library (mcp_library table, catalog sync, paginated listing, custom entries with soft-delete)
+- feat: added complexity analyzer config DB and API support
+- feat: added vault backend support for sensitive config fields
+- feat: added live model catalog cache store and per-key config aggregation (keyconfig.Store)
+- feat: added unique-name constraint migration on the customer table
+- feat: refactored tracers to correctly set trace-level attributes
+- fix: metadata filters and pagination total_count for the Postgres logstore (thanks [@zbloss](https://github.com/zbloss)!)
+- fix: customer FK column issue
+- fix: enforce auth on inference in the auth middleware
+- fix: fast mode pricing for Anthropic
+- chore: removed vault encryption hooks from certain GORM tables in favor of AES-only encryption
+- chore: upgraded core to v1.5.19

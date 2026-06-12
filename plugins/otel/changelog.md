@@ -1,0 +1,4 @@
+- feat: added HTTP metrics
+- feat: added plugin span filtering for multiple connectors
+- feat: refactored tracers to correctly set trace-level attributes
+- chore: upgraded core to v1.5.19 and framework to v1.3.19

@@ -1,0 +1,21 @@
+- feat: added Vertex AI Files and Batches API support
+- feat: added vault backends (aws-secrets-manager, gcp-secret-manager, hashicorp-vault) as alternative to AES encryption for sensitive config fields
+- feat: added per-alias provider overrides (Azure endpoint/API version/Anthropic version, Bedrock region/ARN, Vertex project/region, Replicate deployments endpoint) by promoting KeyAliases values to AliasConfig
+- feat: added PreRequestHook to the LLMPlugin interface for once-per-request processing
+- feat: added RoutingInfo to response/error extra fields with retry and fallback audit trail
+- feat: scoped ListModels to a single key when KeyID is set
+- feat: added datasheet store to model catalog
+- feat: added Anthropic Fable model compatibility
+- feat: added plugin span filtering for multiple connectors
+- feat: tagged MCP health check requests via BifrostContextKeyMCPHealthCheck
+- feat: refactored tracers to correctly set trace-level attributes
+- refactor: extracted provider resolution into the modelcatalogresolver plugin
+- fix: max reasoning effort handling for DeepSeek v4
+- fix: virtual key propagation in GenAI file upload sessions
+- fix: fast mode pricing for Anthropic
+- fix: drop reasoning effort "none" for Vertex
+- fix: added API key auth support to the Vertex Embedding method (thanks [@TransactCharlie](https://github.com/TransactCharlie)!)
+- fix: fill Cohere embed/rerank usage from the response header on Bedrock (thanks [@Alishark14](https://github.com/Alishark14)!)
+- fix: preserve cache_control blocks in OpenRouter chat requests
+- fix: Gemini parts handling in tool responses
+- fix: plugin name sanitization for live-loaded plugins for connectors
