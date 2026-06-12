@@ -1,0 +1,335 @@
+# 基于配置的技能注册系统
+
+## 概述
+
+本功能引入了一个基于配置文件的技能注册系统，旨在将技能的定义、注册和管理从代码硬编码中解耦，通过声明式配置实现技能的动态加载和生命周期管理。该设计适用于需要灵活扩展技能集合的AI Agent系统，例如聊天机器人、自动化工作流引擎或智能助手平台。
+
+传统技能注册通常采用装饰器或手动导入的方式，导致技能列表与代码强耦合，新增或修改技能需要修改核心代码并重新部署。本方案通过外部配置文件（如YAML、JSON或TOML）定义技能元数据，系统启动时自动扫描并注册，支持热更新和条件加载。
+
+## 详细说明
+
+### 核心概念
+
+- **技能定义**：每个技能由唯一标识符、名称、描述、入口函数路径、依赖项和执行条件组成。
+- **配置驱动**：技能注册信息存储在`skills.yaml`或`skills.json`文件中，系统通过配置解析器加载。
+- **动态加载**：使用Python的`importlib`或Node.js的`require`机制，根据配置中的模块路径动态导入技能实现。
+- **注册中心**：内存中的技能注册表（`SkillRegistry`类），提供注册、查询、启用/禁用和卸载接口。
+
+### 配置结构
+
+以下为YAML格式的配置示例，支持分组、依赖声明和执行条件：
+
+```yaml
+# skills.yaml
+version: "1.0"
+skills:
+  - id: "weather_query"
+    name: "天气查询"
+    description: "根据城市名称查询当前天气"
+    module: "skills.weather.handler"
+    function: "get_weather"
+    enabled: true
+    priority: 10
+    dependencies:
+      - "requests>=2.25.0"
+    conditions:
+      - type: "time_range"
+        params:
+          start: "06:00"
+          end: "23:00"
+    metadata:
+      author: "team-ai"
+      version: "1.0.1"
+
+  - id: "calculator"
+    name: "计算器"
+    description: "执行基本数学运算"
+    module: "skills.math.calc"
+    function: "calculate"
+    enabled: true
+    priority: 5
+    dependencies: []
+    conditions: []
+    metadata:
+      author: "core"
+      version: "1.0.0"
+```
+
+### 注册系统实现
+
+以下为Python实现的核心组件，包含配置加载、技能注册和错误处理：
+
+```python
+# skill_registry.py
+import yaml
+import importlib
+import logging
+from typing import Dict, Optional, List
+from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class SkillDefinition:
+    id: str
+    name: str
+    description: str
+    module: str
+    function: str
+    enabled: bool = True
+    priority: int = 0
+    dependencies: List[str] = field(default_factory=list)
+    conditions: List[Dict] = field(default_factory=list)
+    metadata: Dict = field(default_factory=dict)
+
+class SkillRegistry:
+    def __init__(self, config_path: str = "skills.yaml"):
+        self.config_path = config_path
+        self._skills: Dict[str, SkillDefinition] = {}
+        self._loaded_modules: Dict[str, object] = {}
+        
+    def load_config(self) -> None:
+        """加载并解析配置文件"""
+        try:
+            with open(self.config_path, 'r') as f:
+                data = yaml.safe_load(f)
+        except FileNotFoundError:
+            logger.error(f"配置文件 {self.config_path} 未找到")
+            raise
+        except yaml.YAMLError as e:
+            logger.error(f"配置文件格式错误: {e}")
+            raise
+            
+        # 验证版本和结构
+        if data.get("version") != "1.0":
+            logger.warning("配置版本不匹配，尝试兼容模式")
+            
+        for skill_data in data.get("skills", []):
+            try:
+                skill = SkillDefinition(**skill_data)
+                self._skills[skill.id] = skill
+                logger.info(f"注册技能: {skill.id} ({skill.name})")
+            except Exception as e:
+                logger.error(f"技能定义解析失败: {skill_data.get('id', 'unknown')} - {e}")
+                
+    def register_skill(self, skill: SkillDefinition) -> None:
+        """手动注册单个技能"""
+        if skill.id in self._skills:
+            logger.warning(f"技能 {skill.id} 已存在，将被覆盖")
+        self._skills[skill.id] = skill
+        
+    def get_skill(self, skill_id: str) -> Optional[SkillDefinition]:
+        """根据ID获取技能定义"""
+        return self._skills.get(skill_id)
+        
+    def load_skill_module(self, skill_id: str) -> Optional[object]:
+        """动态加载技能实现模块"""
+        skill = self.get_skill(skill_id)
+        if not skill:
+            logger.error(f"技能 {skill_id} 未注册")
+            return None
+            
+        if skill_id in self._loaded_modules:
+            return self._loaded_modules[skill_id]
+            
+        try:
+            module = importlib.import_module(skill.module)
+            if not hasattr(module, skill.function):
+                raise AttributeError(f"模块 {skill.module} 中未找到函数 {skill.function}")
+                
+            self._loaded_modules[skill_id] = module
+            logger.debug(f"成功加载技能模块: {skill.module}")
+            return module
+        except ImportError as e:
+            logger.error(f"导入模块失败 {skill.module}: {e}")
+            return None
+        except AttributeError as e:
+            logger.error(f"技能函数未找到: {e}")
+            return None
+            
+    def execute_skill(self, skill_id: str, *args, **kwargs) -> Optional[object]:
+        """执行指定技能"""
+        skill = self.get_skill(skill_id)
+        if not skill or not skill.enabled:
+            logger.warning(f"技能 {skill_id} 未启用或不存在")
+            return None
+            
+        # 检查条件
+        if not self._check_conditions(skill):
+            logger.info(f"技能 {skill_id} 当前条件不满足，跳过执行")
+            return None
+            
+        module = self.load_skill_module(skill_id)
+        if not module:
+            return None
+            
+        try:
+            func = getattr(module, skill.function)
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"执行技能 {skill_id} 失败: {e}")
+            return None
+            
+    def _check_conditions(self, skill: SkillDefinition) -> bool:
+        """检查技能执行条件"""
+        from datetime import datetime, time
+        
+        for condition in skill.conditions:
+            if condition["type"] == "time_range":
+                now = datetime.now().time()
+                start = time.fromisoformat(condition["params"]["start"])
+                end = time.fromisoformat(condition["params"]["end"])
+                if not (start <= now <= end):
+                    return False
+            # 可扩展其他条件类型
+        return True
+        
+    def list_skills(self, enabled_only: bool = True) -> List[SkillDefinition]:
+        """列出所有注册的技能"""
+        if enabled_only:
+            return [s for s in self._skills.values() if s.enabled]
+        return list(self._skills.values())
+```
+
+### 技能实现示例
+
+对应的天气查询技能实现：
+
+```python
+# skills/weather/handler.py
+import requests
+from typing import Optional
+
+def get_weather(city: str, api_key: str = None) -> Optional[str]:
+    """
+    根据城市名称查询天气
+    
+    Args:
+        city: 城市名称，如"北京"、"Tokyo"
+        api_key: 可选的API密钥
+        
+    Returns:
+        天气描述字符串，失败时返回None
+    """
+    # 使用公开API示例
+    base_url = "https://api.openweathermap.org/data/2.5/weather"
+    params = {
+        "q": city,
+        "appid": api_key or "default_key",
+        "units": "metric",
+        "lang": "zh_cn"
+    }
+    
+    try:
+        response = requests.get(base_url, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        temp = data["main"]["temp"]
+        desc = data["weather"][0]["description"]
+        humidity = data["main"]["humidity"]
+        
+        return f"{city}当前天气: {desc}, 温度: {temp}°C, 湿度: {humidity}%"
+    except requests.RequestException as e:
+        logger.error(f"天气查询失败: {e}")
+        return None
+```
+
+## 示例
+
+### 基本使用流程
+
+```python
+# main.py
+from skill_registry import SkillRegistry
+
+# 初始化注册中心
+registry = SkillRegistry("skills.yaml")
+registry.load_config()
+
+# 列出所有可用技能
+skills = registry.list_skills()
+print(f"已注册 {len(skills)} 个技能:")
+for s in skills:
+    print(f"  - {s.id}: {s.name} ({s.description[:30]}...)")
+
+# 执行天气查询
+result = registry.execute_skill("weather_query", city="上海")
+print(result)
+
+# 动态添加技能（运行时注册）
+from skill_registry import SkillDefinition
+new_skill = SkillDefinition(
+    id="joke_teller",
+    name="讲笑话",
+    description="随机讲一个冷笑话",
+    module="skills.entertainment.jokes",
+    function="tell_joke",
+    enabled=True,
+    priority=1
+)
+registry.register_skill(new_skill)
+```
+
+### 配置文件热更新
+
+```python
+# hot_reload.py
+import time
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+class ConfigWatcher(FileSystemEventHandler):
+    def __init__(self, registry):
+        self.registry = registry
+        
+    def on_modified(self, event):
+        if event.src_path.endswith("skills.yaml"):
+            logger.info("检测到配置变更，重新加载...")
+            self.registry._skills.clear()
+            self.registry._loaded_modules.clear()
+            self.registry.load_config()
+
+# 启动文件监控
+observer = Observer()
+observer.schedule(ConfigWatcher(registry), path=".", recursive=False)
+observer.start()
+```
+
+## 注意事项
+
+1. **安全性**：动态导入模块可能引入安全风险，建议对模块路径进行白名单校验，避免任意代码执行。生产环境中应使用数字签名验证配置文件的完整性。
+
+2. **依赖管理**：配置中的`dependencies`字段仅作为元数据记录，不自动安装依赖。建议结合`pip`或`poetry`的依赖解析器，在注册时检查依赖是否满足，若不满足则记录警告并跳过该技能。
+
+3. **性能考虑**：技能模块采用懒加载策略，仅在首次执行时导入。对于频繁调用的技能，可考虑预加载或缓存模块对象。注意模块的全局状态可能引起副作用，建议技能实现为无状态函数。
+
+4. **错误隔离**：单个技能的加载或执行失败不应影响其他技能。使用`try-except`捕获异常，并通过日志记录详细错误信息。可考虑为每个技能创建独立的执行上下文或沙箱。
+
+5. **配置验证**：建议在加载配置时使用JSON Schema或Pydantic模型进行校验，确保字段类型和必填项正确。以下为Pydantic校验示例：
+
+```python
+from pydantic import BaseModel, Field, validator
+
+class SkillConfig(BaseModel):
+    id: str = Field(..., regex=r'^[a-z_][a-z0-9_]*$')
+    name: str
+    description: str = ""
+    module: str
+    function: str
+    enabled: bool = True
+    priority: int = Field(ge=0, le=100, default=0)
+    dependencies: List[str] = []
+    conditions: List[Dict] = []
+    metadata: Dict = {}
+    
+    @validator('module')
+    def validate_module_path(cls, v):
+        if not v.count('.') >= 1:
+            raise ValueError('模块路径必须包含至少一个点号')
+        return v
+```
+
+6. **扩展性**：当前设计支持`time_range`条件类型，可根据需要扩展`user_role`、`rate_limit`、`feature_flag`等条件。建议将条件检查抽象为策略模式，便于添加新类型。
+
+7. **测试建议**：为注册系统编写单元测试时，应mock文件系统和模块导入，避免对外部依赖的耦合。测试覆盖配置解析、技能注册、条件检查和错误处理路径。
