@@ -1552,8 +1552,9 @@ type ChatStreamResponseChoiceDelta struct {
 	Refusal          *string                        `json:"refusal,omitempty"`   // Refusal content if any
 	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`     // Audio data if any
 	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
-	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
-	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
+	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"` // URL citations (web search)
+	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.

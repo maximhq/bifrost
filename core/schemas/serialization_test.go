@@ -1545,3 +1545,45 @@ func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T)
 	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
 	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
 }
+
+func TestChatStreamResponseChoiceDeltaAnnotationsSerialization(t *testing.T) {
+	delta := ChatStreamResponseChoiceDelta{
+		Content: Ptr("voir source"),
+		Annotations: []ChatAssistantMessageAnnotation{
+			{
+				Type: "url_citation",
+				URLCitation: ChatAssistantMessageAnnotationCitation{
+					StartIndex: 0,
+					EndIndex:   10,
+					Title:      "Example",
+					URL:        Ptr("https://example.com"),
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(delta)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"annotations"`) {
+		t.Fatalf("expected annotations in JSON, got: %s", string(data))
+	}
+
+	var decoded ChatStreamResponseChoiceDelta
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if len(decoded.Annotations) != 1 || decoded.Annotations[0].URLCitation.Title != "Example" {
+		t.Fatalf("annotations not round-tripped: %+v", decoded.Annotations)
+	}
+
+	// omitempty : pas d'annotations => pas de clé dans le JSON
+	empty, err := json.Marshal(ChatStreamResponseChoiceDelta{})
+	if err != nil {
+		t.Fatalf("marshal empty failed: %v", err)
+	}
+	if strings.Contains(string(empty), `"annotations"`) {
+		t.Fatalf("empty delta must omit annotations key, got: %s", string(empty))
+	}
+}
