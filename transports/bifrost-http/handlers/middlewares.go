@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1083,20 +1084,25 @@ type TracingMiddleware struct {
 	tracer atomic.Pointer[tracing.Tracer]
 }
 
-func attachDimensionAttributesToHTTPSpan(ctx *fasthttp.RequestCtx, setAttribute func(key string, value any)) {
-	if ctx == nil || setAttribute == nil {
-		return
+// collectDimensionHeaders gathers x-bf-dim-* request headers into a map keyed by
+// the bare dimension name. TracingMiddleware runs before ConvertToBifrostContext,
+// so it reads the headers directly rather than BifrostContextKeyDimensions.
+func collectDimensionHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	if ctx == nil {
+		return nil
 	}
-	// Root HTTP span starts before ConvertToBifrostContext, so read x-bf-dim-* directly.
+	var dims map[string]string
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
-			if labelName != "path" && labelName != "method" {
-				setAttribute(labelName, string(value))
+			if dims == nil {
+				dims = make(map[string]string)
 			}
+			dims[labelName] = string(value)
 		}
 		return true
 	})
+	return dims
 }
 
 // NewTracingMiddleware creates a new tracing middleware
@@ -1142,6 +1148,18 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
+			// Store dimensions and session ID at the trace level (not as span
+			// attributes) so connectors like BigQuery can export them without
+			// changing the OTEL/Datadog span payloads.
+			dimensions := collectDimensionHeaders(ctx)
+			if len(dimensions) > 0 {
+				// Hand the trace its own copy — connectors read the attribute
+				// asynchronously and must never observe later mutations.
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, maps.Clone(dimensions))
+			}
+			if sessionID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id"))); sessionID != "" {
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
+			}
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
 			// Extract parent span ID from W3C traceparent header (if present)
@@ -1174,9 +1192,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
-				attachDimensionAttributesToHTTPSpan(ctx, func(key string, value any) {
-					tracer.SetAttribute(rootSpan, key, value)
-				})
+				for name, value := range dimensions {
+					// "path" and "method" stay reserved for the standard http.* attributes.
+					if name != "path" && name != "method" {
+						tracer.SetAttribute(rootSpan, name, value)
+					}
+				}
 				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
 				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
 				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))

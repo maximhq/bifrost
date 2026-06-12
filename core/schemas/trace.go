@@ -22,6 +22,18 @@ type Trace struct {
 	mu             sync.Mutex        // Mutex for thread-safe span operations
 }
 
+// Trace-level attribute keys. Unlike span attributes, trace attributes are never
+// exported as OTEL/Datadog span attributes — observability connectors (BigQuery,
+// Datadog) read them directly off the completed trace.
+const (
+	// TraceAttrSessionID holds the session ID from the x-bf-session-id request
+	// header. The key matches the header name because connectors already read it.
+	TraceAttrSessionID = "x-bf-session-id"
+	// TraceAttrDimensions holds the map[string]string of request dimensions
+	// parsed from x-bf-dim-* headers, keyed by bare dimension name.
+	TraceAttrDimensions = "bifrost.dimensions"
+)
+
 // AddSpan adds a span to the trace in a thread-safe manner
 func (t *Trace) AddSpan(span *Span) {
 	t.mu.Lock()
@@ -60,6 +72,28 @@ func (t *Trace) SetRequestHeaders(headers map[string]string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.RequestHeaders = headers
+}
+
+// SetAttribute sets a trace-level attribute in a thread-safe manner
+func (t *Trace) SetAttribute(key string, value any) {
+	if value == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.Attributes == nil {
+		t.Attributes = make(map[string]any)
+	}
+	t.Attributes[key] = value
+}
+
+// GetAttribute retrieves a trace-level attribute in a thread-safe manner.
+// The second return value reports whether the key was present.
+func (t *Trace) GetAttribute(key string) (any, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	value, ok := t.Attributes[key]
+	return value, ok
 }
 
 // Reset clears the trace for reuse from pool
