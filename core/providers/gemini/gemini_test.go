@@ -4413,3 +4413,73 @@ func TestImagenImageEditSizeRoundtrip(t *testing.T) {
 	require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be derived from Size on edit path")
 	assert.Equal(t, "1:1", *imagenReq.Parameters.AspectRatio)
 }
+
+func TestWebSearchOptionsEnablesGoogleSearchTool(t *testing.T) {
+	userMessage := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("quoi de neuf ?")}},
+	}
+
+	t.Run("web_search_options seul ajoute googleSearch", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: userMessage,
+			Params: &schemas.ChatParameters{
+				WebSearchOptions: &schemas.ChatWebSearchOptions{},
+			},
+		}
+		geminiReq, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, geminiReq)
+		require.Len(t, geminiReq.Tools, 1)
+		assert.NotNil(t, geminiReq.Tools[0].GoogleSearch)
+	})
+
+	t.Run("web_search_options coexiste avec des tools function", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: userMessage,
+			Params: &schemas.ChatParameters{
+				WebSearchOptions: &schemas.ChatWebSearchOptions{},
+				Tools: []schemas.ChatTool{
+					{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name: "get_weather",
+						},
+					},
+				},
+			},
+		}
+		geminiReq, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, geminiReq)
+
+		var hasGoogleSearch, hasFunction bool
+		for _, tool := range geminiReq.Tools {
+			if tool.GoogleSearch != nil {
+				hasGoogleSearch = true
+			}
+			if len(tool.FunctionDeclarations) > 0 {
+				hasFunction = true
+			}
+		}
+		assert.True(t, hasGoogleSearch, "googleSearch tool missing")
+		assert.True(t, hasFunction, "function declarations missing")
+	})
+
+	t.Run("sans web_search_options pas de googleSearch", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: userMessage,
+			Params: &schemas.ChatParameters{
+				Temperature: schemas.Ptr(0.5),
+			},
+		}
+		geminiReq, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, geminiReq)
+		for _, tool := range geminiReq.Tools {
+			assert.Nil(t, tool.GoogleSearch)
+		}
+	})
+}
