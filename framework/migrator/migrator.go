@@ -76,6 +76,58 @@ type Migration struct {
 	Rollback RollbackFunc
 }
 
+// PendingIDs returns the expected migration IDs that are not recorded in the
+// migration table yet. It is intentionally a read-only preflight helper for
+// callers that want to avoid taking a migration lock when the database is
+// already current.
+//
+// If the migration table does not exist, every expected ID is considered
+// pending. Applied state matches Gormigrate's existing semantics: an ID row in
+// the migration table means the migration ran.
+func PendingIDs(ctx context.Context, db *gorm.DB, options *Options, expectedIDs []string) ([]string, error) {
+	if db == nil {
+		return nil, errors.New("gormigrate: db cannot be nil")
+	}
+	if len(expectedIDs) == 0 {
+		return nil, nil
+	}
+
+	opts := DefaultOptions
+	if options != nil {
+		opts = options
+	}
+
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(opts.TableName) {
+		return append([]string(nil), expectedIDs...), nil
+	}
+	if !tx.Migrator().HasColumn(opts.TableName, opts.SequenceColumnName) ||
+		!tx.Migrator().HasColumn(opts.TableName, opts.AppliedAtColumnName) ||
+		!tx.Migrator().HasColumn(opts.TableName, opts.StatusColumnName) {
+		return append([]string(nil), expectedIDs...), nil
+	}
+
+	var appliedIDs []string
+	if err := tx.Table(opts.TableName).
+		Where(fmt.Sprintf("%s IN ?", opts.IDColumnName), expectedIDs).
+		Pluck(opts.IDColumnName, &appliedIDs).Error; err != nil {
+		return nil, err
+	}
+
+	applied := make(map[string]struct{}, len(appliedIDs))
+	for _, id := range appliedIDs {
+		applied[id] = struct{}{}
+	}
+
+	pending := make([]string, 0, len(expectedIDs)-len(applied))
+	for _, id := range expectedIDs {
+		if _, ok := applied[id]; !ok {
+			pending = append(pending, id)
+		}
+	}
+	return pending, nil
+}
+
 // Gormigrate represents a collection of all migrations of a database schema.
 type Gormigrate struct {
 	db         *gorm.DB

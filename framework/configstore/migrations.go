@@ -222,6 +222,202 @@ func currentBudgetOwnerModel(tableName string) (any, error) {
 	}
 }
 
+// migrationStep records the migration IDs written by one migration function.
+// Most functions write one ID, but a few grouped migrations write multiple IDs.
+type migrationStep struct {
+	IDs []string
+	run func(context.Context, *gorm.DB, schemas.Logger) error
+}
+
+// migrationStepIDs flattens migration step IDs in execution order.
+func migrationStepIDs(steps []migrationStep) []string {
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.IDs...)
+	}
+	return ids
+}
+
+// pendingMigrationStepIDs returns the migration IDs from steps that are not
+// recorded in the migration table yet.
+func pendingMigrationStepIDs(ctx context.Context, db *gorm.DB, steps []migrationStep) ([]string, error) {
+	return migrator.PendingIDs(ctx, db, migrator.DefaultOptions, migrationStepIDs(steps))
+}
+
+// runMigrationSteps runs migration steps in their declared order.
+func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	for _, step := range steps {
+		if err := step.run(ctx, db, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// configstoreMigrationSteps is the ordered source of truth for configstore
+// migration execution and preflight checks.
+var configstoreMigrationSteps = []migrationStep{
+	{IDs: []string{"init"}, run: migrationInit},
+	{IDs: []string{"many2manyjoin"}, run: migrationMany2ManyJoinTable},
+	{IDs: []string{"addcustomproviderconfigjsoncolumn"}, run: migrationAddCustomProviderConfigJSONColumn},
+	{IDs: []string{"addvirtualkeyproviderconfig"}, run: migrationAddVirtualKeyProviderConfigTable},
+	{IDs: []string{"add_allowed_origins_json_column"}, run: migrationAddAllowedOriginsJSONColumn},
+	{IDs: []string{"add_allow_direct_keys_column"}, run: migrationAddAllowDirectKeysColumn},
+	{IDs: []string{"add_enable_litellm_fallbacks_column"}, run: migrationAddEnableLiteLLMFallbacksColumn},
+	{IDs: []string{"add_profile_config_claims_columns_to_team_table"}, run: migrationTeamsTableUpdates},
+	{IDs: []string{"add_team_source_id_column"}, run: migrationAddTeamSourceIDColumn},
+	{IDs: []string{"add_key_name_column"}, run: migrationAddKeyNameColumn},
+	{IDs: []string{"add_framework_configs_table"}, run: migrationAddFrameworkConfigsTable},
+	{IDs: []string{"cleanup_mcp_client_tools_config"}, run: migrationCleanupMCPClientToolsConfig},
+	{IDs: []string{"add_vk_mcp_configs_table"}, run: migrationAddVirtualKeyMCPConfigsTable},
+	{IDs: []string{"update_plugins_table_for_custom_plugins"}, run: migrationAddPluginPathColumn},
+	{IDs: []string{"add_provider_config_budget_rate_limit"}, run: migrationAddProviderConfigBudgetRateLimit},
+	{IDs: []string{"add_sessions_table"}, run: migrationAddSessionsTable},
+	{IDs: []string{"add_headers_json_column_into_mcp_client"}, run: migrationAddHeadersJSONColumnIntoMCPClient},
+	{IDs: []string{"add_disable_content_logging_column"}, run: migrationAddDisableContentLoggingColumn},
+	{IDs: []string{"add_mcp_client_id_column"}, run: migrationAddMCPClientIDColumn},
+	{IDs: []string{"add_vertex_project_number_column"}, run: migrationAddVertexProjectNumberColumn},
+	{IDs: []string{"add_vertex_deployments_json_column"}, run: migrationAddVertexDeploymentsJSONColumn},
+	{IDs: []string{"add_and_fill_provider_column_in_key_table"}, run: migrationMissingProviderColumnInKeyTable},
+	{IDs: []string{"add_tools_to_auto_execute_json_column"}, run: migrationAddToolsToAutoExecuteJSONColumn},
+	{IDs: []string{"add_is_code_mode_client_column"}, run: migrationAddIsCodeModeClientColumn},
+	{IDs: []string{"add_log_retention_days_column"}, run: migrationAddLogRetentionDaysColumn},
+	{IDs: []string{"add_enabled_column_to_key_table"}, run: migrationAddEnabledColumnToKeyTable},
+	{IDs: []string{"update_model_pricing_table_to_add_cache_and_batch_pricing"}, run: migrationAddBatchAndCachePricingColumns},
+	{IDs: []string{"add_mcp_agent_depth_and_mcp_tool_execution_timeout_columns"}, run: migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns},
+	{IDs: []string{"add_mcp_code_mode_binding_level_column"}, run: migrationAddMCPCodeModeBindingLevelColumn},
+	{IDs: []string{"normalize_mcp_client_names"}, run: migrationNormalizeMCPClientNames},
+	{IDs: []string{"move_keys_to_provider_config"}, run: migrationMoveKeysToProviderConfig},
+	{IDs: []string{"add_plugin_version_column"}, run: migrationAddPluginVersionColumn},
+	{IDs: []string{"add_send_back_raw_request_columns"}, run: migrationAddSendBackRawRequestColumns},
+	{IDs: []string{"add_config_hash_column"}, run: migrationAddConfigHashColumn},
+	{IDs: []string{"add_virtual_key_config_hash_column"}, run: migrationAddVirtualKeyConfigHashColumn},
+	{IDs: []string{"add_additional_config_hash_columns"}, run: migrationAddAdditionalConfigHashColumns},
+	{IDs: []string{"add_200k_token_pricing_columns"}, run: migrationAdd200kTokenPricingColumns},
+	{IDs: []string{"add_image_pricing_columns"}, run: migrationAddImagePricingColumns},
+	{IDs: []string{"add_use_for_batch_api_column"}, run: migrationAddUseForBatchAPIColumnAndS3BucketsConfig},
+	{IDs: []string{"add_header_filter_config_json_column"}, run: migrationAddHeaderFilterConfigJSONColumn},
+	{IDs: []string{"add_azure_client_id_and_client_secret_and_tenant_id_columns"}, run: migrationAddAzureClientIDAndClientSecretAndTenantIDColumns},
+	{IDs: []string{"add_distributed_locks_table"}, run: migrationAddDistributedLocksTable},
+	{IDs: []string{"add_model_config_table"}, run: migrationAddModelConfigTable},
+	{IDs: []string{"add_provider_governance_columns"}, run: migrationAddProviderGovernanceColumns},
+	{IDs: []string{"add_allowed_headers_json_column"}, run: migrationAddAllowedHeadersJSONColumn},
+	{IDs: []string{"add_disable_db_pings_in_health_column"}, run: migrationAddDisableDBPingsInHealthColumn},
+	{IDs: []string{"add_is_ping_available_column"}, run: migrationAddIsPingAvailableColumnToMCPClientTable},
+	{IDs: []string{"add_tool_pricing_json_column"}, run: migrationAddToolPricingJSONColumn},
+	{IDs: []string{"remove_server_prefix_from_mcp_tools"}, run: migrationRemoveServerPrefixFromMCPTools},
+	{IDs: []string{"add_oauth_tables"}, run: migrationAddOAuthTables},
+	{IDs: []string{"add_tool_sync_interval_columns"}, run: migrationAddToolSyncIntervalColumns},
+	{IDs: []string{"add_mcp_client_config_to_oauth_config"}, run: migrationAddMCPClientConfigToOAuthConfig},
+	{IDs: []string{"add_routing_rules_table"}, run: migrationAddRoutingRulesTable},
+	{IDs: []string{"add_base_model_pricing_column"}, run: migrationAddBaseModelPricingColumn},
+	{IDs: []string{"add_azure_scopes_column"}, run: migrationAddAzureScopesColumn},
+	{IDs: []string{"add_replicate_deployments_json_column"}, run: migrationAddReplicateDeploymentsJSONColumn},
+	{IDs: []string{"add_key_status_columns"}, run: migrationAddKeyStatusColumns},
+	{IDs: []string{"add_provider_status_columns"}, run: migrationAddProviderStatusColumns},
+	{IDs: []string{"add_rate_limit_to_teams_and_customers"}, run: migrationAddRateLimitToTeamsAndCustomers},
+	{IDs: []string{"add_async_job_result_ttl_column"}, run: migrationAddAsyncJobResultTTLColumn},
+	{IDs: []string{"add_required_headers_json_column"}, run: migrationAddRequiredHeadersJSONColumn},
+	{IDs: []string{"add_logging_headers_json_column"}, run: migrationAddLoggingHeadersJSONColumn},
+	{IDs: []string{"add_hide_deleted_virtual_keys_in_filters_column"}, run: migrationAddHideDeletedVirtualKeysInFiltersColumn},
+	{IDs: []string{"add_enforce_scim_auth_column"}, run: migrationAddEnforceSCIMAuthColumn},
+	{IDs: []string{"add_enforce_auth_on_inference_column"}, run: migrationAddEnforceAuthOnInferenceColumn},
+	{IDs: []string{"reconcile_pricing_overrides_table"}, run: migrationReconcilePricingOverridesTable},
+	{IDs: []string{"add_encryption_columns"}, run: migrationAddEncryptionColumns},
+	{IDs: []string{"add_output_cost_per_video_per_second_and_output_cost_per_second_columns"}, run: migrationAddOutputCostPerVideoPerSecond},
+	{IDs: []string{"drop_enable_governance_column"}, run: migrationDropEnableGovernanceColumn},
+	{IDs: []string{"add_vllm_key_config_columns"}, run: migrationAddVLLMKeyConfigColumns},
+	{IDs: []string{"widen_encrypted_varchar_columns"}, run: migrationWidenEncryptedVarcharColumns},
+	{IDs: []string{"add_bedrock_assume_role_columns"}, run: migrationAddBedrockAssumeRoleColumns},
+	{IDs: []string{"add_store_raw_request_response_column"}, run: migrationAddStoreRawRequestResponseColumn},
+	{IDs: []string{"add_pricing_refactor_columns"}, run: migrationAddPricingRefactorColumns},
+	{IDs: []string{"rename_truncated_pricing_column"}, run: migrationRenameTruncatedPricingColumn},
+	{IDs: []string{"add_image_quality_pricing_columns"}, run: migrationAddImageQualityPricingColumns},
+	{IDs: []string{"add_routing_targets_table"}, run: migrationAddRoutingTargetsTable},
+	{IDs: []string{"add_prompt_repo_tables", "add_prompt_id_to_prompt_message_tables", "add_model_parameters_table"}, run: migrationAddPromptRepoTables},
+	{IDs: []string{"add_plugin_order_columns"}, run: migrationAddPluginOrderColumns},
+	{IDs: []string{"add_allow_all_keys_to_provider_config"}, run: migrationAddAllowAllKeysToProviderConfig},
+	{IDs: []string{"add_vk_provider_config_blacklisted_models_column"}, run: migrationAddVirtualKeyBlacklistedModelsColumn},
+	{IDs: []string{"backfill_empty_virtual_key_configs"}, run: migrationBackfillEmptyVirtualKeyConfigs},
+	{IDs: []string{"add_mcp_disable_auto_tool_inject_column"}, run: migrationAddMCPDisableAutoToolInjectColumn},
+	{IDs: []string{"add_mcp_enable_temp_token_auth_column"}, run: migrationAddMCPEnableTempTokenAuthColumn},
+	{IDs: []string{"backfill_allowed_models_wildcard"}, run: migrationBackfillAllowedModelsWildcard},
+	{IDs: []string{"add_mcp_client_allowed_extra_headers_json_column"}, run: migrationAddMCPClientAllowedExtraHeadersJSONColumn},
+	{IDs: []string{"make_base_pricing_columns_nullable"}, run: migrationMakeBasePricingColumnsNullable},
+	{IDs: []string{"add_allow_on_all_virtual_keys_column"}, run: migrationAddAllowOnAllVirtualKeysColumn},
+	{IDs: []string{"add_open_ai_config_json_column"}, run: migrationAddOpenAIConfigJSONColumn},
+	{IDs: []string{"add_key_blacklisted_models_json_column"}, run: migrationAddKeyBlacklistedModelsJSONColumn},
+	{IDs: []string{"add_chain_rule_column_to_routing_rules"}, run: migrationAddChainRuleColumnToRoutingRules},
+	{IDs: []string{"drop_deployment_columns_and_add_aliases"}, run: migrationDropDeploymentColumnsAndAddAliases},
+	{IDs: []string{"add_replicate_key_config_column"}, run: migrationAddReplicateKeyConfigColumn},
+	{IDs: []string{"add_budget_calendar_aligned_column"}, run: migrationAddBudgetCalendarAlignedColumn},
+	{IDs: []string{"add_routing_chain_max_depth_column"}, run: migrationAddRoutingChainMaxDepthColumn},
+	{IDs: []string{"add_prompt_variables_columns"}, run: migrationAddPromptVariablesColumns},
+	{IDs: []string{"add_model_capability_columns"}, run: migrationAddModelCapabilityColumns},
+	{IDs: []string{"add_ollama_sgl_config_columns"}, run: migrationAddOllamaSGLConfigColumns},
+	{IDs: []string{"add_multi_budget_tables"}, run: migrationAddMultiBudgetTables},
+	{IDs: []string{"add_per_user_oauth_tables"}, run: migrationAddPerUserOAuthTables},
+	{IDs: []string{"add_mcp_client_discovered_tools_columns"}, run: migrationAddMCPClientDiscoveredToolsColumns},
+	{IDs: []string{"add_whitelisted_routes_json_column"}, run: migrationAddWhitelistedRoutesJSONColumn},
+	{IDs: []string{"replace_enable_litellm_with_compat_columns"}, run: migrationReplaceEnableLiteLLMWithCompatColumns},
+	{IDs: []string{"add_model_pricing_unique_index"}, run: migrationAddModelPricingUniqueIndex},
+	{IDs: []string{"default_compat_should_convert_params_false"}, run: migrationDefaultCompatShouldConvertParamsFalse},
+	{IDs: []string{"add_priority_tier_pricing_columns"}, run: migrationAddPriorityTierPricingColumns},
+	{IDs: []string{"add_flex_tier_pricing_columns"}, run: migrationAddFlexTierPricingColumns},
+	{IDs: []string{"normalize_otel_trace_type"}, run: migrationNormalizeOtelTraceType},
+	{IDs: []string{"migrate_calendar_aligned"}, run: migrateCalendarAlignedToBudgetsAndRateLimitsTable},
+	{IDs: []string{"add_team_budgets_to_budgets_table"}, run: migrationAddTeamBudgetsToBudgetsTable},
+	{IDs: []string{"add_ocr_pricing_columns"}, run: migrationAddOCRPricingColumns},
+	{IDs: []string{"convert_mcp_client_tool_sync_interval_minutes_to_seconds"}, run: migrationConvertMCPClientToolSyncIntervalMinutesToSeconds},
+	{IDs: []string{"add_mcp_external_base_url_column"}, run: migrationAddMCPExternalBaseURLColumn},
+	{IDs: []string{"split_mcp_external_base_url_into_server_client"}, run: migrationSplitMCPExternalBaseURL},
+	{IDs: []string{"make_oauth_token_expiry_nullable"}, run: migrationMakeOAuthTokenExpiryNullable},
+	{IDs: []string{"add_allow_per_request_content_storage_override_column"}, run: migrationAddAllowPerRequestContentStorageOverrideColumn},
+	{IDs: []string{"add_allow_per_request_raw_override_column"}, run: migrationAddAllowPerRequestRawOverrideColumn},
+	{IDs: []string{"add_mcp_client_disabled_column"}, run: migrationAddMCPClientDisabledColumn},
+	{IDs: []string{"gov_unique_team_names"}, run: migrationUniqueTeamNames},
+	{IDs: []string{"drop_allow_direct_keys_column"}, run: migrationDropAllowDirectKeysColumn},
+	{IDs: []string{"drop_allow_direct_keys_column_ddl"}, run: migrationDropAllowDirectKeysColumnDDL},
+	{IDs: []string{"add_oauth_auth_mode_columns"}, run: migrationAddOAuthAuthModeColumns},
+	{IDs: []string{"replace_oauth_session_token_with_session_id"}, run: migrationReplaceOauthSessionTokenWithSessionID},
+	{IDs: []string{"drop_legacy_oauth_server_tables"}, run: migrationDropLegacyOAuthServerTables},
+	{IDs: []string{"drop_non_vk_oauth_user_rows"}, run: migrationDropNonVKOauthUserRows},
+	{IDs: []string{"drop_mcp_external_server_url_column"}, run: migrationDropMCPExternalServerURL},
+	{IDs: []string{"add_team_calendar_aligned_column"}, run: migrationAddTeamCalendarAlignedColumn},
+	{IDs: []string{"drop_legacy_calendar_aligned_columns"}, run: migrationDropLegacyCalendarAlignedColumns},
+	{IDs: []string{"add_vk_access_profile_id_column"}, run: migrationAddVKAccessProfileIDColumn},
+	{IDs: []string{"drop_vk_access_profile_id_column"}, run: migrationDropVKAccessProfileIDColumn},
+	{IDs: []string{"add_feature_flags_table"}, run: migrationAddFeatureFlagsTable},
+	{IDs: []string{"add_framework_config_hash_column"}, run: migrationAddFrameworkConfigHashColumn},
+	{IDs: []string{"add_model_parameters_url_column"}, run: migrationAddModelParametersURLColumn},
+	{IDs: []string{"add_client_config_metadata_json_column"}, run: migrationAddClientConfigMetadataColumn},
+	{IDs: []string{"add_temp_tokens_table"}, run: migrationAddTempTokensTable},
+	{IDs: []string{"backfill_vk_provider_config_blacklisted_models"}, run: migrationBackfillVirtualKeyBlacklistedModels},
+	{IDs: []string{"add_created_by_user_id_column_for_virtual_keys"}, run: migrationAddCreatedByUserIDColumnForVirtualKeys},
+	{IDs: []string{"re_add_allow_direct_keys_column"}, run: migrationReAddAllowDirectKeysColumn},
+	{IDs: []string{"refresh_config_hash_after_mcp_external_server_url_removal"}, run: migrationRefreshConfigHashAfterMCPExternalServerURLRemoval},
+	{IDs: []string{"drop_azure_api_version_column"}, run: migrationDropAzureAPIVersionColumn},
+	{IDs: []string{"add_mcp_per_user_header_credentials_table"}, run: migrationAddPerUserHeadersTables},
+	{IDs: []string{"add_mcp_per_user_header_flows_table"}, run: migrationAddPerUserHeadersFlowsTable},
+	{IDs: []string{"add_mcp_client_tls_config_json_column"}, run: migrationAddMCPClientTLSConfigColumn},
+	{IDs: []string{"add_additional_attributes_to_pricing"}, run: migrationAddAdditionalAttributesToPricing},
+	{IDs: []string{"add_model_config_scope_columns"}, run: migrationAddModelConfigScopeColumns},
+	{IDs: []string{"migrate_provider_governance_to_model_configs"}, run: migrationMigrateProviderGovernanceToModelConfigs},
+	{IDs: []string{"add_budget_model_config_id_column"}, run: migrationAddBudgetModelConfigIDColumn},
+	{IDs: []string{"add_model_config_calendar_aligned_column"}, run: migrationAddModelConfigCalendarAlignedColumn},
+	{IDs: []string{"migrate_virtual_key_governance_to_model_configs"}, run: migrationMigrateVirtualKeyGovernanceToModelConfigs},
+	{IDs: []string{"add_customer_calendar_aligned_column"}, run: migrationAddCustomerCalendarAlignedColumn},
+	{IDs: []string{"add_customer_budgets_to_budgets_table"}, run: migrationAddCustomerBudgetsToBudgetsTable},
+	{IDs: []string{"add_model_config_budgets_fk_constraint"}, run: migrationAddModelConfigBudgetsFKConstraint},
+	{IDs: []string{"add_mcp_library_table"}, run: migrationAddMCPLibraryTable},
+	{IDs: []string{"add_mcp_library_config_columns"}, run: migrationAddMCPLibraryConfigColumns},
+	{IDs: []string{"add_mcp_library_source_columns"}, run: migrationAddMCPLibrarySourceColumns},
+	{IDs: []string{"add_fast_mode_pricing_columns"}, run: migrationAddFastModePricingColumns},
+	{IDs: []string{"add_customer_name_unique_constraint_dedup", "add_customer_name_unique_constraint_index"}, run: migrationAddCustomerNameUniqueConstraint},
+	{IDs: []string{"null_legacy_customer_budget_id_refs"}, run: migrationNullLegacyCustomerBudgetID},
+	{IDs: []string{"add_skills_repo_tables"}, run: migrationAddSkillsRepoTables},
+}
+
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
 func quoteSQLiteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
@@ -395,6 +591,17 @@ func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 
 // Migrate performs the necessary database migrations.
 func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	if db.Dialector.Name() == "postgres" {
+		pending, err := pendingMigrationStepIDs(ctx, db, configstoreMigrationSteps)
+		if err == nil && len(pending) == 0 {
+			logger.Info("[configstore] migrations already current; skipping migration lock")
+			return nil
+		}
+		if err != nil {
+			logger.Warn("[configstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
+		}
+	}
+
 	// Acquire advisory lock to serialize migrations across cluster nodes.
 	// This prevents race conditions when multiple nodes start simultaneously
 	// and try to create the same tables in parallel.
@@ -404,490 +611,18 @@ func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) 
 	}
 	defer lock.release(ctx)
 
-	if err := migrationInit(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationMany2ManyJoinTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCustomProviderConfigJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyProviderConfigTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAllowedOriginsJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAllowDirectKeysColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddEnableLiteLLMFallbacksColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationTeamsTableUpdates(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddTeamSourceIDColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddKeyNameColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddFrameworkConfigsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationCleanupMCPClientToolsConfig(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyMCPConfigsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPluginPathColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddProviderConfigBudgetRateLimit(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddSessionsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddHeadersJSONColumnIntoMCPClient(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddDisableContentLoggingColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientIDColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVertexProjectNumberColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVertexDeploymentsJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationMissingProviderColumnInKeyTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddToolsToAutoExecuteJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddIsCodeModeClientColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddLogRetentionDaysColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddEnabledColumnToKeyTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddBatchAndCachePricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPCodeModeBindingLevelColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationNormalizeMCPClientNames(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationMoveKeysToProviderConfig(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPluginVersionColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddSendBackRawRequestColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddConfigHashColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyConfigHashColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAdditionalConfigHashColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAdd200kTokenPricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddImagePricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddHeaderFilterConfigJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddDistributedLocksTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddModelConfigTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddProviderGovernanceColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAllowedHeadersJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddDisableDBPingsInHealthColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddIsPingAvailableColumnToMCPClientTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddToolPricingJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationRemoveServerPrefixFromMCPTools(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOAuthTables(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddToolSyncIntervalColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientConfigToOAuthConfig(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingRulesTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddBaseModelPricingColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAzureScopesColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddReplicateDeploymentsJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddKeyStatusColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddProviderStatusColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRateLimitToTeamsAndCustomers(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAsyncJobResultTTLColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRequiredHeadersJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddLoggingHeadersJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddEnforceSCIMAuthColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationReconcilePricingOverridesTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddEncryptionColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOutputCostPerVideoPerSecond(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropEnableGovernanceColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVLLMKeyConfigColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationWidenEncryptedVarcharColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddBedrockAssumeRoleColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddStoreRawRequestResponseColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPricingRefactorColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationRenameTruncatedPricingColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddImageQualityPricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingTargetsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPromptRepoTables(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPluginOrderColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationBackfillEmptyVirtualKeyConfigs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPEnableTempTokenAuthColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationBackfillAllowedModelsWildcard(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationMakeBasePricingColumnsNullable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAllowOnAllVirtualKeysColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOpenAIConfigJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddChainRuleColumnToRoutingRules(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropDeploymentColumnsAndAddAliases(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddReplicateKeyConfigColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingChainMaxDepthColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPromptVariablesColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddModelCapabilityColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOllamaSGLConfigColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMultiBudgetTables(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPerUserOAuthTables(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientDiscoveredToolsColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddWhitelistedRoutesJSONColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationReplaceEnableLiteLLMWithCompatColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddModelPricingUniqueIndex(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDefaultCompatShouldConvertParamsFalse(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPriorityTierPricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddFlexTierPricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationNormalizeOtelTraceType(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddTeamBudgetsToBudgetsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOCRPricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPExternalBaseURLColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationSplitMCPExternalBaseURL(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationMakeOAuthTokenExpiryNullable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAllowPerRequestContentStorageOverrideColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAllowPerRequestRawOverrideColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientDisabledColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationUniqueTeamNames(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropAllowDirectKeysColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOAuthAuthModeColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationReplaceOauthSessionTokenWithSessionID(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropLegacyOAuthServerTables(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropNonVKOauthUserRows(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropMCPExternalServerURL(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddTeamCalendarAlignedColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVKAccessProfileIDColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropVKAccessProfileIDColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddFeatureFlagsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddFrameworkConfigHashColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddModelParametersURLColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddClientConfigMetadataColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddTempTokensTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationBackfillVirtualKeyBlacklistedModels(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCreatedByUserIDColumnForVirtualKeys(ctx, db, logger); err != nil {
-		return err
-	}
-	// Must run before migrationRefreshConfigHashAfterMCPExternalServerURLRemoval:
-	// that migration SELECTs config_client using the column list derived from
-	// the TableClientConfig struct, which still declares allow_direct_keys.
-	// Without re-adding the column first, the SELECT fails with
-	// "no such column: allow_direct_keys" on any DB where the earlier
-	// drop_allow_direct_keys_column_ddl migration has run.
-	if err := migrationReAddAllowDirectKeysColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationDropAzureAPIVersionColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPerUserHeadersTables(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPerUserHeadersFlowsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientTLSConfigColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAdditionalAttributesToPricing(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddModelConfigScopeColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationMigrateProviderGovernanceToModelConfigs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddBudgetModelConfigIDColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddModelConfigCalendarAlignedColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCustomerCalendarAlignedColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCustomerBudgetsToBudgetsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddModelConfigBudgetsFKConstraint(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPLibraryTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPLibraryConfigColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMCPLibrarySourceColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddFastModePricingColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCustomerNameUniqueConstraint(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationNullLegacyCustomerBudgetID(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddSkillsRepoTables(ctx, db, logger); err != nil {
-		return err
-	}
-	return nil
+	if db.Dialector.Name() == "postgres" {
+		pending, err := pendingMigrationStepIDs(ctx, db, configstoreMigrationSteps)
+		if err == nil && len(pending) == 0 {
+			logger.Info("[configstore] migrations completed by another node; skipping migration run")
+			return nil
+		}
+		if err != nil {
+			logger.Warn("[configstore] migration preflight after lock failed; running migrations: %v", err)
+		}
+	}
+
+	return runMigrationSteps(ctx, db, logger, configstoreMigrationSteps)
 }
 
 // migrationAddClientConfigMetadataColumn adds the metadata_json column to

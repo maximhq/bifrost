@@ -21,8 +21,8 @@ func isValidJSON(s string) bool {
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes.
-	// This is the SAME key used by configstore migrations to ensure
-	// all migrations are fully serialized.
+	// This is intentionally separate from the configstore migration lock so
+	// configstore and logstore migrations can proceed independently.
 	migrationAdvisoryLockKey = 1000011
 
 	// indexAdvisoryLockKey serializes the background index build across
@@ -164,206 +164,137 @@ func acquireIndexLock(ctx context.Context, db *gorm.DB, logger schemas.Logger) (
 	return acquireAdvisoryLock(ctx, db, logger, indexAdvisoryLockKey, "index")
 }
 
-// triggerMigrations runs all registered logstore schema migrations in order under a
-// PostgreSQL advisory lock (shared with configstore) so only one node migrates at a time.
+// migrationStep records the migration IDs written by one migration function.
+// Most functions write one ID, but a few grouped migrations write multiple IDs.
+type migrationStep struct {
+	IDs []string
+	run func(context.Context, *gorm.DB, schemas.Logger) error
+}
+
+// migrationStepIDs flattens migration step IDs in execution order.
+func migrationStepIDs(steps []migrationStep) []string {
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.IDs...)
+	}
+	return ids
+}
+
+// pendingMigrationStepIDs returns the migration IDs from steps that are not
+// recorded in the migration table yet.
+func pendingMigrationStepIDs(ctx context.Context, db *gorm.DB, steps []migrationStep) ([]string, error) {
+	return migrator.PendingIDs(ctx, db, migrator.DefaultOptions, migrationStepIDs(steps))
+}
+
+// runMigrationSteps runs migration steps in their declared order.
+func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	for _, step := range steps {
+		if err := step.run(ctx, db, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// logstoreMigrationSteps is the ordered source of truth for logstore migration
+// execution and preflight checks.
+var logstoreMigrationSteps = []migrationStep{
+	{IDs: []string{"logs_init"}, run: migrationInit},
+	{IDs: []string{"logs_init_update_object_column_values"}, run: migrationUpdateObjectColumnValues},
+	{IDs: []string{"logs_init_add_parent_request_id_column"}, run: migrationAddParentRequestIDColumn},
+	{IDs: []string{"logs_init_add_responses_output_column"}, run: migrationAddResponsesOutputColumn},
+	{IDs: []string{"logs_init_add_cost_and_cache_debug_column"}, run: migrationAddCostAndCacheDebugColumn},
+	{IDs: []string{"logs_init_add_responses_input_history_column"}, run: migrationAddResponsesInputHistoryColumn},
+	{IDs: []string{"logs_init_add_number_of_retries_and_fallback_index_and_selected_key_and_virtual_key_columns"}, run: migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColumns},
+	{IDs: []string{"logs_add_performance_indexes"}, run: migrationAddPerformanceIndexes},
+	{IDs: []string{"logs_add_performance_indexes_v2"}, run: migrationAddPerformanceIndexesV2},
+	{IDs: []string{"logs_update_timestamp_format"}, run: migrationUpdateTimestampFormat},
+	{IDs: []string{"logs_add_raw_request_column"}, run: migrationAddRawRequestColumn},
+	{IDs: []string{"mcp_tool_logs_init"}, run: migrationCreateMCPToolLogsTable},
+	{IDs: []string{"mcp_tool_logs_add_cost_column"}, run: migrationAddCostColumnToMCPToolLogs},
+	{IDs: []string{"logs_add_image_generation_output_column"}, run: migrationAddImageGenerationOutputColumn},
+	{IDs: []string{"logs_add_image_generation_input_column"}, run: migrationAddImageGenerationInputColumn},
+	{IDs: []string{"logs_add_routing_rule_id_and_routing_rule_name_columns"}, run: migrationAddRoutingRuleIDAndRoutingRuleNameColumns},
+	{IDs: []string{"mcp_tool_logs_add_virtual_key_columns"}, run: migrationAddVirtualKeyColumnsToMCPToolLogs},
+	{IDs: []string{"logs_add_routing_engine_used_column"}, run: migrationAddRoutingEngineUsedColumn},
+	{IDs: []string{"logs_add_routing_engines_used_column"}, run: migrationAddRoutingEnginesUsedColumn},
+	{IDs: []string{"logs_add_list_models_output_column"}, run: migrationAddListModelsOutputColumn},
+	{IDs: []string{"logs_add_rerank_output_column"}, run: migrationAddRerankOutputColumn},
+	{IDs: []string{"logs_add_routing_engine_logs_column"}, run: migrationAddRoutingEngineLogsColumn},
+	{IDs: []string{"async_jobs_init"}, run: migrationCreateAsyncJobsTable},
+	{IDs: []string{"logs_add_metadata_column"}, run: migrationAddMetadataColumn},
+	{IDs: []string{"mcp_tool_logs_add_metadata_column"}, run: migrationAddMetadataColumnToMCPToolLogs},
+	{IDs: []string{"logs_add_histogram_composite_indexes"}, run: migrationAddHistogramCompositeIndexes},
+	{IDs: []string{"logs_add_video_columns"}, run: migrationAddVideoColumns},
+	{IDs: []string{"logs_add_provider_histogram_index"}, run: migrationAddProviderHistogramIndex},
+	{IDs: []string{"logs_add_large_payload_columns"}, run: migrationAddLargePayloadColumns},
+	{IDs: []string{"logs_add_passthrough_request_body_column"}, run: migrationAddPassthroughRequestBodyColumn},
+	{IDs: []string{"logs_add_passthrough_response_body_column"}, run: migrationAddPassthroughResponseBodyColumn},
+	{IDs: []string{"logs_add_metadata_gin_index_v3"}, run: migrationAddMetadataGINIndex},
+	{IDs: []string{"logs_dashboard_enhancements"}, run: migrationAddDashboardEnhancements},
+	{IDs: []string{"logs_and_dashboard_performance_indexes"}, run: migrationAddLogsAndDashboardPerformanceIndexes},
+	{IDs: []string{"logs_add_image_edit_input_column"}, run: migrationAddImageEditInputColumn},
+	{IDs: []string{"logs_add_image_variation_input_column"}, run: migrationAddImageVariationInputColumn},
+	{IDs: []string{"logs_add_plugin_logs_column"}, run: migrationAddPluginLogsColumn},
+	{IDs: []string{"logs_add_alias_column"}, run: migrationAddAliasColumn},
+	{IDs: []string{"logs_add_governance_context_columns"}, run: migrationAddGovernanceContextColumns},
+	{IDs: []string{"logs_recreate_matviews_with_governance_columns"}, run: migrationRecreateMatViewsWithGovernanceColumns},
+	{IDs: []string{"logs_add_ocr_output_column"}, run: migrationAddOCROutputColumn},
+	{IDs: []string{"mcp_tool_logs_add_request_id_column"}, run: migrationAddRequestIDColumnToMCPToolLogs},
+	{IDs: []string{"logs_add_has_object_column"}, run: migrationAddHasObjectColumn},
+	{IDs: []string{"mcp_tool_logs_add_has_object_column"}, run: migrationAddHasObjectColumnToMCPToolLogs},
+	{IDs: []string{"logs_add_attempt_trail_column"}, run: migrationAddAttemptTrailColumn},
+	{IDs: []string{"logs_add_selected_prompt_columns"}, run: migrationAddSelectedPromptColumns},
+	{IDs: []string{"logs_add_user_name_column"}, run: migrationAddUserNameColumn},
+	{IDs: []string{"logs_add_ocr_input_column"}, run: migrationAddOCRInputColumn},
+	{IDs: []string{"logs_add_stop_reason_column"}, run: migrationAddStopReasonColumn},
+	{IDs: []string{"logs_add_safe_jsonb_function"}, run: migrationAddSafeJsonbFunction},
+	{IDs: []string{"mcp_tool_logs_add_dac_columns"}, run: migrationAddDACColumnsToMCPToolLogs},
+	{IDs: []string{"logs_add_cluster_governance_columns"}, run: migrationAddClusterGovernanceColumns},
+	{IDs: []string{"logs_add_inc_number_column"}, run: migrationAddLogIncNumberColumn},
+	{IDs: []string{"logs_recreate_filter_users_matview"}, run: migrationRecreateFilterUsersMatView},
+	{IDs: []string{"logs_add_multi_team_business_unit_columns"}, run: migrationAddMultiTeamBusinessUnitColumns},
+	{IDs: []string{"logs_add_multi_team_bu_gin_indexes_v1"}, run: migrationAddMultiTeamBusinessUnitGINIndexes},
+	{IDs: []string{"logs_recreate_filter_team_bu_matviews_multivalue"}, run: migrationRecreateFilterTeamBUMatViews},
+	{IDs: []string{"logs_add_customer_array_columns"}, run: migrationAddCustomerArrayColumns},
+	{IDs: []string{"logs_add_customer_array_gin_indexes_v1"}, run: migrationAddCustomerArrayGINIndexes},
+	{IDs: []string{"logs_recreate_filter_customers_matview_multivalue"}, run: migrationRecreateFilterCustomersMatView},
+	{IDs: []string{"logs_add_canonical_model_columns"}, run: migrationAddCanonicalModelColumns},
+}
+
+// triggerMigrations runs all registered logstore schema migrations in order under
+// a PostgreSQL advisory lock so only one node migrates the logstore at a time.
 func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	if db.Dialector.Name() == "postgres" {
+		pending, err := pendingMigrationStepIDs(ctx, db, logstoreMigrationSteps)
+		if err == nil && len(pending) == 0 {
+			logger.Info("[logstore] migrations already current; skipping migration lock")
+			return nil
+		}
+		if err != nil {
+			logger.Warn("[logstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
+		}
+	}
+
 	// Acquire advisory lock to serialize migrations across cluster nodes.
-	// Uses the same key as configstore to ensure all migrations are serialized.
 	lock, err := acquireMigrationLock(ctx, db, logger)
 	if err != nil {
 		return err
 	}
 	defer lock.release(ctx)
 
-	if err := migrationInit(ctx, db, logger); err != nil {
-		return err
+	if db.Dialector.Name() == "postgres" {
+		pending, err := pendingMigrationStepIDs(ctx, db, logstoreMigrationSteps)
+		if err == nil && len(pending) == 0 {
+			logger.Info("[logstore] migrations completed by another node; skipping migration run")
+			return nil
+		}
+		if err != nil {
+			logger.Warn("[logstore] migration preflight after lock failed; running migrations: %v", err)
+		}
 	}
-	if err := migrationUpdateObjectColumnValues(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddParentRequestIDColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddResponsesOutputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCostAndCacheDebugColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddResponsesInputHistoryColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPerformanceIndexes(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPerformanceIndexesV2(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationUpdateTimestampFormat(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRawRequestColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationCreateMCPToolLogsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCostColumnToMCPToolLogs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddImageGenerationOutputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddImageGenerationInputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyColumnsToMCPToolLogs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingEngineUsedColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingEnginesUsedColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddListModelsOutputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRerankOutputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingEngineLogsColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationCreateAsyncJobsTable(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMetadataColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMetadataColumnToMCPToolLogs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddHistogramCompositeIndexes(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddVideoColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddProviderHistogramIndex(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddLargePayloadColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPassthroughRequestBodyColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPassthroughResponseBodyColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMetadataGINIndex(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddDashboardEnhancements(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddImageEditInputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddImageVariationInputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddPluginLogsColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAliasColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddGovernanceContextColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationRecreateMatViewsWithGovernanceColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOCROutputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddRequestIDColumnToMCPToolLogs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddHasObjectColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddHasObjectColumnToMCPToolLogs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddAttemptTrailColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddSelectedPromptColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddUserNameColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddOCRInputColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddStopReasonColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddSafeJsonbFunction(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddDACColumnsToMCPToolLogs(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddClusterGovernanceColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddLogIncNumberColumn(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationRecreateFilterUsersMatView(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMultiTeamBusinessUnitColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddMultiTeamBusinessUnitGINIndexes(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationRecreateFilterTeamBUMatViews(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCustomerArrayColumns(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCustomerArrayGINIndexes(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationRecreateFilterCustomersMatView(ctx, db, logger); err != nil {
-		return err
-	}
-	if err := migrationAddCanonicalModelColumns(ctx, db); err != nil {
-		return err
-	}
-	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
-	// release. Dropping mv_logs_filterdata while old replicas are still
-	// serving /api/logs/filterdata from it would surface "relation does not
-	// exist" during rolling deploys. A follow-up release wires it in once
-	// this one is fully rolled out. See the function's docstring.
-	return nil
+
+	return runMigrationSteps(ctx, db, logger, logstoreMigrationSteps)
 }
 
 // migrationInit creates the logs table if it does not exist.
@@ -3028,7 +2959,13 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 // alias_model_family columns to the logs table. Both are copied from the resolved
 // alias config when the request's model was resolved via alias mapping and the
 // alias defines them.
-func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_recreate_filter_customers_matview_multivalue"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
