@@ -1,0 +1,2 @@
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
