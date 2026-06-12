@@ -321,8 +321,8 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 
 // GeminiStreamState tracks tool-call index across streaming chunks.
 type GeminiStreamState struct {
-	nextToolCallIndex    int
-	hadToolCalls         bool // true if any tool calls were seen in this stream
+	nextToolCallIndex     int
+	hadToolCalls          bool // true if any tool calls were seen in this stream
 	hasEmittedAnnotations bool // true once grounding annotations have been sent, to avoid duplicates
 }
 
