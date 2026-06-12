@@ -1277,6 +1277,80 @@ false
 {{- if hasKey .Values.bifrost.plugins.bigquery "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.bigquery.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
+{{- if (.Values.bifrost.plugins.kafka).enabled }}
+{{- $kafkaConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.kafka.config | default dict }}
+{{- if $inputConfig.brokers }}
+{{- $_ := set $kafkaConfig "brokers" $inputConfig.brokers }}
+{{- end }}
+{{- if $inputConfig.topic }}
+{{- $_ := set $kafkaConfig "topic" $inputConfig.topic }}
+{{- end }}
+{{- if hasKey $inputConfig "sasl_enabled" }}
+{{- $_ := set $kafkaConfig "sasl_enabled" $inputConfig.sasl_enabled }}
+{{- end }}
+{{- if $inputConfig.sasl }}
+{{- $_ := set $kafkaConfig "sasl" $inputConfig.sasl }}
+{{- end }}
+{{- if hasKey $inputConfig "tls_enabled" }}
+{{- $_ := set $kafkaConfig "tls_enabled" $inputConfig.tls_enabled }}
+{{- end }}
+{{- if $inputConfig.ca_cert }}
+{{- $_ := set $kafkaConfig "ca_cert" $inputConfig.ca_cert }}
+{{- end }}
+{{- if $inputConfig.compression }}
+{{- $_ := set $kafkaConfig "compression" $inputConfig.compression }}
+{{- end }}
+{{- if hasKey $inputConfig "batch_size" }}
+{{- $_ := set $kafkaConfig "batch_size" $inputConfig.batch_size }}
+{{- end }}
+{{- if hasKey $inputConfig "flush_interval_ms" }}
+{{- $_ := set $kafkaConfig "flush_interval_ms" $inputConfig.flush_interval_ms }}
+{{- end }}
+{{- if hasKey $inputConfig "auto_create_topic" }}
+{{- $_ := set $kafkaConfig "auto_create_topic" $inputConfig.auto_create_topic }}
+{{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $kafkaConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if $inputConfig.request_headers }}
+{{- $_ := set $kafkaConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $kafkaConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- $plugin := dict "enabled" true "name" "kafka" "config" $kafkaConfig }}
+{{- if hasKey .Values.bifrost.plugins.kafka "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.kafka.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
+{{- end }}
+{{- if (.Values.bifrost.plugins.pubsub).enabled }}
+{{- $pubsubConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.pubsub.config | default dict }}
+{{- if $inputConfig.project_id }}
+{{- $_ := set $pubsubConfig "project_id" $inputConfig.project_id }}
+{{- end }}
+{{- if $inputConfig.topic_id }}
+{{- $_ := set $pubsubConfig "topic_id" $inputConfig.topic_id }}
+{{- end }}
+{{- if $inputConfig.service_account_key }}
+{{- $_ := set $pubsubConfig "service_account_key" $inputConfig.service_account_key }}
+{{- end }}
+{{- if hasKey $inputConfig "auto_create_topic" }}
+{{- $_ := set $pubsubConfig "auto_create_topic" $inputConfig.auto_create_topic }}
+{{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $pubsubConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if $inputConfig.request_headers }}
+{{- $_ := set $pubsubConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $pubsubConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- $plugin := dict "enabled" true "name" "pubsub" "config" $pubsubConfig }}
+{{- if hasKey .Values.bifrost.plugins.pubsub "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.pubsub.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
+{{- end }}
 {{- /* Custom plugins */ -}}
 {{- if .Values.bifrost.plugins.custom }}
 {{- range .Values.bifrost.plugins.custom }}
@@ -1447,6 +1521,36 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if and .Values.bifrost.plugins.bigquery.enabled (not (.Values.bifrost.plugins.bigquery.config | default dict).project_id) }}
 {{- fail "ERROR: bifrost.plugins.bigquery.config.project_id is required when the BigQuery plugin is enabled." }}
+{{- end }}
+{{- if and (.Values.bifrost.plugins.kafka).enabled (hasKey .Values.bifrost.plugins.kafka "version") (lt (int .Values.bifrost.plugins.kafka.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.kafka.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and (.Values.bifrost.plugins.kafka).enabled (hasKey .Values.bifrost.plugins.kafka "version") (gt (int .Values.bifrost.plugins.kafka.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.kafka.version must be <= 32767." }}
+{{- end }}
+{{- if (.Values.bifrost.plugins.kafka).enabled }}
+{{- $kafkaInputConfig := .Values.bifrost.plugins.kafka.config | default dict }}
+{{- if not $kafkaInputConfig.brokers }}
+{{- fail "ERROR: bifrost.plugins.kafka.config.brokers is required when the Kafka plugin is enabled." }}
+{{- end }}
+{{- if not $kafkaInputConfig.topic }}
+{{- fail "ERROR: bifrost.plugins.kafka.config.topic is required when the Kafka plugin is enabled." }}
+{{- end }}
+{{- end }}
+{{- if and (.Values.bifrost.plugins.pubsub).enabled (hasKey .Values.bifrost.plugins.pubsub "version") (lt (int .Values.bifrost.plugins.pubsub.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.pubsub.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and (.Values.bifrost.plugins.pubsub).enabled (hasKey .Values.bifrost.plugins.pubsub "version") (gt (int .Values.bifrost.plugins.pubsub.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.pubsub.version must be <= 32767." }}
+{{- end }}
+{{- if (.Values.bifrost.plugins.pubsub).enabled }}
+{{- $pubsubInputConfig := .Values.bifrost.plugins.pubsub.config | default dict }}
+{{- if not $pubsubInputConfig.project_id }}
+{{- fail "ERROR: bifrost.plugins.pubsub.config.project_id is required when the Pub/Sub plugin is enabled." }}
+{{- end }}
+{{- if not $pubsubInputConfig.topic_id }}
+{{- fail "ERROR: bifrost.plugins.pubsub.config.topic_id is required when the Pub/Sub plugin is enabled." }}
+{{- end }}
 {{- end }}
 
 {{/* Validate semantic cache plugin when enabled */}}
