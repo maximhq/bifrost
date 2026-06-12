@@ -2129,3 +2129,26 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 		t.Fatalf("root span has non-positive duration: start=%v, end=%v", plugin.rootStart, plugin.rootEnd)
 	}
 }
+
+func TestCollectDimensionHeaders(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-team", "ml")
+	ctx.Request.Header.Set("x-bf-dim-", "ignored")  // empty dimension name
+	ctx.Request.Header.Set("x-request-id", "req-1") // non-dimension header
+
+	dims := collectDimensionHeaders(ctx)
+	if len(dims) != 2 {
+		t.Fatalf("collectDimensionHeaders() = %v, want 2 entries", dims)
+	}
+	if dims["environment"] != "prod" || dims["team"] != "ml" {
+		t.Errorf("collectDimensionHeaders() = %v, want environment=prod team=ml", dims)
+	}
+
+	if got := collectDimensionHeaders(&fasthttp.RequestCtx{}); got != nil {
+		t.Errorf("collectDimensionHeaders(no dims) = %v, want nil", got)
+	}
+	if got := collectDimensionHeaders(nil); got != nil {
+		t.Errorf("collectDimensionHeaders(nil) = %v, want nil", got)
+	}
+}
