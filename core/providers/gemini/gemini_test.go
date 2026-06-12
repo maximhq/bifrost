@@ -4416,10 +4416,10 @@ func TestImagenImageEditSizeRoundtrip(t *testing.T) {
 
 func TestWebSearchOptionsEnablesGoogleSearchTool(t *testing.T) {
 	userMessage := []schemas.ChatMessage{
-		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("quoi de neuf ?")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what's new?")}},
 	}
 
-	t.Run("web_search_options seul ajoute googleSearch", func(t *testing.T) {
+	t.Run("web_search_options alone adds googleSearch", func(t *testing.T) {
 		req := &schemas.BifrostChatRequest{
 			Model: "gemini-2.5-flash",
 			Input: userMessage,
@@ -4434,7 +4434,7 @@ func TestWebSearchOptionsEnablesGoogleSearchTool(t *testing.T) {
 		assert.NotNil(t, geminiReq.Tools[0].GoogleSearch)
 	})
 
-	t.Run("web_search_options coexiste avec des tools function", func(t *testing.T) {
+	t.Run("web_search_options replaces function tools", func(t *testing.T) {
 		req := &schemas.BifrostChatRequest{
 			Model: "gemini-2.5-flash",
 			Input: userMessage,
@@ -4464,10 +4464,11 @@ func TestWebSearchOptionsEnablesGoogleSearchTool(t *testing.T) {
 			}
 		}
 		assert.True(t, hasGoogleSearch, "googleSearch tool missing")
-		assert.True(t, hasFunction, "function declarations missing")
+		assert.False(t, hasFunction, "function declarations should be dropped when googleSearch is used")
+		assert.Nil(t, geminiReq.ToolConfig, "ToolConfig should be cleared when function tools are dropped")
 	})
 
-	t.Run("sans web_search_options pas de googleSearch", func(t *testing.T) {
+	t.Run("no googleSearch without web_search_options", func(t *testing.T) {
 		req := &schemas.BifrostChatRequest{
 			Model: "gemini-2.5-flash",
 			Input: userMessage,

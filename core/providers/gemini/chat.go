@@ -52,9 +52,12 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 		}
 
 		// OpenAI-style web_search_options enables Google Search grounding.
-		// Must work even when no function tools are declared.
+		// GoogleSearch and FunctionDeclarations cannot coexist in a Gemini
+		// request, so function tools are dropped (same policy as the
+		// Responses path).
 		if bifrostReq.Params.WebSearchOptions != nil {
-			geminiReq.Tools = append(geminiReq.Tools, Tool{GoogleSearch: &GoogleSearch{}})
+			geminiReq.Tools = []Tool{{GoogleSearch: &GoogleSearch{}}}
+			geminiReq.ToolConfig = nil
 		}
 
 		if bifrostReq.Params.ServiceTier != nil {
