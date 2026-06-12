@@ -723,13 +723,12 @@ func isRealtimeTransportEndpoint(path string) bool {
 
 // AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
-	store                  configstore.ConfigStore
-	whitelistedRoutes      atomic.Pointer[[]string]
-	authConfig             atomic.Pointer[configstore.AuthConfig]
-	wsTicketStore          *WSTicketStore
-	tempTokensService      *temptoken.Service // optional; when nil, temp-token fallback is disabled
-	tempTokensEnabled      atomic.Bool
-	enforceAuthOnInference atomic.Bool
+	store             configstore.ConfigStore
+	whitelistedRoutes atomic.Pointer[[]string]
+	authConfig        atomic.Pointer[configstore.AuthConfig]
+	wsTicketStore     *WSTicketStore
+	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
+	tempTokensEnabled atomic.Bool
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
@@ -757,12 +756,10 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
 		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
-		am.enforceAuthOnInference.Store(clientConfig.EnforceAuthOnInference)
 	} else {
 		emptyRoutes := []string{}
 		am.whitelistedRoutes.Store(&emptyRoutes)
 		am.tempTokensEnabled.Store(false)
-		am.enforceAuthOnInference.Store(false)
 	}
 
 	return am, nil
@@ -780,11 +777,6 @@ func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 // UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
 func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
 	m.tempTokensEnabled.Store(enabled)
-}
-
-// UpdateEnforceAuthOnInference updates whether auth is enforced on inference endpoints.
-func (m *AuthMiddleware) UpdateEnforceAuthOnInference(enforce bool) {
-	m.enforceAuthOnInference.Store(enforce)
 }
 
 // tryTempTokenOrUnauthorized is the last-resort auth path: a request that
@@ -815,13 +807,21 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 }
 
-// InferenceMiddleware is for inference requests (including MCP routes). It skips
-// authentication when the ClientConfig.EnforceAuthOnInference switch is disabled.
-// That switch is config/Helm-driven and survives restarts. Inference auth is open
-// by default (raw binary); the Helm chart enables enforcement for production.
+// InferenceMiddleware is for inference requests (including MCP routes). It always
+// passes the request through — inference authentication is owned entirely by the
+// governance plugin, not by this dashboard-auth middleware.
+//
+// Governance runs downstream on every inference request type (via RunLLMPreHooks) and
+// is the authoritative virtual-key validator: it rejects missing/unknown/revoked keys
+// and enforces whether a VK is mandatory (driven by ClientConfig.EnforceAuthOnInference).
+// In OSS it is loaded unconditionally and cannot be disabled, so delegating to it never
+// leaves inference ungated. Keeping admin-password checks out of this path is deliberate:
+// gating inference on dashboard credentials would reject virtual-key callers, since a VK
+// is not an admin/session credential. Admin-password auth therefore stays exclusive to
+// dashboard/API routes (APIMiddleware) and is never required for inference.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		return !m.enforceAuthOnInference.Load()
+		return true
 	})
 }
 
