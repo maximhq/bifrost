@@ -2574,7 +2574,12 @@
           }
         }
       },
-      "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+      "required": [
+        "code_keywords",
+        "reasoning_keywords",
+        "technical_keywords",
+        "simple_keywords"
+      ],
       "additionalProperties": false
     },
     "complexity_analyzer_config": {
@@ -2875,7 +2880,15 @@
                   },
                   "model_family": {
                     "type": "string",
-                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "nova", "titan"],
+                    "enum": [
+                      "anthropic",
+                      "openai",
+                      "mistral",
+                      "cohere",
+                      "gemini",
+                      "nova",
+                      "titan"
+                    ],
                     "description": "Underlying model family. Used by provider routing without substring-sniffing the wire model ID."
                   },
                   "description": {
@@ -4400,6 +4413,15 @@
               "role": {
                 "type": "string",
                 "description": "Bifrost role to assign on match"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
               }
             },
             "required": ["attribute", "value", "role"],
@@ -4422,7 +4444,7 @@
               },
               "team": {
                 "type": "string",
-                "description": "Bifrost team slug to assign"
+                "description": "Bifrost team slug to assign. In case of '*' value, leave this empty"
               },
               "attributeType": {
                 "type": "string",
@@ -4450,11 +4472,11 @@
               },
               "value": {
                 "type": "string",
-                "description": "Claim value to match"
+                "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign."
               },
               "business_unit": {
                 "type": "string",
-                "description": "Bifrost business unit slug to assign"
+                "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty"
               },
               "attributeType": {
                 "type": "string",
@@ -4466,7 +4488,7 @@
                 "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
               }
             },
-            "required": ["attribute", "value", "business_unit"],
+            "required": ["attribute", "value"],
             "additionalProperties": false
           }
         }
@@ -4519,6 +4541,102 @@
           "type": "string",
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings (first match wins).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name (supports dot paths)"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match (case-insensitive)"
+              },
+              "role": {
+                "type": "string",
+                "description": "Bifrost role to assign on match"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value", "role"],
+            "additionalProperties": false
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match, or '*' for pass-through"
+              },
+              "team": {
+                "type": "string",
+                "description": "Bifrost team slug to assign. In case of '*' value, leave this empty"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign."
+              },
+              "business_unit": {
+                "type": "string",
+                "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["tenantId", "clientId"],
@@ -4566,23 +4684,71 @@
         },
         "attributeRoleMappings": {
           "type": "array",
-          "description": "Ordered list of attribute -> role mappings",
+          "description": "Ordered list of attribute -> role mappings (first match wins).",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match (case-insensitive)"
+              },
+              "role": {
+                "type": "string",
+                "description": "Bifrost role to assign on match"
+              }
+            },
+            "required": ["attribute", "value", "role"],
+            "additionalProperties": false
           }
         },
         "attributeTeamMappings": {
           "type": "array",
-          "description": "Attribute -> team mappings (all matches apply)",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match, or '*' for pass-through"
+              },
+              "team": {
+                "type": "string",
+                "description": "Bifrost team slug to assign. In case of '*' value, leave this empty"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
           }
         },
         "attributeBusinessUnitMappings": {
           "type": "array",
-          "description": "Attribute -> business-unit mappings (all matches apply)",
+          "description": "Attribute -> business-unit mappings (all matches apply).",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign."
+              },
+              "business_unit": {
+                "type": "string",
+                "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
           }
         }
       },
