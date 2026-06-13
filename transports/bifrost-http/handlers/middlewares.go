@@ -559,15 +559,10 @@ func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedRes
 	defer schemas.ReleaseHTTPRequest(req)
 	req.Method = capturedReq.Method
 	req.Path = capturedReq.Path
-	for k, v := range capturedReq.Headers {
-		req.Headers[k] = v
-	}
-	for k, v := range capturedReq.Query {
-		req.Query[k] = v
-	}
-	for k, v := range capturedReq.PathParams {
-		req.PathParams[k] = v
-	}
+
+	maps.Copy(req.Headers, capturedReq.Headers)
+	maps.Copy(req.Query, capturedReq.Query)
+	maps.Copy(req.PathParams, capturedReq.PathParams)
 
 	httpResp := schemas.AcquireHTTPResponse()
 	defer schemas.ReleaseHTTPResponse(httpResp)
@@ -911,7 +906,7 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return true
-	})
+	}, true)
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.

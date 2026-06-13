@@ -150,6 +150,75 @@ func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 	assertDecision(t, DecisionModelBlocked, result)
 }
 
+// TestGovernancePlugin_EvaluateGovernanceRequest_DirectKeySatisfiesMandatoryAuth verifies direct provider keys satisfy mandatory auth after transport validation.
+func TestGovernancePlugin_EvaluateGovernanceRequest_DirectKeySatisfiesMandatoryAuth(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	mandatory := true
+	plugin := &GovernancePlugin{
+		store:         store,
+		resolver:      NewBudgetResolver(store, nil, logger, nil),
+		isVkMandatory: &mandatory,
+		isEnterprise:  true,
+	}
+
+	ctx := &schemas.BifrostContext{}
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+		ID:    "header-provided",
+		Name:  "header-provided",
+		Value: schemas.SecretVar{Val: "sk-real-openai-key"},
+	})
+
+	result, bifrostErr := plugin.EvaluateGovernanceRequest(ctx, &EvaluationRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+	}, schemas.PassthroughRequest)
+
+	require.Nil(t, bifrostErr)
+	assertDecision(t, DecisionAllow, result)
+}
+
+// TestGovernancePlugin_EvaluateGovernanceRequest_HeaderWithoutContextDoesNotSatisfyMandatoryAuth verifies callers cannot spoof direct-key auth with only a request header.
+func TestGovernancePlugin_EvaluateGovernanceRequest_HeaderWithoutContextDoesNotSatisfyMandatoryAuth(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	mandatory := true
+	plugin := &GovernancePlugin{
+		store:         store,
+		resolver:      NewBudgetResolver(store, nil, logger, nil),
+		isVkMandatory: &mandatory,
+		isEnterprise:  true,
+	}
+
+	_, bifrostErr := plugin.EvaluateGovernanceRequest(&schemas.BifrostContext{}, &EvaluationRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+	}, schemas.PassthroughRequest)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, 401, *bifrostErr.StatusCode)
+	assert.Equal(t, "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token.", bifrostErr.Error.Message)
+}
+
+// TestHasDirectKeyAuth reads only the transport-owned direct-key context value.
+func TestHasDirectKeyAuth(t *testing.T) {
+	ctx := &schemas.BifrostContext{}
+	assert.False(t, hasDirectKeyAuth(ctx))
+
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+		ID:    "header-provided",
+		Name:  "header-provided",
+		Value: schemas.SecretVar{Val: "sk-real-openai-key"},
+	})
+
+	assert.True(t, hasDirectKeyAuth(ctx))
+}
+
 // TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit tests token limit
 func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit(t *testing.T) {
 	logger := NewMockLogger()
