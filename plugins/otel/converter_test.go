@@ -395,6 +395,24 @@ func TestConvertTraceToResourceSpan_OpenInferenceTool(t *testing.T) {
 	assertOTELStringAttribute(t, attrs, oiOutputValue, `{"temperature":21}`)
 }
 
+func TestAppendOpenInferenceMessageStructuredContent(t *testing.T) {
+	attrs := otelAttributes(appendOpenInferenceMessage(nil, "llm.input_messages.0", map[string]any{
+		"role": "user",
+		"content": []any{
+			map[string]any{"type": "text", "text": "describe this image"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/image.png"}},
+		},
+	}))
+
+	assertOTELStringAttribute(t, attrs, "llm.input_messages.0.message.contents.0.message_content.type", "text")
+	assertOTELStringAttribute(t, attrs, "llm.input_messages.0.message.contents.0.message_content.text", "describe this image")
+	assertOTELStringAttribute(t, attrs, "llm.input_messages.0.message.contents.1.message_content.type", "image_url")
+	assertOTELStringAttribute(t, attrs, "llm.input_messages.0.message.contents.1.message_content.image.image.url", "https://example.com/image.png")
+	if _, ok := attrs["llm.input_messages.0.message.content"]; ok {
+		t.Error("structured message content should not emit message.content")
+	}
+}
+
 func otelStringAttributes(attrs []*commonpb.KeyValue) map[string]string {
 	result := make(map[string]string, len(attrs))
 	for _, attr := range attrs {

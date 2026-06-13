@@ -231,7 +231,22 @@ func openInferenceContentValue(value any) string {
 
 func appendOpenInferenceMessage(result []*KeyValue, prefix string, message map[string]any) []*KeyValue {
 	result = appendMappedAttribute(result, message, prefix+".message.role", "role")
-	result = appendMappedAttribute(result, message, prefix+".message.content", "content")
+	if content, ok := message["content"].([]any); ok {
+		for i, rawBlock := range content {
+			block, ok := rawBlock.(map[string]any)
+			if !ok {
+				continue
+			}
+			blockPrefix := fmt.Sprintf("%s.message.contents.%d.message_content", prefix, i)
+			result = appendMappedAttribute(result, block, blockPrefix+".type", "type")
+			result = appendMappedAttribute(result, block, blockPrefix+".text", "text")
+			if image, ok := block["image_url"].(map[string]any); ok {
+				result = appendMappedAttribute(result, image, blockPrefix+".image.image.url", "url")
+			}
+		}
+	} else {
+		result = appendMappedAttribute(result, message, prefix+".message.content", "content")
+	}
 	result = appendMappedAttribute(result, message, prefix+".message.name", "name")
 	result = appendMappedAttribute(result, message, prefix+".message.tool_call_id", "tool_call_id")
 
