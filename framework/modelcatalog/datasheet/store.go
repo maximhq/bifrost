@@ -419,6 +419,16 @@ func NewTestStore(baseModelIndex map[string]string) *Store {
 	}
 }
 
+// NewTestStoreWithParams is like NewTestStore but also seeds the per-model
+// supported-parameter index, letting tests exercise parameter-dropping logic.
+func NewTestStoreWithParams(baseModelIndex map[string]string, supportedParams map[string][]string) *Store {
+	s := NewTestStore(baseModelIndex)
+	for model, params := range supportedParams {
+		s.supportedParams[model] = slices.Clone(params)
+	}
+	return s
+}
+
 // --- Internal: rebuild the datasheet view from current pricingData ---
 
 // rebuildDatasheetViewUnsafe regenerates baseModelIndex and datasheetByProvider

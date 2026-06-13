@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 func newTestContext() *schemas.BifrostContext {
@@ -169,4 +171,63 @@ func TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged(t *testing.T) {
 	if drop.ChatRequest.Params.MaxCompletionTokens != nil {
 		t.Errorf("max_completion_tokens = preserved, want dropped (no token cap supported)")
 	}
+}
+
+// TestPreLLMHook_ShouldDropParams_MaxOutputTokens exercises the user-facing
+// compat.should_drop_params toggle end to end through PreLLMHook and the model
+// catalog: with dropping enabled and a chat-named catalog (max_tokens only, the
+// real gpt-4o-mini case) the Responses token cap must survive, and with dropping
+// disabled the request is left untouched.
+func TestPreLLMHook_ShouldDropParams_MaxOutputTokens(t *testing.T) {
+	mc := modelcatalog.NewTestCatalogWithParams(nil, map[string][]string{
+		"gpt-4o-mini": {"temperature", "max_tokens"},
+	})
+	logger := bifrost.NewNoOpLogger()
+
+	// top_p is absent from the catalog (only temperature + max_tokens). Each
+	// subtest checks it too, so the drop path is proven to actually run:
+	// dropped when dropping is enabled, kept when it is disabled.
+	t.Run("should_drop_params=true keeps max_output_tokens, drops unsupported params", func(t *testing.T) {
+		p, err := Init(Config{ShouldDropParams: true}, logger, mc)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		req := newResponsesRequest(schemas.OpenAI, "gpt-4o-mini", &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(16),
+			TopP:            schemas.Ptr(0.9),
+		})
+		out, _, err := p.PreLLMHook(newTestContext(), req)
+		if err != nil {
+			t.Fatalf("PreLLMHook() error = %v", err)
+		}
+		if out.ResponsesRequest.Params.MaxOutputTokens == nil {
+			t.Errorf("max_output_tokens = dropped, want preserved")
+		}
+		// Confirms the drop branch actually executed (not silently skipped).
+		if out.ResponsesRequest.Params.TopP != nil {
+			t.Errorf("top_p = preserved, want dropped (unsupported, dropping enabled)")
+		}
+	})
+
+	t.Run("should_drop_params=false leaves request untouched", func(t *testing.T) {
+		p, err := Init(Config{ShouldDropParams: false}, logger, mc)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		req := newResponsesRequest(schemas.OpenAI, "gpt-4o-mini", &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(16),
+			TopP:            schemas.Ptr(0.9),
+		})
+		out, _, err := p.PreLLMHook(newTestContext(), req)
+		if err != nil {
+			t.Fatalf("PreLLMHook() error = %v", err)
+		}
+		// Dropping disabled: every param survives untouched, even unsupported ones.
+		if out.ResponsesRequest.Params.MaxOutputTokens == nil {
+			t.Errorf("max_output_tokens = dropped, want preserved (dropping disabled)")
+		}
+		if out.ResponsesRequest.Params.TopP == nil {
+			t.Errorf("top_p = dropped, want preserved (dropping disabled)")
+		}
+	})
 }
