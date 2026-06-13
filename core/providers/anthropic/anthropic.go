@@ -452,32 +452,46 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		}, nil
 	}
 
-	// Create response object from pool
-	response := AcquireAnthropicMessageResponse()
-	defer ReleaseAnthropicMessageResponse(response)
+	return ParseAnthropicChatResponse(ctx, responseBody, jsonData, latency, providerResponseHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+}
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+// ParseAnthropicChatResponse parses a raw Anthropic Messages API response body into a
+// BifrostChatResponse, populating latency, provider response headers, and raw
+// request/response. Every provider targeting the Anthropic Messages endpoint (native
+// Anthropic, Bedrock InvokeModel, Vertex rawPredict, Azure) returns identical JSON here,
+// so only transport differs — callers do their own request/sign/send and hand the bytes
+// to this shared assembler. Callers set RequestType/Model afterward if they need to.
+func ParseAnthropicChatResponse(
+	ctx *schemas.BifrostContext,
+	responseBody, jsonBody []byte,
+	latency time.Duration,
+	providerResponseHeaders map[string]string,
+	sendBackRawRequest, sendBackRawResponse bool,
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	anthropicResponse := AcquireAnthropicMessageResponse()
+	defer ReleaseAnthropicMessageResponse(anthropicResponse)
+
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 	// Create final response
-	bifrostResponse := response.ToBifrostChatResponse(ctx)
+	response := anthropicResponse.ToBifrostChatResponse(ctx)
 
 	// Set ExtraFields
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
 	}
 
 	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
 	}
-
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Anthropic API.
@@ -980,32 +994,44 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Create response object from pool
-	response := AcquireAnthropicMessageResponse()
-	defer ReleaseAnthropicMessageResponse(response)
+	return ParseAnthropicResponsesResponse(ctx, responseBody, jsonBody, latency, providerResponseHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+}
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+// ParseAnthropicResponsesResponse is the Responses-API counterpart to
+// ParseAnthropicChatResponse: it assembles a BifrostResponsesResponse from a raw
+// Anthropic Messages API response body shared across all providers.
+func ParseAnthropicResponsesResponse(
+	ctx *schemas.BifrostContext,
+	responseBody, jsonBody []byte,
+	latency time.Duration,
+	providerResponseHeaders map[string]string,
+	sendBackRawRequest, sendBackRawResponse bool,
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	anthropicResponse := AcquireAnthropicMessageResponse()
+	defer ReleaseAnthropicMessageResponse(anthropicResponse)
+
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Create final response
-	bifrostResponse := response.ToBifrostResponsesResponse(ctx)
+	response := anthropicResponse.ToBifrostResponsesResponse(ctx)
 
 	// Set ExtraFields
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
 	}
 
 	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
 	}
-
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // ResponsesStream performs a streaming responses request to the Anthropic API.

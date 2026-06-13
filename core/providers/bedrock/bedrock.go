@@ -1118,30 +1118,10 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	var bifrostResponse *schemas.BifrostChatResponse
-
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Parse Anthropic Messages API response
-		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
+		// Parse Anthropic Messages API response (shared assembler)
+		return anthropic.ParseAnthropicChatResponse(ctx, responseBody, jsonData, latency, providerResponseHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
 
-		rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if err != nil {
-			return nil, providerUtils.EnrichError(ctx, err, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-		bifrostResponse = anthropicResponse.ToBifrostChatResponse(ctx)
-
-		// Set ExtraFields
-		bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
-		bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-		bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			bifrostResponse.ExtraFields.RawRequest = rawRequest
-		}
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			bifrostResponse.ExtraFields.RawResponse = rawResponse
-		}
 	} else {
 		// Parse Bedrock Converse API response
 		bedrockResponse := acquireBedrockChatResponse()
@@ -1153,8 +1133,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		}
 
 		// Convert using the new response converter
-		var err error
-		bifrostResponse, err = bedrockResponse.ToBifrostChatResponse(ctx, request.Model)
+		bifrostResponse, err := bedrockResponse.ToBifrostChatResponse(ctx, request.Model)
 		if err != nil {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
@@ -1181,9 +1160,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 				bifrostResponse.ExtraFields.RawResponse = rawResponse
 			}
 		}
-	}
+		return bifrostResponse, nil
 
-	return bifrostResponse, nil
+	}
 }
 
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
@@ -1601,29 +1580,9 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	var bifrostResponse *schemas.BifrostResponsesResponse
-	var err error
-
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Parse Anthropic Messages API response
-		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
-
-		rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if err != nil {
-			return nil, providerUtils.EnrichError(ctx, err, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-		bifrostResponse = anthropicResponse.ToBifrostResponsesResponse(ctx)
-
-		bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-		bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			bifrostResponse.ExtraFields.RawRequest = rawRequest
-		}
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			bifrostResponse.ExtraFields.RawResponse = rawResponse
-		}
+		// Parse Anthropic Messages API response (shared assembler)
+		return anthropic.ParseAnthropicResponsesResponse(ctx, responseBody, jsonData, latency, providerResponseHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	} else {
 		// Parse Bedrock Converse API response
 		bedrockResponse := acquireBedrockChatResponse()
@@ -1635,7 +1594,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		}
 
 		// Convert using the new response converter
-		bifrostResponse, err = bedrockResponse.ToBifrostResponsesResponse(ctx)
+		bifrostResponse, err := bedrockResponse.ToBifrostResponsesResponse(ctx)
 		if err != nil {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
@@ -1658,9 +1617,8 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 				bifrostResponse.ExtraFields.RawResponse = rawResponse
 			}
 		}
+		return bifrostResponse, nil
 	}
-
-	return bifrostResponse, nil
 }
 
 // ResponsesStream performs a streaming chat completion request to Bedrock's API.

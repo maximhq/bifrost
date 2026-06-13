@@ -676,34 +676,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Create response object from pool
-		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
-
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-
-		// Create final response
-		response := anthropicResponse.ToBifrostChatResponse(ctx)
-
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
-			Latency:                 latency.Milliseconds(),
-			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
-		}
-
-		// Set raw request if enabled
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			response.ExtraFields.RawRequest = rawRequest
-		}
-
-		// Set raw response if enabled
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			response.ExtraFields.RawResponse = rawResponse
-		}
-
-		return response, nil
+		// Parse Anthropic Messages API response (shared assembler — Vertex rawPredict
+		// returns identical JSON to the native Anthropic endpoint).
+		return anthropic.ParseAnthropicChatResponse(ctx, responseBody, jsonBody, latency, providerUtils.ExtractProviderResponseHeaders(resp), provider.sendBackRawRequest, provider.sendBackRawResponse)
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
@@ -1077,34 +1052,8 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			}, nil
 		}
 
-		// Create response object from pool
-		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
-
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-
-		// Create final response
-		response := anthropicResponse.ToBifrostResponsesResponse(ctx)
-
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
-		}
-
-		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
-		// Set raw request if enabled
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			response.ExtraFields.RawRequest = rawRequest
-		}
-
-		// Set raw response if enabled
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			response.ExtraFields.RawResponse = rawResponse
-		}
-
-		return response, nil
+		// Parse Anthropic Messages API response (shared assembler).
+		return anthropic.ParseAnthropicResponsesResponse(ctx, responseBody, jsonBody, latency, providerUtils.ExtractProviderResponseHeaders(resp), provider.sendBackRawRequest, provider.sendBackRawResponse)
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,

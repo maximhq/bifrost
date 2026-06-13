@@ -523,7 +523,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	}
 
 	var path string
-	if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		path = "anthropic/v1/messages"
 	} else {
 		path = "openai/v1/chat/completions"
@@ -558,19 +558,13 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	var rawRequest interface{}
 	var rawResponse interface{}
 
-	if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
-		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
-		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-		response = anthropicResponse.ToBifrostChatResponse(ctx)
-	} else {
-		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		// Parse Anthropic Messages API response (shared assembler).
+		return anthropic.ParseAnthropicChatResponse(ctx, responseBody, jsonData, latency, providerResponseHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	response.ExtraFields.Latency = latency.Milliseconds()
@@ -599,7 +593,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 	var url string
-	if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		authHeader, err := provider.getAzureAuthHeaders(ctx, key, true)
 		if err != nil {
 			return nil, err
@@ -732,18 +726,12 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	var rawResponse interface{}
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
-		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-		response = anthropicResponse.ToBifrostResponsesResponse(ctx)
-	} else {
-		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
+		// Parse Anthropic Messages API response (shared assembler).
+		return anthropic.ParseAnthropicResponsesResponse(ctx, responseBody, jsonData, latency, providerResponseHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	response.ExtraFields.Latency = latency.Milliseconds()
