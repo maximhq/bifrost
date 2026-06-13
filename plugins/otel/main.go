@@ -30,8 +30,12 @@ const PluginName = "otel"
 // TraceType is the type of trace to use for the OTEL collector
 type TraceType string
 
-// TraceTypeGenAIExtension is the type of trace to use for the OTEL collector
-const TraceTypeGenAIExtension TraceType = "genai_extension"
+const (
+	// TraceTypeGenAIExtension exports OpenTelemetry GenAI semantic conventions.
+	TraceTypeGenAIExtension TraceType = "genai_extension"
+	// TraceTypeOpenInference adds Arize OpenInference semantic conventions.
+	TraceTypeOpenInference TraceType = "open_inference"
+)
 
 // Protocol is the protocol to use for the OTEL collector
 type Protocol string
@@ -553,6 +557,12 @@ func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostR
 	return req, nil, nil
 }
 
+// PreRequestHook is a no-op. OTEL remains an LLMPlugin because PostLLMHook records
+// cache-hit metrics that cannot be derived from completed traces.
+func (p *OtelPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PostLLMHook records the cache-hit metric. Every other metric is derived from the
 // completed trace in recordMetricsFromTrace, but semantic-cache hits short-circuit the
 // request in a PreHook before any llm.call span exists, so the cache signal never reaches
@@ -640,7 +650,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		go func(t *otelTarget) {
 			defer wg.Done()
 			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging)
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.traceType, t.disableContentLogging)
 				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
 					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
 				}
@@ -920,5 +930,8 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// Compile-time check that OtelPlugin implements ObservabilityPlugin
-var _ schemas.ObservabilityPlugin = (*OtelPlugin)(nil)
+var (
+	_ schemas.HTTPTransportPlugin = (*OtelPlugin)(nil)
+	_ schemas.LLMPlugin           = (*OtelPlugin)(nil)
+	_ schemas.ObservabilityPlugin = (*OtelPlugin)(nil)
+)

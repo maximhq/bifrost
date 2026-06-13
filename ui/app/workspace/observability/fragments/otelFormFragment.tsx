@@ -69,8 +69,6 @@ const traceTypeOptions: {
 	{
 		value: "open_inference",
 		label: "Arize OpenInference",
-		disabled: true,
-		disabledReason: "Coming soon",
 	},
 ];
 const protocolOptions: {

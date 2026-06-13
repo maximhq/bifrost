@@ -176,3 +176,44 @@ func TestPopulateRequestExtraParamsSerializesStructuredValues(t *testing.T) {
 		})
 	}
 }
+
+func TestPopulateChatRequestAttributesIncludesToolsAndToolMessageIdentity(t *testing.T) {
+	toolName := "weather"
+	toolCallID := "call-1"
+	messageName := "weather"
+	attrs := map[string]any{}
+
+	PopulateChatRequestAttributes(&schemas.BifrostChatRequest{
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleTool,
+			Name: &messageName,
+			ChatToolMessage: &schemas.ChatToolMessage{
+				ToolCallID: &toolCallID,
+			},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name: toolName,
+				},
+			}},
+		},
+	}, attrs)
+
+	tools, ok := attrs[schemas.AttrTools].(string)
+	if !ok {
+		t.Fatalf("%s = %T(%v), want JSON string", schemas.AttrTools, attrs[schemas.AttrTools], attrs[schemas.AttrTools])
+	}
+	if !strings.Contains(tools, `"name":"weather"`) {
+		t.Errorf("%s = %q, want full tool definition", schemas.AttrTools, tools)
+	}
+
+	messages, ok := attrs[schemas.AttrInputMessages].(string)
+	if !ok {
+		t.Fatalf("%s = %T(%v), want JSON string", schemas.AttrInputMessages, attrs[schemas.AttrInputMessages], attrs[schemas.AttrInputMessages])
+	}
+	if !strings.Contains(messages, `"name":"weather"`) || !strings.Contains(messages, `"tool_call_id":"call-1"`) {
+		t.Errorf("%s = %q, want tool message name and call ID", schemas.AttrInputMessages, messages)
+	}
+}

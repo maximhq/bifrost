@@ -235,6 +235,11 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 		if req.Params.User != nil {
 			attrs[schemas.AttrRequestUser] = *req.Params.User
 		}
+		if len(req.Params.Tools) > 0 {
+			if data, err := schemas.MarshalString(req.Params.Tools); err == nil {
+				attrs[schemas.AttrTools] = data
+			}
+		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
 			attrs[k] = formatTraceValue(v)
@@ -709,24 +714,8 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 			attrs[schemas.AttrToolChoiceName] = *req.Params.ToolChoice.ResponsesToolChoiceStruct.Name
 		}
 	}
-	if req.Params.Tools != nil {
-		type toolInfo struct {
-			Name        string `json:"name"`
-			Description string `json:"description,omitempty"`
-		}
-		tools := make([]toolInfo, 0, len(req.Params.Tools))
-		for _, tool := range req.Params.Tools {
-			if tool.Name != nil {
-				info := toolInfo{Name: *tool.Name}
-				if tool.Description != nil {
-					info.Description = *tool.Description
-				}
-				tools = append(tools, info)
-			} else {
-				tools = append(tools, toolInfo{Name: string(tool.Type)})
-			}
-		}
-		if data, err := schemas.MarshalString(tools); err == nil {
+	if len(req.Params.Tools) > 0 {
+		if data, err := schemas.MarshalString(req.Params.Tools); err == nil {
 			attrs[schemas.AttrTools] = data
 		}
 	}
@@ -1362,6 +1351,8 @@ func PopulateFileContentResponseAttributes(resp *schemas.BifrostFileContentRespo
 type MessageSummary struct {
 	Role             string                   `json:"role"`
 	Content          string                   `json:"content"`
+	Name             string                   `json:"name,omitempty"`
+	ToolCallID       string                   `json:"tool_call_id,omitempty"`
 	ToolCalls        []ToolCallSummary        `json:"tool_calls,omitempty"`
 	Reasoning        string                   `json:"reasoning,omitempty"`
 	ReasoningDetails []ReasoningDetailSummary `json:"reasoning_details,omitempty"`
@@ -1430,6 +1421,12 @@ func extractMessageSummary(msg *schemas.ChatMessage) MessageSummary {
 
 	if msg.Role != "" {
 		summary.Role = string(msg.Role)
+	}
+	if msg.Name != nil {
+		summary.Name = *msg.Name
+	}
+	if msg.ChatToolMessage != nil && msg.ChatToolMessage.ToolCallID != nil {
+		summary.ToolCallID = *msg.ChatToolMessage.ToolCallID
 	}
 
 	// Extract assistant-specific fields

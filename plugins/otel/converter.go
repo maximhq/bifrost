@@ -70,17 +70,42 @@ func hexToBytes(hexStr string, length int) []byte {
 }
 
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
-// profile service name. Span filtering and instance attributes are shared across profiles;
-// only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool) *ResourceSpan {
-	reparent := p.pluginSpanFilter.BuildReparentMap(trace.Spans)
-	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
+// profile service name and trace type. Span filtering and instance attributes are shared
+// across profiles; destination-specific semantic conventions are added during conversion.
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, traceType TraceType, disableContentLogging bool) *ResourceSpan {
+	shouldExport := func(span *schemas.Span) bool {
+		if !p.pluginSpanFilter.ShouldExportSpan(span) {
+			return false
+		}
+		if traceType == TraceTypeOpenInference {
+			// Hook timing and internal implementation spans make OpenInference traces
+			// noisy without adding model, tool, or orchestration semantics.
+			return span.Kind != schemas.SpanKindPlugin && span.Kind != schemas.SpanKindInternal
+		}
+		return true
+	}
+	reparent := buildSpanReparentMap(trace.Spans, shouldExport)
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
-		if !p.pluginSpanFilter.ShouldExportSpan(span) {
+		if _, filtered := reparent[span.SpanID]; filtered {
 			continue
 		}
-		otelSpan := convertSpanToOTELSpan(trace.TraceID, span, disableContentLogging)
+
+		var attributes []*KeyValue
+		if traceType == TraceTypeOpenInference {
+			// OpenInference profiles export a clean OpenInference attribute set. Keeping
+			// the original GenAI/Bifrost/HTTP attributes causes OpenInference backends
+			// to infer conflicting span kinds and renders the profile as a mixed format.
+			attributes = convertSpanToOpenInferenceAttributes(trace, span, disableContentLogging)
+		} else {
+			attributes = convertAttributesToKeyValues(span.Attributes, disableContentLogging)
+		}
+		otelSpan := convertSpanToOTELSpan(trace.TraceID, span, attributes, disableContentLogging)
+		if traceType == TraceTypeOpenInference {
+			if span.Kind == schemas.SpanKindEmbedding {
+				otelSpan.Name = "CreateEmbeddings"
+			}
+		}
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -90,7 +115,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 				otelSpan.ParentSpanId = hexToBytes(effectiveParent, 8)
 			}
 		}
-		if span == trace.RootSpan {
+		if span == trace.RootSpan && traceType != TraceTypeOpenInference {
 			if requestID := trace.GetRequestID(); requestID != "" {
 				otelSpan.Attributes = append(otelSpan.Attributes,
 					kvStr(schemas.AttrRequestID, requestID), // legacy: gen_ai.* placement of bifrost-internal attr; replaced by bifrost.request.id
@@ -100,7 +125,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 			if len(p.instanceAttrs) > 0 {
 				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
 			}
-			for k, v := range filteredHeaders {
+			for k, v := range schemas.FilterHeaders(trace.RequestHeaders, requestHeaders) {
 				otelSpan.Attributes = append(otelSpan.Attributes, kvStr("http.request.header."+k, v))
 			}
 		}
@@ -117,8 +142,34 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 	}
 }
 
+// buildSpanReparentMap returns filtered span IDs mapped to their nearest exported
+// ancestor so profile-specific filtering does not leave dangling parent IDs.
+func buildSpanReparentMap(spans []*schemas.Span, shouldExport func(*schemas.Span) bool) map[string]string {
+	filtered := make(map[string]string)
+	for _, span := range spans {
+		if span != nil && !shouldExport(span) {
+			filtered[span.SpanID] = span.ParentID
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	for spanID := range filtered {
+		parentID := filtered[spanID]
+		for range len(filtered) {
+			grandParentID, ok := filtered[parentID]
+			if !ok {
+				break
+			}
+			parentID = grandParentID
+		}
+		filtered[spanID] = parentID
+	}
+	return filtered
+}
+
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool) *Span {
+func convertSpanToOTELSpan(traceID string, span *schemas.Span, attributes []*KeyValue, disableContentLogging bool) *Span {
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -126,7 +177,7 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		Kind:              convertSpanKind(span.Kind),
 		StartTimeUnixNano: uint64(span.StartTime.UnixNano()),
 		EndTimeUnixNano:   uint64(span.EndTime.UnixNano()),
-		Attributes:        convertAttributesToKeyValues(span.Attributes, disableContentLogging),
+		Attributes:        attributes,
 		Status:            convertSpanStatus(span.Status, span.StatusMsg),
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
 	}
