@@ -944,7 +944,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 	}
 	p.cfgMutex.RLock()
-	if !isVirtualKeyValid && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !isVirtualKeyValid && !hasDirectKeyAuth(ctx) && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -1133,6 +1133,15 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			},
 		}
 	}
+}
+
+// hasDirectKeyAuth returns true when the transport accepted an admin-enabled direct provider key.
+func hasDirectKeyAuth(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	_, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	return ok
 }
 
 // isMCPToolAllowedByVK checks whether a tool pattern (in "clientName-toolName" or "clientName-*"
