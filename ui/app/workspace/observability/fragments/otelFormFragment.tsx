@@ -60,15 +60,12 @@ const traceTypeOptions: {
 	disabledReason?: string;
 }[] = [
 	{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
+	{ value: "open_inference", label: "Arize OpenInference" },
 	{
 		value: "vercel",
 		label: "Vercel AI SDK",
 		disabled: true,
 		disabledReason: "Coming soon",
-	},
-	{
-		value: "open_inference",
-		label: "Arize OpenInference",
 	},
 ];
 const protocolOptions: {
