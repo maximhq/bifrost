@@ -152,7 +152,7 @@ func openInferenceInvocationParameters(attrs map[string]any) string {
 		}
 		name := strings.TrimPrefix(key, "gen_ai.request.")
 		switch name {
-		case "prompt", "tools", "user", "message_count":
+		case "prompt", "tools", "user", "message_count", "instructions":
 			continue
 		}
 		params[name] = value
