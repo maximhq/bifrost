@@ -54,6 +54,8 @@ func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Sp
 		if invocation := openInferenceInvocationParameters(attrs); invocation != "" {
 			result = append(result, kvStr("embedding.invocation_parameters", invocation))
 		}
+	case "TOOL":
+		result = appendOpenInferenceToolIdentity(result, attrs)
 	}
 
 	if disableContentLogging {
@@ -61,6 +63,13 @@ func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Sp
 	}
 
 	return appendOpenInferenceContent(result, attrs)
+}
+
+func appendOpenInferenceToolIdentity(result []*KeyValue, attrs map[string]any) []*KeyValue {
+	result = appendMappedAttribute(result, attrs, "tool.name", schemas.AttrToolName)
+	result = appendMappedAttribute(result, attrs, "tool_call.function.name", schemas.AttrToolName)
+	result = appendMappedAttribute(result, attrs, "tool.id", schemas.AttrToolCallID)
+	return appendMappedAttribute(result, attrs, "tool_call.id", schemas.AttrToolCallID)
 }
 
 func appendOpenInferenceTokenAttributes(result []*KeyValue, attrs map[string]any) []*KeyValue {
@@ -180,10 +189,6 @@ func appendOpenInferenceContent(result []*KeyValue, attrs map[string]any) []*Key
 		result = appendOpenInferenceTools(result, value)
 	}
 
-	result = appendMappedAttribute(result, attrs, "tool.name", schemas.AttrToolName)
-	result = appendMappedAttribute(result, attrs, "tool_call.function.name", schemas.AttrToolName)
-	result = appendMappedAttribute(result, attrs, "tool.id", schemas.AttrToolCallID)
-	result = appendMappedAttribute(result, attrs, "tool_call.id", schemas.AttrToolCallID)
 	if value, ok := firstAttribute(attrs, schemas.AttrToolCallArguments); ok {
 		result = appendTextContent(result, "tool_call.function.arguments", oiInputValue, oiInputMIMEType, value)
 	}

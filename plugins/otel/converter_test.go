@@ -393,6 +393,18 @@ func TestConvertTraceToResourceSpan_OpenInferenceTool(t *testing.T) {
 	assertOTELStringAttribute(t, attrs, "tool_call.function.arguments", `{"city":"Paris"}`)
 	assertOTELStringAttribute(t, attrs, oiInputValue, `{"city":"Paris"}`)
 	assertOTELStringAttribute(t, attrs, oiOutputValue, `{"temperature":21}`)
+
+	withoutContent := otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0].Attributes)
+	assertOTELStringAttribute(t, withoutContent, openInferenceSpanKind, "TOOL")
+	assertOTELStringAttribute(t, withoutContent, "tool.name", "weather")
+	assertOTELStringAttribute(t, withoutContent, "tool.id", "call-1")
+	assertOTELStringAttribute(t, withoutContent, "tool_call.function.name", "weather")
+	assertOTELStringAttribute(t, withoutContent, "tool_call.id", "call-1")
+	for _, key := range []string{"tool_call.function.arguments", oiInputValue, oiOutputValue} {
+		if _, ok := withoutContent[key]; ok {
+			t.Errorf("content attribute %s should not be exported", key)
+		}
+	}
 }
 
 func TestAppendOpenInferenceMessageStructuredContent(t *testing.T) {
