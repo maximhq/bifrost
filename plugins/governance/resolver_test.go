@@ -205,6 +205,20 @@ func TestGovernancePlugin_EvaluateGovernanceRequest_HeaderWithoutContextDoesNotS
 	assert.Equal(t, "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token.", bifrostErr.Error.Message)
 }
 
+// TestHasDirectKeyAuth reads only the transport-owned direct-key context value.
+func TestHasDirectKeyAuth(t *testing.T) {
+	ctx := &schemas.BifrostContext{}
+	assert.False(t, hasDirectKeyAuth(ctx))
+
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+		ID:    "header-provided",
+		Name:  "header-provided",
+		Value: schemas.SecretVar{Val: "sk-real-openai-key"},
+	})
+
+	assert.True(t, hasDirectKeyAuth(ctx))
+}
+
 // TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit tests token limit
 func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit(t *testing.T) {
 	logger := NewMockLogger()
