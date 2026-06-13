@@ -133,6 +133,46 @@ func TestCustomProviderExtraParamsForwardedAutomatically(t *testing.T) {
 	}
 }
 
+func TestStandardProviderExtraParamsNotForwardedAutomatically(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			ExtraParams: map[string]interface{}{
+				"thinking": true,
+				"chat_template_kwargs": map[string]interface{}{
+					"enable_thinking": true,
+				},
+			},
+		},
+	}
+
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		req,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, req), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var body map[string]interface{}
+	if err := sonic.Unmarshal(wireBody, &body); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if _, ok := body["thinking"]; ok {
+		t.Fatal("thinking must not be forwarded for a standard provider")
+	}
+	if _, ok := body["chat_template_kwargs"]; ok {
+		t.Fatal("chat_template_kwargs must not be forwarded for a standard provider")
+	}
+}
+
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
