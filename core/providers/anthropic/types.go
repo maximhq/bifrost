@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
 // Since Anthropic always needs to have a max_tokens parameter, we set a default value if not provided.
@@ -56,6 +58,8 @@ const (
 	AnthropicRedactThinkingBetaHeader = "redact-thinking-2026-02-12"
 	// AnthropicTaskBudgetsBetaHeader is required for output_config.task_budget (Opus 4.7+).
 	AnthropicTaskBudgetsBetaHeader = "task-budgets-2026-03-13"
+	// AnthropicAdvisorBetaHeader is required for the advisor_20260301 server tool. Anthropic API only.
+	AnthropicAdvisorBetaHeader = "advisor-tool-2026-03-01"
 	// AnthropicEagerInputStreamingBetaHeader is required for eager_input_streaming
 	// on custom tools (streams input_json_delta before full args are determined).
 	// Per Table 20: GA on Anthropic/Bedrock/Vertex, Beta on Azure.
@@ -84,6 +88,7 @@ const (
 	AnthropicEagerInputStreamingBetaHeaderPrefix = "fine-grained-tool-streaming-"
 	AnthropicContextManagementBetaHeaderPrefix   = "context-management-"
 	AnthropicCompactionBetaHeaderPrefix          = "compact-"
+	AnthropicAdvisorBetaHeaderPrefix             = "advisor-tool-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -817,6 +822,9 @@ type AnthropicMessage struct {
 type AnthropicContent struct {
 	ContentStr    *string
 	ContentBlocks []AnthropicContentBlock
+	// ContentObj marshals as a single bare object (not wrapped in an array).
+	// Used for fields Anthropic types as a single object, e.g. advisor_tool_result.content.
+	ContentObj *AnthropicContentBlock
 }
 
 // MarshalJSON implements custom JSON marshalling for AnthropicContent.
@@ -829,6 +837,9 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 
 	if mc.ContentStr != nil {
 		return providerUtils.MarshalSorted(*mc.ContentStr)
+	}
+	if mc.ContentObj != nil {
+		return providerUtils.MarshalSorted(mc.ContentObj)
 	}
 	if mc.ContentBlocks != nil {
 		return providerUtils.MarshalSorted(mc.ContentBlocks)
@@ -940,6 +951,7 @@ type AnthropicContentBlock struct {
 	EncryptedContent *string                   `json:"encrypted_content,omitempty"` // web_search_result, advisor_redacted_result, compaction
 	PageAge          *string                   `json:"page_age,omitempty"`          // web_search_result
 	ErrorCode        *string                   `json:"error_code,omitempty"`        // any *_tool_result_error variant
+	StopReason       *string                   `json:"stop_reason,omitempty"`       // advisor_result / advisor_redacted_result inner block; present when advisor tool max_tokens is set
 	Caller           *AnthropicToolCaller      `json:"caller,omitempty"`            // tool_use, server_tool_use, every *_tool_result block
 
 	// search_result block: the API uses the literal key "source" with a plain
@@ -1206,6 +1218,11 @@ const (
 	AnthropicToolTypeToolSearchBM2520251119  AnthropicToolType = "tool_search_tool_bm25_20251119"
 	AnthropicToolTypeToolSearchRegex         AnthropicToolType = "tool_search_tool_regex"
 	AnthropicToolTypeToolSearchRegex20251119 AnthropicToolType = "tool_search_tool_regex_20251119"
+
+	// Advisor server tool — pairs the executor model with a higher-intelligence
+	// advisor model mid-generation. Anthropic API only; requires the
+	// advisor-tool-2026-03-01 beta header.
+	AnthropicToolTypeAdvisor20260301 AnthropicToolType = "advisor_20260301"
 )
 
 type AnthropicToolName string
@@ -1223,6 +1240,7 @@ const (
 	AnthropicToolNameMemory           AnthropicToolName = "memory"
 	AnthropicToolNameToolSearchBM25   AnthropicToolName = "tool_search_tool_bm25"
 	AnthropicToolNameToolSearchRegex  AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameAdvisor          AnthropicToolName = "advisor"
 )
 
 type AnthropicToolComputerUse struct {
@@ -1263,6 +1281,22 @@ type AnthropicToolTextEditor struct {
 	MaxCharacters *int `json:"max_characters,omitempty"` // text_editor_20250728+ only
 }
 
+// AnthropicToolAdvisorCaching toggles advisor-side prompt caching across calls
+// within a conversation. Not a breakpoint marker — an on/off switch.
+type AnthropicToolAdvisorCaching struct {
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "5m" | "1h"
+}
+
+// AnthropicToolAdvisor holds fields specific to the advisor_20260301 server
+// tool. Anthropic API only; requires the advisor-tool-2026-03-01 beta header.
+type AnthropicToolAdvisor struct {
+	Model     string                       `json:"model,omitempty"`      // advisor model id (required by Anthropic; must form a valid executor/advisor pair)
+	MaxUses   *int                         `json:"max_uses,omitempty"`   // per-request cap on advisor calls
+	MaxTokens *int                         `json:"max_tokens,omitempty"` // caps advisor output (thinking + text) per call; minimum 1024
+	Caching   *AnthropicToolAdvisorCaching `json:"caching,omitempty"`    // advisor-side prompt caching toggle
+}
+
 // AnthropicToolInputExample represents an input example for a tool (beta feature)
 type AnthropicToolInputExample struct {
 	Input       json.RawMessage `json:"input"`
@@ -1286,6 +1320,7 @@ type AnthropicTool struct {
 	*AnthropicToolWebSearch
 	*AnthropicToolWebFetch
 	*AnthropicToolTextEditor
+	*AnthropicToolAdvisor
 
 	// MCP toolset (mcp-client-2025-11-20 format) — embedded when Type is nil and MCPToolset is set
 	MCPToolset *AnthropicMCPToolsetTool `json:"-"` // Serialized via custom MarshalJSON
@@ -1299,7 +1334,47 @@ func (t AnthropicTool) MarshalJSON() ([]byte, error) {
 	}
 	// Use an alias to avoid infinite recursion
 	type Alias AnthropicTool
-	return providerUtils.MarshalSorted((Alias)(t))
+	data, err := providerUtils.MarshalSorted((Alias)(t))
+	if err != nil {
+		return nil, err
+	}
+	// max_uses (web_search/web_fetch/advisor) and allowed_domains/blocked_domains
+	// (web_search/web_fetch) share JSON tags across the anonymously-embedded
+	// variant structs, so the encoder drops them. Re-inject from the active
+	// variant in a fixed order — deterministic, which is all the prompt-cache
+	// prefix needs (see InputSchema.Normalized()).
+	maxUses, allowed, blocked := t.sharedServerToolFields()
+	if maxUses != nil {
+		if data, err = sjson.SetBytes(data, "max_uses", *maxUses); err != nil {
+			return nil, err
+		}
+	}
+	if len(allowed) > 0 {
+		if data, err = sjson.SetBytes(data, "allowed_domains", allowed); err != nil {
+			return nil, err
+		}
+	}
+	if len(blocked) > 0 {
+		if data, err = sjson.SetBytes(data, "blocked_domains", blocked); err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
+}
+
+// sharedServerToolFields returns the max_uses/allowed_domains/blocked_domains of
+// whichever server-tool variant is active. These share JSON tags across the
+// embedded variant structs and are (un)marshaled explicitly by AnthropicTool.
+func (t AnthropicTool) sharedServerToolFields() (maxUses *int, allowed, blocked []string) {
+	switch {
+	case t.AnthropicToolWebSearch != nil:
+		return t.AnthropicToolWebSearch.MaxUses, t.AnthropicToolWebSearch.AllowedDomains, t.AnthropicToolWebSearch.BlockedDomains
+	case t.AnthropicToolWebFetch != nil:
+		return t.AnthropicToolWebFetch.MaxUses, t.AnthropicToolWebFetch.AllowedDomains, t.AnthropicToolWebFetch.BlockedDomains
+	case t.AnthropicToolAdvisor != nil:
+		return t.AnthropicToolAdvisor.MaxUses, nil, nil
+	}
+	return nil, nil, nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for AnthropicTool.
@@ -1320,7 +1395,51 @@ func (t *AnthropicTool) UnmarshalJSON(data []byte) error {
 	}
 	// Default unmarshaling for all other tool types
 	type Alias AnthropicTool
-	return sonic.Unmarshal(data, (*Alias)(t))
+	if err := sonic.Unmarshal(data, (*Alias)(t)); err != nil {
+		return err
+	}
+	// The embedded variant structs share these JSON tags, so the decoder drops
+	// them. Re-read and route them into the active variant by tool type.
+	var shared struct {
+		MaxUses        *int     `json:"max_uses"`
+		AllowedDomains []string `json:"allowed_domains"`
+		BlockedDomains []string `json:"blocked_domains"`
+	}
+	if err := sonic.Unmarshal(data, &shared); err != nil {
+		return err
+	}
+	t.applySharedServerToolFields(shared.MaxUses, shared.AllowedDomains, shared.BlockedDomains)
+	return nil
+}
+
+// applySharedServerToolFields routes the shared (collision-dropped)
+// max_uses/allowed_domains/blocked_domains into the embedded variant struct that
+// matches the tool type, allocating it if the default decode left it nil.
+func (t *AnthropicTool) applySharedServerToolFields(maxUses *int, allowed, blocked []string) {
+	if t.Type == nil || (maxUses == nil && allowed == nil && blocked == nil) {
+		return
+	}
+	switch typeStr := string(*t.Type); {
+	case strings.HasPrefix(typeStr, "web_search"):
+		if t.AnthropicToolWebSearch == nil {
+			t.AnthropicToolWebSearch = &AnthropicToolWebSearch{}
+		}
+		t.AnthropicToolWebSearch.MaxUses = maxUses
+		t.AnthropicToolWebSearch.AllowedDomains = allowed
+		t.AnthropicToolWebSearch.BlockedDomains = blocked
+	case strings.HasPrefix(typeStr, "web_fetch"):
+		if t.AnthropicToolWebFetch == nil {
+			t.AnthropicToolWebFetch = &AnthropicToolWebFetch{}
+		}
+		t.AnthropicToolWebFetch.MaxUses = maxUses
+		t.AnthropicToolWebFetch.AllowedDomains = allowed
+		t.AnthropicToolWebFetch.BlockedDomains = blocked
+	case strings.HasPrefix(typeStr, "advisor"):
+		if t.AnthropicToolAdvisor == nil {
+			t.AnthropicToolAdvisor = &AnthropicToolAdvisor{}
+		}
+		t.AnthropicToolAdvisor.MaxUses = maxUses
+	}
 }
 
 // AnthropicToolChoice represents tool choice in Anthropic format
