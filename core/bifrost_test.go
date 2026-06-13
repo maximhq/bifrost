@@ -2756,3 +2756,73 @@ func TestFilterKeysByID(t *testing.T) {
 		}
 	})
 }
+
+// fakeRoutingPlugin is a minimal LLMPlugin whose PreRequestHook writes a routing key pin to the
+// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID, mirroring what the governance routing
+// engine does. It exists to exercise the commit step in PluginPipeline.RunPreRequestHooks.
+type fakeRoutingPlugin struct {
+	name     string
+	pinKeyID string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+}
+
+func (f *fakeRoutingPlugin) GetName() string { return f.name }
+func (f *fakeRoutingPlugin) Cleanup() error  { return nil }
+func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if f.pinKeyID != "" {
+		// A direct write to the reserved BifrostContextKeyAPIKeyID here would be dropped by the
+		// restricted-write block; routing must use the non-reserved key.
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, f.pinKeyID)
+	}
+	return nil
+}
+func (f *fakeRoutingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+func newRoutingCommitPipeline(plugins ...schemas.LLMPlugin) *PluginPipeline {
+	return &PluginPipeline{
+		logger:     NewDefaultLogger(schemas.LogLevelError),
+		tracer:     &schemas.NoOpTracer{},
+		llmPlugins: plugins,
+	}
+}
+
+// TestRunPreRequestHooks_CommitsRoutingPinnedKey verifies that the pinned key a routing rule
+// writes to the non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (during the blocked
+// PreRequestHook phase) is committed by core into the reserved BifrostContextKeyAPIKeyID that
+// key selection reads — and that the routing pin's precedence over a caller-supplied pin holds.
+func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
+	const pinned = "routing-pinned-key-id"
+
+	t.Run("routing pin is committed to reserved api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q", got, pinned)
+		}
+	})
+
+	t.Run("routing pin overrides a caller-supplied api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q (routing pin must override caller pin)", got, pinned)
+		}
+	})
+
+	t.Run("caller api-key-id preserved when no routing pin", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "noop"})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "caller-pin" {
+			t.Fatalf("APIKeyID = %q, want %q (no routing pin must not clobber caller pin)", got, "caller-pin")
+		}
+	})
+}
