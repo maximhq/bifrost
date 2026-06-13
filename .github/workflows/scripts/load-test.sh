@@ -172,8 +172,8 @@ build_bifrost_http() {
   cd "${BIFROST_HTTP_DIR}"
 
   # Ensure ui directory exists for //go:embed all:ui (load test does not need the real UI assets)
-  if [ ! -d "${BIFROST_HTTP_DIR}/ui" ]; then
-    mkdir -p "${BIFROST_HTTP_DIR}/ui"
+  mkdir -p "${BIFROST_HTTP_DIR}/ui"
+  if [ ! -f "${BIFROST_HTTP_DIR}/ui/.gitkeep" ]; then
     echo "placeholder" > "${BIFROST_HTTP_DIR}/ui/.gitkeep"
   fi
 
