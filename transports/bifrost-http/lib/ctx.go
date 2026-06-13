@@ -675,6 +675,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// Direct key bypass: requires both the server-side AllowDirectKeys setting and the
 	// per-request x-bf-direct-key: true header. The server setting is the admin opt-in;
 	// the header is the per-request opt-in from the caller.
+	// Enterprise SCIM inference auth runs before this context conversion, so it mirrors
+	// this config/header gate separately to avoid validating provider bearer tokens as
+	// SCIM user JWTs before direct-key extraction can happen here.
 	if store != nil && store.ShouldAllowDirectKeys() && string(ctx.Request.Header.Peek("x-bf-direct-key")) == "true" {
 		var apiKey string
 		authHeader := string(ctx.Request.Header.Peek("Authorization"))
