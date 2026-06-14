@@ -47,6 +47,17 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
+func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+		Provider:    schemas.OpenAI,
+		UpstreamURL: "https://chatgpt.com",
+		StripPrefix: []string{
+			"/chatgpt_passthrough",
+		},
+	})
+}
+
 // NewAzurePassthroughRouter creates a passthrough router for /azure_passthrough.
 func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
