@@ -407,6 +407,28 @@ func TestConvertTraceToResourceSpan_OpenInferenceEmbedding(t *testing.T) {
 	}
 }
 
+func TestConvertTraceToResourceSpan_OpenInferenceEmbeddingTextContentLogging(t *testing.T) {
+	span := makeSpan("aaaa", "", "embedding test-model", schemas.SpanKindEmbedding)
+	span.Attributes = map[string]any{
+		schemas.AttrRequestModel: "test-model",
+		schemas.AttrInputText:    "hello world",
+	}
+	trace := &schemas.Trace{
+		TraceID:  "00000000000000000000000000000001",
+		RootSpan: span,
+		Spans:    []*schemas.Span{span},
+	}
+
+	p := &OtelPlugin{}
+	attrs := otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, false).ScopeSpans[0].Spans[0].Attributes)
+	assertOTELStringAttribute(t, attrs, "embedding.text", "hello world")
+
+	attrs = otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0].Attributes)
+	if _, ok := attrs["embedding.text"]; ok {
+		t.Error("embedding.text should not be exported when content logging is disabled")
+	}
+}
+
 func TestConvertTraceToResourceSpan_OpenInferenceTool(t *testing.T) {
 	span := makeSpan("aaaa", "", "weather", schemas.SpanKindMCPTool)
 	span.Attributes = map[string]any{

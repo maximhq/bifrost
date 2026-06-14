@@ -63,7 +63,7 @@ func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Sp
 		return result
 	}
 
-	return appendOpenInferenceContent(result, attrs)
+	return appendOpenInferenceContent(result, attrs, kind)
 }
 
 func appendOpenInferenceExceptionAttributes(result []*KeyValue, span *schemas.Span) []*KeyValue {
@@ -180,7 +180,11 @@ func openInferenceInvocationParameters(attrs map[string]any) string {
 	return string(data)
 }
 
-func appendOpenInferenceContent(result []*KeyValue, attrs map[string]any) []*KeyValue {
+func appendOpenInferenceContent(result []*KeyValue, attrs map[string]any, kind string) []*KeyValue {
+	if kind == "EMBEDDING" {
+		result = appendMappedAttribute(result, attrs, "embedding.text", schemas.AttrInputText)
+	}
+
 	if value, ok := firstAttribute(attrs, schemas.AttrInputMessages); ok {
 		result = appendJSONContent(result, "llm.input_messages", oiInputValue, oiInputMIMEType, value)
 	} else if value, ok := firstAttribute(attrs, schemas.AttrInputText, schemas.AttrInputSpeech, schemas.AttrInputEmbedding); ok {
