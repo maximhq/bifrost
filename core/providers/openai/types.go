@@ -278,20 +278,18 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		aux.ReasoningEffort = req.Reasoning.Effort
 	}
 
-	// DeepSeek thinking toggle: "thinking": {"type": "enabled|disabled"}
-	// This is a DeepSeek-specific parameter that controls the thinking/reasoning mode.
-	if req.Provider == schemas.DeepSeek {
-		thinkingEnabled := true
-		if req.Reasoning != nil {
-			if req.Reasoning.Enabled != nil {
-				thinkingEnabled = *req.Reasoning.Enabled
-			} else if req.Reasoning.Effort != nil && *req.Reasoning.Effort == "none" {
-				thinkingEnabled = false
-			}
+	// DeepSeek thinking toggle: only emit "thinking": {"type": "disabled"} when the user
+	// explicitly opts out of thinking on a reasoning-capable model. Omitting the field lets
+	// DeepSeek use its default (thinking enabled), avoiding errors on non-reasoning models
+	// (deepseek-chat, deepseek-coder, deepseek-v3) which reject the thinking parameter.
+	if req.Provider == schemas.DeepSeek && isDeepSeekReasoningModel(req.Model) && req.Reasoning != nil {
+		disabled := false
+		if req.Reasoning.Enabled != nil && !*req.Reasoning.Enabled {
+			disabled = true
+		} else if req.Reasoning.Effort != nil && *req.Reasoning.Effort == "none" {
+			disabled = true
 		}
-		if thinkingEnabled {
-			aux.Thinking = &map[string]string{"type": "enabled"}
-		} else {
+		if disabled {
 			aux.Thinking = &map[string]string{"type": "disabled"}
 		}
 	}
