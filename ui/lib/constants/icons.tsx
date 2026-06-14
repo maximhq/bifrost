@@ -641,6 +641,33 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	deepseek: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 128 128"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>DeepSeek</title>
+				<path
+					d="M32 96V32h8v56h56v8H32Z"
+					fill="#4F46E5"
+				/>
+				<path
+					d="M40 64c0-13.255 10.745-24 24-24h8c13.255 0 24 10.745 24 24v8c0 13.255-10.745 24-24 24h-8c-13.255 0-24-10.745-24-24v-8Z"
+					fill="#4F46E5"
+				/>
+				<circle cx="56" cy="64" r="8" fill="white" />
+				<circle cx="72" cy="64" r="8" fill="white" />
+			</svg>
+		);
+	},
+
 	fireworks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

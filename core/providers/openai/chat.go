@@ -99,6 +99,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters()
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
+	case schemas.DeepSeek:
+		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.applyDeepSeekCompatibility(bifrostReq.Model)
+		return openaiReq
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
@@ -180,6 +184,22 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 			req.Reasoning.Effort = schemas.Ptr("high")
 		}
 	}
+}
+
+// applyDeepSeekCompatibility applies DeepSeek-specific transformations to the request.
+// DeepSeek supports reasoning_effort "high" and "max" (default: "max").
+// "low"/"medium" map to "high"; "xhigh" maps to "max"; "none" disables thinking.
+// The thinking toggle is serialized as "thinking": {"type": "enabled|disabled"}
+// in MarshalJSON when provider is DeepSeek.
+func (req *OpenAIChatRequest) applyDeepSeekCompatibility(model string) {
+	// normalizeReasoningEffort already handles:
+	// - "minimal" → "low"
+	// - "max" → preserved for deepseek-v4 models (supportsMaxReasoningEffort)
+	// - "xhigh" → "max" for deepseek-v4, "high" otherwise
+	// - "low"/"medium" → stays as-is (DeepSeek maps these to "high")
+	// The thinking toggle itself is handled in MarshalJSON based on
+	// Reasoning.Enabled and Reasoning.Effort.
+	_ = model
 }
 
 // applyXAICompatibility applies xAI-specific transformations to the request
