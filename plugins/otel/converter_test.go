@@ -319,10 +319,10 @@ func TestOpenInferenceKind(t *testing.T) {
 func TestOpenInferenceProviderAndSystem(t *testing.T) {
 	tests := map[string][2]string{
 		"openai":        {"openai", "openai"},
-		"bedrock":       {"aws", "amazon"},
-		"gcp.vertex_ai": {"google", "vertexai"},
+		"bedrock":       {"bedrock", "amazon"},
+		"gcp.vertex_ai": {"gcp.vertex_ai", "vertexai"},
 		"azure":         {"azure", "openai"},
-		"mistral":       {"mistralai", "mistralai"},
+		"mistral":       {"mistral", "mistralai"},
 	}
 
 	for raw, want := range tests {
@@ -330,6 +330,14 @@ func TestOpenInferenceProviderAndSystem(t *testing.T) {
 		if provider != want[0] || system != want[1] {
 			t.Errorf("openInferenceProviderAndSystem(%q) = (%q, %q), want (%q, %q)", raw, provider, system, want[0], want[1])
 		}
+	}
+
+	provider, system := openInferenceProviderAndSystem(map[string]any{
+		schemas.AttrProviderName:        "aws.bedrock",
+		schemas.AttrBifrostProviderName: "bedrock",
+	})
+	if provider != "aws.bedrock" || system != "amazon" {
+		t.Errorf("canonical provider preferred = (%q, %q), want (%q, %q)", provider, system, "aws.bedrock", "amazon")
 	}
 }
 

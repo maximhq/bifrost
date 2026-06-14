@@ -83,27 +83,28 @@ func appendOpenInferenceTokenAttributes(result []*KeyValue, attrs map[string]any
 }
 
 func openInferenceProviderAndSystem(attrs map[string]any) (provider, system string) {
-	value, ok := firstAttribute(attrs, schemas.AttrBifrostProviderName, schemas.AttrProviderName)
+	value, ok := firstAttribute(attrs, schemas.AttrProviderName, schemas.AttrBifrostProviderName)
 	if !ok {
 		return "", ""
 	}
-	raw := fmt.Sprint(value)
-	switch raw {
+	provider = fmt.Sprint(value)
+	switch provider {
 	case "bedrock", "aws.bedrock":
-		return "aws", "amazon"
+		system = "amazon"
 	case "vertex", "gcp.vertex_ai":
-		return "google", "vertexai"
+		system = "vertexai"
 	case "gemini", "gcp.gemini":
-		return "google", "google"
+		system = "google"
 	case "azure", "azure.ai.openai":
-		return "azure", "openai"
+		system = "openai"
 	case "mistral", "mistral_ai":
-		return "mistralai", "mistralai"
+		system = "mistralai"
 	case "xai", "x_ai":
-		return "xai", "xai"
+		system = "xai"
 	default:
-		return raw, raw
+		system = provider
 	}
+	return provider, system
 }
 
 func openInferenceKind(kind schemas.SpanKind) string {
