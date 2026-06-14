@@ -643,6 +643,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationBackfillEmptyVirtualKeyConfigs(ctx, db); err != nil {
 		return err
 	}
@@ -803,9 +806,6 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddTempTokensTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationBackfillVirtualKeyBlacklistedModels(ctx, db); err != nil {
