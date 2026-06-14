@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -36,6 +37,24 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	model, stream := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
 	assert.Equal(t, "openai/whisper-1", model)
 	assert.True(t, stream)
+}
+
+func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+
+	r.Handler(&ctx)
+
+	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
 }
 
 func TestRequestWithSettableExtraParams_OpenAIChatRequest(t *testing.T) {
