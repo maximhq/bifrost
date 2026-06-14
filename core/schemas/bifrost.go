@@ -67,6 +67,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Anthropic,
 	Bedrock,
 	Cohere,
+	DeepSeek,
 	Gemini,
 	OpenAI,
 	HuggingFace,

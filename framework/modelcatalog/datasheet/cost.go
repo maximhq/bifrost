@@ -1156,7 +1156,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// WHEN: datasheed updated for deepseek pricing
 	// WHY: fallbacks hopefully not necessary anymore at that point
 	if provider == string(schemas.DeepSeek) {
-		if !strings.HasPrefix(model, "deepseek-chat") {
+		if strings.HasPrefix(model, "deepseek-v4") {
 			s.logger.Debug("primary lookup failed, trying deepseek-chat pricing for %s", model)
 			pricing, ok = s.pricingData[makeKey("deepseek-chat", provider, mode)]
 			if ok {
