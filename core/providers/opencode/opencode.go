@@ -135,7 +135,7 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		p.streamingClient,
-		p.networkConfig.BaseURL+"/v1/chat/completions",
+		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		authHeader,
 		p.networkConfig.ExtraHeaders,
