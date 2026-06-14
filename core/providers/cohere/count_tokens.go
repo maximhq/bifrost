@@ -5,7 +5,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -15,7 +14,7 @@ func (req *CohereCountTokensRequest) ToBifrostResponsesRequest(ctx *schemas.Bifr
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Cohere))
+	provider, model := schemas.ParseModelString(req.Model, "")
 
 	userRole := schemas.ResponsesInputMessageRoleUser
 	return &schemas.BifrostResponsesRequest{

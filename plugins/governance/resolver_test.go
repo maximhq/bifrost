@@ -9,7 +9,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,87 +33,6 @@ func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 
 	assertDecision(t, DecisionAllow, result)
 	assertVirtualKeyFound(t, result)
-}
-
-// TestBudgetResolver_EvaluateRequest_WildcardAllowsCatalogOpaqueProvider verifies that a
-// wildcard ("*") allow-list permits any model on a catalog-opaque provider (vLLM, whose
-// self-hosted models are never in the bundled catalog), while leaving catalog-known providers
-// (openai) fully intact — i.e. wildcard is still catalog-cross-checked for them.
-func TestBudgetResolver_EvaluateRequest_WildcardAllowsCatalogOpaqueProvider(t *testing.T) {
-	logger := NewMockLogger()
-
-	// Catalog knows openai/gpt-4o but has NO model list for vLLM.
-	mc := modelcatalog.NewTestCatalog(map[string]string{"openai/gpt-4o": "gpt-4o"})
-	mc.UpsertModelDataForProvider(schemas.OpenAI,
-		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}}, nil)
-
-	// Non-nil inMemoryStore so isModelAllowed takes the catalog branch.
-	inMem := &mockInMemoryStore{
-		configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.VLLM:   {},
-			schemas.OpenAI: {},
-		},
-	}
-
-	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
-	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
-		buildProviderConfig("vllm", []string{"*"}),
-		buildProviderConfig("openai", []string{"*"}),
-	}
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, mc)
-	require.NoError(t, err)
-
-	resolver := NewBudgetResolver(store, mc, logger, inMem)
-	ctx := &schemas.BifrostContext{}
-
-	// vLLM (catalog-opaque) + ["*"] + uncatalogued model -> allowed (the fix).
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.VLLM, "my-self-hosted-llama", schemas.ChatCompletionRequest, false)
-	assertDecision(t, DecisionAllow, result)
-
-	// openai intact: a real catalog model under ["*"] is still allowed.
-	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false)
-	assertDecision(t, DecisionAllow, result)
-
-	// openai intact: an unknown model under ["*"] is still catalog-cross-checked and blocked.
-	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "not-a-real-model", schemas.ChatCompletionRequest, false)
-	assertDecision(t, DecisionModelBlocked, result)
-}
-
-// TestBudgetResolver_EvaluateRequest_WildcardOpaqueProviderRespectsBlacklist guards the ordering
-// in isModelAllowed: the blacklist pass must run before the wildcard + catalog-opaque shortcut,
-// so a blacklisted model is blocked on an opaque provider even under a ["*"] allow-list.
-func TestBudgetResolver_EvaluateRequest_WildcardOpaqueProviderRespectsBlacklist(t *testing.T) {
-	logger := NewMockLogger()
-
-	mc := modelcatalog.NewTestCatalog(nil) // catalog has no vLLM models -> opaque
-	inMem := &mockInMemoryStore{
-		configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.VLLM: {},
-		},
-	}
-
-	vllmConfig := buildProviderConfig("vllm", []string{"*"})
-	vllmConfig.BlacklistedModels = schemas.BlackList{"my-self-hosted-llama"}
-
-	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
-	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{vllmConfig}
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, mc)
-	require.NoError(t, err)
-
-	resolver := NewBudgetResolver(store, mc, logger, inMem)
-	ctx := &schemas.BifrostContext{}
-
-	// Blacklisted model on the opaque provider is blocked despite the ["*"] allow-list.
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.VLLM, "my-self-hosted-llama", schemas.ChatCompletionRequest, false)
-	assertDecision(t, DecisionModelBlocked, result)
-
-	// A different (non-blacklisted) model on the same opaque provider is still allowed.
-	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.VLLM, "another-local-model", schemas.ChatCompletionRequest, false)
-	assertDecision(t, DecisionAllow, result)
 }
 
 // TestBudgetResolver_EvaluateRequest_VirtualKeyNotFound tests missing VK

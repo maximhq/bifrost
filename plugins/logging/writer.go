@@ -476,6 +476,23 @@ func applyModelAlias(entry *logstore.Log, requestedModel, resolvedModel string) 
 	}
 }
 
+// applyResolvedAliasInfo copies the canonical model name and model family from the
+// resolved key alias onto the entry when the alias config defines them. Both fields
+// stay nil when no alias matched or the alias doesn't configure them.
+func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.ResolvedKeyAlias) {
+	if resolvedAlias == nil {
+		return
+	}
+	if resolvedAlias.ModelName != nil && *resolvedAlias.ModelName != "" {
+		name := *resolvedAlias.ModelName
+		entry.CanonicalModelName = &name
+	}
+	if resolvedAlias.ModelFamily != nil && *resolvedAlias.ModelFamily != "" {
+		family := string(*resolvedAlias.ModelFamily)
+		entry.AliasModelFamily = &family
+	}
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,

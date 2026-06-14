@@ -18,8 +18,7 @@ type testHandlerStore struct {
 	kv *kvstore.Store
 }
 
-func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher                      { return nil }
-func (s testHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider { return nil }
+func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher { return nil }
 func (s testHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
 	return nil
 }

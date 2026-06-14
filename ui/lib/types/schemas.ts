@@ -227,6 +227,51 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// Model family enum schema — must mirror schemas.ModelFamily in Go.
+export const modelFamilySchema = z.enum([
+	"anthropic",
+	"openai",
+	"mistral",
+	"cohere",
+	"gemini",
+	"gemma",
+	"llama",
+	"imagen",
+	"veo",
+	"nova",
+	"titan",
+]);
+
+// AliasConfig schema — mirrors schemas.AliasConfig with the embedded
+// provider sub-configs flattened to top-level optional fields (matches Go's
+// embedded-pointer-struct JSON output).
+const aliasConfigObjectSchema = z.object({
+	model_id: z.string().trim().min(1, "Model ID is required"),
+	model_name: z.string().trim().optional(),
+	model_family: modelFamilySchema.optional(),
+	description: z.string().optional(),
+	region: envVarSchema.optional(),
+	// Azure overrides
+	api_version: z.string().optional(),
+	anthropic_version: z.string().optional(),
+	endpoint: envVarSchema.optional(),
+	// Vertex overrides
+	project_id: envVarSchema.optional(),
+	project_number: envVarSchema.optional(),
+	// Bedrock overrides
+	inference_profile_arn: envVarSchema.optional(),
+	// Replicate overrides
+	use_deployments_endpoint: z.boolean().optional(),
+});
+
+// The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
+// for aliases that only carry ModelID — see AliasConfig.MarshalJSON. Accept
+// both shapes here so edit-time validation doesn't reject hydrated state.
+export const aliasConfigSchema = z.preprocess(
+	(value) => (typeof value === "string" ? { model_id: value } : value),
+	aliasConfigObjectSchema,
+);
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -253,7 +298,7 @@ export const modelProviderKeySchema = z
 				return num;
 			})
 			.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
-		aliases: z.record(z.string(), z.string()).optional(),
+		aliases: z.record(z.string(), aliasConfigSchema).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),

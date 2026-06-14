@@ -107,8 +107,14 @@ func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 }
 
 func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
+	// DeepSeek is configured as a custom OpenAI-compatible provider, which registers
+	// itself so ParseModelString can strip its prefix from "deepseek/deepseek-v4-pro".
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+
 	tests := []struct {
 		name     string
+		provider schemas.ModelProvider
 		model    string
 		effort   string
 		expected string
@@ -167,12 +173,37 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "high",
 		},
+		{
+			name:     "preserves max for deepseek-v4-pro",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
 			req := &schemas.BifrostChatRequest{
-				Provider: schemas.OpenAI,
+				Provider: provider,
 				Model:    tt.model,
 				Input: []schemas.ChatMessage{{
 					Role: schemas.ChatMessageRoleUser,
@@ -205,7 +236,85 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	}
 }
 
+// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking, minimax-m2)
+// reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
+// Vertex case should drop a "none" effort for these models while preserving it for
+// Mistral on Vertex (which does accept "none").
+func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		keepsEffort bool
+	}{
+		{
+			name:        "MaaS model drops none effort",
+			model:       "moonshotai/kimi-k2-thinking-maas",
+			keepsEffort: false,
+		},
+		{
+			name:        "minimax MaaS model drops none effort",
+			model:       "minimaxai/minimax-m2-maas",
+			keepsEffort: false,
+		},
+		{
+			name:        "Mistral on Vertex keeps none effort",
+			model:       "mistral-large",
+			keepsEffort: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("none"),
+					},
+				},
+			}
+
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+			if out == nil {
+				t.Fatal("expected OpenAI chat request")
+			}
+
+			if tt.keepsEffort {
+				if out.Reasoning == nil || out.Reasoning.Effort == nil || *out.Reasoning.Effort != "none" {
+					t.Fatalf("expected reasoning effort to be preserved as \"none\", got %+v", out.Reasoning)
+				}
+				return
+			}
+
+			// Effort must be dropped so reasoning_effort is omitted from the payload.
+			if out.Reasoning != nil && out.Reasoning.Effort != nil {
+				t.Fatalf("expected reasoning effort to be dropped, got %q", *out.Reasoning.Effort)
+			}
+
+			// Verify the marshalled body does not contain reasoning_effort.
+			body, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("failed to marshal request: %v", err)
+			}
+			if strings.Contains(string(body), "reasoning_effort") {
+				t.Fatalf("expected marshalled body to omit reasoning_effort, got %s", string(body))
+			}
+		})
+	}
+}
+
 func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort(t *testing.T) {
+	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+
 	tests := []struct {
 		name     string
 		model    string
@@ -265,6 +374,24 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 			model:    "gpt-5.1",
 			effort:   "max",
 			expected: "high",
+		},
+		{
+			name:     "preserves max for deepseek-v4-pro",
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
 		},
 	}
 
@@ -891,6 +1018,88 @@ func TestApplyXAICompatibility(t *testing.T) {
 
 			// Validate the results
 			tt.validate(t, tt.request)
+		})
+	}
+}
+
+// TestToOpenAIChatRequest_CacheControl_OpenRouterOnly verifies that
+// Anthropic-style cache_control breakpoints on message content blocks and on
+// tools survive marshalling only when the originating provider is OpenRouter
+// (which forwards them to the underlying Claude/Gemini model). For OpenAI and
+// other OpenAI-format providers, cache_control is still stripped.
+func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
+	makeReq := func(provider schemas.ModelProvider) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-opus-4",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleSystem,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type:         schemas.ChatContentBlockTypeText,
+								Text:         schemas.Ptr("long cacheable system prompt"),
+								CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+							},
+						},
+					},
+				},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+			},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "lookup",
+							Description: schemas.Ptr("lookup something"),
+							Parameters: &schemas.ToolFunctionParameters{
+								Type: "object",
+								Properties: schemas.NewOrderedMapFromPairs(
+									schemas.KV("q", map[string]interface{}{"type": "string"}),
+								),
+							},
+						},
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		wantKept bool
+	}{
+		{name: "openrouter preserves cache_control", provider: schemas.OpenRouter, wantKept: true},
+		{name: "openai strips cache_control", provider: schemas.OpenAI, wantKept: false},
+		{name: "gemini strips cache_control", provider: schemas.Gemini, wantKept: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+
+			result := ToOpenAIChatRequest(ctx, makeReq(tt.provider))
+			require.NotNil(t, result)
+
+			wireBody, err := json.Marshal(result)
+			require.NoError(t, err)
+			s := string(wireBody)
+
+			if tt.wantKept {
+				require.Contains(t, s, "cache_control", "cache_control must be preserved for OpenRouter: %s", s)
+				// Both the content-block breakpoint and the tool breakpoint must survive.
+				require.Equal(t, 2, strings.Count(s, "cache_control"), "expected cache_control on both content block and tool: %s", s)
+			} else {
+				require.NotContains(t, s, "cache_control", "cache_control must be stripped for %s: %s", tt.provider, s)
+			}
+
+			// The tool identity must always survive regardless of stripping.
+			require.Contains(t, s, "lookup")
 		})
 	}
 }

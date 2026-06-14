@@ -103,6 +103,13 @@ func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]strin
 	t.store.SetRequestHeaders(traceID, matched)
 }
 
+// SetTraceAttribute sets a trace-level attribute. Trace attributes are never
+// exported as OTEL/Datadog span attributes; observability connectors read them
+// directly off the completed trace.
+func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
+	t.store.SetTraceAttribute(traceID, key, value)
+}
+
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
 func (t *Tracer) CreateTrace(parentID string, requestID ...string) string {
 	return t.store.CreateTrace(parentID, requestID...)

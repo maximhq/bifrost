@@ -180,6 +180,7 @@ export const baseApi = createApi({
     "AuditLogs",
     "UserGovernance",
     "LargePayloadConfig",
+    "LoadBalancerConfig",
     "Folders",
     "Prompts",
     "Versions",
@@ -190,7 +191,9 @@ export const baseApi = createApi({
     "AuthType",
     "MCPSessions",
     "MCPPerUserHeaderCredentials",
+    "MCPLibrary",
     "FeatureFlags",
+    "ComplexityAnalyzerConfig",
   ],
   endpoints: () => ({}),
 });

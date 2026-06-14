@@ -220,6 +220,24 @@ assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interv
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
 
 ###############################################################################
+# 1b. Server Config
+###############################################################################
+echo ""
+echo -e "${CYAN}🖥️  1b - Server Config${NC}"
+echo "----------------------"
+
+cat > "$TMPDIR/values-server.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  server:
+    readBufferSize: 131072
+VALS
+
+render_config "$TMPDIR/values-server.yaml"
+assert_field_value 'server.read_buffer_size' '.server.read_buffer_size' '131072'
+
+###############################################################################
 # 2. Framework (Pricing)
 ###############################################################################
 echo ""
@@ -555,7 +573,6 @@ assert_field_value 'governance.providers[0].rate_limit_id' '.governance.provider
 assert_field_value 'governance.auth_config.admin_username' '.governance.auth_config.admin_username' '"admin"'
 assert_field_value 'governance.auth_config.admin_password' '.governance.auth_config.admin_password' '"secret"'
 assert_field_value 'governance.auth_config.is_enabled' '.governance.auth_config.is_enabled' 'true'
-assert_field_value 'governance.auth_config.disable_auth_on_inference' '.governance.auth_config.disable_auth_on_inference' 'true'
 
 ###############################################################################
 # 5. Top-level Auth Config
@@ -579,7 +596,6 @@ render_config "$TMPDIR/values-auth.yaml"
 assert_field_value 'auth_config.admin_username' '.auth_config.admin_username' '"root"'
 assert_field_value 'auth_config.admin_password' '.auth_config.admin_password' '"rootpass"'
 assert_field_value 'auth_config.is_enabled' '.auth_config.is_enabled' 'true'
-assert_field_value 'auth_config.disable_auth_on_inference' '.auth_config.disable_auth_on_inference' 'false'
 
 ###############################################################################
 # 6. Plugins (telemetry, logging, governance, maxim, semantic_cache, otel, datadog, custom)
@@ -656,12 +672,22 @@ bifrost:
       enabled: true
       config:
         service_name: "bifrost-dd"
+        ml_app: "bifrost-ml"
         agent_addr: "dd-agent:8126"
+        dogstatsd_addr: "dd-agent:8125"
         env: "staging"
         version: "1.0.0"
         custom_tags:
           team: "platform"
+        enable_metrics: true
         enable_traces: true
+        enable_llm_obs: true
+        disable_content_logging: false
+        agentless: true
+        api_key: "env.DD_API_KEY"
+        site: "datadoghq.com"
+        request_headers:
+          - "x-bf-session-id"
     custom:
       - name: "my-plugin"
         enabled: true
@@ -727,11 +753,20 @@ assert_field_value 'plugins: otel insecure' '.plugins.[5].config.insecure' 'true
 # Datadog plugin
 assert_field_value 'plugins: datadog name' '.plugins.[6].name' '"datadog"'
 assert_field_value 'plugins: datadog service_name' '.plugins.[6].config.service_name' '"bifrost-dd"'
+assert_field_value 'plugins: datadog ml_app' '.plugins.[6].config.ml_app' '"bifrost-ml"'
 assert_field_value 'plugins: datadog agent_addr' '.plugins.[6].config.agent_addr' '"dd-agent:8126"'
+assert_field_value 'plugins: datadog dogstatsd_addr' '.plugins.[6].config.dogstatsd_addr' '"dd-agent:8125"'
 assert_field_value 'plugins: datadog env' '.plugins.[6].config.env' '"staging"'
 assert_field_value 'plugins: datadog version' '.plugins.[6].config.version' '"1.0.0"'
 assert_field 'plugins: datadog custom_tags' '.plugins.[6].config.custom_tags'
+assert_field_value 'plugins: datadog enable_metrics' '.plugins.[6].config.enable_metrics' 'true'
 assert_field_value 'plugins: datadog enable_traces' '.plugins.[6].config.enable_traces' 'true'
+assert_field_value 'plugins: datadog enable_llm_obs' '.plugins.[6].config.enable_llm_obs' 'true'
+assert_field_value 'plugins: datadog disable_content_logging' '.plugins.[6].config.disable_content_logging' 'false'
+assert_field_value 'plugins: datadog agentless' '.plugins.[6].config.agentless' 'true'
+assert_field_value 'plugins: datadog api_key' '.plugins.[6].config.api_key' '"env.DD_API_KEY"'
+assert_field_value 'plugins: datadog site' '.plugins.[6].config.site' '"datadoghq.com"'
+assert_field 'plugins: datadog request_headers' '.plugins.[6].config.request_headers'
 
 # Custom plugin
 assert_field_value 'plugins: custom name' '.plugins.[7].name' '"my-plugin"'

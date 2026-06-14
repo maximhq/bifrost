@@ -108,47 +108,109 @@
       }
     },
     "ingress": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "className": {
-          "type": "string"
-        },
-        "annotations": {
-          "type": "object"
-        },
-        "hosts": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "host": {
-                "type": "string"
-              },
-              "paths": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string"
-                    },
-                    "pathType": {
-                      "type": "string",
-                      "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+      "description": "Ingress configuration. Either a single ingress (legacy, with top-level 'enabled') or a map of named ingresses (new format, each key becomes a separate Ingress resource named <release>-<key>).",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Single ingress (legacy format).",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "className": {
+              "type": "string"
+            },
+            "annotations": {
+              "type": "object"
+            },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["host", "paths"],
+                "properties": {
+                  "host": {
+                    "type": "string"
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "pathType"],
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "pathType": {
+                          "type": "string",
+                          "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+                        }
+                      }
                     }
                   }
                 }
               }
+            },
+            "tls": {
+              "type": "array"
             }
-          }
+          },
+          "required": ["enabled"]
         },
-        "tls": {
-          "type": "array"
+        {
+          "type": "object",
+          "description": "Named ingresses map. Each key produces a separate Ingress named <release>-<key>. Keys must be valid DNS-1123 label segments (lowercase alphanumeric and hyphens only, no underscores or uppercase) so the resulting Ingress name is a valid Kubernetes resource name.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "className": {
+                "type": "string"
+              },
+              "annotations": {
+                "type": "object"
+              },
+              "hosts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["host", "paths"],
+                  "properties": {
+                    "host": {
+                      "type": "string"
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["path", "pathType"],
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "pathType": {
+                            "type": "string",
+                            "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "tls": {
+                "type": "array"
+              }
+            },
+            "required": ["enabled"]
+          },
+          "not": {
+            "required": ["enabled"]
+          }
         }
-      }
+      ]
     },
     "resources": {
       "type": "object",
@@ -466,6 +528,18 @@
           },
           "additionalProperties": false
         },
+        "server": {
+          "type": "object",
+          "description": "HTTP server configuration",
+          "properties": {
+            "readBufferSize": {
+              "type": "integer",
+              "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
+              "default": 65536
+            }
+          },
+          "additionalProperties": false
+        },
         "framework": {
           "type": "object",
           "properties": {
@@ -483,6 +557,19 @@
                 "pricingSyncInterval": {
                   "type": "integer",
                   "description": "Pricing sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+                  "default": 86400,
+                  "minimum": 3600
+                },
+                "mcpLibraryUrl": {
+                  "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog.",
+                  "anyOf": [
+                    {"type": "string", "format": "uri"},
+                    {"const": ""}
+                  ]
+                },
+                "mcpLibrarySyncInterval": {
+                  "type": "integer",
+                  "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
                   "default": 86400,
                   "minimum": 3600
                 }
@@ -872,14 +959,27 @@
                 "enabled": {
                   "type": "boolean"
                 },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
                 "config": {
                   "type": "object",
                   "properties": {
                     "service_name": {
                       "type": "string"
                     },
+                    "ml_app": {
+                      "type": "string",
+                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name)"
+                    },
                     "agent_addr": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Datadog Agent address for APM traces (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_AGENT_ADDR)"
+                    },
+                    "dogstatsd_addr": {
+                      "type": "string",
+                      "description": "DogStatsD server address for metrics (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_DOGSTATSD_ADDR)"
                     },
                     "env": {
                       "type": "string"
@@ -888,11 +988,321 @@
                       "type": "string"
                     },
                     "custom_tags": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "Custom tags for Datadog metrics and traces. Values support env.VAR_NAME prefix for environment variable substitution",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Enable Datadog metrics emission (default: true)"
                     },
                     "enable_traces": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "Enable Datadog APM traces (default: true)"
+                    },
+                    "enable_llm_obs": {
+                      "type": "boolean",
+                      "description": "Enable Datadog LLM Observability (default: true)"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "When true, sensitive content (prompts, completions, embeddings) is excluded from traces (default: false)"
+                    },
+                    "agentless": {
+                      "type": "boolean",
+                      "description": "Use agentless mode to send data directly to Datadog APIs instead of a local agent. Requires api_key (default: false)"
+                    },
+                    "api_key": {
+                      "type": "string",
+                      "description": "Datadog API key, required for agentless mode. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_API_KEY)"
+                    },
+                    "site": {
+                      "type": "string",
+                      "description": "Datadog site/region for agentless mode (e.g. datadoghq.com, datadoghq.eu)"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request header names to capture as Datadog span tags"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/pluginSpanFilter"
                     }
+                  }
+                }
+              }
+            },
+            "bigquery": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "dataset_id": {
+                      "type": "string"
+                    },
+                    "table_id": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "service_account_key": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "create_table_if_not_exists": {
+                      "type": "boolean"
+                    },
+                    "flush_interval_seconds": {
+                      "type": "integer"
+                    },
+                    "buffer_size": {
+                      "type": "integer"
+                    },
+                    "custom_labels": {
+                      "type": "object"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/pluginSpanFilter"
+                    }
+                  },
+                  "required": ["project_id"]
+                }
+              }
+            },
+            "kafka": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "brokers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Kafka broker addresses (required when enabled)"
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "Kafka topic to publish traces to (required when enabled)"
+                    },
+                    "sasl_enabled": {
+                      "type": "boolean",
+                      "description": "Enable SASL authentication. SASL is only activated when both sasl_enabled is true and sasl is set"
+                    },
+                    "sasl": {
+                      "type": "object",
+                      "properties": {
+                        "mechanism": {
+                          "type": "string",
+                          "enum": ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"]
+                        },
+                        "username": {
+                          "anyOf": [
+                            { "type": "string" },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "value": { "type": "string" },
+                                "env_var": { "type": "string" },
+                                "from_env": { "type": "boolean" }
+                              },
+                              "additionalProperties": false
+                            }
+                          ],
+                          "description": "SASL username. Supports env.VAR_NAME prefix for environment variable substitution"
+                        },
+                        "password": {
+                          "anyOf": [
+                            { "type": "string" },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "value": { "type": "string" },
+                                "env_var": { "type": "string" },
+                                "from_env": { "type": "boolean" }
+                              },
+                              "additionalProperties": false
+                            }
+                          ],
+                          "description": "SASL password. Supports env.VAR_NAME prefix for environment variable substitution"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "tls_enabled": {
+                      "type": "boolean",
+                      "description": "Enable TLS for broker connections"
+                    },
+                    "ca_cert": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "PEM-encoded CA certificate used to verify the broker's TLS certificate. Omit to use the system CA pool. Supports env.VAR_NAME prefix"
+                    },
+                    "compression": {
+                      "type": "string",
+                      "enum": ["none", "gzip", "snappy", "lz4", "zstd"],
+                      "description": "Compression codec for published messages"
+                    },
+                    "batch_size": {
+                      "type": "integer",
+                      "description": "Maximum number of messages batched per write (default: 100)"
+                    },
+                    "flush_interval_ms": {
+                      "type": "integer",
+                      "description": "Maximum time (ms) to wait before flushing a batch (default: 1000)"
+                    },
+                    "auto_create_topic": {
+                      "type": "boolean",
+                      "description": "Create the topic at startup if it does not exist"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip input/output message content from traces before publishing"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are embedded in published traces"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/pluginSpanFilter"
+                    }
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "enabled": { "const": true }
+                },
+                "required": ["enabled"]
+              },
+              "then": {
+                "required": ["config"],
+                "properties": {
+                  "config": {
+                    "required": ["brokers", "topic"],
+                    "properties": {
+                      "brokers": { "minItems": 1 }
+                    }
+                  }
+                }
+              }
+            },
+            "pubsub": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "project_id": {
+                      "type": "string",
+                      "description": "GCP project ID (required when enabled)"
+                    },
+                    "topic_id": {
+                      "type": "string",
+                      "description": "Pub/Sub topic ID — just the ID, not the full resource name (required when enabled)"
+                    },
+                    "service_account_key": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "Service account key JSON for authentication. Omit to use Application Default Credentials (ADC). Supports env.VAR_NAME prefix"
+                    },
+                    "auto_create_topic": {
+                      "type": "boolean",
+                      "description": "Create the topic at startup if it does not exist"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip request/response content from traces before publishing"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are included in published traces"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/pluginSpanFilter"
+                    }
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "enabled": { "const": true }
+                },
+                "required": ["enabled"]
+              },
+              "then": {
+                "required": ["config"],
+                "properties": {
+                  "config": {
+                    "required": ["project_id", "topic_id"]
                   }
                 }
               }
@@ -1487,6 +1897,75 @@
                 },
                 "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"]
               }
+            },
+            "complexityAnalyzerConfig": {
+              "type": ["object", "null"],
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json.",
+              "properties": {
+                "tier_boundaries": {
+                  "type": "object",
+                  "properties": {
+                    "simple_medium": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "exclusiveMaximum": 1
+                    },
+                    "medium_complex": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "exclusiveMaximum": 1
+                    },
+                    "complex_reasoning": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "exclusiveMaximum": 1
+                    }
+                  },
+                  "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+                  "additionalProperties": false
+                },
+                "keywords": {
+                  "type": "object",
+                  "properties": {
+                    "code_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    },
+                    "reasoning_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    },
+                    "technical_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    },
+                    "simple_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["tier_boundaries", "keywords"],
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -1782,6 +2261,15 @@
                             "role": {
                               "type": "string",
                               "description": "Bifrost role to assign on match"
+                            },
+                            "attributeType": {
+                              "type": "string",
+                              "enum": ["user", "group"],
+                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+                            },
+                            "attributeValue": {
+                              "type": "string",
+                              "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
                             }
                           },
                           "required": ["attribute", "value", "role"],
@@ -1824,7 +2312,7 @@
                           "type": "object",
                           "properties": {
                             "attribute": { "type": "string", "description": "JWT claim name" },
-                            "value": { "type": "string", "description": "Claim value to match" },
+                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
                             "business_unit": {
                               "type": "string",
                               "description": "Bifrost business unit slug to assign"
@@ -1839,7 +2327,7 @@
                               "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
                             }
                           },
-                          "required": ["attribute", "value", "business_unit"],
+                          "required": ["attribute", "value"],
                           "additionalProperties": false
                         }
                       }
@@ -1927,6 +2415,15 @@
                             "role": {
                               "type": "string",
                               "description": "Bifrost role to assign on match"
+                            },
+                            "attributeType": {
+                              "type": "string",
+                              "enum": ["user", "group"],
+                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+                            },
+                            "attributeValue": {
+                              "type": "string",
+                              "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
                             }
                           },
                           "required": ["attribute", "value", "role"],
@@ -1935,13 +2432,22 @@
                       },
                       "attributeTeamMappings": {
                         "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name).",
+                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "team": { "type": "string" }
+                            "attribute": { "type": "string", "description": "JWT claim name" },
+                            "value": { "type": "string", "description": "Claim value to match, or '*' for pass-through" },
+                            "team": { "type": "string", "description": "Bifrost team slug to assign. In case of '*' value, leave this empty" },
+                            "attributeType": {
+                              "type": "string",
+                              "enum": ["user", "group"],
+                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+                            },
+                            "attributeValue": {
+                              "type": "string",
+                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
+                            }
                           },
                           "required": ["attribute", "value", "team"],
                           "additionalProperties": false
@@ -1949,15 +2455,24 @@
                       },
                       "attributeBusinessUnitMappings": {
                         "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply).",
+                        "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "business_unit": { "type": "string" }
+                            "attribute": { "type": "string", "description": "JWT claim name" },
+                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
+                            "business_unit": { "type": "string", "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty" },
+                            "attributeType": {
+                              "type": "string",
+                              "enum": ["user", "group"],
+                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+                            },
+                            "attributeValue": {
+                              "type": "string",
+                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
+                            }
                           },
-                          "required": ["attribute", "value", "business_unit"],
+                          "required": ["attribute", "value"],
                           "additionalProperties": false
                         }
                       }
@@ -2066,10 +2581,10 @@
                           "type": "object",
                           "properties": {
                             "attribute": { "type": "string" },
-                            "value": { "type": "string" },
+                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
                             "business_unit": { "type": "string" }
                           },
-                          "required": ["attribute", "value", "business_unit"],
+                          "required": ["attribute", "value"],
                           "additionalProperties": false
                         }
                       }
@@ -2168,10 +2683,10 @@
                           "type": "object",
                           "properties": {
                             "attribute": { "type": "string" },
-                            "value": { "type": "string" },
+                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
                             "business_unit": { "type": "string" }
                           },
-                          "required": ["attribute", "value", "business_unit"],
+                          "required": ["attribute", "value"],
                           "additionalProperties": false
                         }
                       }
@@ -2280,10 +2795,10 @@
                           "type": "object",
                           "properties": {
                             "attribute": { "type": "string" },
-                            "value": { "type": "string" },
+                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
                             "business_unit": { "type": "string" }
                           },
-                          "required": ["attribute", "value", "business_unit"],
+                          "required": ["attribute", "value"],
                           "additionalProperties": false
                         }
                       }
@@ -2593,6 +3108,13 @@
                         }
                       },
                       "additionalProperties": false
+                    },
+                    "key_ids": {
+                      "type": "array",
+                      "description": "Key IDs allowed for this provider config. Use [\"*\"] to allow all keys; empty array or omitted denies all keys. Specific IDs restrict access to those keys only.",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": ["provider_name"],
@@ -3391,9 +3913,9 @@
         }
       ]
     },
-    "otelPluginSpanFilter": {
+    "pluginSpanFilter": {
       "type": "object",
-      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+      "description": "Controls which plugin hook spans this observability connector exports. Omit to export all plugin spans. Mode \"include\" exports only the listed plugins; mode \"exclude\" exports everything except them.",
       "properties": {
         "mode": {
           "type": "string",
@@ -3475,7 +3997,7 @@
           "default": false
         },
         "plugin_span_filter": {
-          "$ref": "#/$defs/otelPluginSpanFilter"
+          "$ref": "#/$defs/pluginSpanFilter"
         }
       },
       "allOf": [
@@ -3523,7 +4045,7 @@
           "minItems": 1
         },
         "plugin_span_filter": {
-          "$ref": "#/$defs/otelPluginSpanFilter"
+          "$ref": "#/$defs/pluginSpanFilter"
         },
         "enabled": {
           "type": "boolean",
@@ -3602,7 +4124,8 @@
         },
         "disableAuthOnInference": {
           "type": "boolean",
-          "description": "Whether authentication is disabled on inference"
+          "deprecated": true,
+          "description": "Deprecated and ignored. Use client.enforceAuthOnInference instead."
         },
         "existingSecret": {
           "type": "string"
@@ -3892,6 +4415,78 @@
           },
           "required": ["url", "model_name"],
           "additionalProperties": false
+        },
+        "aliases": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "description": "Legacy shape: a bare provider-specific identifier. Equivalent to {\"model_id\": \"<value>\"}."
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "model_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Provider-specific identifier sent on the wire (deployment name, inference profile ID, fine-tuned model ID, etc.)."
+                  },
+                  "model_name": {
+                    "type": "string",
+                    "description": "Canonical model name used for pricing, logging, and family inference."
+                  },
+                  "model_family": {
+                    "type": "string",
+                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "nova", "titan"],
+                    "description": "Underlying model family. Used by provider routing without substring-sniffing the wire model ID."
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "Per-alias region override (can use env. prefix)."
+                  },
+                  "api_version": {
+                    "type": "string",
+                    "description": "Azure OpenAI api-version override for this alias."
+                  },
+                  "anthropic_version": {
+                    "type": "string",
+                    "description": "Azure anthropic-version header override for Claude-on-Azure deployments."
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "description": "Per-alias Azure endpoint override (can use env. prefix)."
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Per-alias Vertex project ID override (can use env. prefix)."
+                  },
+                  "project_number": {
+                    "type": "string",
+                    "description": "Per-alias Vertex project number override (can use env. prefix)."
+                  },
+                  "inference_profile_arn": {
+                    "type": "string",
+                    "description": "Per-alias Bedrock inference profile ARN (can use env. prefix)."
+                  },
+                  "use_deployments_endpoint": {
+                    "type": "boolean",
+                    "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  }
+                },
+                "required": ["model_id"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "description": "Model alias mappings: each entry maps a user-facing model name to either a bare provider identifier (legacy string shape) or an AliasConfig object carrying the wire identifier plus optional canonical name, family, and provider-specific overrides."
         }
       },
       "required": ["name", "weight"],
@@ -4442,7 +5037,7 @@
         },
         "key_ids": {
           "type": "array",
-          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In Helm values, use provider key names.",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default).",
           "items": {
             "type": "string"
           }
