@@ -31,6 +31,7 @@ func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Sp
 
 	result = appendMappedAttribute(result, attrs, "user.id", schemas.AttrRequestUser)
 	result = appendMappedAttribute(result, attrs, "metadata", schemas.AttrRespMetadata)
+	result = appendOpenInferenceExceptionAttributes(result, span)
 
 	switch kind {
 	case "LLM":
@@ -63,6 +64,17 @@ func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Sp
 	}
 
 	return appendOpenInferenceContent(result, attrs)
+}
+
+func appendOpenInferenceExceptionAttributes(result []*KeyValue, span *schemas.Span) []*KeyValue {
+	if span.Status != schemas.SpanStatusError {
+		return result
+	}
+	result = appendMappedAttribute(result, span.Attributes, "exception.message", schemas.AttrError)
+	if _, ok := firstAttribute(span.Attributes, schemas.AttrError); !ok && span.StatusMsg != "" {
+		result = append(result, kvStr("exception.message", span.StatusMsg))
+	}
+	return appendMappedAttribute(result, span.Attributes, "exception.type", schemas.AttrErrorTypeSpec, schemas.AttrErrorType)
 }
 
 func appendOpenInferenceToolIdentity(result []*KeyValue, attrs map[string]any) []*KeyValue {

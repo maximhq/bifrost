@@ -199,6 +199,36 @@ func TestConvertTraceToResourceSpan_OpenInferenceContentLoggingDisabled(t *testi
 	}
 }
 
+func TestConvertTraceToResourceSpan_OpenInferenceExceptionAttributes(t *testing.T) {
+	t.Run("uses explicit error attributes", func(t *testing.T) {
+		span := makeSpan("aaaa", "", "chat test-model", schemas.SpanKindLLMCall)
+		span.Status = schemas.SpanStatusError
+		span.StatusMsg = "status fallback"
+		span.Attributes = map[string]any{
+			schemas.AttrError:         "provider rejected request",
+			schemas.AttrErrorTypeSpec: "rate_limit",
+		}
+		trace := &schemas.Trace{TraceID: "00000000000000000000000000000001", RootSpan: span, Spans: []*schemas.Span{span}}
+
+		attrs := otelAttributes((&OtelPlugin{}).convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0].Attributes)
+		assertOTELStringAttribute(t, attrs, "exception.message", "provider rejected request")
+		assertOTELStringAttribute(t, attrs, "exception.type", "rate_limit")
+	})
+
+	t.Run("falls back to status message", func(t *testing.T) {
+		span := makeSpan("aaaa", "", "chat test-model", schemas.SpanKindLLMCall)
+		span.Status = schemas.SpanStatusError
+		span.StatusMsg = "request failed"
+		trace := &schemas.Trace{TraceID: "00000000000000000000000000000001", RootSpan: span, Spans: []*schemas.Span{span}}
+
+		attrs := otelAttributes((&OtelPlugin{}).convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0].Attributes)
+		assertOTELStringAttribute(t, attrs, "exception.message", "request failed")
+		if _, ok := attrs["exception.type"]; ok {
+			t.Error("exception.type should not be inferred when no error type is available")
+		}
+	})
+}
+
 func TestConvertTraceToResourceSpan_GenAIProfileDoesNotAddOpenInferenceAttributes(t *testing.T) {
 	span := makeSpan("aaaa", "", "chat test-model", schemas.SpanKindLLMCall)
 	span.Attributes = map[string]any{
