@@ -41,6 +41,8 @@ func TestEachBudgetForScopes_BucketsByOwnerScope(t *testing.T) {
 	gs.budgets.Store("b-team", &configstoreTables.TableBudget{ID: "b-team", MaxLimit: 100, CurrentUsage: 50, TeamID: ownerStrPtr("team1")})
 	gs.budgets.Store("b-cust", &configstoreTables.TableBudget{ID: "b-cust", MaxLimit: 100, CurrentUsage: 10, CustomerID: ownerStrPtr("cust1")})
 	gs.budgets.Store("b-global", &configstoreTables.TableBudget{ID: "b-global", MaxLimit: 100, CurrentUsage: 30})
+	providerConfigID := uint(7)
+	gs.budgets.Store("b-provider-direct", &configstoreTables.TableBudget{ID: "b-provider-direct", MaxLimit: 100, CurrentUsage: 15, ProviderConfigID: &providerConfigID})
 
 	t.Run("single vk scope", func(t *testing.T) {
 		got := collectBudgetScopes(gs, []OwnerScope{{Type: "virtual_key", ID: "vk1"}})
@@ -52,6 +54,41 @@ func TestEachBudgetForScopes_BucketsByOwnerScope(t *testing.T) {
 		got := collectBudgetScopes(gs, []OwnerScope{{Type: "global", ID: ""}})
 		require.Len(t, got, 1)
 		assert.Equal(t, OwnerScope{Type: "global", ID: ""}, got["b-global"])
+	})
+
+	t.Run("provider config scope", func(t *testing.T) {
+		gs.ownerScopeIndexMu.Lock()
+		gs.ownerScopeIndexBuiltAt = time.Now().Add(-2 * ownerScopeIndexTTL)
+		gs.ownerScopeIndexMu.Unlock()
+		got := collectBudgetScopes(gs, []OwnerScope{{Type: "provider", ID: ""}})
+		require.Len(t, got, 1)
+		require.Contains(t, got, "b-provider-direct")
+	})
+
+	t.Run("provider model-config scope", func(t *testing.T) {
+		mc := &configstoreTables.TableModelConfig{
+			ID:        "mc-provider",
+			ModelName: configstoreTables.ModelConfigAllModels,
+			Provider:  ownerStrPtr("openai"),
+			Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+			ScopeID:   ownerStrPtr("vk-provider"),
+			Budgets: []configstoreTables.TableBudget{{
+				ID:            "b-provider-mc",
+				MaxLimit:      100,
+				CurrentUsage:  5,
+				ModelConfigID: ownerStrPtr("mc-provider"),
+			}},
+		}
+		gs.modelConfigs.Store("vk-provider:model-config", mc)
+		gs.budgets.Store("b-provider-mc", &mc.Budgets[0])
+		gs.ownerScopeIndexMu.Lock()
+		gs.ownerScopeIndexBuiltAt = time.Now().Add(-2 * ownerScopeIndexTTL)
+		gs.ownerScopeIndexMu.Unlock()
+
+		got := collectBudgetScopes(gs, []OwnerScope{{Type: "provider", ID: ""}})
+		require.Len(t, got, 2)
+		require.Contains(t, got, "b-provider-direct")
+		require.Contains(t, got, "b-provider-mc")
 	})
 
 	t.Run("multiple scopes", func(t *testing.T) {
@@ -139,7 +176,7 @@ func TestEachRateLimitForScopes_TokenAndRequest(t *testing.T) {
 
 	t.Run("token limit only", func(t *testing.T) {
 		ids := map[string]int64{}
-		gs.EachRateLimitForScopes([]OwnerScope{{Type: "virtual_key", ID: "vk1"}, {Type: "customer", ID: "cust1"}, {Type: "provider", ID: "openai"}},
+		gs.EachRateLimitForScopes([]OwnerScope{{Type: "virtual_key", ID: "vk1"}, {Type: "customer", ID: "cust1"}, {Type: "provider", ID: ""}},
 			func(id string, cur, max int64, st, sid string) { ids[id] = max })
 		require.Len(t, ids, 3)
 		assert.Equal(t, int64(1000), ids["rl-token"])
@@ -177,7 +214,7 @@ var benchScaleSizes = []int{1000, 10000, 25000, 50000}
 func BenchmarkEachBudgetForScopes_Targeted(b *testing.B) {
 	scopes := []OwnerScope{
 		{Type: "global", ID: ""},
-		{Type: "provider", ID: "openai"},
+		{Type: "provider", ID: ""},
 		{Type: "virtual_key", ID: "vk-123"},
 	}
 	for _, n := range benchScaleSizes {

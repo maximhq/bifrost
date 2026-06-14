@@ -2083,7 +2083,7 @@ func ownerScopeFromBudget(b *configstoreTables.TableBudget) (scopeType, scopeID 
 	case b.CustomerID != nil:
 		return "customer", *b.CustomerID
 	case b.ProviderConfigID != nil:
-		return "provider", fmt.Sprintf("%d", *b.ProviderConfigID)
+		return "provider", ""
 	default:
 		return "global", ""
 	}
@@ -2122,11 +2122,60 @@ func (gs *LocalGovernanceStore) rebuildOwnerScopeIndexLocked() {
 	budgets := make(map[OwnerScope][]string)
 	tokenLimits := make(map[OwnerScope][]string)
 	reqLimits := make(map[OwnerScope][]string)
+	seenBudgets := make(map[string]struct{})
+	providerBudgetIDs := make(map[string]struct{})
+	addBudget := func(scopeType, scopeID, budgetID string) {
+		if budgetID == "" {
+			return
+		}
+		if _, seen := seenBudgets[budgetID]; seen {
+			return
+		}
+		s := OwnerScope{Type: scopeType, ID: scopeID}
+		budgets[s] = append(budgets[s], budgetID)
+		seenBudgets[budgetID] = struct{}{}
+	}
+	gs.providers.Range(func(_, value any) bool {
+		provider, ok := value.(*configstoreTables.TableProvider)
+		if !ok || provider == nil {
+			return true
+		}
+		if provider.BudgetID != nil {
+			providerBudgetIDs[*provider.BudgetID] = struct{}{}
+		}
+		return true
+	})
 	gs.budgets.Range(func(key, value any) bool {
 		if b, ok := value.(*configstoreTables.TableBudget); ok && b != nil {
+			budgetID, ok := key.(string)
+			if !ok || budgetID == "" {
+				return true
+			}
+			if b.ModelConfigID != nil {
+				return true
+			}
+			if _, ownedByProvider := providerBudgetIDs[budgetID]; ownedByProvider {
+				return true
+			}
 			scopeType, scopeID := ownerScopeFromBudget(b)
-			s := OwnerScope{Type: scopeType, ID: scopeID}
-			budgets[s] = append(budgets[s], key.(string))
+			addBudget(scopeType, scopeID, budgetID)
+		}
+		return true
+	})
+	gs.modelConfigs.Range(func(_, value any) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true
+		}
+		scopeType := mc.Scope
+		scopeID := ""
+		if mc.Provider != nil {
+			scopeType = "provider"
+		} else if mc.ScopeID != nil {
+			scopeID = *mc.ScopeID
+		}
+		for i := range mc.Budgets {
+			addBudget(scopeType, scopeID, mc.Budgets[i].ID)
 		}
 		return true
 	})
@@ -2161,7 +2210,28 @@ func (gs *LocalGovernanceStore) rebuildOwnerScopeIndexLocked() {
 			}
 			if rateLimitValue, exists := gs.rateLimits.Load(*pc.RateLimitID); exists && rateLimitValue != nil {
 				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					indexRateLimit("provider", pc.Provider, *pc.RateLimitID, rateLimit)
+					indexRateLimit("provider", "", *pc.RateLimitID, rateLimit)
+				}
+			}
+		}
+		return true
+	})
+	gs.providers.Range(func(_, value any) bool {
+		provider, ok := value.(*configstoreTables.TableProvider)
+		if !ok || provider == nil {
+			return true
+		}
+		if provider.BudgetID != nil {
+			if budgetValue, exists := gs.budgets.Load(*provider.BudgetID); exists && budgetValue != nil {
+				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
+					addBudget("provider", "", *provider.BudgetID)
+				}
+			}
+		}
+		if provider.RateLimitID != nil {
+			if rateLimitValue, exists := gs.rateLimits.Load(*provider.RateLimitID); exists && rateLimitValue != nil {
+				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+					indexRateLimit("provider", "", *provider.RateLimitID, rateLimit)
 				}
 			}
 		}
