@@ -20,7 +20,7 @@ const (
 // and are not exported by OpenInference profiles.
 func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Span, disableContentLogging bool) []*KeyValue {
 	attrs := span.Attributes
-	kind := openInferenceKind(span.Kind)
+	kind := openInferenceKind(trace, span)
 	result := []*KeyValue{kvStr(openInferenceSpanKind, kind)}
 
 	if sessionID, ok := trace.GetAttribute(schemas.TraceAttrSessionID); ok {
@@ -119,8 +119,14 @@ func openInferenceProviderAndSystem(attrs map[string]any) (provider, system stri
 	return provider, system
 }
 
-func openInferenceKind(kind schemas.SpanKind) string {
-	switch kind {
+func openInferenceKind(trace *schemas.Trace, span *schemas.Span) string {
+	if span == trace.RootSpan && span.Kind != schemas.SpanKindLLMCall {
+		if agentMode, ok := span.Attributes[schemas.AttrBifrostAgentMode].(bool); ok && agentMode {
+			return "AGENT"
+		}
+	}
+
+	switch span.Kind {
 	case schemas.SpanKindLLMCall, schemas.SpanKindSpeech, schemas.SpanKindTranscription:
 		return "LLM"
 	case schemas.SpanKindEmbedding:

@@ -326,6 +326,7 @@ func TestConvertTraceToResourceSpan_OpenInferenceOmitsImplementationSpans(t *tes
 }
 
 func TestOpenInferenceKind(t *testing.T) {
+	trace := &schemas.Trace{}
 	tests := map[schemas.SpanKind]string{
 		schemas.SpanKindLLMCall:       "LLM",
 		schemas.SpanKindEmbedding:     "EMBEDDING",
@@ -340,9 +341,46 @@ func TestOpenInferenceKind(t *testing.T) {
 	}
 
 	for kind, want := range tests {
-		if got := openInferenceKind(kind); got != want {
+		if got := openInferenceKind(trace, &schemas.Span{Kind: kind}); got != want {
 			t.Errorf("openInferenceKind(%q) = %q, want %q", kind, got, want)
 		}
+	}
+}
+
+func TestOpenInferenceKindAgent(t *testing.T) {
+	root := &schemas.Span{
+		SpanID: "aaaa",
+		Kind:   schemas.SpanKindHTTPRequest,
+		Attributes: map[string]any{
+			schemas.AttrBifrostAgentMode: true,
+		},
+	}
+	trace := &schemas.Trace{
+		TraceID:  "00000000000000000000000000000001",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root},
+	}
+
+	if got := openInferenceKind(trace, root); got != "AGENT" {
+		t.Errorf("openInferenceKind(agent root) = %q, want AGENT", got)
+	}
+	p := &OtelPlugin{}
+	attrs := otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, false).ScopeSpans[0].Spans[0].Attributes)
+	assertOTELStringAttribute(t, attrs, openInferenceSpanKind, "AGENT")
+	attrs = otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeGenAIExtension, false).ScopeSpans[0].Spans[0].Attributes)
+	if _, ok := attrs[schemas.AttrBifrostAgentMode]; ok {
+		t.Error("internal agent marker should not be exported by the OTEL profile")
+	}
+
+	llmRoot := &schemas.Span{
+		Kind: schemas.SpanKindLLMCall,
+		Attributes: map[string]any{
+			schemas.AttrBifrostAgentMode: true,
+		},
+	}
+	trace.RootSpan = llmRoot
+	if got := openInferenceKind(trace, llmRoot); got != "LLM" {
+		t.Errorf("openInferenceKind(agent-marked LLM root) = %q, want LLM", got)
 	}
 }
 

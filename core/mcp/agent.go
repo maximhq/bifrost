@@ -145,6 +145,8 @@ func (a *AgentModeExecutor) executeAgent(
 	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (interface{}, *schemas.BifrostError) {
+	ctx.SetTraceAttribute(schemas.AttrBifrostAgentMode, true)
+
 	// Get initial response from adapter
 	currentResponse := adapter.getInitialResponse()
 
