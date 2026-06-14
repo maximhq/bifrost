@@ -16,8 +16,6 @@ import {
 	FlaskConical,
 	FolderGit,
 	Globe,
-	KeyRound,
-	Landmark,
 	Hexagon,
 	BadgeCheck,
 	LaptopMinimalCheck,
