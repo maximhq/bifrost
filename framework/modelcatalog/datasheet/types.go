@@ -450,6 +450,8 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 		case "web_search":
 			addParam("web_search_options") // chat-path param
 			addParam("web_search")         // responses-path server tool
+		case "stop_sequences":
+			addParam("stop")
 		case "promptTools", "image_detail", "stream":
 			// skip — not top-level request parameters
 		default:

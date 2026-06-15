@@ -13,6 +13,7 @@ FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
+COMPAT ?=
 
 # Colors for output
 RED=\033[0;31m
@@ -1771,6 +1772,21 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		exit 0; \
 	fi
 	@if [ -n "$(HELP)" ]; then exit 0; fi; \
+	if [ "$(COMPAT)" = "both" ]; then \
+		mkdir -p tmp; \
+		$(ECHO) "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		for mode in off on; do \
+			$(ECHO) "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
+			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
+			RC=$$?; \
+			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
+			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
+			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
+			if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
+		done; \
+		$(ECHO) "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
+		exit $${BOTH_RC:-0}; \
+	fi; \
 	$(EXPOSE_ENV); \
 	mkdir -p tmp; \
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
@@ -1893,6 +1909,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			( \
 				newman run "tmp/harness-filtered-$$p.json" \
 					--env-var "baseUrl=$$BASE_URL_VAL" \
+					$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 					$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
@@ -1975,6 +1992,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			echo $$! > tmp/harness-monitor.pid; \
 			newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
@@ -1998,6 +2016,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		else \
 			newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
