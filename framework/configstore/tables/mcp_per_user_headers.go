@@ -1,7 +1,6 @@
 package tables
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -121,30 +120,6 @@ func (c *TableMCPPerUserHeaderCredential) AfterFind(tx *gorm.DB) error {
 		}
 	}
 	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (c *TableMCPPerUserHeaderCredential) AfterDelete(tx *gorm.DB) error {
-	if c.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	headersField := tx.Statement.DB.NamingStrategy.ColumnName("", "HeadersJSON")
-	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ID, headersField)
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
-	return nil
-}
-
-// DeleteVaultSecrets removes vault entries for the given credential IDs.
-// Called after a batch delete so vault cleanup runs even when AfterDelete can't fire.
-func (TableMCPPerUserHeaderCredential) DeleteVaultSecrets(ctx context.Context, ids []string) {
-	if VaultHooks.Remove == nil {
-		return
-	}
-	tableName := TableMCPPerUserHeaderCredential{}.TableName()
-	for _, id := range ids {
-		path := fmt.Sprintf("%s/%s/%s/headers_json", VaultPrefix(), tableName, id)
-		_ = VaultHooks.Remove(ctx, path)
-	}
 }
 
 // SetHeaders serializes the caller-supplied header map into HeadersJSON.

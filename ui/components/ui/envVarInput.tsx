@@ -72,7 +72,9 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
 		}, [value]);
 
 		// Show badge when value is from env (server-synced or user-typed)
-		const showBadge = value?.from_env && value?.env_var;
+		const showEnvBadge = value?.from_env && value?.env_var;
+		const showVaultBadge = value?.from_vault && value?.vault_var;
+		const showBadge = showEnvBadge || showVaultBadge;
 		const rawValue = value?.value ?? "";
 		const displayValue =
 			showBadge && hideValueWhenEnv && !hasChanged.current
@@ -97,16 +99,18 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
 			}
 			hasChanged.current = true;
 			isUserChange.current = true;
-			// Auto-detect env var prefix
+			// Auto-detect env var / vault reference prefix
 			if (newValue.startsWith("env.")) {
-				onChange?.({ value: newValue, env_var: newValue, from_env: true });
+				onChange?.({ value: newValue, env_var: newValue, from_env: true, vault_var: "", from_vault: false });
+			} else if (newValue.startsWith("vault.")) {
+				onChange?.({ value: newValue, env_var: "", from_env: false, vault_var: newValue, from_vault: true });
 			} else {
-				onChange?.({ value: newValue, env_var: "", from_env: false });
+				onChange?.({ value: newValue, env_var: "", from_env: false, vault_var: "", from_vault: false });
 			}
 		};
 
-		// Show hint when user is typing an env var (from_env is true but no resolved value yet)
-		const showEnvHint = value?.from_env && value?.env_var && hasChanged.current;
+		// Show hint when user is typing an env var / vault ref (reference set but no resolved value yet)
+		const showEnvHint = ((value?.from_env && value?.env_var) || (value?.from_vault && value?.vault_var)) && hasChanged.current;
 
 		const isTextarea = variant === "textarea";
 
@@ -149,9 +153,14 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
 							{...(props as Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">)}
 						/>
 					)}
-					{showBadge && (
+					{showEnvBadge && (
 						<Badge variant="success" className={cn("mr-2 whitespace-nowrap", isTextarea && "mb-2")}>
 							{value?.env_var}
+						</Badge>
+					)}
+					{showVaultBadge && (
+						<Badge variant="warning" className={cn("mr-2 whitespace-nowrap", isTextarea && "mb-2")}>
+							{value?.vault_var}
 						</Badge>
 					)}
 				</div>

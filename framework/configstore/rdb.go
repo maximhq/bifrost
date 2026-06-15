@@ -2045,6 +2045,8 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			for key, value := range clientConfigCopy.Headers {
 				if value.IsFromEnv() {
 					headersToSerialize[key] = value.EnvVar
+				} else if value.IsFromVault() {
+					headersToSerialize[key] = value.VaultRef
 				} else {
 					headersToSerialize[key] = value.GetValue()
 				}
@@ -2163,7 +2165,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if clientConfigCopy.ConfigHash != "" {
 			connectionStringToPersist := clientConfigCopy.ConnectionString
 			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
-				!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
+				!connectionStringToPersist.IsFromEnv() && !connectionStringToPersist.IsFromVault() && connectionStringToPersist.GetValue() != "" {
 				// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
 				cs := *connectionStringToPersist
 				encryptedConnString, encErr := encrypt.Encrypt(cs.Val)

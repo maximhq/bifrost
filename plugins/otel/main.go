@@ -295,7 +295,7 @@ func redactHeaderValue(v string) string {
 // consumers can tell the value exists without leaking env content. Unresolved env
 // references keep an empty Val, while preserving env_var for round-trip edits.
 func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
-	if v == nil || !v.IsFromEnv() {
+	if v == nil || (!v.IsFromEnv() && !v.IsFromVault()) {
 		return v
 	}
 	return v.Redacted()
