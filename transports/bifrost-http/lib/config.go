@@ -5641,6 +5641,21 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 			}
 			return fmt.Errorf("failed to create provider key in store: %w", err)
 		}
+		// The vault store callback rewrites the secret into a vault reference
+		// during the DB write, but only on the store-side row copy. Re-read so the
+		// in-memory key (and API responses) carry FromVault/VaultRef instead of the
+		// original plaintext.
+		storedKey, err := c.ConfigStore.GetProviderKey(ctx, provider, key.ID)
+		if err != nil {
+			// The DB write succeeded but we could not re-read the vault-rewritten
+			// key. Failing here avoids committing the original plaintext into
+			// c.Providers (and serving it via the keys API) on vault deployments.
+			logger.Error("failed to re-read stored key %s for provider %s after create: %v", key.ID, provider, err)
+			return fmt.Errorf("failed to re-read provider key after create: %w", err)
+		}
+		if idx := slices.IndexFunc(updatedConfig.Keys, func(k schemas.Key) bool { return k.ID == key.ID }); idx != -1 {
+			updatedConfig.Keys[idx] = *storedKey
+		}
 	}
 
 	c.Providers[provider] = updatedConfig
@@ -5698,6 +5713,19 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 			}
 			return fmt.Errorf("failed to update provider key in store: %w", err)
 		}
+		// The vault store callback rewrites the secret into a vault reference
+		// during the DB write, but only on the store-side row copy. Re-read so the
+		// in-memory key (and API responses) carry FromVault/VaultRef instead of the
+		// original plaintext.
+		storedKey, err := c.ConfigStore.GetProviderKey(ctx, provider, keyID)
+		if err != nil {
+			// The DB write succeeded but we could not re-read the vault-rewritten
+			// key. Failing here avoids committing the original plaintext into
+			// c.Providers (and serving it via the keys API) on vault deployments.
+			logger.Error("failed to re-read stored key %s for provider %s after update: %v", keyID, provider, err)
+			return fmt.Errorf("failed to re-read provider key after update: %w", err)
+		}
+		updatedConfig.Keys[index] = *storedKey
 	}
 
 	c.Providers[provider] = updatedConfig
