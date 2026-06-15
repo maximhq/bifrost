@@ -13,16 +13,7 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		return nil
 	}
 
-	defaultProvider := schemas.OpenAI
-
-	// for requests coming from azure sdk without provider prefix, we need to set the default provider to azure
-	if ctx != nil {
-		if isAzureUser, ok := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); ok && isAzureUser {
-			defaultProvider = schemas.Azure
-		}
-	}
-
-	provider, model := schemas.ParseModelString(resp.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
+	provider, model := schemas.ParseModelString(resp.Model, "")
 
 	input := resp.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
@@ -143,7 +134,9 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				message.Role = nil
 				// Strip cross-provider encrypted content that non-reasoning models cannot decrypt.
 				// Reasoning models (o1/o3/o4/GPT-5) may use EncryptedContent for multi-turn state.
-				if !isReasoning {
+				// Compaction items always carry encrypted_content and must never be stripped.
+				isCompactionMessage := message.Type != nil && *message.Type == schemas.ResponsesMessageTypeCompaction
+				if !isReasoning && !isCompactionMessage {
 					message.ResponsesReasoning.EncryptedContent = nil
 				}
 				// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
@@ -408,5 +401,79 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	// the upstream ("tool_choice must be specified with tools").
 	if len(resp.Tools) == 0 {
 		resp.ToolChoice = nil
+	}
+}
+
+// OpenAICompactionRequest is the wire format for POST /v1/responses/compact.
+// It is a strict subset of OpenAIResponsesRequest — no tools, no sampling params, no streaming.
+type OpenAICompactionRequest struct {
+	Model                string                      `json:"model"`
+	Input                OpenAIResponsesRequestInput `json:"input,omitempty"`
+	Instructions         *string                     `json:"instructions,omitempty"`
+	PreviousResponseID   *string                     `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention *string                     `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          *schemas.BifrostServiceTier `json:"service_tier,omitempty"`
+	ExtraParams          map[string]interface{}      `json:"-"`
+}
+
+// GetExtraParams implements RequestBodyWithExtraParams.
+func (r *OpenAICompactionRequest) GetExtraParams() map[string]interface{} { return r.ExtraParams }
+
+// ToOpenAICompactionRequest converts a BifrostCompactionRequest to the OpenAI wire format.
+func ToOpenAICompactionRequest(req *schemas.BifrostCompactionRequest) *OpenAICompactionRequest {
+	if req == nil {
+		return nil
+	}
+	r := &OpenAICompactionRequest{
+		Model:                req.Model,
+		Instructions:         req.Instructions,
+		PreviousResponseID:   req.PreviousResponseID,
+		PromptCacheKey:       req.PromptCacheKey,
+		PromptCacheRetention: req.PromptCacheRetention,
+		ServiceTier:          req.ServiceTier,
+		ExtraParams:          req.ExtraParams,
+	}
+	if len(req.Input) > 0 {
+		// Run through the same normalization as ToOpenAIResponsesRequest so reasoning
+		// role cleanup, compaction-content conversion, etc. are applied consistently.
+		normalized := ToOpenAIResponsesRequest(&schemas.BifrostResponsesRequest{
+			Provider: req.Provider,
+			Model:    req.Model,
+			Input:    req.Input,
+		})
+		if normalized != nil {
+			r.Input = normalized.Input
+		}
+	}
+	return r
+}
+
+// ToBifrostCompactionRequest converts an OpenAICompactionRequest to Bifrost format.
+func (r *OpenAICompactionRequest) ToBifrostCompactionRequest(ctx *schemas.BifrostContext) *schemas.BifrostCompactionRequest {
+	if r == nil {
+		return nil
+	}
+
+	provider, model := schemas.ParseModelString(r.Model, "")
+	input := r.Input.OpenAIResponsesRequestInputArray
+	if len(input) == 0 && r.Input.OpenAIResponsesRequestInputStr != nil {
+		input = []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: r.Input.OpenAIResponsesRequestInputStr},
+			},
+		}
+	}
+	return &schemas.BifrostCompactionRequest{
+		Provider:             provider,
+		Model:                model,
+		Input:                input,
+		Instructions:         r.Instructions,
+		PreviousResponseID:   r.PreviousResponseID,
+		PromptCacheKey:       r.PromptCacheKey,
+		PromptCacheRetention: r.PromptCacheRetention,
+		ServiceTier:          r.ServiceTier,
+		ExtraParams:          r.ExtraParams,
 	}
 }

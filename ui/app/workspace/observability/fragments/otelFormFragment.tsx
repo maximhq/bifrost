@@ -35,6 +35,7 @@ interface StoredOtelProfile {
 	metrics_endpoint?: string | EnvVar;
 	metrics_push_interval?: number;
 	request_headers?: string[];
+	disable_content_logging?: boolean;
 }
 
 // StoredOtelConfig is either the canonical { profiles: [...] } wrapper or a legacy single
@@ -96,6 +97,7 @@ const emptyProfile = (): ProfileForm => ({
 	metrics_endpoint: emptyEnvVar(),
 	metrics_push_interval: 15,
 	request_headers: [],
+	disable_content_logging: false,
 });
 
 // toProfileForm normalizes a stored profile into the EnvVar-based form representation.
@@ -112,6 +114,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	metrics_endpoint: toEnvVarFormValue(p?.metrics_endpoint),
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
 	request_headers: p?.request_headers ?? [],
+	disable_content_logging: p?.disable_content_logging ?? false,
 });
 
 // buildDefaults handles both stored shapes: the { profiles: [...] } wrapper and the legacy
@@ -311,7 +314,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 	const collectorPreview = collectorUrl?.from_env ? collectorUrl.env_var : collectorUrl?.value;
 
 	return (
-		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-lg border" data-testid={`otel-profile-${index}`}>
+		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-sm border" data-testid={`otel-profile-${index}`}>
 			<div className="flex flex-row items-center gap-2 px-4 py-3">
 				<CollapsibleTrigger asChild>
 					<button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left">
@@ -435,6 +438,24 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									/>
 								</FormControl>
 								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`${base}.disable_content_logging`}
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between">
+								<div className="space-y-0.5">
+									<FormLabel className="text-base">Disable Content Logging</FormLabel>
+									<FormDescription>
+										When enabled, message content (input/output messages, tool definitions, and tool call arguments/results) is dropped
+										from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-disable-content-logging-toggle`} />
+								</FormControl>
 							</FormItem>
 						)}
 					/>

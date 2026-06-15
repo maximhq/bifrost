@@ -474,6 +474,7 @@ VirtualKeyQuotaResponse:
     - budgets
     - rate_limit
     - provider_configs
+    - model_configs
   properties:
     virtual_key_name:
       type: string
@@ -483,9 +484,11 @@ VirtualKeyQuotaResponse:
       description: Whether the virtual key is active
     budgets:
       type: [array, 'null']
-      description: Overall budget quotas assigned to this virtual key
+      description: >
+        Overall budget quotas for this virtual key. Each budget also carries the actual
+        per-model spend (from request logs) accumulated in its current cycle.
       items:
-        $ref: '#/Budget'
+        $ref: '#/VirtualKeyBudgetUsage'
     rate_limit:
       oneOf:
         - $ref: '#/RateLimit'
@@ -495,6 +498,80 @@ VirtualKeyQuotaResponse:
       description: Per-provider budget quotas and rate limits (provider-level splits and limits)
       items:
         $ref: '#/VirtualKeyProviderConfig'
+    model_configs:
+      type: array
+      description: >
+        Per-model budget quotas and rate limits configured for this virtual key (model-level
+        limits). Always an array — the endpoint fails closed (500) rather than returning null
+        when the model-config lookup errors.
+      items:
+        $ref: '#/VirtualKeyModelUsage'
+
+VirtualKeyBudgetUsage:
+  description: >
+    A virtual key budget with the actual per-model spend (from request logs) accumulated in
+    its current cycle [last_reset, now]. The per-model totals reconcile with current_usage.
+    The models list is empty when the logging plugin is not enabled.
+  allOf:
+    - $ref: '#/Budget'
+    - type: object
+      required:
+        - per_model_usage
+      properties:
+        per_model_usage:
+          type: array
+          description: Per-model actual usage within this budget's current cycle
+          items:
+            $ref: '#/VirtualKeyModelSpend'
+
+VirtualKeyModelSpend:
+  type: object
+  description: One model's actual usage (from request logs) within a budget cycle
+  required:
+    - model
+    - total_requests
+    - total_tokens
+    - total_cost
+  properties:
+    model:
+      type: string
+      description: The model name
+    provider:
+      type: string
+      description: Provider that served the model; omitted when unknown
+    total_requests:
+      type: integer
+      format: int64
+      description: Number of requests to this model in the cycle
+    total_tokens:
+      type: integer
+      format: int64
+      description: Total tokens consumed by this model in the cycle
+    total_cost:
+      type: number
+      description: Total cost in dollars for this model in the cycle
+
+VirtualKeyModelUsage:
+  type: object
+  description: Per-model budgets and rate limit (with current usage) for a model governed under a virtual key
+  required:
+    - model_name
+  properties:
+    model_name:
+      type: string
+      description: The model this usage applies to
+    provider:
+      type: string
+      description: Provider this model config is scoped to; omitted when it applies to all providers
+    budgets:
+      type: [array, 'null']
+      description: Budget quotas for this model
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      oneOf:
+        - $ref: '#/RateLimit'
+        - type: 'null'
 
 VirtualKeyResponse:
   type: object
@@ -684,6 +761,194 @@ CustomerResponse:
       type: string
     customer:
       $ref: '#/Customer'
+
+# Business Units (Enterprise)
+
+BusinessUnit:
+  type: object
+  description: Business unit configuration with governance association
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    source_id:
+      type: string
+      description: External source identifier (e.g. from SCIM provisioning)
+    profile:
+      type: object
+      additionalProperties: true
+      nullable: true
+    config:
+      type: object
+      additionalProperties: true
+      nullable: true
+    claims:
+      type: object
+      additionalProperties: true
+      nullable: true
+    budget_id:
+      type: string
+    rate_limit_id:
+      type: string
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    config_hash:
+      type: string
+    created_by_user_id:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+BusinessUnitListItem:
+  type: object
+  description: Business unit summary as returned in list responses
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+ListBusinessUnitsResponse:
+  type: object
+  description: Paginated list of business units
+  required:
+    - business_units
+    - total
+    - page
+    - limit
+  properties:
+    business_units:
+      type: array
+      items:
+        $ref: '#/BusinessUnitListItem'
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+BusinessUnitDetailResponse:
+  type: object
+  description: Single business unit with governance and team count
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateBusinessUnitRequest:
+  type: object
+  description: Create business unit request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+
+BusinessUnitMutationResponse:
+  type: object
+  description: Response for business unit create/update operations
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
+AssignTeamToBusinessUnitRequest:
+  type: object
+  description: Request to assign a team to a business unit
+  required:
+    - team_id
+  properties:
+    team_id:
+      type: string
+
+BusinessUnitTeamsResponse:
+  type: object
+  description: Paginated list of teams assigned to a business unit
+  required:
+    - teams
+    - total
+    - page
+    - limit
+  properties:
+    teams:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          name:
+            type: string
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+CreateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Create business unit governance request. The business unit is identified by
+    the {id} path parameter. At least one of budget or rate_limit is required.
+  anyOf:
+    - required: [budget]
+    - required: [rate_limit]
+  properties:
+    budget:
+      $ref: '#/CreateBudgetRequest'
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+
+UpdateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Update business unit governance request. Passing an empty budget or rate_limit
+    object removes that governance component.
+  properties:
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+
+BusinessUnitGovernanceResponse:
+  type: object
+  description: Business unit governance operation response
+  properties:
+    message:
+      type: string
+    business_unit:
+      $ref: '#/BusinessUnit'
 
 TableKey:
   type: object
@@ -1510,3 +1775,77 @@ ListPricingOverridesResponse:
     count:
       type: integer
       description: Total number of overrides returned
+
+# Complexity Tier Boundaries
+
+ComplexityTierBoundaries:
+  type: object
+  description: Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+  additionalProperties: false
+  required:
+    - simple_medium
+    - medium_complex
+    - complex_reasoning
+  properties:
+    simple_medium:
+      type: number
+      description: Score boundary between SIMPLE and MEDIUM tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+    medium_complex:
+      type: number
+      description: Score boundary between MEDIUM and COMPLEX tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+    complex_reasoning:
+      type: number
+      description: Score boundary between COMPLEX and REASONING tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+
+ComplexityKeywordConfig:
+  type: object
+  description: |
+    Editable keyword lists used by the complexity analyzer. Only the four user-facing
+    dimensions are exposed; `reasoning_keywords` entries drive the reasoning tier
+    override. Matching is normalized to lowercase and duplicates are removed on save.
+  additionalProperties: false
+  required:
+    - code_keywords
+    - reasoning_keywords
+    - technical_keywords
+    - simple_keywords
+  properties:
+    code_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    reasoning_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    technical_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    simple_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+
+ComplexityAnalyzerConfig:
+  type: object
+  description: Full runtime configuration for complexity routing analysis.
+  additionalProperties: false
+  required:
+    - tier_boundaries
+    - keywords
+  properties:
+    tier_boundaries:
+      $ref: '#/ComplexityTierBoundaries'
+    keywords:
+      $ref: '#/ComplexityKeywordConfig'

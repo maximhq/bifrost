@@ -299,3 +299,23 @@ updates:
     directory: /tests/semanticcache
     schedule:
       interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/e2eseed
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/seed
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/seedvks
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /plugins/modelcatalogresolver
+    schedule:
+      interval: weekly

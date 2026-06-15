@@ -19,6 +19,7 @@ interface DimensionRankingsTabProps {
 	loading: boolean;
 	dimensionLabel: string;
 	testIdPrefix: string;
+	attributed?: boolean;
 }
 
 function TopDimensionTooltip({ active, payload }: any) {
@@ -38,14 +39,16 @@ function TopDimensionChart({
 	loading,
 	dimensionLabel,
 	testIdPrefix,
+	attributed,
 }: {
 	data: DimensionRankingsResponse | null;
 	loading: boolean;
 	dimensionLabel: string;
 	testIdPrefix: string;
+	attributed?: boolean;
 }) {
-	const { chartData, grandTotal, rankedItems } = useMemo(() => {
-		if (!data?.rankings?.length) return { chartData: [], grandTotal: null, rankedItems: [] };
+	const { chartData, grandTotal, rankedItems, actualTotal, attributedTotal } = useMemo(() => {
+		if (!data?.rankings?.length) return { chartData: [], grandTotal: null, rankedItems: [], actualTotal: null, attributedTotal: null };
 
 		const sorted = [...data.rankings].sort((a, b) => b.total_requests - a.total_requests);
 		const top = sorted.slice(0, 10);
@@ -64,8 +67,13 @@ function TopDimensionChart({
 			fill: getModelColor(item.colorIdx),
 		}));
 
-		return { chartData: chart, grandTotal: total, rankedItems: items };
-	}, [data]);
+		// Server-computed totals (fan-out dimensions only); when absent, fall
+		// back to the client-side attributed sum.
+		const actual = attributed ? (data.total_actual_requests ?? null) : null;
+		const attributedSum = actual !== null ? (data.total_attributed_requests ?? total) : total;
+
+		return { chartData: chart, grandTotal: total, rankedItems: items, actualTotal: actual, attributedTotal: attributedSum };
+	}, [data, attributed]);
 
 	return (
 		<ChartCard
@@ -73,20 +81,45 @@ function TopDimensionChart({
 			loading={loading}
 			testId={`${testIdPrefix}-top-chart`}
 			className="z-[1] h-full"
-			totalLabel="Total Requests"
-			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}
+			totalLabel={attributed && actualTotal === null ? "Total Requests (attributed)" : "Total Requests"}
+			total={
+				actualTotal !== null ? (
+					<NumberFlow value={actualTotal} format={COMPACT_NUMBER_FORMAT} />
+				) : grandTotal !== null ? (
+					<NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} />
+				) : undefined
+			}
+			totalTooltip={
+				grandTotal === null ? undefined : actualTotal !== null ? (
+					<div className="max-w-[240px] text-xs opacity-80">Actual number of requests sent</div>
+				) : attributed ? (
+					<div className="space-y-1">
+						<div className="max-w-[240px] text-xs opacity-80">
+							Attributed - a request counts toward each {dimensionLabel.toLowerCase()} it belongs to, so this can exceed the actual request
+							count.
+						</div>
+					</div>
+				) : (
+					grandTotal.toLocaleString("en-US")
+				)
+			}
+			secondaryTotalLabel="Attributed Requests"
+			secondaryTotal={actualTotal !== null ? <NumberFlow value={attributedTotal ?? 0} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+			secondaryTotalTooltip={
+				actualTotal === null ? undefined : (
+					<div className="space-y-1">
+						<div className="max-w-[240px] text-xs opacity-80">
+							A request counts toward each {dimensionLabel.toLowerCase()} it belongs to, so this can exceed the total request count.
+						</div>
+					</div>
+				)
+			}
 		>
 			<div style={{ height: Math.max(200, chartData.length * 40 + 40), marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${chartData.length}`}>
 						<ResponsiveContainer width="100%" height="100%">
-							<BarChart
-								data={chartData}
-								layout="vertical"
-								margin={{ top: 6, right: 20, left: 0, bottom: 0 }}
-								barCategoryGap={4}
-							>
+							<BarChart data={chartData} layout="vertical" margin={{ top: 6, right: 20, left: 0, bottom: 0 }} barCategoryGap={4}>
 								<CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
 								<XAxis
 									type="number"
@@ -100,23 +133,24 @@ function TopDimensionChart({
 									dataKey="displayName"
 									tick={(props: any) => {
 										const { x, y, payload } = props;
-										const maxChars = 14;
-										const label =
-											payload.value.length > maxChars
-												? `${payload.value.slice(0, maxChars)}…`
-												: payload.value;
+										const labelWidth = 92;
 										return (
-											<text x={x} y={y} dy={4} textAnchor="end" fontSize={11} className="fill-zinc-500">
-												<title>{payload.value}</title>
-												{label}
-											</text>
+											<foreignObject x={x - labelWidth} y={y - 9} width={labelWidth} height={18} style={{ overflow: "visible" }}>
+												<div
+													title={payload.value}
+													className="truncate text-right text-[11px] leading-[18px] text-zinc-500 dark:text-zinc-400"
+													style={{ width: labelWidth }}
+												>
+													{payload.value}
+												</div>
+											</foreignObject>
 										);
 									}}
 									tickLine={false}
 									axisLine={false}
-									width={92}
+									width={100}
 								/>
-								<Tooltip content={<TopDimensionTooltip />} />
+								<Tooltip content={<TopDimensionTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 								<Bar
 									dataKey="total_requests"
 									isAnimationActive={false}
@@ -155,7 +189,7 @@ function TopDimensionChart({
 	);
 }
 
-function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix }: DimensionRankingsTabProps) {
+function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix, attributed }: DimensionRankingsTabProps) {
 	const [sortField, setSortField] = useState<SortField>("total_requests");
 	const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
 
@@ -187,6 +221,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix 
 				loading={loading}
 				dimensionLabel={dimensionLabel}
 				testIdPrefix={testIdPrefix}
+				attributed={attributed}
 			/>
 
 			{loading ? (
@@ -240,9 +275,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix 
 									<TableCell>
 										<div className="flex flex-col">
 											<span className="font-medium">{entry.name || entry.id}</span>
-											{entry.name && entry.name !== entry.id && (
-												<span className="text-muted-foreground text-xs">{entry.id}</span>
-											)}
+											{entry.name && entry.name !== entry.id && <span className="text-muted-foreground text-xs">{entry.id}</span>}
 										</div>
 									</TableCell>
 									<TableCell className="text-right">

@@ -4,12 +4,40 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.20
+**Latest Version:** 2.1.23
 
 ## Changelog
 
+### 2.1.23
+
+- Introduced `bifrost.governance.complexityAnalyzerConfig` for complexity router boundaries/keywords; renders into `governance.complexity_analyzer_config`.
+- `pluginSpanFilter` (`mode`/`plugins`) is now supported in OTEL config (single- and multi-profile), with a shared `$defs` definition reused across OTEL, Datadog, and BigQuery connectors.
+- Brought `plugin_span_filter` support to the Datadog plugin config.
+- New `bigquery` plugin defintion: `project_id`, `dataset_id`, `table_id`, `location`, `service_account_key`, `create_table_if_not_exists`, `flush_interval_seconds`, `buffer_size`, `custom_labels`, `disable_content_logging`, `request_headers`, `plugin_span_filter`.
+- Extended Datadog plugin with `ml_app`, `dogstatsd_addr`, `enable_metrics`, `enable_llm_obs`, `agentless`, `api_key` (required when agentless), and `site`. Credentials support `env.VAR_NAME`.
+- `key_ids` is now accepted in nested provider config inside virtual providers. Use `["*"]` for all keys; empty/omitted denies all (v2 default).
+- New `kafka` plugin definition: requires `brokers` + `topic`; optional SASL, TLS, `compression`, `batch_size`, `flush_interval_ms`, `auto_create_topic`, `disable_content_logging`, `plugin_span_filter`.
+- New `pubsub` plugin definition: requires `project_id` + `topic_id`; optional `service_account_key` (or ADC), `auto_create_topic`, `disable_content_logging`, `plugin_span_filter`.
+- Introduced `bifrost.framework.pricing.mcpLibraryUrl` and `mcpLibrarySyncInterval` for configuring a custom MCP server catalog.
+- `ingress` now accepts a named map where each key produces a separate `Ingress` named `<release>-<key>`. Legacy `ingress.enabled` shape is unchanged.
+- Configurable HTTP server read buffer size via `bifrost.server.readBufferSize` (controls header-reading buffer; default 65536 bytes). Maps to `server.read_buffer_size` in config.json.
+
+### 2.1.22
+
+- Added `bifrost.governance.roles` array to `values.yaml`, `values.schema.json`, and `_helpers.tpl`. Each role requires a `name` and accepts optional `description`, `dac` (`own-data` | `team-data` | `all-data`, default `all-data`), `access_profile`, and `permissions[]` (`resource` + `operation`).
+- `bifrost.plugins.otel.config` now accepts either the existing single-profile shape or a new `profiles` wrapper (`otelProfilesConfig`) with an array of profiles. Each profile is independently enabled/disabled. A shared `plugin_span_filter` can be set at the top level in either shape.
+- Added `disable_content_logging` to OTEL config (both single-profile and per-profile). When `true`, message content (input/output messages, embeddings, tool definitions, tool call arguments/results) is dropped from exported spans — only metadata (model, tokens, latency) is sent to the collector.
+- Added `otelPluginSpanFilter` (`mode`: `include`/`exclude`, `plugins` array) to the OTEL config schema, available in both single-profile and multi-profile shapes.
+- Added `calendar_aligned` to `bifrost.governance.modelConfigs[]`. 
+- Added `model_config_id` and `customer_id` as budget owner fields in `governance.budgets[]`, alongside the existing `virtual_key_id`, `provider_config_id`, and `team_id`.
+- Extended `attributeTeamMappings` and `attributeBusinessUnitMappings` in SCIM auth config with optional `attributeType` (`user` | `group`) and `attributeValue` fields to enable SCIM-driven team/business-unit provisioning.
+- Added OAuth MCP client config example to `values.yaml` showing `authType: oauth` with `oauthConfigId`.
+- Added `bifrost.sourceOfTruth` (`split` | `config.json`, optional). When set to `"config.json"`, sections explicitly present in the file become authoritative on startup — database-only rows for those sections are pruned. Omitting the field preserves the default `"split"` merge behavior.
+- Added `allow_private_network` to `networkConfig` in `values.schema.json`. When `true`, allows connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x) — useful for providers on a k8s pod network, LAN, or private VPC.
+
 ### 2.1.21
 
+- Add `per_user_oauth`/`per_user_headers` to `authType` enum in mcpClientConfig
 - Added `scope` and `scope_id` fields to `bifrost.governance.modelConfigs[]` items in `values.yaml` and `values.schema.json`. `scope` accepts `"global"` (default, applies to all traffic) or `"virtual_key"` (applies to a specific virtual key); `scope_id` is required when `scope` is `"virtual_key"` and must reference a virtual key `id`. The `_helpers.tpl` already passes `modelConfigs` through as-is so no template change was needed.
 
 ### 2.1.20
@@ -648,17 +676,17 @@ bifrost:
 
 ### MCP Configuration
 
-| Parameter                                             | Description                                                                                                                                                                                   | Default  |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `bifrost.mcp.enabled`                                 | Enable MCP (Model Context Protocol)                                                                                                                                                           | `false`  |
-| `bifrost.mcp.clientConfigs`                           | Array of MCP client configurations                                                                                                                                                            | `[]`     |
-| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout`  | Tool execution timeout. Integer = seconds, string = Go duration (e.g. `"30s"`, `"2m"`). Prefer the string form.                                                                               | `"30s"`  |
-| `bifrost.mcp.toolManagerConfig.maxAgentDepth`         | Maximum agent depth                                                                                                                                                                           | `10`     |
-| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`  | Code mode binding level (`server` or `tool`)                                                                                                                                                  | `server` |
-| `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection                                                                                                                                                          | `false`  |
-| `bifrost.mcp.toolSyncInterval`                        | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended. | `10m`    |
-| `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production. | `false`  |
-| `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`    | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
+| Parameter                                                  | Description                                                                                                                                                                                                    | Default  |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `bifrost.mcp.enabled`                                      | Enable MCP (Model Context Protocol)                                                                                                                                                                            | `false`  |
+| `bifrost.mcp.clientConfigs`                                | Array of MCP client configurations                                                                                                                                                                             | `[]`     |
+| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout`       | Tool execution timeout. Integer = seconds, string = Go duration (e.g. `"30s"`, `"2m"`). Prefer the string form.                                                                                                | `"30s"`  |
+| `bifrost.mcp.toolManagerConfig.maxAgentDepth`              | Maximum agent depth                                                                                                                                                                                            | `10`     |
+| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`       | Code mode binding level (`server` or `tool`)                                                                                                                                                                   | `server` |
+| `bifrost.mcp.toolManagerConfig.disableAutoToolInject`      | Disable automatic MCP tool injection                                                                                                                                                                           | `false`  |
+| `bifrost.mcp.toolSyncInterval`                             | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended.                  | `10m`    |
+| `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production.                              | `false`  |
+| `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`          | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
 
 #### MCP Migration Guide (`client.mcp*` -> `mcp.*`)
 

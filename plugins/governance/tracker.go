@@ -236,14 +236,26 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 	var vksWithoutRateLimits int
 
 	// ==== RESET EXPIRED RATE LIMITS ====
-	// Check ALL virtual keys (both active and inactive) for expired rate limits
-	allVKs, err := t.configStore.GetVirtualKeys(ctx)
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("failed to load virtual keys for reset: %s", err.Error()))
-	} else {
-		t.logger.Debug(fmt.Sprintf("startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
+	// Check ALL virtual keys (both active and inactive) for expired rate limits.
+	// Reuse the already-loaded in-memory governance data instead of issuing a
+	// second full database load of every virtual key. The store is populated at
+	// startup (loadFromDatabase) before this runs, so re-querying all VKs from
+	// the DB here was redundant and, at large key counts, added seconds of
+	// startup latency for no additional information.
+	vkLoadStart := time.Now()
+	var allVKs []configstoreTables.TableVirtualKey
+	if govData := t.store.GetGovernanceData(ctx); govData != nil {
+		allVKs = make([]configstoreTables.TableVirtualKey, 0, len(govData.VirtualKeys))
+		for _, vk := range govData.VirtualKeys {
+			if vk != nil {
+				allVKs = append(allVKs, *vk)
+			}
+		}
 	}
+	t.logger.Debug(fmt.Sprintf("startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
+	t.logger.Info("[startup-timing] PerformStartupResets read %d keys from in-memory store in %v", len(allVKs), time.Since(vkLoadStart))
 
+	scanStart := time.Now()
 	for i := range allVKs {
 		vk := &allVKs[i] // Get pointer to VK for modifications
 		if vk.RateLimit == nil {
@@ -253,7 +265,10 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 		vksWithRateLimits++
 
-		rateLimit := vk.RateLimit
+		// Operate on a detached copy so the persisted reset never mutates the
+		// live in-memory rate limit (which background workers may read).
+		rlCopy := *vk.RateLimit
+		rateLimit := &rlCopy
 		rateLimitUpdated := false
 
 		// Check token limits
@@ -288,6 +303,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 			resetRateLimits = append(resetRateLimits, rateLimit)
 		}
 	}
+	t.logger.Info("[startup-timing] PerformStartupResets VK scan loop took %v (%d with rate limits, %d without, %d to reset)", time.Since(scanStart), vksWithRateLimits, vksWithoutRateLimits, len(resetRateLimits))
 
 	// DB reset is also handled by this function
 	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
@@ -297,6 +313,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 	// ==== PERSIST RESETS TO DATABASE ====
 	// Use selective updates to avoid overwriting config fields (max_limit, reset_duration)
+	dbWriteStart := time.Now()
 	if t.configStore != nil && len(resetRateLimits) > 0 {
 		if err := t.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 			for _, rateLimit := range resetRateLimits {
@@ -324,6 +341,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 			errs = append(errs, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
 		}
 	}
+	t.logger.Info("[startup-timing] PerformStartupResets DB persist of %d rate-limit resets took %v", len(resetRateLimits), time.Since(dbWriteStart))
 	if len(errs) > 0 {
 		t.logger.Error("startup reset encountered %d errors: %v", len(errs), errs)
 		return fmt.Errorf("startup reset completed with %d errors", len(errs))

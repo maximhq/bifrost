@@ -1,0 +1,160 @@
+---
+title: "v1.5.12"
+description: "v1.5.12 changelog - 2026-06-12"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.12
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.12
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.12
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.12">
+<Warning>
+The `disable_auth_on_inference` (`DisableAuthOnInference`) config field, deprecated in v1.4.0, has been completely removed. Use `enforce_auth_on_inference` (`EnforceAuthOnInference`) instead, which enforces API key authentication on inference endpoints.
+</Warning>
+<Warning>
+Known issue: with `enforce_auth_on_inference` enabled alongside dashboard password auth, virtual-key-authenticated inference requests are incorrectly rejected with `401 Unauthorized`. Fixed in v1.5.13 — upgrade to v1.5.13 or later.
+</Warning>
+
+## ✨ Features
+
+- **Vertex AI Files & Batches API** - Added support for the Vertex AI Files and Batches endpoints
+- **Vault Backends for Secrets** - Sensitive config fields can now be stored in AWS Secrets Manager, GCP Secret Manager, or HashiCorp Vault as an alternative to AES encryption
+- **Per-Alias Provider Overrides** - Key aliases now support alias-level Azure endpoint/API version/Anthropic version, Bedrock region/ARN, Vertex project/region, and Replicate deployments-endpoint overrides
+- **MCP Server Library** - New browsable MCP server catalog with background sync, search and filters, install sheet, custom entries with soft-delete, and a multi-harness agent connect sheet
+- **Complexity Router** - Route requests by prompt complexity using `complexity_tier` CEL expressions with a configurable analyzer (config UI, DB, and API included)
+- **Per-Model Usage in Quota API** - The virtual key quota API now reports usage broken down per model
+- **OTEL HTTP Metrics & Span Filtering** - The OTEL connector now emits HTTP-level metrics, and plugin spans can be filtered per connector via `plugin_span_filters`
+- **Canonical Model Name in Logs** - Added `canonical_model_name` and `alias_model_family` columns to logs, and request metadata is now included in object-storage log exports
+- **Routing Audit Trail** - Responses and errors now carry `RoutingInfo` extra fields with a retry/fallback audit trail from the core routing engine
+- **`key_ids` in Provider Config** - Providers can be scoped to specific keys via the new `key_ids` field in the config schema and Helm chart
+- **Datadog Env Vars in Helm** - Added support for DD environment variables in the Helm chart
+- **Anthropic Fable Compatibility** - Added support for Anthropic Fable models, including fast mode pricing fixes
+
+## 🐞 Fixed
+
+- “Allow All” in vk provider config now properly  routes to all allowed models in key configurations
+- **Postgres Logstore Filters** - Fixed metadata filters and pagination `total_count` for the Postgres logstore (thanks [@zbloss](https://github.com/zbloss)!)
+- **Vertex Embeddings API Key Auth** - The Vertex Embedding method now supports API key authentication (thanks [@TransactCharlie](https://github.com/TransactCharlie)!)
+- **Bedrock Cohere Usage** - Cohere embed/rerank usage on Bedrock is now filled from the response header (thanks [@Alishark14](https://github.com/Alishark14)!)
+- **OpenAI File Upload** - Fixed `expires_at` fields in OpenAI file uploads
+- **Virtual Key Handling** - Generate a UUID when a virtual key is created without an ID, propagate the VK in GenAI file upload sessions, stamp the VK tool allowlist when the `include-clients` filter is present, and enforce the VK tool-grant boundary on caller-provided `x-bf-mcp-include-*` headers
+- **Governance Log Mappings** - Fixed teams and customers name mappings on logs, the customer FK column issue, and added a unique-name constraint migration on the customer table
+- **DeepSeek v4 Reasoning** - Fixed max reasoning effort handling for DeepSeek v4
+- **Gemini Tool Responses** - Fixed parts handling in Gemini tool responses
+- **OpenRouter Cache Control** - `cache_control` blocks are now preserved in OpenRouter chat requests
+- **Trace Attributes** - Refactored tracers to correctly set trace-level attributes
+- **Provider Config Preservation** - Use the in-file provider config when preserving a failed provider config instead of the existing runtime config
+
+</Update>
+<Update label="Core" description="1.5.19">
+- feat: added Vertex AI Files and Batches API support
+- feat: added vault backends (aws-secrets-manager, gcp-secret-manager, hashicorp-vault) as alternative to AES encryption for sensitive config fields
+- feat: added per-alias provider overrides (Azure endpoint/API version/Anthropic version, Bedrock region/ARN, Vertex project/region, Replicate deployments endpoint) by promoting KeyAliases values to AliasConfig
+- feat: added PreRequestHook to the LLMPlugin interface for once-per-request processing
+- feat: added RoutingInfo to response/error extra fields with retry and fallback audit trail
+- feat: scoped ListModels to a single key when KeyID is set
+- feat: added datasheet store to model catalog
+- feat: added Anthropic Fable model compatibility
+- feat: added plugin span filtering for multiple connectors
+- feat: tagged MCP health check requests via BifrostContextKeyMCPHealthCheck
+- feat: refactored tracers to correctly set trace-level attributes
+- refactor: extracted provider resolution into the modelcatalogresolver plugin
+- fix: max reasoning effort handling for DeepSeek v4
+- fix: virtual key propagation in GenAI file upload sessions
+- fix: fast mode pricing for Anthropic
+- fix: drop reasoning effort "none" for Vertex
+- fix: added API key auth support to the Vertex Embedding method (thanks [@TransactCharlie](https://github.com/TransactCharlie)!)
+- fix: fill Cohere embed/rerank usage from the response header on Bedrock (thanks [@Alishark14](https://github.com/Alishark14)!)
+- fix: preserve cache_control blocks in OpenRouter chat requests
+- fix: Gemini parts handling in tool responses
+- fix: plugin name sanitization for live-loaded plugins for connectors
+
+</Update>
+<Update label="Framework" description="1.3.19">
+- feat: added canonical_model_name and alias_model_family columns to logs
+- feat: added request metadata to LLM logs in object storage
+- feat: added MCP server library (mcp_library table, catalog sync, paginated listing, custom entries with soft-delete)
+- feat: added complexity analyzer config DB and API support
+- feat: added vault backend support for sensitive config fields
+- feat: added live model catalog cache store and per-key config aggregation (keyconfig.Store)
+- feat: added unique-name constraint migration on the customer table
+- feat: refactored tracers to correctly set trace-level attributes
+- fix: metadata filters and pagination total_count for the Postgres logstore (thanks [@zbloss](https://github.com/zbloss)!)
+- fix: customer FK column issue
+- fix: enforce auth on inference in the auth middleware
+- fix: fast mode pricing for Anthropic
+- chore: removed vault encryption hooks from certain GORM tables in favor of AES-only encryption
+- chore: upgraded core to v1.5.19
+
+</Update>
+<Update label="compat" description="0.1.18">
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="governance" description="1.5.19">
+- feat: added complexity router with complexity_tier CEL routing and configurable analyzer
+- feat: enforce VK tool-grant boundary on caller-provided x-bf-mcp-include-* headers
+- fix: stamp virtual key tool allowlist when the include-clients filter is present
+- fix: teams and customers name mappings on logs
+- fix: complexity router keyword merging and removal via config.json changes
+- fix: parse provider-prefixed model strings in pre-request routing
+- fix: exempt cache creation requests from model checks
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="jsonparser" description="1.5.19">
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="logging" description="1.5.19">
+- feat: added canonical_model_name and alias_model_family columns to logs
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="maxim" description="1.6.19">
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="mocker" description="1.5.19">
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.0">
+- feat: initial release - provider resolution extracted from core into a standalone plugin, with routing allowlist enforcement and provider-prefixed model parsing
+
+</Update>
+<Update label="otel" description="1.2.19">
+- feat: added HTTP metrics
+- feat: added plugin span filtering for multiple connectors
+- feat: refactored tracers to correctly set trace-level attributes
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="prompts" description="1.0.19">
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="semanticcache" description="1.5.19">
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>
+<Update label="telemetry" description="1.5.19">
+- chore: implemented no-op PreRequestHook for the new LLMPlugin interface
+- chore: upgraded core to v1.5.19 and framework to v1.3.19
+
+</Update>

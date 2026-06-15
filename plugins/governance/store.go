@@ -160,6 +160,10 @@ type GovernanceStore interface {
 	// Team level CheckUserBudget
 	CheckTeamBudget(ctx context.Context, teamID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
 	CheckTeamRateLimit(ctx context.Context, teamID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
+	// Team-level live budget/rate-limit collectors (resolved from the hot maps);
+	// used by the enterprise user→team→business-unit hierarchy collector.
+	CollectTeamBudgets(ctx context.Context, teamID string) []*configstoreTables.TableBudget
+	CollectTeamRateLimits(ctx context.Context, teamID string) []*configstoreTables.TableRateLimit
 	// Customer-level governance checks
 	CheckCustomerBudget(ctx context.Context, customerID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
 	CheckCustomerRateLimit(ctx context.Context, customerID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
@@ -168,6 +172,7 @@ type GovernanceStore interface {
 	CreateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
 	UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
 	DeleteUserGovernanceInMemory(ctx context.Context, userID string)
+	CreateUserNameInMemory(ctx context.Context, userID string, userName string)
 	// User-level governance checks (enterprise-only)
 	CheckUserBudget(ctx context.Context, userID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
 	CheckUserRateLimit(ctx context.Context, userID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
@@ -176,6 +181,7 @@ type GovernanceStore interface {
 	// Model config in-memory operations
 	UpdateModelConfigInMemory(ctx context.Context, mc *configstoreTables.TableModelConfig) *configstoreTables.TableModelConfig
 	DeleteModelConfigInMemory(ctx context.Context, mcID string)
+	ScopedModelConfigIDs(scope, scopeID string) []string
 	// Provider in-memory operations
 	UpdateProviderInMemory(ctx context.Context, provider *configstoreTables.TableProvider) *configstoreTables.TableProvider
 	DeleteProviderInMemory(ctx context.Context, providerName string)
@@ -189,12 +195,11 @@ type GovernanceStore interface {
 	GetScopedRoutingRules(ctx context.Context, scope string, scopeID string) []*configstoreTables.TableRoutingRule
 	UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error
 	DeleteRoutingRuleInMemory(ctx context.Context, id string) error
-	// CollectApplicableGovernanceIDs returns the budget and rate-limit IDs that
-	// govern a request for the given virtual key, provider, and model. The
-	// returned IDs are attached to log entries so that ghost-node usage
-	// reconciliation can attribute cost and tokens to the correct governance
-	// entities.
-	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
+	// CollectApplicableGovernanceIDs returns every budget and rate-limit ID this node charges for the given (virtualKey, userID, provider, model).
+	// The IDs are stamped on the log row so ghost-node reconciliation can re-attribute cost and tokens;
+	// missing any ID here means that usage vanishes from cluster baselines when the node ghosts.
+	// userID contributes the user-scoped model-config IDs;
+	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -444,6 +449,35 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 		if shouldUpdateRequests {
 			clone.RequestCurrentUsage++
 		}
+		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			return nil
+		}
+	}
+}
+
+// BumpRateLimitUsageBy atomically adds arbitrary token and request deltas to the
+// rate limit identified by rateLimitID. Unlike BumpRateLimitUsage (which adds a
+// token count and a single request), this adds caller-supplied counts on both
+// dimensions — used to fold accumulated usage carried from another rate limit.
+// Same CAS-retry contract: no increment is dropped under concurrent callers.
+// No window-reset side effect, since carried deltas are not request traffic.
+// No-op when the rate limit is absent or both deltas are zero.
+func (gs *LocalGovernanceStore) BumpRateLimitUsageBy(ctx context.Context, rateLimitID string, tokenDelta, requestDelta int64) error {
+	if tokenDelta == 0 && requestDelta == 0 {
+		return nil
+	}
+	for {
+		raw, exists := gs.rateLimits.Load(rateLimitID)
+		if !exists || raw == nil {
+			return nil
+		}
+		old, ok := raw.(*configstoreTables.TableRateLimit)
+		if !ok || old == nil {
+			return nil
+		}
+		clone := *old
+		clone.TokenCurrentUsage += tokenDelta
+		clone.RequestCurrentUsage += requestDelta
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
 			return nil
 		}
@@ -1237,6 +1271,153 @@ func (gs *LocalGovernanceStore) CheckTeamRateLimit(ctx context.Context, teamID s
 	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
 }
 
+// CollectTeamBudgets returns the live budget objects configured for a team,
+// resolved by ID from the hot budgets map (so usage counters and recent edits
+// are reflected). Mirrors the read pattern in CheckTeamBudget. Returns nil when
+// the team is unknown or has no budgets. Exported so the enterprise layer can
+// fold team budgets into a user→team→business-unit hierarchy collector the same
+// way collectBudgetsFromHierarchy folds them into the VK hierarchy.
+func (gs *LocalGovernanceStore) CollectTeamBudgets(ctx context.Context, teamID string) []*configstoreTables.TableBudget {
+	if teamID == "" {
+		return nil
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return nil
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || len(team.Budgets) == 0 {
+		return nil
+	}
+	list := make([]*configstoreTables.TableBudget, 0, len(team.Budgets))
+	for _, b := range team.Budgets {
+		if hot := gs.LoadBudget(ctx, b.ID); hot != nil {
+			list = append(list, hot)
+		}
+	}
+	if len(list) == 0 {
+		return nil
+	}
+	return list
+}
+
+// CollectTeamRateLimits returns the live rate-limit object configured for a team
+// (at most one), resolved by ID from the hot rate-limits map. Mirrors the read
+// pattern in CheckTeamRateLimit. Returns nil when the team is unknown or has no
+// rate limit. Exported for the enterprise user-hierarchy collector.
+func (gs *LocalGovernanceStore) CollectTeamRateLimits(ctx context.Context, teamID string) []*configstoreTables.TableRateLimit {
+	if teamID == "" {
+		return nil
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return nil
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || team.RateLimitID == nil {
+		return nil
+	}
+	rl := gs.LoadRateLimit(ctx, *team.RateLimitID)
+	if rl == nil {
+		return nil
+	}
+	return []*configstoreTables.TableRateLimit{rl}
+}
+
+// CollectCustomerBudgets returns the customer's live budgets resolved from the hot budgets map, or nil if the customer is unknown or has none.
+func (gs *LocalGovernanceStore) CollectCustomerBudgets(ctx context.Context, customerID string) []*configstoreTables.TableBudget {
+	if customerID == "" {
+		return nil
+	}
+	customerValue, exists := gs.customers.Load(customerID)
+	if !exists || customerValue == nil {
+		return nil
+	}
+	customer, ok := customerValue.(*configstoreTables.TableCustomer)
+	if !ok || customer == nil || len(customer.Budgets) == 0 {
+		return nil
+	}
+	list := make([]*configstoreTables.TableBudget, 0, len(customer.Budgets))
+	for i := range customer.Budgets {
+		if hot := gs.LoadBudget(ctx, customer.Budgets[i].ID); hot != nil {
+			list = append(list, hot)
+		}
+	}
+	return list
+}
+
+// CollectCustomerRateLimits returns the customer's live rate-limit (at most one) resolved from the hot rate-limits map, or nil if the customer is unknown or has none.
+func (gs *LocalGovernanceStore) CollectCustomerRateLimits(ctx context.Context, customerID string) []*configstoreTables.TableRateLimit {
+	if customerID == "" {
+		return nil
+	}
+	customerValue, exists := gs.customers.Load(customerID)
+	if !exists || customerValue == nil {
+		return nil
+	}
+	customer, ok := customerValue.(*configstoreTables.TableCustomer)
+	if !ok || customer == nil || customer.RateLimitID == nil {
+		return nil
+	}
+	rl := gs.LoadRateLimit(ctx, *customer.RateLimitID)
+	if rl == nil {
+		return nil
+	}
+	return []*configstoreTables.TableRateLimit{rl}
+}
+
+// GetTeamCustomerID returns a team's scalar customer id (TableTeam.CustomerID), or "" if the team is unknown or has no scalar customer. The enterprise layer uses it to exclude that customer from its M2M team→customer propagation so the OSS VK→team→customer hierarchy doesn't double-charge it.
+func (gs *LocalGovernanceStore) GetTeamCustomerID(ctx context.Context, teamID string) string {
+	if teamID == "" {
+		return ""
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return ""
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || team.CustomerID == nil {
+		return ""
+	}
+	return *team.CustomerID
+}
+
+// GetTeamName returns a team's display name from the in-memory store, or "" if
+// the team is unknown. The enterprise layer uses it as the fallback for log
+// stamping when its edge-driven name caches miss (e.g. a team with no user
+// members and no business unit).
+func (gs *LocalGovernanceStore) GetTeamName(ctx context.Context, teamID string) string {
+	if teamID == "" {
+		return ""
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return ""
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil {
+		return ""
+	}
+	return team.Name
+}
+
+// GetCustomerName returns a customer's display name from the in-memory store,
+// or "" if the customer is unknown. Same fallback role as GetTeamName.
+func (gs *LocalGovernanceStore) GetCustomerName(ctx context.Context, customerID string) string {
+	if customerID == "" {
+		return ""
+	}
+	customerValue, exists := gs.customers.Load(customerID)
+	if !exists || customerValue == nil {
+		return ""
+	}
+	customer, ok := customerValue.(*configstoreTables.TableCustomer)
+	if !ok || customer == nil {
+		return ""
+	}
+	return customer.Name
+}
+
 // CheckCustomerBudget checks customer-level budget and returns evaluation result if violated
 func (gs *LocalGovernanceStore) CheckCustomerBudget(ctx context.Context, customerID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
 	if customerID == "" {
@@ -1893,6 +2074,10 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 
 // loadFromDatabase loads all governance data from the database into memory
 func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
+	loadStart := time.Now()
+	defer func() {
+		gs.logger.Info("[startup-timing] loadFromDatabase total took %v", time.Since(loadStart))
+	}()
 	// Load customers with their budgets
 	customers, err := gs.configStore.GetCustomers(ctx)
 	if err != nil {
@@ -1906,10 +2091,12 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	}
 
 	// Load virtual keys with all relationships
+	vkLoadStart := time.Now()
 	virtualKeys, err := gs.configStore.GetVirtualKeys(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load virtual keys: %w", err)
 	}
+	gs.logger.Info("[startup-timing] loadFromDatabase GetVirtualKeys loaded %d keys in %v", len(virtualKeys), time.Since(vkLoadStart))
 
 	// Load budgets
 	budgets, err := gs.configStore.GetBudgets(ctx)
@@ -1942,7 +2129,9 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	}
 
 	// Rebuild in-memory structures (lock-free)
+	rebuildStart := time.Now()
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
+	gs.logger.Info("[startup-timing] loadFromDatabase rebuildInMemoryStructures took %v", time.Since(rebuildStart))
 
 	return nil
 }
@@ -2482,7 +2671,7 @@ func (gs *LocalGovernanceStore) collectRateLimitIDsFromMemory(ctx context.Contex
 // affected by a request with the given virtual key, provider, and model.
 // It combines provider-level, model-level, and VK-hierarchy (team/customer) IDs.
 // All lookups are fast in-memory sync.Map reads.
-func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
+func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
 	seenBudgets := map[string]bool{}
 	seenRateLimits := map[string]bool{}
 
@@ -2530,6 +2719,13 @@ func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Conte
 		}
 	}
 
+	// --- User-scoped model configs (user / AP path) ---
+	if userID != "" && model != "" {
+		for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeUser, userID, model, providerStr) {
+			addModelConfigIDs(mc)
+		}
+	}
+
 	// --- VK hierarchy (VK-scoped model configs + team/customer) ---
 	if virtualKey != "" {
 		if vk, exists := gs.GetVirtualKey(ctx, virtualKey); exists && vk != nil {
@@ -2567,34 +2763,42 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 		return // Nothing to create
 	}
 
+	clone := *vk
+
+	// Clone provider configs
+	if vk.ProviderConfigs != nil {
+		clone.ProviderConfigs = make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
+		copy(clone.ProviderConfigs, vk.ProviderConfigs)
+	}
+
 	// Store budgets
-	for i := range vk.Budgets {
-		vk.Budgets[i].IsCalendarAligned = vk.CalendarAligned
-		gs.budgets.Store(vk.Budgets[i].ID, &vk.Budgets[i])
+	for i := range clone.Budgets {
+		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
+		gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
 	}
 
 	// Create associated rate limit if exists
-	if vk.RateLimit != nil {
-		vk.RateLimit.IsCalendarAligned = vk.CalendarAligned
-		gs.rateLimits.Store(vk.RateLimit.ID, vk.RateLimit)
+	if clone.RateLimit != nil {
+		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
 	// Create provider config budgets and rate limits if they exist
-	if vk.ProviderConfigs != nil {
-		for i := range vk.ProviderConfigs {
-			pc := &vk.ProviderConfigs[i]
+	if clone.ProviderConfigs != nil {
+		for i := range clone.ProviderConfigs {
+			pc := &clone.ProviderConfigs[i]
 			for j := range pc.Budgets {
-				pc.Budgets[j].IsCalendarAligned = vk.CalendarAligned
+				pc.Budgets[j].IsCalendarAligned = clone.CalendarAligned
 				gs.budgets.Store(pc.Budgets[j].ID, &pc.Budgets[j])
 			}
 			if pc.RateLimit != nil {
-				pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
+				pc.RateLimit.IsCalendarAligned = clone.CalendarAligned
 				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
 			}
 		}
 	}
 
-	gs.virtualKeys.Store(vk.Value, vk)
+	gs.virtualKeys.Store(clone.Value, &clone)
 }
 
 // UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
@@ -2824,14 +3028,28 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 	// Evict any model configs scoped to this virtual key (and their budgets/rate-limits).
 	// Mirrors the DB-side cleanup in DeleteVirtualKey and keeps the in-memory store
 	// consistent even when the VK entry was already removed.
+	gs.DeleteModelConfigsForScopeInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vkID)
+}
+
+// DeleteModelConfigsForScopeInMemory evicts every cached model config targeting the
+// given scope owner (e.g. scope=virtual_key, scopeID=<vk id>) along with the budgets
+// and rate-limits those configs own. It is the in-memory mirror of
+// RDBConfigStore.DeleteModelConfigsForScope; every owner-eviction path routes through
+// here so the cleanup lives in one place. Exported so out-of-package owner-eviction
+// paths (e.g. the enterprise user-deletion flow) reuse it. Owned budgets are released
+// from both the active Budgets slice and the legacy single BudgetID column.
+func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.Context, scope, scopeID string) {
 	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
 		if !ok || mc == nil {
 			return true
 		}
-		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && *mc.ScopeID == vkID {
+		if mc.Scope == scope && mc.ScopeID != nil && *mc.ScopeID == scopeID {
 			for i := range mc.Budgets {
 				gs.DeleteBudget(ctx, mc.Budgets[i].ID)
+			}
+			if mc.BudgetID != nil {
+				gs.DeleteBudget(ctx, *mc.BudgetID)
 			}
 			if mc.RateLimitID != nil {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
@@ -2848,20 +3066,22 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 		return // Nothing to create
 	}
 
+	clone := *team
+
 	// Create associated budgets if they exist
-	for i := range team.Budgets {
-		team.Budgets[i].IsCalendarAligned = team.CalendarAligned
-		b := team.Budgets[i]
+	for i := range clone.Budgets {
+		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
+		b := clone.Budgets[i]
 		gs.budgets.Store(b.ID, &b)
 	}
 
 	// Create associated rate limit if exists
-	if team.RateLimit != nil {
-		team.RateLimit.IsCalendarAligned = team.CalendarAligned
-		gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
+	if clone.RateLimit != nil {
+		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
-	gs.teams.Store(team.ID, team)
+	gs.teams.Store(clone.ID, &clone)
 }
 
 // UpdateTeamInMemory updates an existing team in the in-memory store (lock-free)
@@ -2980,15 +3200,16 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 	if customer == nil {
 		return // Nothing to create
 	}
-	for i := range customer.Budgets {
-		customer.Budgets[i].IsCalendarAligned = customer.CalendarAligned
-		gs.budgets.Store(customer.Budgets[i].ID, &customer.Budgets[i])
+	clone := *customer
+	for i := range clone.Budgets {
+		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
+		gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
 	}
-	if customer.RateLimit != nil {
-		customer.RateLimit.IsCalendarAligned = customer.CalendarAligned
-		gs.rateLimits.Store(customer.RateLimit.ID, customer.RateLimit)
+	if clone.RateLimit != nil {
+		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
-	gs.customers.Store(customer.ID, customer)
+	gs.customers.Store(clone.ID, &clone)
 }
 
 // UpdateCustomerInMemory updates an existing customer in the in-memory store (lock-free)
@@ -3116,6 +3337,11 @@ func (gs *LocalGovernanceStore) CreateUserGovernanceInMemory(ctx context.Context
 	// Available in enterprise
 }
 
+func (gs *LocalGovernanceStore) CreateUserNameInMemory(ctx context.Context, userID string, userName string) {
+	// NoOp
+	// Available in enterprise
+}
+
 // UpdateUserGovernanceInMemory updates user governance data in the in-memory store (enterprise-only)
 func (gs *LocalGovernanceStore) UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
 	// NoOp
@@ -3217,6 +3443,28 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 		}
 		return true // continue iteration
 	})
+}
+
+// ScopedModelConfigIDs returns the IDs of all in-memory model configs for the
+// given (scope, scopeID). Callers use this to diff against the DB result and
+// evict stale entries via DeleteModelConfigInMemory.
+func (gs *LocalGovernanceStore) ScopedModelConfigIDs(scope, scopeID string) []string {
+	var ids []string
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true
+		}
+		mcScopeID := ""
+		if mc.ScopeID != nil {
+			mcScopeID = *mc.ScopeID
+		}
+		if mc.Scope == scope && mcScopeID == scopeID {
+			ids = append(ids, mc.ID)
+		}
+		return true
+	})
+	return ids
 }
 
 // UpdateProviderInMemory adds or updates a provider in the in-memory store (lock-free)
@@ -3518,8 +3766,16 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *con
 		return nil, fmt.Errorf("CEL compile error: %s", issues.Err().Error())
 	}
 
-	// Create program
-	program, err := gs.routingCELEnv.Program(ast)
+	// Create program. Partial evaluation is only needed for complexity rules,
+	// where routing treats unavailable complexity_tier as unknown instead of
+	// leaking an empty-string sentinel.
+	var program cel.Program
+	var err error
+	if celASTReferencesIdentifier(ast, "complexity_tier") {
+		program, err = gs.routingCELEnv.Program(ast, cel.EvalOptions(cel.OptPartialEval))
+	} else {
+		program, err = gs.routingCELEnv.Program(ast)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("CEL program creation error: %w", err)
 	}

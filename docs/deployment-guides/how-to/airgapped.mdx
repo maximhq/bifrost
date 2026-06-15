@@ -1,0 +1,50 @@
+---
+title: "Air-Gapped Deployment"
+description: "Run Bifrost in environments without outbound internet access."
+icon: "wifi-slash"
+---
+
+## Overview
+
+Bifrost fetches its pricing and model parameter datasheets from `https://getbifrost.ai/datasheet` on startup and periodically in the background. In environments without outbound internet access, these fetches fail and Bifrost cannot start.
+
+Both fields accept `file://` URLs so you can load the datasheets from the local filesystem instead.
+
+---
+
+## Setup
+
+**1. Download the datasheets** on a machine with internet access:
+
+```bash
+curl -o pricing.json https://getbifrost.ai/datasheet
+curl -o model-parameters.json https://getbifrost.ai/datasheet/model-parameters
+```
+
+Transfer the files to your air-gapped host (or bake them into your container image / Kubernetes volume).
+
+**2. Point Bifrost at the local files** in `config.json`:
+
+```json
+{
+  "framework": {
+    "pricing": {
+      "pricing_url": "file:///opt/bifrost/pricing.json",
+      "model_parameters_url": "file:///opt/bifrost/model-parameters.json",
+      "pricing_sync_interval": 86400
+    }
+  }
+}
+```
+
+<Note>
+`file://` URLs require three slashes followed by an absolute path.
+</Note>
+
+**3. Ensure the files are accessible** to the Bifrost process at the configured paths before starting.
+
+---
+
+## Keeping datasheets current
+
+Bifrost re-reads the file on every sync tick (`pricing_sync_interval`, minimum 3600 s).

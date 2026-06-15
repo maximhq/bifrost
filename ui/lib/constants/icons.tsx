@@ -1,4 +1,4 @@
-import { Database, Landmark, Network, Shuffle } from "lucide-react";
+import { Database, Landmark, Network, Shuffle, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
 
@@ -367,6 +367,44 @@ export const ProviderIcons = {
 		);
 	},
 
+	"opencode-go": ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 128 128"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>OpenCode</title>
+				<rect x="16" y="20" width="96" height="88" rx="8" stroke="currentColor" strokeWidth="6" fill="none" />
+				<rect x="28" y="44" width="72" height="40" rx="4" fill="currentColor" />
+			</svg>
+		);
+	},
+
+	"opencode-zen": ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 128 128"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>OpenCode Zen</title>
+				<rect x="16" y="20" width="96" height="88" rx="8" stroke="currentColor" strokeWidth="6" fill="none" />
+				<circle cx="64" cy="64" r="20" fill="currentColor" />
+			</svg>
+		);
+	},
+
 	sgl: ({ className = "" }: IconProps) => {
 		return <img src="/images/sgl.webp" alt="sgl" width={14} height={14} loading="lazy" decoding="async" className={className} />;
 	},
@@ -681,8 +719,9 @@ export const ProviderIcons = {
 export const RoutingEngineUsedIcons = {
 	"routing-rule": ({ className = "h-5 w-5 text-blue-800" }: { className?: string } = {}) => <Network className={className} />,
 	governance: ({ className = "h-5 w-5 text-green-800" }: { className?: string } = {}) => <Landmark className={className} />,
-	loadbalancing: ({ className = "h-5 w-5 text-red-800" }: { className?: string } = {}) => <Shuffle className={className} />,
+	loadbalancing: ({ className = "h-5 w-5 text-orange-800" }: { className?: string } = {}) => <Shuffle className={className} />,
 	"model-catalog": ({ className = "h-5 w-5 text-purple-800" }: { className?: string } = {}) => <Database className={className} />,
+	core: ({ className = "h-5 w-5 text-sky-800" }: { className?: string } = {}) => <Workflow className={className} />,
 } as const;
 
 export type RoutingEngineType = keyof typeof RoutingEngineUsedIcons;

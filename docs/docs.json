@@ -144,6 +144,7 @@
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
+                  "providers/supported-providers/opencode",
                   "providers/supported-providers/openai",
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
@@ -230,12 +231,14 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers"
+                  "features/governance/required-headers",
+                  "features/governance/complexity-router"
                 ]
               },
               "features/telemetry",
               "features/otel",
               "features/semantic-caching",
+              "features/skills-repository",
               {
                 "group": "Prompt Repository",
                 "icon": "folder",
@@ -329,6 +332,51 @@
             "icon": "shield",
             "pages": [
               "security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Edge",
+        "icon": "globe",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "edge/overview",
+              "edge/how-it-works"
+            ]
+          },
+          {
+            "group": "Governance & Control",
+            "icon": "shield-halved",
+            "pages": [
+              "edge/app-governance",
+              "edge/mcp-governance",
+              "edge/security"
+            ]
+          },
+          {
+            "group": "Admin controls",
+            "icon": "sliders",
+            "pages": [
+              "edge/admin-devices",
+              "edge/admin-approvals",
+              "edge/admin-configurations"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "icon": "cloud-arrow-up",
+            "pages": [
+              "edge/deployment-mdm"
+            ]
+          },
+          {
+            "group": "Reference",
+            "icon": "list",
+            "pages": [
+              "edge/supported-applications"
             ]
           }
         ]
@@ -511,6 +559,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
           }
@@ -585,15 +634,26 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.5.7",
-              "changelogs/v1.5.6",
-              "changelogs/v1.5.5",
-              "changelogs/v1.5.4",
-              "changelogs/v1.5.3",
-              "changelogs/v1.5.2",
-              "changelogs/v1.5.1",
-              "changelogs/v1.5.0",
-              "changelogs/v1.5.0-prerelease8",
+              "changelogs/v1.5.13",
+              "changelogs/v1.5.12",
+              "changelogs/v1.5.11",
+              "changelogs/v1.5.10",
+              "changelogs/v1.5.9",
+              "changelogs/v1.5.8",
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/v1.5.7",
+                  "changelogs/v1.5.6",
+                  "changelogs/v1.5.5",
+                  "changelogs/v1.5.4",
+                  "changelogs/v1.5.3",
+                  "changelogs/v1.5.2",
+                  "changelogs/v1.5.1",
+                  "changelogs/v1.5.0",
+                  "changelogs/v1.5.0-prerelease8"
+                ]
+              },
               {
                 "group": "April 2026",
                 "pages": [
@@ -755,6 +815,10 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.9",
+              "changelogs/ent-v1.4.8",
+              "changelogs/ent-v1.4.7",
+              "changelogs/ent-v1.4.7-rc1",
               "changelogs/ent-v1.4.6",
               "changelogs/ent-v1.4.5",
               "changelogs/ent-v1.4.4",
@@ -816,6 +880,9 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.23",
+              "changelogs/helm-v2.1.22",
+              "changelogs/helm-v2.1.21",
               "changelogs/helm-v2.1.20",
               "changelogs/helm-v2.1.19",
               "changelogs/helm-v2.1.18",

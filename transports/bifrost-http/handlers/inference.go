@@ -5,6 +5,7 @@ package handlers
 import (
 	"context"
 
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,27 +57,13 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 	}
 }
 
-// resolveModelAndProvider parses the model string, validates it, and resolves
-// the provider via model catalog when no provider prefix is present. Stores
-// resolution metadata on the fasthttp context for ConvertToBifrostContext to
-// emit the routing engine log.
-func resolveModelAndProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
+// resolveModelAndProvider parses the model string. An empty provider is allowed here —
+// the ModelCatalogResolver built-in PreRequestHook plugin fills it in as the last routing
+// layer when no other routing plugin (governance routing rules, governance VK LB, enterprise
+// LB) picked one. The empty-provider validation in handleRequest/handleStreamRequest catches
+// the case where catalog resolution also fails.
+func resolveModelAndProvider(_ *fasthttp.RequestCtx, _ *lib.Config, model string) (schemas.ModelProvider, string, error) {
 	provider, modelName := schemas.ParseModelString(model, "")
-	if modelName == "" {
-		return "", "", fmt.Errorf("model is required")
-	}
-	if provider == "" {
-		providers := config.GetProvidersForModel(modelName)
-		if len(providers) == 0 {
-			return "", "", fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog to auto-resolve", modelName)
-		}
-		ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
-			Model:            modelName,
-			ResolvedProvider: providers[0],
-			AllProviders:     providers,
-		})
-		provider = providers[0]
-	}
 	return provider, modelName, nil
 }
 
@@ -195,6 +182,17 @@ var responsesParamsKnownFields = map[string]bool{
 	"tool_choice":            true,
 	"tools":                  true,
 	"truncation":             true,
+}
+
+var compactionParamsKnownFields = map[string]bool{
+	"model":                  true,
+	"input":                  true,
+	"fallbacks":              true,
+	"instructions":           true,
+	"previous_response_id":   true,
+	"prompt_cache_key":       true,
+	"prompt_cache_retention": true,
+	"service_tier":           true,
 }
 
 var embeddingParamsKnownFields = map[string]bool{
@@ -344,6 +342,7 @@ var batchCreateParamsKnownFields = map[string]bool{
 	"input_file_id":     true,
 	"input_blob":        true,
 	"output_folder":     true,
+	"display_name":      true,
 	"requests":          true,
 	"endpoint":          true,
 	"completion_window": true,
@@ -514,6 +513,17 @@ type ResponsesRequest struct {
 	*schemas.ResponsesParameters
 }
 
+// CompactionHTTPRequest is a bifrost compaction request (subset of responses fields)
+type CompactionHTTPRequest struct {
+	Input                ResponsesRequestInput       `json:"input"`
+	Instructions         *string                     `json:"instructions,omitempty"`
+	PreviousResponseID   *string                     `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention *string                     `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          *schemas.BifrostServiceTier `json:"service_tier,omitempty"`
+	BifrostParams
+}
+
 // EmbeddingRequest is a bifrost embedding request
 type EmbeddingRequest struct {
 	Input *schemas.EmbeddingInput `json:"input"`
@@ -567,6 +577,7 @@ type BatchCreateRequest struct {
 	Requests         []schemas.BatchRequestItem `json:"requests,omitempty"`          // Anthropic-style inline requests
 	InputBlob        *string                    `json:"input_blob,omitempty"`        // Azure-style blob storage input
 	OutputFolder     *schemas.BatchOutputFolder `json:"output_folder,omitempty"`     // Azure-style output destination
+	DisplayName      *string                    `json:"display_name,omitempty"`      // Human-readable job name (e.g. Vertex displayName)
 	Endpoint         string                     `json:"endpoint,omitempty"`          // e.g., "/v1/chat/completions"
 	CompletionWindow string                     `json:"completion_window,omitempty"` // e.g., "24h"
 	Metadata         map[string]string          `json:"metadata,omitempty"`
@@ -674,6 +685,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
 	"/v1/images/generations":     schemas.ImageGenerationRequest,
 	"/v1/responses/input_tokens": schemas.CountTokensRequest,
+	"/v1/responses/compact":      schemas.CompactionRequest,
 	"/v1/images/edits":           schemas.ImageEditRequest,
 	"/v1/images/variations":      schemas.ImageVariationRequest,
 	"/v1/models":                 schemas.ListModelsRequest,
@@ -719,6 +731,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
 	r.POST("/v1/responses/input_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
+	r.POST("/v1/responses/compact", lib.ChainMiddlewares(h.compaction, baseMiddlewares...))
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
@@ -1423,11 +1436,16 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] == "true" {
 		stream = true
 	}
+	fallbacks, err := parseFallbacks(form.Value["fallbacks"])
+	if err != nil {
+		return nil, false, err
+	}
 	bifrostTranscriptionReq := &schemas.BifrostTranscriptionRequest{
-		Model:    modelName,
-		Provider: schemas.ModelProvider(provider),
-		Input:    transcriptionInput,
-		Params:   transcriptionParams,
+		Model:     modelName,
+		Provider:  schemas.ModelProvider(provider),
+		Input:     transcriptionInput,
+		Params:    transcriptionParams,
+		Fallbacks: fallbacks,
 	}
 	return bifrostTranscriptionReq, stream, nil
 }
@@ -1496,6 +1514,72 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 
 	forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, response)
+}
+
+// prepareCompactionRequest prepares a BifrostCompactionRequest from the HTTP request body
+func prepareCompactionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*CompactionHTTPRequest, *schemas.BifrostCompactionRequest, error) {
+	req, base, err := prepareRequest[CompactionHTTPRequest](ctx, config, compactionParamsKnownFields)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(req.Input.ResponsesRequestInputArray) == 0 && req.Input.ResponsesRequestInputStr == nil && req.PreviousResponseID == nil {
+		return nil, nil, fmt.Errorf("input or previous_response_id is required for compaction")
+	}
+
+	input := req.Input.ResponsesRequestInputArray
+	if input == nil && req.Input.ResponsesRequestInputStr != nil {
+		input = []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: req.Input.ResponsesRequestInputStr},
+			},
+		}
+	}
+
+	return req, &schemas.BifrostCompactionRequest{
+		Provider:             base.Provider,
+		Model:                base.ModelName,
+		Input:                input,
+		Instructions:         req.Instructions,
+		PreviousResponseID:   req.PreviousResponseID,
+		PromptCacheKey:       req.PromptCacheKey,
+		PromptCacheRetention: req.PromptCacheRetention,
+		ServiceTier:          req.ServiceTier,
+		Fallbacks:            base.Fallbacks,
+		ExtraParams:          base.ExtraParams,
+	}, nil
+}
+
+// compaction handles POST /v1/responses/compact - Compact a conversation context window
+func (h *CompletionHandler) compaction(ctx *fasthttp.RequestCtx) {
+	_, bifrostCompactionReq, err := prepareCompactionRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	response, bifrostErr := h.client.CompactionRequest(bifrostCtx, bifrostCompactionReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if response != nil && response.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
+	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
@@ -2692,6 +2776,7 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		InputFileID:      req.InputFileID,
 		InputBlob:        req.InputBlob,
 		OutputFolder:     req.OutputFolder,
+		DisplayName:      req.DisplayName,
 		Requests:         req.Requests,
 		Endpoint:         schemas.BatchEndpoint(req.Endpoint),
 		CompletionWindow: req.CompletionWindow,
@@ -2921,6 +3006,32 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+// encodeStorageFileID makes a storage-URI file id (gs://...) opaque and path-safe so
+// callers can use it in retrieve/delete/content without percent-encoding slashes.
+// Non-URI ids (OpenAI/Gemini/Anthropic) pass through unchanged. The response's
+// storage_uri still carries the raw gs:// URI for direct use (e.g. inference).
+func encodeStorageFileID(id string) string {
+	if strings.HasPrefix(id, "gs://") {
+		return base64.RawURLEncoding.EncodeToString([]byte(id))
+	}
+	return id
+}
+
+// decodeStorageFileID reverses encodeStorageFileID. PathUnescape first (harmless for
+// the unreserved RawURL alphabet, and tolerant of callers that percent-encode), then
+// base64-decode the opaque gs:// id. Raw or percent-encoded gs:// ids passed directly
+// also work: PathUnescape yields the gs:// URI and the base64 step is skipped (a
+// gs:// string is not valid base64).
+func decodeStorageFileID(id string) string {
+	if unescaped, err := url.PathUnescape(id); err == nil {
+		id = unescaped
+	}
+	if decoded, err := base64.RawURLEncoding.DecodeString(id); err == nil && strings.HasPrefix(string(decoded), "gs://") {
+		return string(decoded)
+	}
+	return id
+}
+
 // fileUpload handles POST /v1/files - Upload a file
 func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	// Parse multipart form
@@ -2954,36 +3065,71 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	}
 	purpose := purposeValues[0]
 
-	// Extract file (required)
+	// Extract file (optional for providers that support resumable uploads, e.g. Vertex/GCS;
+	// when omitted, the provider mints an upload session URL instead of receiving bytes)
+	var fileData []byte
+	var filename string
 	fileHeaders := form.File["file"]
-	if len(fileHeaders) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "file is required")
-		return
+	if len(fileHeaders) > 0 {
+		fileHeader := fileHeaders[0]
+		filename = fileHeader.Filename
+
+		// Open and read the file
+		file, err := fileHeader.Open()
+		if err != nil {
+			logger.Warn("Failed to open uploaded file: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+		defer file.Close()
+
+		// Read file data
+		fileData, err = io.ReadAll(file)
+		if err != nil {
+			logger.Warn("Failed to read uploaded file: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+	} else if len(form.Value["filename"]) > 0 {
+		filename = form.Value["filename"][0]
 	}
 
-	fileHeader := fileHeaders[0]
-
-	// Open and read the file
-	file, err := fileHeader.Open()
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
-		return
+	// Extract content type (used for resumable upload sessions and stored object metadata)
+	var contentType *string
+	if len(form.Value["content_type"]) > 0 && form.Value["content_type"][0] != "" {
+		contentType = &form.Value["content_type"][0]
 	}
-	defer file.Close()
 
-	// Read file data
-	fileData, err := io.ReadAll(file)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
-		return
+	// GCS storage location for Vertex uploads: sent as individual multipart fields,
+	// parsed into the typed StorageConfig rather than passed opaquely via extra_params.
+	var storageConfig *schemas.FileStorageConfig
+	if len(form.Value["gcs_bucket"]) > 0 && form.Value["gcs_bucket"][0] != "" {
+		gcs := &schemas.GCSStorageConfig{Bucket: form.Value["gcs_bucket"][0]}
+		if len(form.Value["gcs_prefix"]) > 0 {
+			gcs.Prefix = form.Value["gcs_prefix"][0]
+		}
+		storageConfig = &schemas.FileStorageConfig{GCS: gcs}
+	}
+
+	// Collect unknown form fields as extra params (multipart — cannot use extractExtraParams which expects JSON).
+	// gcs_bucket/gcs_prefix are consumed into StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
+	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true}
+	extraParams := map[string]interface{}{}
+	for k, vals := range form.Value {
+		if !fileUploadKnownFields[k] && len(vals) > 0 && vals[0] != "" {
+			extraParams[k] = vals[0]
+		}
 	}
 
 	// Build Bifrost file upload request
 	bifrostFileReq := &schemas.BifrostFileUploadRequest{
-		Provider: schemas.ModelProvider(provider),
-		File:     fileData,
-		Filename: fileHeader.Filename,
-		Purpose:  schemas.FilePurpose(purpose),
+		Provider:      schemas.ModelProvider(provider),
+		File:          fileData,
+		Filename:      filename,
+		Purpose:       schemas.FilePurpose(purpose),
+		ContentType:   contentType,
+		StorageConfig: storageConfig,
+		ExtraParams:   extraParams,
 	}
 
 	// Convert context
@@ -3001,8 +3147,11 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		resp.ID = encodeStorageFileID(resp.ID)
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3046,13 +3195,35 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		order = &s
 	}
 
+	// GCS storage location for Vertex listing: parsed into the typed StorageConfig
+	// rather than passed opaquely via extra_params.
+	var storageConfig *schemas.FileStorageConfig
+	if gcsBucket := string(ctx.QueryArgs().Peek("gcs_bucket")); gcsBucket != "" {
+		storageConfig = &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{
+			Bucket: gcsBucket,
+			Prefix: string(ctx.QueryArgs().Peek("gcs_prefix")),
+		}}
+	}
+
+	// Collect unknown query args as extra params. gcs_bucket/gcs_prefix are consumed into
+	// StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
+	fileListKnownArgs := map[string]bool{"provider": true, "x-model-provider": true, "purpose": true, "limit": true, "after": true, "order": true, "gcs_bucket": true, "gcs_prefix": true}
+	extraParams := map[string]interface{}{}
+	ctx.QueryArgs().VisitAll(func(k, v []byte) {
+		if argKey := string(k); !fileListKnownArgs[argKey] && len(v) > 0 {
+			extraParams[argKey] = string(v)
+		}
+	})
+
 	// Build Bifrost file list request
 	bifrostFileReq := &schemas.BifrostFileListRequest{
-		Provider: schemas.ModelProvider(provider),
-		Purpose:  schemas.FilePurpose(purpose),
-		Limit:    limit,
-		After:    after,
-		Order:    order,
+		Provider:      schemas.ModelProvider(provider),
+		Purpose:       schemas.FilePurpose(purpose),
+		Limit:         limit,
+		After:         after,
+		Order:         order,
+		StorageConfig: storageConfig,
+		ExtraParams:   extraParams,
 	}
 
 	// Convert context
@@ -3070,8 +3241,13 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		for i := range resp.Data {
+			resp.Data[i].ID = encodeStorageFileID(resp.Data[i].ID)
+		}
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3087,6 +3263,11 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
 		return
 	}
+
+	// Vertex returns an opaque base64(gs://) id so callers don't percent-encode
+	// slashes in the path; decode it back (falls back to percent-decoding for raw
+	// or percent-encoded gs:// / s3:// ids passed directly).
+	fileID = decodeStorageFileID(fileID)
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -3116,8 +3297,11 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		resp.ID = encodeStorageFileID(resp.ID)
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3133,6 +3317,11 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
 		return
 	}
+
+	// Vertex returns an opaque base64(gs://) id so callers don't percent-encode
+	// slashes in the path; decode it back (falls back to percent-decoding for raw
+	// or percent-encoded gs:// / s3:// ids passed directly).
+	fileID = decodeStorageFileID(fileID)
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -3162,8 +3351,11 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		resp.ID = encodeStorageFileID(resp.ID)
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3179,6 +3371,11 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
 		return
 	}
+
+	// Vertex returns an opaque base64(gs://) id so callers don't percent-encode
+	// slashes in the path; decode it back (falls back to percent-decoding for raw
+	// or percent-encoded gs:// / s3:// ids passed directly).
+	fileID = decodeStorageFileID(fileID)
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))

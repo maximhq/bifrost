@@ -7,8 +7,6 @@ icon: "user-shield"
 
 ## Overview
 
-<Info>Per-user OAuth is available in **Bifrost v1.5.0-prerelease2 and above**.</Info>
-
 `auth_type: "per_user_oauth"` lets each end-user connect to an upstream MCP service (Notion, GitHub, Sentry, etc.) under their own account. Bifrost stores one OAuth token per `(identity, mcp_client)` and reuses it on every later call.
 
 If a single shared admin token is fine, use [OAuth 2.0](./oauth) instead.

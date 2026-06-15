@@ -180,3 +180,10 @@ ui/app/routeTree.gen.ts
 # e2e test artifacts
 examples/mcps/auth-demo-server/auth-demo-server
 examples/mcps/oauth-demo-server/oauth-demo-server
+
+# binaries
+tests/cmd/e2eseed/e2eseed
+tests/cmd/seedvks/seedvks
+
+# routing harness ledgers (local run journals, never committed)
+tests/e2e/api/routing/ledger-*

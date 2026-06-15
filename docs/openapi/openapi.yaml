@@ -140,6 +140,8 @@ tags:
     description: Log search and management endpoints
   - name: Cache
     description: Cache management endpoints
+  - name: Skills
+    description: Skills Repository management, marketplace, and download endpoints
 
 paths:
   # ==================== Unified Inference API ====================
@@ -177,6 +179,8 @@ paths:
     $ref: './paths/inference/videos.yaml#/video-remix'
   /v1/responses/input_tokens:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
+  /v1/responses/compact:
+    $ref: './paths/inference/compaction.yaml#/compact'
   /v1/batches:
     $ref: './paths/inference/batches.yaml#/batches'
   /v1/batches/{batch_id}:
@@ -278,6 +282,10 @@ paths:
     $ref: './paths/integrations/openai/responses.yaml#/azure-responses'
   /openai/v1/responses/input_tokens:
     $ref: './paths/integrations/openai/responses.yaml#/responses-input-tokens'
+
+  # Context Compaction
+  /openai/v1/responses/compact:
+    $ref: './paths/integrations/openai/compaction.yaml#/compact'
 
   # Embeddings
   /openai/v1/embeddings:
@@ -818,6 +826,18 @@ paths:
   /api/governance/customers/{customer_id}:
     $ref: './paths/management/governance.yaml#/customers-by-id'
 
+  # Governance - Business Units (Enterprise)
+  /api/governance/business-units:
+    $ref: './paths/management/businessunits.yaml#/business-units'
+  /api/governance/business-units/{id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-by-id'
+  /api/governance/business-units/{id}/teams:
+    $ref: './paths/management/businessunits.yaml#/business-units-teams'
+  /api/governance/business-units/{id}/teams/{team_id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-team-by-id'
+  /api/governance/business-units/{id}/governance:
+    $ref: './paths/management/businessunits.yaml#/business-units-governance'
+
   # Governance - Budgets and Rate Limits
   /api/governance/budgets:
     $ref: './paths/management/governance.yaml#/budgets'
@@ -900,6 +920,12 @@ paths:
   /api/mcp/tool-groups/{id}:
     $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
 
+  # Governance - Complexity Analyzer Config
+  /api/governance/complexity-analyzer-config:
+    $ref: './paths/management/governance.yaml#/complexity'
+  /api/governance/complexity-analyzer-config/reset:
+    $ref: './paths/management/governance.yaml#/complexity-reset'
+
   # Logging
   /api/logs:
     $ref: './paths/management/logging.yaml#/logs'
@@ -979,6 +1005,32 @@ paths:
     $ref: './paths/management/prompts.yaml#/sessions-rename'
   /api/prompt-repo/sessions/{id}/commit:
     $ref: './paths/management/prompts.yaml#/sessions-commit'
+
+  # Skills Repository
+  /api/skills/files/upload:
+    $ref: './paths/management/skills.yaml#/skill-file-upload'
+  /api/skills/files/orphans:
+    $ref: './paths/management/skills.yaml#/skill-orphan-files'
+  /api/skills/all/version:
+    $ref: './paths/management/skills.yaml#/all-skills-version'
+  /api/skills:
+    $ref: './paths/management/skills.yaml#/skills'
+  /api/skills/{id}:
+    $ref: './paths/management/skills.yaml#/skills-by-id'
+  /api/skills/{id}/versions:
+    $ref: './paths/management/skills.yaml#/skill-versions'
+  /api/skills/{id}/shift-version:
+    $ref: './paths/management/skills.yaml#/shift-skill-version'
+  /api/skills/serve/claude-code/.claude-plugin/marketplace.json:
+    $ref: './paths/management/skills.yaml#/claude-code-skills-marketplace'
+  /api/skills/serve/codex/.agents/plugins/marketplace.json:
+    $ref: './paths/management/skills.yaml#/codex-skills-marketplace'
+  /api/skills/serve/all/download.zip:
+    $ref: './paths/management/skills.yaml#/all-skills-download'
+  /api/skills/serve/{skill-name}/download.zip:
+    $ref: './paths/management/skills.yaml#/skill-download'
+  /api/skills/serve/{skill-name}/files/{filepath}:
+    $ref: './paths/management/skills.yaml#/skill-file-download'
 
   # Cache
   /api/cache/clear/{cacheId}:
@@ -1064,6 +1116,12 @@ components:
             $ref: './schemas/inference/common.yaml#/BifrostError'
     InternalError:
       description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    ConfigStoreUnavailable:
+      description: Config store not available
       content:
         application/json:
           schema:
@@ -1500,6 +1558,44 @@ components:
       $ref: './schemas/management/governance.yaml#/PricingOverrideResponse'
     ListPricingOverridesResponse:
       $ref: './schemas/management/governance.yaml#/ListPricingOverridesResponse'
+
+    # Skills Repository
+    SkillSourceType:
+      $ref: './schemas/management/skills.yaml#/SkillSourceType'
+    SkillFileEntry:
+      $ref: './schemas/management/skills.yaml#/SkillFileEntry'
+    SkillFile:
+      $ref: './schemas/management/skills.yaml#/SkillFile'
+    SkillVersion:
+      $ref: './schemas/management/skills.yaml#/SkillVersion'
+    Skill:
+      $ref: './schemas/management/skills.yaml#/Skill'
+    CreateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/CreateSkillRequest'
+    UpdateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/UpdateSkillRequest'
+    SkillResponse:
+      $ref: './schemas/management/skills.yaml#/SkillResponse'
+    ListSkillsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillsResponse'
+    ListSkillVersionsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillVersionsResponse'
+    UploadSkillFileRequest:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileRequest'
+    UploadSkillFileResponse:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileResponse'
+    SkillOrphanCleanupResponse:
+      $ref: './schemas/management/skills.yaml#/SkillOrphanCleanupResponse'
+    AllSkillsVersionResponse:
+      $ref: './schemas/management/skills.yaml#/AllSkillsVersionResponse'
+    BumpAllSkillsVersionRequest:
+      $ref: './schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
+    ShiftSkillVersionRequest:
+      $ref: './schemas/management/skills.yaml#/ShiftSkillVersionRequest'
+    ClaudeCodeSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/ClaudeCodeSkillMarketplace'
+    CodexSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/CodexSkillMarketplace'
 
     # Logging
     LogEntry:

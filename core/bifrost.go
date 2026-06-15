@@ -35,6 +35,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
+	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
@@ -459,7 +460,6 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			},
 		}
 	}
-
 	startTime := time.Now()
 
 	// Result structure for collecting provider responses
@@ -920,6 +920,49 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 	}
 
 	return response.CountTokensResponse, nil
+}
+
+// CompactionRequest compacts a conversation context window via providers that implement
+// the OpenAI-compatible /v1/responses/compact flow (OpenAI, Azure OpenAI, xAI).
+// Providers without compaction support return an unsupported-operation error.
+func (bifrost *Bifrost) CompactionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "compaction request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.CompactionRequest,
+			},
+		}
+	}
+
+	if len(req.Input) == 0 && req.PreviousResponseID == nil && !isLargePayloadPassthrough(ctx) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "input not provided for compaction request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.CompactionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CompactionRequest
+	bifrostReq.CompactionRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.CompactionResponse, nil
 }
 
 // EmbeddingRequest sends an embedding request to the specified provider.
@@ -2125,7 +2168,8 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			},
 		}
 	}
-	if len(req.File) == 0 {
+
+	if len(req.File) == 0 && req.Provider != schemas.Vertex {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -3923,6 +3967,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return ollama.NewOllamaProvider(config, bifrost.logger)
 	case schemas.Groq:
 		return groq.NewGroqProvider(config, bifrost.logger)
+	case schemas.OpencodeGo:
+		return opencode.NewOpencodeGoProvider(config, bifrost.logger)
+	case schemas.OpencodeZen:
+		return opencode.NewOpencodeZenProvider(config, bifrost.logger)
 	case schemas.SGL:
 		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
@@ -4125,6 +4173,33 @@ type WSStreamHooks struct {
 type RealtimeTurnHooks struct {
 	PostHookRunner schemas.PostHookRunner
 	Cleanup        func()
+}
+
+// RunPreRequestHooks acquires a plugin pipeline and runs PreRequestHook on each LLM plugin
+// for callers that do not flow through handleRequest/handleStreamRequest — primarily realtime
+// WebSocket upgrades, where the upgrade itself is the routing decision (once per WS connection)
+// but the per-turn pipeline handles PreLLMHook/PostLLMHook separately.
+//
+// Mutations to req.Provider/req.Model/req.Fallbacks made by PreRequestHook plugins are committed
+// to the shared *BifrostRequest. Plugin errors are non-blocking — they are logged as warnings
+// and the pipeline continues to the next plugin (same semantics as RunLLMPreHooks). Callers
+// should validate req.Provider after this returns if a provider is required.
+func (bifrost *Bifrost) RunPreRequestHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+	}
+
+	pipeline := bifrost.getPluginPipeline()
+	defer bifrost.releasePluginPipeline(pipeline)
+	pipeline.RunPreRequestHooks(ctx, req)
+	// This path has no downstream post-hook cleanup, so drain any plugin logs
+	// emitted by PreRequestHook here to avoid them bleeding into a later request
+	// on a reused/long-lived context (e.g. realtime WS connections).
+	flushPluginLogs(ctx)
 }
 
 // RunStreamPreHooks acquires a plugin pipeline, sets up tracing context, runs PreLLMHooks,
@@ -4489,6 +4564,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		fallbackReq.CountTokensRequest = &tmp
 	}
 
+	if req.CompactionRequest != nil {
+		tmp := *req.CompactionRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.CompactionRequest = &tmp
+	}
+
 	if req.EmbeddingRequest != nil {
 		tmp := *req.EmbeddingRequest
 		tmp.Provider = fallback.Provider
@@ -4559,17 +4641,11 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
-	if err := validateRequest(req); err != nil {
-		err.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, err
-	}
 
 	// Handle nil context early to prevent blocking
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
-
-	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
 
 	// Try the primary provider first
 	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
@@ -4578,6 +4654,27 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+
+	// PreRequestHook: once-per-request phase where plugins decide provider/model/fallbacks
+	// (and may mutate other request fields). Mutations commit to req and are observed by
+	// all downstream phases and fallbacks. Plugin errors are non-blocking (logged + skipped).
+	preReqPipeline := bifrost.getPluginPipeline()
+	preReqPipeline.RunPreRequestHooks(ctx, req)
+	bifrost.releasePluginPipeline(preReqPipeline)
+	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
+	provider, model, fallbacks = req.GetRequestFields()
+	// Empty provider/model after PreRequestHook means no plugin
+	// could pick a provider for this model — the caller's input is unresolvable.
+	if err := validateRequestAfterPreRequestHooks(req); err != nil {
+		// Returning before tryRequest skips the downstream log drain, so flush
+		// any PreRequestHook-emitted plugin logs here.
+		flushPluginLogs(ctx)
+		err.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, err
+	}
+
+	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
@@ -4596,10 +4693,22 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		return primaryResult, primaryErr
 	}
 
+	// Core is about to make routing decisions of its own (fallback transitions)
+	// — record it on the request's used-engines list so the audit trail closes
+	// the loop on whatever plugin-level engine selected the primary upstream.
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
+
+	// Tracks the most recent failure so each fallback transition log carries
+	// the error that triggered it (primary error for the first iteration, the
+	// prior fallback's error for subsequent iterations).
+	lastErr := primaryErr
+
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
 
@@ -4615,6 +4724,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
 			bifrost.logger.Debug(fmt.Sprintf("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config", fallback.Provider, fallback.Model))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
@@ -4622,8 +4732,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
+		// Layer on Primary/IsFallback — the per-attempt code populates only
+		// attempt-level RoutingInfo (Provider/Model/Key/ResolvedKeyAlias);
+		// fallback-relative signals belong to the orchestrator scope.
+		result.SetFallbackRoutingInfo(provider, model)
+		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
 		}
@@ -4636,10 +4752,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
+
+		lastErr = fallbackErr
 	}
 
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error
 	return nil, primaryErr
 }
@@ -4650,14 +4770,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 // It is the wrapper for all streaming public API methods.
 func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
-
 	provider, model, fallbacks := req.GetRequestFields()
-
-	if err := validateRequest(req); err != nil {
-		err.PopulateExtraFields(req.RequestType, provider, model, model)
-		err.StatusCode = schemas.Ptr(fasthttp.StatusBadRequest)
-		return nil, err
-	}
 
 	// Handle nil context early to prevent blocking
 	if ctx == nil {
@@ -4671,7 +4784,36 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+
+	// PreRequestHook: once-per-request phase. See handleRequest for semantics.
+	preReqPipeline := bifrost.getPluginPipeline()
+	preReqPipeline.RunPreRequestHooks(ctx, req)
+	bifrost.releasePluginPipeline(preReqPipeline)
+	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
+	provider, model, fallbacks = req.GetRequestFields()
+	// Empty provider after PreRequestHook means no plugin
+	// could pick a provider for this model — the caller's input is unresolvable.
+	if err := validateRequestAfterPreRequestHooks(req); err != nil {
+		// Returning before tryStreamRequest skips the downstream log drain, so
+		// flush any PreRequestHook-emitted plugin logs here.
+		flushPluginLogs(ctx)
+		err.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, err
+	}
+
+	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
+	if primaryErr != nil {
+		if primaryErr.Error != nil {
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
+		} else {
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+		}
+		if len(fallbacks) > 0 {
+			bifrost.logger.Debug(fmt.Sprintf("check if we should try %d fallbacks", len(fallbacks)))
+		}
+	}
 
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
@@ -4679,9 +4821,18 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		return primaryResult, primaryErr
 	}
 
+	// Mirror handleRequest: register core on the engines-used list and post
+	// the primary-failure entry to the routing engine log trail before
+	// iterating fallbacks. See handleRequest for the rationale.
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
+
+	lastErr := primaryErr
+
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
 
@@ -4696,6 +4847,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config", fallback.Provider, fallback.Model))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
@@ -4703,8 +4855,15 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
+		// Layer on Primary/IsFallback on errors. For the success case the
+		// result is a chan of stream chunks emitted asynchronously — those
+		// chunks already carry per-attempt RoutingInfo populated upstream,
+		// but Primary/IsFallback aren't reachable from here without wrapping
+		// the channel. See SetFallbackRoutingInfo doc.
+		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
 		}
@@ -4717,10 +4876,14 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
+
+		lastErr = fallbackErr
 	}
 
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error
 	return nil, primaryErr
 }
@@ -5282,10 +5445,31 @@ func executeRequestWithRetries[T any](
 	model string,
 	req *schemas.BifrostRequest,
 	logger schemas.Logger,
-) (T, *schemas.BifrostError) {
-	var result T
-	var bifrostError *schemas.BifrostError
+) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
+
+	// Emit the terminal routing-engine entry on every return path — including
+	// early returns from key-selection failures and tracer-missing — so the
+	// audit trail isn't truncated when execution exits before reaching the
+	// natural end of the function. Skipped when attempts == 0: the request
+	// never crossed core's retry-orchestration boundary, so there's nothing
+	// to record.
+	defer func() {
+		if attempts <= 0 {
+			return
+		}
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+		switch {
+		case bifrostError == nil:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request to %s/%s succeeded after %d retry attempt(s)", providerKey, model, attempts))
+		case bifrostError.IsBifrostError:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Retries halted for %s/%s after %d attempt(s): internal Bifrost error (%s)", providerKey, model, attempts, routingErrorSummary(bifrostError)))
+		case bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Request to %s/%s cancelled after %d attempt(s)", providerKey, model, attempts))
+		default:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Retries exhausted for %s/%s after %d attempt(s); last error: %s", providerKey, model, attempts, routingErrorSummary(bifrostError)))
+		}
+	}()
 
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
@@ -5434,6 +5618,25 @@ func executeRequestWithRetries[T any](
 			//   - 429 pool reset that re-picks the same key — no rotation actually happened.
 			//   - keyless providers — currentKey.ID stays empty, so keyChanged is false.
 			keyChanged := keyProvider != nil && currentKey.ID != previousKeyID
+
+			// Emit a routing-engine log entry for this retry transition so the
+			// per-request audit trail records *why* core decided to retry and
+			// whether it rotated the credential. routingErrorSummary() omits
+			// the upstream message so keys/PII don't leak into the log row.
+			// Key.Name is a user-set label (not the secret value) and is safe.
+			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+			// Omit the key=... segment for keyless providers, where currentKey is
+			// the zero value and the trailing token would render as "same key=".
+			keyNote := ""
+			if keyProvider != nil {
+				rotationNote := "same key"
+				if keyChanged {
+					rotationNote = "rotated key"
+				}
+				keyNote = fmt.Sprintf("; %s=%s", rotationNote, currentKey.Name)
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries, providerKey, model, routingErrorSummary(bifrostError), keyNote))
+
 			if !(lastWasPermanentKeyFailure && keyChanged) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
@@ -5724,6 +5927,10 @@ func executeRequestWithRetries[T any](
 		logger.Debug("request failed after %d %s", attempts, map[bool]string{true: "attempts", false: "attempt"}[attempts > 1])
 	}
 
+	// Terminal routing-engine log entry is emitted by the defer at the top of
+	// the function so it runs on every return path, including the early
+	// returns from key-selection or tracer-missing.
+
 	// On final error, clear selected_key so it only reflects a key that actually served a successful response.
 	// The attempt trail is the authoritative record of which keys were tried.
 	if bifrostError != nil && keyProvider != nil {
@@ -5875,6 +6082,29 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					}
 					continue
 				}
+				// Scope to a single key when ListModelsRequest.KeyID is set, so
+				// callers (the catalog composer) can cache per-key without an
+				// extra round-trip and without the provider aggregating across
+				// every configured key.
+				if lmr := req.BifrostRequest.ListModelsRequest; lmr != nil && lmr.KeyID != nil {
+					target := *lmr.KeyID
+					keys = filterKeysByID(keys, target)
+					if len(keys) == 0 {
+						req.Err <- schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: fmt.Sprintf("no key found with id %q for provider %s", target, provider.GetProviderKey()),
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:               provider.GetProviderKey(),
+								RequestType:            req.RequestType,
+								OriginalModelRequested: model,
+								ResolvedModelUsed:      model,
+							},
+						}
+						continue
+					}
+				}
 			} else {
 				// Determine if this is a multi-key batch/file/container operation
 				// BatchCreate, FileUpload, ContainerCreate, ContainerFileCreate use single key; other batch/file/container ops use multiple keys
@@ -5990,6 +6220,20 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// line 5653). Streaming postHookRunner must NOT capture this var by reference — it
 		// snapshots its own attemptResolvedModel inside the per-attempt closure.
 		var resolvedModel string
+		// attemptRoutingInfo holds the LAST attempt's RoutingInfo. Same single-writer/
+		// single-reader contract as resolvedModel — assigned inside the per-attempt
+		// closure, read after retries finish by the post-retry populate below.
+		// Streaming postHookRunner must NOT capture by reference — it snapshots its
+		// own copy inside the per-attempt closure.
+		// Pre-seeded with the provider/model the orchestrator already knows so that
+		// retries that fail before the per-attempt closure ever runs (e.g. key
+		// selection error) still produce a populated RoutingInfo on the error —
+		// otherwise the post-retry populate at line ~6221 would clobber RoutingInfo
+		// to a zero value, leaving new consumers without provider/model context.
+		attemptRoutingInfo := schemas.RoutingInfo{
+			Provider: provider.GetProviderKey(),
+			Model:    originalModelRequested,
+		}
 		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
 		// worker-level error fallback below. Single-threaded write (assigned by the retry
 		// loop's per-attempt closure) and single-threaded read (after retries finish), so
@@ -6006,11 +6250,21 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// returned to the pool via its deferred finalizer.
 		if IsStreamRequestType(req.RequestType) {
 			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-				resolvedModel = k.Aliases.Resolve(originalModelRequested)
+				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
+					resolvedModel = aliasConfig.ModelID
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
+				} else {
+					resolvedModel = originalModelRequested
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+				}
 				req.SetModel(resolvedModel)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
+				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				// Per-attempt snapshot for the async postHookRunner closure (it must
+				// not capture the outer var by reference — a later retry would race).
+				perAttemptRoutingInfo := attemptRoutingInfo
 				// Snapshot RequestType before the closure. After tryStreamRequest receives
 				// the stream channel it releases the *ChannelMessage back to the pool;
 				// a concurrent request can then reuse it and overwrite RequestType.
@@ -6024,9 +6278,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// reference would let a later retry's alias bleed into this attempt's chunks.
 					if result != nil {
 						result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						result.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					if err != nil {
 						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						err.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
@@ -6034,9 +6290,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					}
 					if bifrostErr != nil {
 						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
 						return nil, bifrostErr
 					} else if resp != nil {
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					return resp, nil
 				}
@@ -6065,8 +6323,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				resolvedModel = k.Aliases.Resolve(originalModelRequested)
+				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
+					resolvedModel = aliasConfig.ModelID
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
+				} else {
+					resolvedModel = originalModelRequested
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+				}
 				req.SetModel(resolvedModel)
+				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}
@@ -6089,6 +6354,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		if bifrostError != nil {
 			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+			bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
 
 			// Send error with context awareness to prevent deadlock
 			select {
@@ -6104,6 +6370,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		} else {
 			if result != nil {
 				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+				result.PopulateRoutingInfo(attemptRoutingInfo)
 			}
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
@@ -6195,6 +6462,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.CountTokensResponse = countTokensResponse
+	case schemas.CompactionRequest:
+		compactionResponse, bifrostError := provider.Compaction(req.Context, key, req.BifrostRequest.CompactionRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CompactionResponse = compactionResponse
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
 		if bifrostError != nil {
@@ -6570,6 +6843,62 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 	return req, nil, p.executedPreHooks
 }
 
+// RunPreRequestHooks executes PreRequestHook on each LLM plugin in registration order, once per
+// top-level request. Plugins mutate req.Provider, req.Model, req.Fallbacks (and any other field
+// they choose); mutations are committed to the shared *BifrostRequest and observed by every
+// subsequent plugin, the provider call, and every fallback attempt. There is no short-circuit
+// and errors are non-blocking — same semantics as RunLLMPreHooks: errors are logged as warnings
+// and accumulated in p.preHookErrors, then the pipeline continues to the next plugin. The empty-
+// provider validation in handleRequest/handleStreamRequest catches the case where no plugin
+// successfully resolved a provider.
+//
+// Per-request semantics: unlike PreLLMHook (which runs again on every fallback), PreRequestHook
+// runs exactly once at the top of handleRequest/handleStreamRequest, before any fan-out.
+func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	// If the skip plugin pipeline flag is set, skip the plugin pipeline
+	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
+		return
+	}
+	ctx.BlockRestrictedWrites()
+	for _, plugin := range p.llmPlugins {
+		pluginName := plugin.GetName()
+		p.logger.Debug("running pre-request hook for plugin %s", pluginName)
+		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.prerequesthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		if spanCtx != nil {
+			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+			}
+		}
+
+		pluginCtx := ctx.WithPluginScope(&pluginName)
+		err := plugin.PreRequestHook(pluginCtx, req)
+		pluginCtx.ReleasePluginScope()
+
+		if err != nil {
+			p.tracer.SetAttribute(handle, "error", err.Error())
+			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
+			p.preHookErrors = append(p.preHookErrors, err)
+			p.logger.Warn("error in PreRequestHook for plugin %s: %s", pluginName, err.Error())
+			continue
+		}
+		p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+	}
+	ctx.UnblockRestrictedWrites()
+
+	// Commit the routing-rule key pin. A matched routing rule writes the pinned key ID to the
+	// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID during the blocked phase above — a
+	// direct write to the reserved BifrostContextKeyAPIKeyID would have been silently dropped.
+	// Core is the sole writer of the reserved key, so normalize the routing pin into it here,
+	// after unblocking, so key selection reads a single canonical pin. A non-empty routing pin
+	// overrides a caller-supplied pin: the routing rule is authoritative server-side policy and
+	// has typically already rewritten provider/model for this request.
+	if pin, ok := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); ok {
+		if pin = strings.TrimSpace(pin); pin != "" {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, pin)
+		}
+	}
+}
+
 // RunPostLLMHooks executes PostHooks in reverse order for the plugins whose PreLLMHook ran.
 // Accepts the response and error, and allows plugins to transform either (e.g., recover from error, or invalidate a response).
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
@@ -6930,6 +7259,22 @@ func (p *PluginPipeline) resetPluginPipeline() {
 	p.streamingMu.Unlock()
 }
 
+// flushPluginLogs drains accumulated plugin logs from the BifrostContext and
+// attaches them to the active trace when one exists. Unlike drainAndAttachPluginLogs,
+// it always drains the buffer first, so logs emitted before any trace is established
+// (e.g. by PreRequestHook) are not carried over to a later request on a reused context.
+func flushPluginLogs(ctx *schemas.BifrostContext) {
+	logs := ctx.DrainPluginLogs()
+	if len(logs) == 0 {
+		return
+	}
+	tracer, traceID, err := GetTracerFromContext(ctx)
+	if err != nil || tracer == nil || traceID == "" {
+		return
+	}
+	tracer.AttachPluginLogs(traceID, logs)
+}
+
 // drainAndAttachPluginLogs drains accumulated plugin logs from the BifrostContext
 // and attaches them to the trace for later retrieval by observability plugins.
 func drainAndAttachPluginLogs(ctx *schemas.BifrostContext) {
@@ -7186,6 +7531,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil
 	req.CountTokensRequest = nil
+	req.CompactionRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
 	req.OCRRequest = nil
@@ -7238,6 +7584,20 @@ func (bifrost *Bifrost) getBifrostRequest() *schemas.BifrostRequest {
 func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
 	resetBifrostRequest(req)
 	bifrost.bifrostRequestPool.Put(req)
+}
+
+// filterKeysByID returns the subset of keys whose ID equals target. Used to
+// scope a ListModels request to a single key when ListModelsRequest.KeyID is
+// set. Returns an empty slice when no key matches; the input slice is not
+// mutated.
+func filterKeysByID(keys []schemas.Key, target string) []schemas.Key {
+	out := make([]schemas.Key, 0, len(keys))
+	for _, k := range keys {
+		if k.ID == target {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // getAllSupportedKeys retrieves all valid keys for a ListModels request.

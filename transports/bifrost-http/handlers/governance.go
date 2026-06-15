@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -21,8 +23,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -54,6 +59,12 @@ type GovernanceManager interface {
 	RemoveRoutingRule(ctx context.Context, id string) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+}
+
+type complexityAnalyzerConfigReloader interface {
+	// HTTP server bridge signature: BifrostHTTPServer implements this and adapts
+	// to the governance plugin's in-memory ReloadComplexityAnalyzerConfig(config).
+	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -97,13 +108,19 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
+	// logManager sources actual per-model usage (from request logs) for the quota
+	// endpoint's model_usage breakdown. Optional: nil when the logging plugin is
+	// not enabled, in which case the breakdown is simply omitted.
+	logManager logging.LogManager
 }
 
 // NewGovernanceHandler creates a new governance handler instance.
+// logManager is optional (may be nil); when supplied it powers the quota
+// endpoint's per-budget actual per-model usage breakdown.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -120,6 +137,7 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	return &GovernanceHandler{
 		governanceManager: manager,
 		configStore:       configStore,
+		logManager:        logManager,
 	}, nil
 }
 
@@ -818,7 +836,13 @@ func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configs
 	byKey := make(map[string]*configstoreTables.TableModelConfig)
 	add := func(provider *string) {
 		mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, &vk.ID, configstoreTables.ModelConfigAllModels, provider)
-		if err == nil && mc != nil {
+		if err != nil {
+			if !errors.Is(err, configstore.ErrNotFound) {
+				logger.Error("failed to get model config for VK governance hydration: %v", err)
+			}
+			return
+		}
+		if mc != nil {
 			byKey[vkModelConfigIndexKey(vk.ID, provider)] = mc
 		}
 	}
@@ -900,8 +924,8 @@ type UpdateTeamRequest struct {
 // CreateCustomerRequest represents the request body for creating a customer
 type CreateCustomerRequest struct {
 	Name            string                  `json:"name" validate:"required"`
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
-	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`           // Deprecated: use budgets
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
+	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
@@ -909,8 +933,8 @@ type CreateCustomerRequest struct {
 // UpdateCustomerRequest represents the request body for updating a customer
 type UpdateCustomerRequest struct {
 	Name            *string                 `json:"name,omitempty"`
-	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"`          // nil=no change, []=remove all
-	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`           // Deprecated: use budgets
+	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"` // nil=no change, []=remove all
+	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
@@ -945,6 +969,10 @@ type UpdateProviderGovernanceRequest struct {
 
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	r.GET("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.getComplexityAnalyzerConfig, middlewares...))
+	r.PUT("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.updateComplexityAnalyzerConfig, middlewares...))
+	r.POST("/api/governance/complexity-analyzer-config/reset", lib.ChainMiddlewares(h.resetComplexityAnalyzerConfig, middlewares...))
+
 	// Virtual Key CRUD operations
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
@@ -1002,6 +1030,88 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
 }
 
+func (h *GovernanceHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	cfg, err := h.configStore.GetComplexityAnalyzerConfig(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get complexity analyzer config: %v", err))
+		return
+	}
+	if cfg == nil {
+		defaults := complexity.DefaultAnalyzerConfig()
+		SendJSON(ctx, defaults)
+		return
+	}
+	SendJSON(ctx, cfg)
+}
+
+func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	var payload complexity.AnalyzerConfig
+	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
+		return
+	}
+
+	normalized, err := complexity.ValidateAndNormalize(&payload)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
+		return
+	}
+	if err := h.reloadComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, normalized)
+}
+
+func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	defaults := complexity.DefaultAnalyzerConfig()
+	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
+		return
+	}
+	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, defaults)
+}
+
+func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
+	reloader, ok := h.governanceManager.(complexityAnalyzerConfigReloader)
+	if !ok {
+		return fmt.Errorf("governance manager does not support complexity analyzer config reload")
+	}
+	return reloader.ReloadComplexityAnalyzerConfig(ctx, config)
+}
+
 // Virtual Key CRUD Operations
 
 // getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
@@ -1051,8 +1161,10 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
 	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
+	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
+	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
@@ -1062,6 +1174,8 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			Order:                              order,
 			Export:                             isExport,
 			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
+			ExcludeAssignedVirtualKeys:         excludeAssignedVirtualKeys,
+			ForUserAssignment:                  forUserAssignment,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
@@ -1167,7 +1281,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
-		isActive = bifrost.Ptr(true)
+		isActive = new(true)
 	}
 	// Fetch providers from DB to ensure up-to-date data in cluster mode.
 	providerSet := map[schemas.ModelProvider]struct{}{}
@@ -1803,6 +1917,7 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, fmt.Errorf("virtual key rotated in database but failed to reload in-memory state: %w", err)
 	}
+	h.hydrateVKGovernance(ctx, preloadedVk)
 	return preloadedVk, nil
 }
 
@@ -4460,6 +4575,114 @@ func validateRoutingFallbacks(fallbacks []string) error {
 	return nil
 }
 
+// quotaModelUsage is one entry in the quota endpoint's per-model breakdown: the budgets
+// and rate limit (with their current usage) for a specific model governed under this VK.
+// Mirrors how provider_configs surface per-provider governance.
+type quotaModelUsage struct {
+	ModelName string                            `json:"model_name"`
+	Provider  *string                           `json:"provider,omitempty"` // nil means all providers
+	Budgets   []configstoreTables.TableBudget   `json:"budgets,omitempty"`
+	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+}
+
+// collectVKModelUsage loads the VK-scoped model configs for vk in a single query, then
+// (1) reverse-maps the wildcard ("*") configs onto the VK and its provider configs — the
+// same hydration hydrateVKGovernance performs — and (2) returns a per-model usage list
+// built from the specific-model configs. Surfacing only VK-scoped governance keeps this
+// self-service endpoint reporting the key's own usage (global/shared per-model limits are
+// intentionally not exposed here). Returns an error on load failure so the endpoint fails
+// closed (500) rather than silently returning empty governance — an empty result here is
+// indistinguishable from a key that legitimately has no model configs.
+func (h *GovernanceHandler) collectVKModelUsage(ctx context.Context, vk *configstoreTables.TableVirtualKey) ([]quotaModelUsage, error) {
+	mcs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
+	if err != nil {
+		logger.Error("failed to load model configs for VK quota: %v", err)
+		return nil, err
+	}
+
+	ptrs := make([]*configstoreTables.TableModelConfig, len(mcs))
+	for i := range mcs {
+		ptrs[i] = &mcs[i]
+	}
+	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs))
+
+	models := make([]quotaModelUsage, 0)
+	for i := range mcs {
+		mc := &mcs[i]
+		if mc.ModelName == configstoreTables.ModelConfigAllModels {
+			continue // wildcard configs are the VK-/provider-level governance handled above
+		}
+		models = append(models, quotaModelUsage{
+			ModelName: mc.ModelName,
+			Provider:  mc.Provider,
+			Budgets:   mc.Budgets,
+			RateLimit: mc.RateLimit,
+		})
+	}
+	return models, nil
+}
+
+// quotaModelSpend is one model's actual usage drawn from request logs (independent of
+// whether any governance config exists for that model) within a budget's current cycle.
+type quotaModelSpend struct {
+	Model         string  `json:"model"`
+	Provider      string  `json:"provider,omitempty"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+}
+
+// quotaBudget is a VK budget plus the actual per-model spend (from request logs) accumulated
+// in its current cycle [last_reset, now]. The TableBudget is embedded so the budget's own
+// fields (id, max_limit, reset_duration, last_reset, current_usage, …) render flat alongside
+// the breakdown — no field is duplicated. The per-model totals reconcile with current_usage
+// (both measured since last_reset). models is empty when logging is disabled.
+type quotaBudget struct {
+	configstoreTables.TableBudget
+	Models []quotaModelSpend `json:"per_model_usage"`
+}
+
+// buildVKBudgetsWithUsage wraps each hydrated VK budget with its per-model actual usage,
+// queried from request logs over that budget's current cycle [last_reset, now]. Per-budget
+// because a VK's budgets can have independent reset cycles (e.g. daily + monthly). When
+// logging is disabled (logManager == nil) the budgets are returned with an empty models list
+// — that is the only case where per_model_usage is empty. A log-store query failure instead
+// returns an error so the endpoint fails closed (500) rather than reporting empty usage that
+// callers cannot distinguish from "logging disabled". Callers must hydrate vk.Budgets (via
+// collectVKModelUsage) before calling this.
+func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *configstoreTables.TableVirtualKey, now time.Time) ([]quotaBudget, error) {
+	out := make([]quotaBudget, 0, len(vk.Budgets))
+	for i := range vk.Budgets {
+		b := &vk.Budgets[i]
+		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
+		if h.logManager != nil {
+			start := b.LastReset
+			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
+				VirtualKeyIDs: []string{vk.ID},
+				StartTime:     &start,
+				EndTime:       &now,
+			})
+			if err != nil {
+				logger.Error("failed to load per-model usage for VK quota (budget %s): %v", b.ID, err)
+				return nil, err
+			}
+			if ranking != nil {
+				for _, r := range ranking.Rankings {
+					entry.Models = append(entry.Models, quotaModelSpend{
+						Model:         r.Model,
+						Provider:      r.Provider,
+						TotalRequests: r.TotalRequests,
+						TotalTokens:   r.TotalTokens,
+						TotalCost:     r.TotalCost,
+					})
+				}
+			}
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
 // getVirtualKeyQuota handles GET /api/governance/virtual-keys/quota
 // This is a self-service endpoint — no admin auth required. The VK value in the header is the credential.
 func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
@@ -4486,11 +4709,30 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// collectVKModelUsage hydrates the wildcard VK/provider governance (in place) and
+	// returns the configured per-model limits — both from a single VK-scoped model-config load.
+	// Fail closed: a load error must not degrade to empty governance (it would leave vk.Budgets
+	// un-hydrated and report "budgets": [], silently hiding configured limits).
+	models, err := h.collectVKModelUsage(ctx, vk)
+	if err != nil {
+		SendError(ctx, 500, "Failed to load model configurations")
+		return
+	}
+
+	// Each budget carries its actual per-model spend (from request logs) for the current
+	// cycle. Must run after collectVKModelUsage, which hydrates vk.Budgets.
+	budgets, err := h.buildVKBudgetsWithUsage(ctx, vk, time.Now())
+	if err != nil {
+		SendError(ctx, 500, "Failed to load per-model usage")
+		return
+	}
+
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key_name": vk.Name,
 		"is_active":        vk.IsActiveValue(),
-		"budgets":          vk.Budgets,
+		"budgets":          budgets,
 		"rate_limit":       vk.RateLimit,
 		"provider_configs": vk.ProviderConfigs,
+		"model_configs":    models,
 	})
 }

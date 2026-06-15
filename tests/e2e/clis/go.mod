@@ -1,3 +1,3 @@
 module github.com/maximhq/bifrost/tests/e2e/clis
 
-go 1.23
+go 1.26.4

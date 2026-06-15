@@ -32,7 +32,7 @@ const (
 
 	// advisoryLockTimeout is the maximum time to wait for the advisory lock
 	// before giving up with actionable operator guidance.
-	advisoryLockTimeout = 5 * time.Minute
+	advisoryLockTimeout = 1 * time.Minute
 )
 
 // migrationLock holds a dedicated connection for the advisory lock.
@@ -47,7 +47,7 @@ type migrationLock struct {
 // blocking indefinitely if a previous pod crashed without releasing the lock
 // (e.g., behind a connection proxy or with slow TCP keepalive detection).
 // For non-PostgreSQL databases, returns a no-op lock.
-func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, error) {
+func acquireMigrationLock(ctx context.Context, db *gorm.DB, logger schemas.Logger) (*migrationLock, error) {
 	if db.Dialector.Name() != "postgres" {
 		return &migrationLock{}, nil
 	}
@@ -63,6 +63,7 @@ func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, err
 		return nil, fmt.Errorf("failed to get dedicated connection: %w", err)
 	}
 
+	logger.Info("[configstore] attempting to get migration lock %d", migrationAdvisoryLockKey)
 	// Try to acquire advisory lock with retry + timeout instead of blocking forever.
 	// pg_try_advisory_lock returns true if acquired, false if held by another session.
 	deadline := time.Now().Add(advisoryLockTimeout)
@@ -88,7 +89,7 @@ func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, err
 
 		if acquired {
 			if attempt > 1 {
-				log.Printf("[configstore] migration lock acquired after %d attempts", attempt)
+				logger.Info("[configstore] migration lock acquired after %d attempts", attempt)
 			}
 			return &migrationLock{conn: conn}, nil
 		}
@@ -116,7 +117,7 @@ func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, err
 			)
 		}
 
-		log.Printf("[configstore] waiting for migration lock (attempt %d/%d) — another node is running migrations, retrying in %s...",
+		logger.Info("[configstore] waiting for migration lock (attempt %d/%d) — another node is running migrations, retrying in %s...",
 			attempt, maxAttempts, advisoryLockRetryInterval)
 
 		// Wait before retrying, but respect context cancellation
@@ -144,7 +145,7 @@ func (l *migrationLock) release(ctx context.Context) {
 // directly, so downstream consumers (bifrost-enterprise, plugins) can run
 // their migrations inside a MigrateOnFreshConnection callback without having
 // to reach the throwaway pool through the ConfigStore abstraction.
-func RunSingleMigration(ctx context.Context, options *migrator.Options, db *gorm.DB, migration *migrator.Migration) error {
+func RunSingleMigration(ctx context.Context, options *migrator.Options, db *gorm.DB, logger schemas.Logger, migration *migrator.Migration) error {
 	if db == nil {
 		return fmt.Errorf("db cannot be nil")
 	}
@@ -220,6 +221,202 @@ func currentBudgetOwnerModel(tableName string) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported legacy budget column drop table: %s", tableName)
 	}
+}
+
+// migrationStep records the migration IDs written by one migration function.
+// Most functions write one ID, but a few grouped migrations write multiple IDs.
+type migrationStep struct {
+	IDs []string
+	run func(context.Context, *gorm.DB, schemas.Logger) error
+}
+
+// migrationStepIDs flattens migration step IDs in execution order.
+func migrationStepIDs(steps []migrationStep) []string {
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.IDs...)
+	}
+	return ids
+}
+
+// pendingMigrationStepIDs returns the migration IDs from steps that are not
+// recorded in the migration table yet.
+func pendingMigrationStepIDs(ctx context.Context, db *gorm.DB, steps []migrationStep) ([]string, error) {
+	return migrator.PendingIDs(ctx, db, migrator.DefaultOptions, migrationStepIDs(steps))
+}
+
+// runMigrationSteps runs migration steps in their declared order.
+func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	for _, step := range steps {
+		if err := step.run(ctx, db, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// configstoreMigrationSteps is the ordered source of truth for configstore
+// migration execution and preflight checks.
+var configstoreMigrationSteps = []migrationStep{
+	{IDs: []string{"init"}, run: migrationInit},
+	{IDs: []string{"many2manyjoin"}, run: migrationMany2ManyJoinTable},
+	{IDs: []string{"addcustomproviderconfigjsoncolumn"}, run: migrationAddCustomProviderConfigJSONColumn},
+	{IDs: []string{"addvirtualkeyproviderconfig"}, run: migrationAddVirtualKeyProviderConfigTable},
+	{IDs: []string{"add_allowed_origins_json_column"}, run: migrationAddAllowedOriginsJSONColumn},
+	{IDs: []string{"add_allow_direct_keys_column"}, run: migrationAddAllowDirectKeysColumn},
+	{IDs: []string{"add_enable_litellm_fallbacks_column"}, run: migrationAddEnableLiteLLMFallbacksColumn},
+	{IDs: []string{"add_profile_config_claims_columns_to_team_table"}, run: migrationTeamsTableUpdates},
+	{IDs: []string{"add_team_source_id_column"}, run: migrationAddTeamSourceIDColumn},
+	{IDs: []string{"add_key_name_column"}, run: migrationAddKeyNameColumn},
+	{IDs: []string{"add_framework_configs_table"}, run: migrationAddFrameworkConfigsTable},
+	{IDs: []string{"cleanup_mcp_client_tools_config"}, run: migrationCleanupMCPClientToolsConfig},
+	{IDs: []string{"add_vk_mcp_configs_table"}, run: migrationAddVirtualKeyMCPConfigsTable},
+	{IDs: []string{"update_plugins_table_for_custom_plugins"}, run: migrationAddPluginPathColumn},
+	{IDs: []string{"add_provider_config_budget_rate_limit"}, run: migrationAddProviderConfigBudgetRateLimit},
+	{IDs: []string{"add_sessions_table"}, run: migrationAddSessionsTable},
+	{IDs: []string{"add_headers_json_column_into_mcp_client"}, run: migrationAddHeadersJSONColumnIntoMCPClient},
+	{IDs: []string{"add_disable_content_logging_column"}, run: migrationAddDisableContentLoggingColumn},
+	{IDs: []string{"add_mcp_client_id_column"}, run: migrationAddMCPClientIDColumn},
+	{IDs: []string{"add_vertex_project_number_column"}, run: migrationAddVertexProjectNumberColumn},
+	{IDs: []string{"add_vertex_deployments_json_column"}, run: migrationAddVertexDeploymentsJSONColumn},
+	{IDs: []string{"add_and_fill_provider_column_in_key_table"}, run: migrationMissingProviderColumnInKeyTable},
+	{IDs: []string{"add_tools_to_auto_execute_json_column"}, run: migrationAddToolsToAutoExecuteJSONColumn},
+	{IDs: []string{"add_is_code_mode_client_column"}, run: migrationAddIsCodeModeClientColumn},
+	{IDs: []string{"add_log_retention_days_column"}, run: migrationAddLogRetentionDaysColumn},
+	{IDs: []string{"add_enabled_column_to_key_table"}, run: migrationAddEnabledColumnToKeyTable},
+	{IDs: []string{"update_model_pricing_table_to_add_cache_and_batch_pricing"}, run: migrationAddBatchAndCachePricingColumns},
+	{IDs: []string{"add_mcp_agent_depth_and_mcp_tool_execution_timeout_columns"}, run: migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns},
+	{IDs: []string{"add_mcp_code_mode_binding_level_column"}, run: migrationAddMCPCodeModeBindingLevelColumn},
+	{IDs: []string{"normalize_mcp_client_names"}, run: migrationNormalizeMCPClientNames},
+	{IDs: []string{"move_keys_to_provider_config"}, run: migrationMoveKeysToProviderConfig},
+	{IDs: []string{"add_plugin_version_column"}, run: migrationAddPluginVersionColumn},
+	{IDs: []string{"add_send_back_raw_request_columns"}, run: migrationAddSendBackRawRequestColumns},
+	{IDs: []string{"add_config_hash_column"}, run: migrationAddConfigHashColumn},
+	{IDs: []string{"add_virtual_key_config_hash_column"}, run: migrationAddVirtualKeyConfigHashColumn},
+	{IDs: []string{"add_additional_config_hash_columns"}, run: migrationAddAdditionalConfigHashColumns},
+	{IDs: []string{"add_200k_token_pricing_columns"}, run: migrationAdd200kTokenPricingColumns},
+	{IDs: []string{"add_image_pricing_columns"}, run: migrationAddImagePricingColumns},
+	{IDs: []string{"add_use_for_batch_api_column"}, run: migrationAddUseForBatchAPIColumnAndS3BucketsConfig},
+	{IDs: []string{"add_header_filter_config_json_column"}, run: migrationAddHeaderFilterConfigJSONColumn},
+	{IDs: []string{"add_azure_client_id_and_client_secret_and_tenant_id_columns"}, run: migrationAddAzureClientIDAndClientSecretAndTenantIDColumns},
+	{IDs: []string{"add_distributed_locks_table"}, run: migrationAddDistributedLocksTable},
+	{IDs: []string{"add_model_config_table"}, run: migrationAddModelConfigTable},
+	{IDs: []string{"add_provider_governance_columns"}, run: migrationAddProviderGovernanceColumns},
+	{IDs: []string{"add_allowed_headers_json_column"}, run: migrationAddAllowedHeadersJSONColumn},
+	{IDs: []string{"add_disable_db_pings_in_health_column"}, run: migrationAddDisableDBPingsInHealthColumn},
+	{IDs: []string{"add_is_ping_available_column"}, run: migrationAddIsPingAvailableColumnToMCPClientTable},
+	{IDs: []string{"add_tool_pricing_json_column"}, run: migrationAddToolPricingJSONColumn},
+	{IDs: []string{"remove_server_prefix_from_mcp_tools"}, run: migrationRemoveServerPrefixFromMCPTools},
+	{IDs: []string{"add_oauth_tables"}, run: migrationAddOAuthTables},
+	{IDs: []string{"add_tool_sync_interval_columns"}, run: migrationAddToolSyncIntervalColumns},
+	{IDs: []string{"add_mcp_client_config_to_oauth_config"}, run: migrationAddMCPClientConfigToOAuthConfig},
+	{IDs: []string{"add_routing_rules_table"}, run: migrationAddRoutingRulesTable},
+	{IDs: []string{"add_base_model_pricing_column"}, run: migrationAddBaseModelPricingColumn},
+	{IDs: []string{"add_azure_scopes_column"}, run: migrationAddAzureScopesColumn},
+	{IDs: []string{"add_replicate_deployments_json_column"}, run: migrationAddReplicateDeploymentsJSONColumn},
+	{IDs: []string{"add_key_status_columns"}, run: migrationAddKeyStatusColumns},
+	{IDs: []string{"add_provider_status_columns"}, run: migrationAddProviderStatusColumns},
+	{IDs: []string{"add_rate_limit_to_teams_and_customers"}, run: migrationAddRateLimitToTeamsAndCustomers},
+	{IDs: []string{"add_async_job_result_ttl_column"}, run: migrationAddAsyncJobResultTTLColumn},
+	{IDs: []string{"add_required_headers_json_column"}, run: migrationAddRequiredHeadersJSONColumn},
+	{IDs: []string{"add_logging_headers_json_column"}, run: migrationAddLoggingHeadersJSONColumn},
+	{IDs: []string{"add_hide_deleted_virtual_keys_in_filters_column"}, run: migrationAddHideDeletedVirtualKeysInFiltersColumn},
+	{IDs: []string{"add_enforce_scim_auth_column"}, run: migrationAddEnforceSCIMAuthColumn},
+	{IDs: []string{"add_enforce_auth_on_inference_column"}, run: migrationAddEnforceAuthOnInferenceColumn},
+	{IDs: []string{"reconcile_pricing_overrides_table"}, run: migrationReconcilePricingOverridesTable},
+	{IDs: []string{"add_encryption_columns"}, run: migrationAddEncryptionColumns},
+	{IDs: []string{"add_output_cost_per_video_per_second_and_output_cost_per_second_columns"}, run: migrationAddOutputCostPerVideoPerSecond},
+	{IDs: []string{"drop_enable_governance_column"}, run: migrationDropEnableGovernanceColumn},
+	{IDs: []string{"add_vllm_key_config_columns"}, run: migrationAddVLLMKeyConfigColumns},
+	{IDs: []string{"widen_encrypted_varchar_columns"}, run: migrationWidenEncryptedVarcharColumns},
+	{IDs: []string{"add_bedrock_assume_role_columns"}, run: migrationAddBedrockAssumeRoleColumns},
+	{IDs: []string{"add_store_raw_request_response_column"}, run: migrationAddStoreRawRequestResponseColumn},
+	{IDs: []string{"add_pricing_refactor_columns"}, run: migrationAddPricingRefactorColumns},
+	{IDs: []string{"rename_truncated_pricing_column"}, run: migrationRenameTruncatedPricingColumn},
+	{IDs: []string{"add_image_quality_pricing_columns"}, run: migrationAddImageQualityPricingColumns},
+	{IDs: []string{"add_routing_targets_table"}, run: migrationAddRoutingTargetsTable},
+	{IDs: []string{"add_prompt_repo_tables", "add_prompt_id_to_prompt_message_tables", "add_model_parameters_table"}, run: migrationAddPromptRepoTables},
+	{IDs: []string{"add_plugin_order_columns"}, run: migrationAddPluginOrderColumns},
+	{IDs: []string{"add_allow_all_keys_to_provider_config"}, run: migrationAddAllowAllKeysToProviderConfig},
+	{IDs: []string{"add_vk_provider_config_blacklisted_models_column"}, run: migrationAddVirtualKeyBlacklistedModelsColumn},
+	{IDs: []string{"backfill_empty_virtual_key_configs"}, run: migrationBackfillEmptyVirtualKeyConfigs},
+	{IDs: []string{"add_mcp_disable_auto_tool_inject_column"}, run: migrationAddMCPDisableAutoToolInjectColumn},
+	{IDs: []string{"add_mcp_enable_temp_token_auth_column"}, run: migrationAddMCPEnableTempTokenAuthColumn},
+	{IDs: []string{"backfill_allowed_models_wildcard"}, run: migrationBackfillAllowedModelsWildcard},
+	{IDs: []string{"add_mcp_client_allowed_extra_headers_json_column"}, run: migrationAddMCPClientAllowedExtraHeadersJSONColumn},
+	{IDs: []string{"make_base_pricing_columns_nullable"}, run: migrationMakeBasePricingColumnsNullable},
+	{IDs: []string{"add_allow_on_all_virtual_keys_column"}, run: migrationAddAllowOnAllVirtualKeysColumn},
+	{IDs: []string{"add_open_ai_config_json_column"}, run: migrationAddOpenAIConfigJSONColumn},
+	{IDs: []string{"add_key_blacklisted_models_json_column"}, run: migrationAddKeyBlacklistedModelsJSONColumn},
+	{IDs: []string{"add_chain_rule_column_to_routing_rules"}, run: migrationAddChainRuleColumnToRoutingRules},
+	{IDs: []string{"drop_deployment_columns_and_add_aliases"}, run: migrationDropDeploymentColumnsAndAddAliases},
+	{IDs: []string{"add_replicate_key_config_column"}, run: migrationAddReplicateKeyConfigColumn},
+	{IDs: []string{"add_budget_calendar_aligned_column"}, run: migrationAddBudgetCalendarAlignedColumn},
+	{IDs: []string{"add_routing_chain_max_depth_column"}, run: migrationAddRoutingChainMaxDepthColumn},
+	{IDs: []string{"add_prompt_variables_columns"}, run: migrationAddPromptVariablesColumns},
+	{IDs: []string{"add_model_capability_columns"}, run: migrationAddModelCapabilityColumns},
+	{IDs: []string{"add_ollama_sgl_config_columns"}, run: migrationAddOllamaSGLConfigColumns},
+	{IDs: []string{"add_multi_budget_tables"}, run: migrationAddMultiBudgetTables},
+	{IDs: []string{"add_per_user_oauth_tables"}, run: migrationAddPerUserOAuthTables},
+	{IDs: []string{"add_mcp_client_discovered_tools_columns"}, run: migrationAddMCPClientDiscoveredToolsColumns},
+	{IDs: []string{"add_whitelisted_routes_json_column"}, run: migrationAddWhitelistedRoutesJSONColumn},
+	{IDs: []string{"replace_enable_litellm_with_compat_columns"}, run: migrationReplaceEnableLiteLLMWithCompatColumns},
+	{IDs: []string{"add_model_pricing_unique_index"}, run: migrationAddModelPricingUniqueIndex},
+	{IDs: []string{"default_compat_should_convert_params_false"}, run: migrationDefaultCompatShouldConvertParamsFalse},
+	{IDs: []string{"add_priority_tier_pricing_columns"}, run: migrationAddPriorityTierPricingColumns},
+	{IDs: []string{"add_flex_tier_pricing_columns"}, run: migrationAddFlexTierPricingColumns},
+	{IDs: []string{"normalize_otel_trace_type"}, run: migrationNormalizeOtelTraceType},
+	{IDs: []string{"migrate_calendar_aligned"}, run: migrateCalendarAlignedToBudgetsAndRateLimitsTable},
+	{IDs: []string{"add_team_budgets_to_budgets_table"}, run: migrationAddTeamBudgetsToBudgetsTable},
+	{IDs: []string{"add_ocr_pricing_columns"}, run: migrationAddOCRPricingColumns},
+	{IDs: []string{"convert_mcp_client_tool_sync_interval_minutes_to_seconds"}, run: migrationConvertMCPClientToolSyncIntervalMinutesToSeconds},
+	{IDs: []string{"add_mcp_external_base_url_column"}, run: migrationAddMCPExternalBaseURLColumn},
+	{IDs: []string{"split_mcp_external_base_url_into_server_client"}, run: migrationSplitMCPExternalBaseURL},
+	{IDs: []string{"make_oauth_token_expiry_nullable"}, run: migrationMakeOAuthTokenExpiryNullable},
+	{IDs: []string{"add_allow_per_request_content_storage_override_column"}, run: migrationAddAllowPerRequestContentStorageOverrideColumn},
+	{IDs: []string{"add_allow_per_request_raw_override_column"}, run: migrationAddAllowPerRequestRawOverrideColumn},
+	{IDs: []string{"add_mcp_client_disabled_column"}, run: migrationAddMCPClientDisabledColumn},
+	{IDs: []string{"gov_unique_team_names"}, run: migrationUniqueTeamNames},
+	{IDs: []string{"drop_allow_direct_keys_column"}, run: migrationDropAllowDirectKeysColumn},
+	{IDs: []string{"drop_allow_direct_keys_column_ddl"}, run: migrationDropAllowDirectKeysColumnDDL},
+	{IDs: []string{"add_oauth_auth_mode_columns"}, run: migrationAddOAuthAuthModeColumns},
+	{IDs: []string{"replace_oauth_session_token_with_session_id"}, run: migrationReplaceOauthSessionTokenWithSessionID},
+	{IDs: []string{"drop_legacy_oauth_server_tables"}, run: migrationDropLegacyOAuthServerTables},
+	{IDs: []string{"drop_non_vk_oauth_user_rows"}, run: migrationDropNonVKOauthUserRows},
+	{IDs: []string{"drop_mcp_external_server_url_column"}, run: migrationDropMCPExternalServerURL},
+	{IDs: []string{"add_team_calendar_aligned_column"}, run: migrationAddTeamCalendarAlignedColumn},
+	{IDs: []string{"drop_legacy_calendar_aligned_columns"}, run: migrationDropLegacyCalendarAlignedColumns},
+	{IDs: []string{"add_vk_access_profile_id_column"}, run: migrationAddVKAccessProfileIDColumn},
+	{IDs: []string{"drop_vk_access_profile_id_column"}, run: migrationDropVKAccessProfileIDColumn},
+	{IDs: []string{"add_feature_flags_table"}, run: migrationAddFeatureFlagsTable},
+	{IDs: []string{"add_framework_config_hash_column"}, run: migrationAddFrameworkConfigHashColumn},
+	{IDs: []string{"add_model_parameters_url_column"}, run: migrationAddModelParametersURLColumn},
+	{IDs: []string{"add_client_config_metadata_json_column"}, run: migrationAddClientConfigMetadataColumn},
+	{IDs: []string{"add_temp_tokens_table"}, run: migrationAddTempTokensTable},
+	{IDs: []string{"backfill_vk_provider_config_blacklisted_models"}, run: migrationBackfillVirtualKeyBlacklistedModels},
+	{IDs: []string{"add_created_by_user_id_column_for_virtual_keys"}, run: migrationAddCreatedByUserIDColumnForVirtualKeys},
+	{IDs: []string{"re_add_allow_direct_keys_column"}, run: migrationReAddAllowDirectKeysColumn},
+	{IDs: []string{"refresh_config_hash_after_mcp_external_server_url_removal"}, run: migrationRefreshConfigHashAfterMCPExternalServerURLRemoval},
+	{IDs: []string{"drop_azure_api_version_column"}, run: migrationDropAzureAPIVersionColumn},
+	{IDs: []string{"add_mcp_per_user_header_credentials_table"}, run: migrationAddPerUserHeadersTables},
+	{IDs: []string{"add_mcp_per_user_header_flows_table"}, run: migrationAddPerUserHeadersFlowsTable},
+	{IDs: []string{"add_mcp_client_tls_config_json_column"}, run: migrationAddMCPClientTLSConfigColumn},
+	{IDs: []string{"add_additional_attributes_to_pricing"}, run: migrationAddAdditionalAttributesToPricing},
+	{IDs: []string{"add_model_config_scope_columns"}, run: migrationAddModelConfigScopeColumns},
+	{IDs: []string{"migrate_provider_governance_to_model_configs"}, run: migrationMigrateProviderGovernanceToModelConfigs},
+	{IDs: []string{"add_budget_model_config_id_column"}, run: migrationAddBudgetModelConfigIDColumn},
+	{IDs: []string{"add_model_config_calendar_aligned_column"}, run: migrationAddModelConfigCalendarAlignedColumn},
+	{IDs: []string{"migrate_virtual_key_governance_to_model_configs"}, run: migrationMigrateVirtualKeyGovernanceToModelConfigs},
+	{IDs: []string{"add_customer_calendar_aligned_column"}, run: migrationAddCustomerCalendarAlignedColumn},
+	{IDs: []string{"add_customer_budgets_to_budgets_table"}, run: migrationAddCustomerBudgetsToBudgetsTable},
+	{IDs: []string{"add_model_config_budgets_fk_constraint"}, run: migrationAddModelConfigBudgetsFKConstraint},
+	{IDs: []string{"add_mcp_library_table"}, run: migrationAddMCPLibraryTable},
+	{IDs: []string{"add_mcp_library_config_columns"}, run: migrationAddMCPLibraryConfigColumns},
+	{IDs: []string{"add_mcp_library_source_columns"}, run: migrationAddMCPLibrarySourceColumns},
+	{IDs: []string{"add_fast_mode_pricing_columns"}, run: migrationAddFastModePricingColumns},
+	{IDs: []string{"add_customer_name_unique_constraint_dedup", "add_customer_name_unique_constraint_index"}, run: migrationAddCustomerNameUniqueConstraint},
+	{IDs: []string{"null_legacy_customer_budget_id_refs"}, run: migrationNullLegacyCustomerBudgetID},
+	{IDs: []string{"add_skills_repo_tables"}, run: migrationAddSkillsRepoTables},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -344,6 +541,19 @@ func sqliteDropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 	return nil
 }
 
+// dropColumnSQL returns a dialect-correct `ALTER TABLE ... DROP COLUMN` statement.
+// Postgres supports (and we use) the `IF EXISTS` guard so the drop is a no-op when the
+// column is already gone; SQLite's ALTER TABLE grammar has no `IF EXISTS` clause and
+// errors with `near "EXISTS": syntax error`, so we emit a plain DROP COLUMN there.
+// Callers must still guard the SQLite path with a HasColumn check, since plain DROP
+// COLUMN errors on a missing column.
+func dropColumnSQL(tx *gorm.DB, table, column string) string {
+	if tx.Dialector.Name() == "postgres" {
+		return fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, column)
+	}
+	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+}
+
 func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 	mg := tx.Migrator()
 	if !mg.HasColumn(tableName, "budget_id") {
@@ -380,493 +590,65 @@ func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 	return nil
 }
 
+// areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
+func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) bool {
+	pending, err := pendingMigrationStepIDs(ctx, db, configstoreMigrationSteps)
+	if err != nil {
+		logger.Warn("[configstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
+	}
+	// Fail open: on a preflight error we proceed to acquire the lock and run
+	// migrations rather than silently skipping them (matches logstore and the
+	// warn log above). Only a clean "nothing pending" result skips the run.
+	return err != nil || len(pending) > 0
+}
+
 // Migrate performs the necessary database migrations.
-func triggerMigrations(ctx context.Context, db *gorm.DB) error {
+func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	if !areThereAnyPendingMigrations(ctx, db, logger) {
+		logger.Info("[configstore] no pending migrations; skipping migration run")
+		return nil
+	}
 	// Acquire advisory lock to serialize migrations across cluster nodes.
 	// This prevents race conditions when multiple nodes start simultaneously
 	// and try to create the same tables in parallel.
-	lock, err := acquireMigrationLock(ctx, db)
+	lock, err := acquireMigrationLock(ctx, db, logger)
 	if err != nil {
 		return err
 	}
 	defer lock.release(ctx)
-
-	if err := migrationInit(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationMany2ManyJoinTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddCustomProviderConfigJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyProviderConfigTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowedOriginsJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowDirectKeysColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddEnableLiteLLMFallbacksColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationTeamsTableUpdates(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddTeamSourceIDColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddKeyNameColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddFrameworkConfigsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationCleanupMCPClientToolsConfig(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyMCPConfigsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPluginPathColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddProviderConfigBudgetRateLimit(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddSessionsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddHeadersJSONColumnIntoMCPClient(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddDisableContentLoggingColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientIDColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVertexProjectNumberColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVertexDeploymentsJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationMissingProviderColumnInKeyTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddToolsToAutoExecuteJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddIsCodeModeClientColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddLogRetentionDaysColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddEnabledColumnToKeyTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddBatchAndCachePricingColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPCodeModeBindingLevelColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationNormalizeMCPClientNames(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationMoveKeysToProviderConfig(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPluginVersionColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddSendBackRawRequestColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddConfigHashColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyConfigHashColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAdditionalConfigHashColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAdd200kTokenPricingColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddImagePricingColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddHeaderFilterConfigJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddDistributedLocksTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddModelConfigTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddProviderGovernanceColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowedHeadersJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddDisableDBPingsInHealthColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddIsPingAvailableColumnToMCPClientTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddToolPricingJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationRemoveServerPrefixFromMCPTools(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddOAuthTables(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddToolSyncIntervalColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientConfigToOAuthConfig(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingRulesTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddBaseModelPricingColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAzureScopesColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddReplicateDeploymentsJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddKeyStatusColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddProviderStatusColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddRateLimitToTeamsAndCustomers(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAsyncJobResultTTLColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddRequiredHeadersJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddLoggingHeadersJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddEnforceSCIMAuthColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationReconcilePricingOverridesTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddOutputCostPerVideoPerSecond(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropEnableGovernanceColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVLLMKeyConfigColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationWidenEncryptedVarcharColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddStoreRawRequestResponseColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPricingRefactorColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationRenameTruncatedPricingColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddImageQualityPricingColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingTargetsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationBackfillEmptyVirtualKeyConfigs(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPEnableTempTokenAuthColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationMakeBasePricingColumnsNullable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowOnAllVirtualKeysColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddOpenAIConfigJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddChainRuleColumnToRoutingRules(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropDeploymentColumnsAndAddAliases(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddReplicateKeyConfigColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddRoutingChainMaxDepthColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPromptVariablesColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddOllamaSGLConfigColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddGigaChatKeyConfigColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMultiBudgetTables(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPerUserOAuthTables(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientDiscoveredToolsColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddWhitelistedRoutesJSONColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationReplaceEnableLiteLLMWithCompatColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddModelPricingUniqueIndex(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDefaultCompatShouldConvertParamsFalse(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPriorityTierPricingColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddFlexTierPricingColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationNormalizeOtelTraceType(ctx, db); err != nil {
-		return err
-	}
-	if err := migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddTeamBudgetsToBudgetsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddOCRPricingColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPExternalBaseURLColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationSplitMCPExternalBaseURL(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationMakeOAuthTokenExpiryNullable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowPerRequestContentStorageOverrideColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowPerRequestRawOverrideColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientDisabledColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationUniqueTeamNames(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropAllowDirectKeysColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddOAuthAuthModeColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationReplaceOauthSessionTokenWithSessionID(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropLegacyOAuthServerTables(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropNonVKOauthUserRows(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropMCPExternalServerURL(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddTeamCalendarAlignedColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVKAccessProfileIDColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropVKAccessProfileIDColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddFrameworkConfigHashColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddModelParametersURLColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddClientConfigMetadataColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddTempTokensTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationBackfillVirtualKeyBlacklistedModels(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddCreatedByUserIDColumnForVirtualKeys(ctx, db); err != nil {
-		return err
-	}
-	// Must run before migrationRefreshConfigHashAfterMCPExternalServerURLRemoval:
-	// that migration SELECTs config_client using the column list derived from
-	// the TableClientConfig struct, which still declares allow_direct_keys.
-	// Without re-adding the column first, the SELECT fails with
-	// "no such column: allow_direct_keys" on any DB where the earlier
-	// drop_allow_direct_keys_column_ddl migration has run.
-	if err := migrationReAddAllowDirectKeysColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationDropAzureAPIVersionColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPerUserHeadersTables(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddMCPClientTLSConfigColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAdditionalAttributesToPricing(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddModelConfigScopeColumns(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationMigrateProviderGovernanceToModelConfigs(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddBudgetModelConfigIDColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddModelConfigCalendarAlignedColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddCustomerCalendarAlignedColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddCustomerBudgetsToBudgetsTable(ctx, db); err != nil {
-		return err
-	}
-	return nil
+	// Checking again if there are any pending migrations after acquiring the lock.
+	if !areThereAnyPendingMigrations(ctx, db, logger) {
+		logger.Info("[configstore] no pending migrations after lock acquisition; skipping migration run")
+		return nil
+	}
+	if db.Dialector.Name() == "postgres" {
+		pending, err := pendingMigrationStepIDs(ctx, db, configstoreMigrationSteps)
+		if err == nil && len(pending) == 0 {
+			logger.Info("[configstore] migrations completed by another node; skipping migration run")
+			return nil
+		}
+		if err != nil {
+			logger.Warn("[configstore] migration preflight after lock failed; running migrations: %v", err)
+		}
+	}
+	return runMigrationSteps(ctx, db, logger, configstoreMigrationSteps)
 }
 
 // migrationAddClientConfigMetadataColumn adds the metadata_json column to
 // config_client. The column stores a JSON blob of UI/admin preferences (e.g.
 // onboarding_dismissed) and is deliberately not part of the ClientConfig API
 // struct, so config.json sync cannot overwrite it.
-func migrationAddClientConfigMetadataColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddClientConfigMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_metadata_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_client_config_metadata_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "metadata_json") {
+				logger.Info("[configstore] %s: adding column metadata_json to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "metadata_json"); err != nil {
 					return err
 				}
@@ -876,6 +658,7 @@ func migrationAddClientConfigMetadataColumn(ctx context.Context, db *gorm.DB) er
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column metadata_json from TableClientConfig", migrationName)
 			if err := migrator.DropColumn(&tables.TableClientConfig{}, "metadata_json"); err != nil {
 				return err
 			}
@@ -890,13 +673,17 @@ func migrationAddClientConfigMetadataColumn(ctx context.Context, db *gorm.DB) er
 
 // migrationAddFeatureFlagsTable creates the feature_flags table holding
 // user-toggled overrides for the in-memory featureflags registry.
-func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_feature_flags_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_feature_flags_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.TableFeatureFlag{}) {
+				logger.Info("[configstore] %s: creating table TableFeatureFlag", migrationName)
 				if err := migrator.CreateTable(&tables.TableFeatureFlag{}); err != nil {
 					return err
 				}
@@ -910,13 +697,17 @@ func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_store_raw_request_response_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_store_raw_request_response_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableProvider{}, "store_raw_request_response") {
+				logger.Info("[configstore] %s: adding column store_raw_request_response to TableProvider", migrationName)
 				if err := migrator.AddColumn(&tables.TableProvider{}, "store_raw_request_response"); err != nil {
 					return err
 				}
@@ -941,6 +732,7 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 				Find(&providers).Error; err != nil {
 				return fmt.Errorf("failed to fetch providers for hash backfill: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d providers", migrationName, len(providers))
 			for _, provider := range providers {
 				providerConfig := ProviderConfig{
 					NetworkConfig:            provider.NetworkConfig,
@@ -971,6 +763,7 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column store_raw_request_response from TableProvider", migrationName)
 			if err := migrator.DropColumn(&tables.TableProvider{}, "store_raw_request_response"); err != nil {
 				return err
 			}
@@ -985,13 +778,17 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 }
 
 // migrationInit is the first migration
-func migrationInit(ctx context.Context, db *gorm.DB) error {
+func migrationInit(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "init"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "init",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.TableConfigHash{}) {
+				logger.Info("[configstore] %s: creating table TableConfigHash", migrationName)
 				if err := migrator.CreateTable(&tables.TableConfigHash{}); err != nil {
 					return err
 				}
@@ -999,100 +796,120 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			// TableBudget and TableRateLimit must be created before TableProvider
 			// because TableProvider has FK references to them
 			if !migrator.HasTable(&tables.TableBudget{}) {
+				logger.Info("[configstore] %s: creating table TableBudget", migrationName)
 				if err := migrator.CreateTable(&tables.TableBudget{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableRateLimit{}) {
+				logger.Info("[configstore] %s: creating table TableRateLimit", migrationName)
 				if err := migrator.CreateTable(&tables.TableRateLimit{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableProvider{}) {
+				logger.Info("[configstore] %s: creating table TableProvider", migrationName)
 				if err := migrator.CreateTable(&tables.TableProvider{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableKey{}) {
+				logger.Info("[configstore] %s: creating table TableKey", migrationName)
 				if err := migrator.CreateTable(&tables.TableKey{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableModel{}) {
+				logger.Info("[configstore] %s: creating table TableModel", migrationName)
 				if err := migrator.CreateTable(&tables.TableModel{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableOauthConfig{}) {
+				logger.Info("[configstore] %s: creating table TableOauthConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableOauthConfig{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableOauthToken{}) {
+				logger.Info("[configstore] %s: creating table TableOauthToken", migrationName)
 				if err := migrator.CreateTable(&tables.TableOauthToken{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableMCPClient{}) {
+				logger.Info("[configstore] %s: creating table TableMCPClient", migrationName)
 				if err := migrator.CreateTable(&tables.TableMCPClient{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableClientConfig{}) {
+				logger.Info("[configstore] %s: creating table TableClientConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableClientConfig{}); err != nil {
 					return err
 				}
 			} else if !migrator.HasColumn(&tables.TableClientConfig{}, "max_request_body_size_mb") {
+				logger.Info("[configstore] %s: adding column max_request_body_size_mb to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "max_request_body_size_mb"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableEnvKey{}) {
+				logger.Info("[configstore] %s: creating table TableEnvKey", migrationName)
 				if err := migrator.CreateTable(&tables.TableEnvKey{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableVectorStoreConfig{}) {
+				logger.Info("[configstore] %s: creating table TableVectorStoreConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableVectorStoreConfig{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableLogStoreConfig{}) {
+				logger.Info("[configstore] %s: creating table TableLogStoreConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableLogStoreConfig{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableCustomer{}) {
+				logger.Info("[configstore] %s: creating table TableCustomer", migrationName)
 				if err := migrator.CreateTable(&tables.TableCustomer{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableTeam{}) {
+				logger.Info("[configstore] %s: creating table TableTeam", migrationName)
 				if err := migrator.CreateTable(&tables.TableTeam{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableVirtualKey{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualKey", migrationName)
 				if err := migrator.CreateTable(&tables.TableVirtualKey{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableGovernanceConfig{}) {
+				logger.Info("[configstore] %s: creating table TableGovernanceConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableGovernanceConfig{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TableModelPricing{}) {
+				logger.Info("[configstore] %s: creating table TableModelPricing", migrationName)
 				if err := migrator.CreateTable(&tables.TableModelPricing{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TablePricingOverride{}) {
+				logger.Info("[configstore] %s: creating table TablePricingOverride", migrationName)
 				if err := migrator.CreateTable(&tables.TablePricingOverride{}); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasTable(&tables.TablePlugin{}) {
+				logger.Info("[configstore] %s: creating table TablePlugin", migrationName)
 				if err := migrator.CreateTable(&tables.TablePlugin{}); err != nil {
 					return err
 				}
@@ -1104,57 +921,75 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			// Drop children first, then parents (adjust if your actual FKs differ)
+			logger.Info("[configstore] %s: dropping table TableVirtualKey", migrationName)
 			if err := migrator.DropTable(&tables.TableVirtualKey{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableKey", migrationName)
 			if err := migrator.DropTable(&tables.TableKey{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableTeam", migrationName)
 			if err := migrator.DropTable(&tables.TableTeam{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableProvider", migrationName)
 			if err := migrator.DropTable(&tables.TableProvider{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableCustomer", migrationName)
 			if err := migrator.DropTable(&tables.TableCustomer{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableBudget", migrationName)
 			if err := migrator.DropTable(&tables.TableBudget{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableRateLimit", migrationName)
 			if err := migrator.DropTable(&tables.TableRateLimit{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableModel", migrationName)
 			if err := migrator.DropTable(&tables.TableModel{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableMCPClient", migrationName)
 			if err := migrator.DropTable(&tables.TableMCPClient{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableClientConfig", migrationName)
 			if err := migrator.DropTable(&tables.TableClientConfig{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableEnvKey", migrationName)
 			if err := migrator.DropTable(&tables.TableEnvKey{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableVectorStoreConfig", migrationName)
 			if err := migrator.DropTable(&tables.TableVectorStoreConfig{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableLogStoreConfig", migrationName)
 			if err := migrator.DropTable(&tables.TableLogStoreConfig{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableGovernanceConfig", migrationName)
 			if err := migrator.DropTable(&tables.TableGovernanceConfig{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableModelPricing", migrationName)
 			if err := migrator.DropTable(&tables.TableModelPricing{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TablePricingOverride", migrationName)
 			if err := migrator.DropTable(&tables.TablePricingOverride{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TablePlugin", migrationName)
 			if err := migrator.DropTable(&tables.TablePlugin{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableConfigHash", migrationName)
 			if err := migrator.DropTable(&tables.TableConfigHash{}); err != nil {
 				return err
 			}
@@ -1169,9 +1004,12 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 }
 
 // createMany2ManyJoinTable creates a many-to-many join table for the given tables.
-func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB) error {
+func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "many2manyjoin"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "many2manyjoin",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -1187,6 +1025,7 @@ func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB) error {
 						FOREIGN KEY (table_key_id) REFERENCES config_keys(id) ON DELETE CASCADE
 					)
 				`
+				logger.Info("[configstore] adding join table for governance_virtual_key_keys: %s", migrationName)
 				if err := tx.Exec(createJoinTableSQL).Error; err != nil {
 					return fmt.Errorf("failed to create governance_virtual_key_keys table: %w", err)
 				}
@@ -1195,6 +1034,7 @@ func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
+			logger.Info("[configstore] dropping join table for governance_virtual_key_keys: %s", migrationName)
 			if err := tx.Exec("DROP TABLE IF EXISTS governance_virtual_key_keys").Error; err != nil {
 				return err
 			}
@@ -1209,14 +1049,18 @@ func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddCustomProviderConfigJSONColumn adds the custom_provider_config_json column to the provider table
-func migrationAddCustomProviderConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddCustomProviderConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "addcustomproviderconfigjsoncolumn"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "addcustomproviderconfigjsoncolumn",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableProvider{}, "custom_provider_config_json") {
+				logger.Info("[configstore] %s: adding column custom_provider_config_json to TableProvider", migrationName)
 				if err := migrator.AddColumn(&tables.TableProvider{}, "custom_provider_config_json"); err != nil {
 					return err
 				}
@@ -1232,14 +1076,18 @@ func migrationAddCustomProviderConfigJSONColumn(ctx context.Context, db *gorm.DB
 }
 
 // migrationAddVirtualKeyProviderConfigTable adds the virtual_key_provider_config table
-func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "addvirtualkeyproviderconfig"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "addvirtualkeyproviderconfig",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasTable(&tables.TableVirtualKeyProviderConfig{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualKeyProviderConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableVirtualKeyProviderConfig{}); err != nil {
 					return err
 				}
@@ -1251,6 +1099,7 @@ func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
+			logger.Info("[configstore] %s: dropping table TableVirtualKeyProviderConfig", migrationName)
 			if err := migrator.DropTable(&tables.TableVirtualKeyProviderConfig{}); err != nil {
 				return err
 			}
@@ -1265,14 +1114,18 @@ func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB)
 }
 
 // migrationAddAllowedOriginsJSONColumn adds the allowed_origins_json column to the client config table
-func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allowed_origins_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_allowed_origins_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allowed_origins_json") {
+				logger.Info("[configstore] %s: adding column allowed_origins_json to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "allowed_origins_json"); err != nil {
 					return err
 				}
@@ -1290,9 +1143,12 @@ func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) erro
 // migrationAddAllowDirectKeysColumn adds the allow_direct_keys column to the client config table.
 // Use raw SQL since the struct field was removed in v1.5 when the feature was retired.
 // This column is subsequently dropped by migrationDropAllowDirectKeysColumn.
-func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allow_direct_keys_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_allow_direct_keys_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -1320,9 +1176,12 @@ func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 // so that the DDL (AccessExclusiveLock) never shares a transaction with the
 // SELECT + UPDATE on the same table — that combination was observed to lock
 // config_client indefinitely on contended Postgres instances.
-func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_allow_direct_keys_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_allow_direct_keys_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -1330,6 +1189,7 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error 
 			if err := tx.Find(&clientConfigs).Error; err != nil {
 				return fmt.Errorf("failed to fetch client configs for hash recompute: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d clientConfigs", migrationName, len(clientConfigs))
 			for _, cc := range clientConfigs {
 				if cc.ConfigHash == "" {
 					continue
@@ -1392,13 +1252,17 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error 
 // column in its own migration. Splitting the DDL from the hash-recompute DML
 // ensures the AccessExclusiveLock from DROP COLUMN is held only for the brief
 // catalog update and never contends with reads/writes on the same table.
-func migrationDropAllowDirectKeysColumnDDL(ctx context.Context, db *gorm.DB) error {
+func migrationDropAllowDirectKeysColumnDDL(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_allow_direct_keys_column_ddl"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_allow_direct_keys_column_ddl",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if mig.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				logger.Info("[configstore] %s: dropping column allow_direct_keys from TableClientConfig", migrationName)
 				if err := mig.DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
 					return err
 				}
@@ -1422,9 +1286,12 @@ func migrationDropAllowDirectKeysColumnDDL(ctx context.Context, db *gorm.DB) err
 }
 
 // migrationAddEnableLiteLLMFallbacksColumn adds the enable_litellm_fallbacks column to the client config table
-func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_enable_litellm_fallbacks_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_enable_litellm_fallbacks_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			// Use raw SQL since the struct field was removed in a later migration.
@@ -1452,23 +1319,29 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 }
 
 // migrationTeamsTableUpdates adds profile, config, and claims columns to the team table
-func migrationTeamsTableUpdates(ctx context.Context, db *gorm.DB) error {
+func migrationTeamsTableUpdates(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_profile_config_claims_columns_to_team_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_profile_config_claims_columns_to_team_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableTeam{}, "profile") {
+				logger.Info("[configstore] %s: adding column profile to TableTeam", migrationName)
 				if err := migrator.AddColumn(&tables.TableTeam{}, "profile"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableTeam{}, "config") {
+				logger.Info("[configstore] %s: adding column config to TableTeam", migrationName)
 				if err := migrator.AddColumn(&tables.TableTeam{}, "config"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableTeam{}, "claims") {
+				logger.Info("[configstore] %s: adding column claims to TableTeam", migrationName)
 				if err := migrator.AddColumn(&tables.TableTeam{}, "claims"); err != nil {
 					return err
 				}
@@ -1484,13 +1357,17 @@ func migrationTeamsTableUpdates(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddFrameworkConfigsTable adds the framework_configs table
-func migrationAddFrameworkConfigsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddFrameworkConfigsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_framework_configs_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_framework_configs_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.TableFrameworkConfig{}) {
+				logger.Info("[configstore] %s: creating table TableFrameworkConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableFrameworkConfig{}); err != nil {
 					return err
 				}
@@ -1506,19 +1383,24 @@ func migrationAddFrameworkConfigsTable(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddTeamSourceIDColumn adds optional source_id to governance_teams, with a unique index
-func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_team_source_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	const idxName = "idx_governance_teams_source_id"
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "add_team_source_id_column",
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				logger.Info("[configstore] %s: adding column source_id to TableTeam", migrationName)
 				if err := mg.AddColumn(&tables.TableTeam{}, "source_id"); err != nil {
 					return fmt.Errorf("add source_id column to governance_teams: %w", err)
 				}
 			}
 			if !mg.HasIndex(&tables.TableTeam{}, idxName) {
+				logger.Info("[configstore] %s: creating index SourceID on TableTeam", migrationName)
 				if err := mg.CreateIndex(&tables.TableTeam{}, "SourceID"); err != nil {
 					return fmt.Errorf("create unique index on governance_teams.source_id: %w", err)
 				}
@@ -1529,11 +1411,13 @@ func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasIndex(&tables.TableTeam{}, idxName) {
+				logger.Info("[configstore] %s: dropping index %s on TableTeam", migrationName, idxName)
 				if err := mg.DropIndex(&tables.TableTeam{}, idxName); err != nil {
 					return fmt.Errorf("drop unique index on governance_teams.source_id: %w", err)
 				}
 			}
 			if mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				logger.Info("[configstore] %s: dropping column source_id from TableTeam", migrationName)
 				if err := mg.DropColumn(&tables.TableTeam{}, "source_id"); err != nil {
 					return fmt.Errorf("drop source_id column from governance_teams: %w", err)
 				}
@@ -1544,9 +1428,12 @@ func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddKeyNameColumn adds the name column to the key table and populates unique names
-func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_key_name_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_key_name_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -1562,6 +1449,7 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB) error {
 					return fmt.Errorf("failed to fetch keys: %w", err)
 				}
 
+				logger.Info("[configstore] %s: processing %d keys", migrationName, len(keys))
 				for _, key := range keys {
 					// Create unique name: provider_name-key-{first8chars_of_key_id}-{key_index}
 					keyIDShort := key.KeyID
@@ -1592,6 +1480,7 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB) error {
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_key_name").Error; err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column name from TableKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableKey{}, "name"); err != nil {
 				return err
 			}
@@ -1606,15 +1495,19 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationCleanupMCPClientToolsConfig removes ToolsToSkipJSON column and converts empty ToolsToExecuteJSON to wildcard
-func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB) error {
+func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "cleanup_mcp_client_tools_config"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "cleanup_mcp_client_tools_config",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			// Step 1: Remove ToolsToSkipJSON column if it exists (cleanup from old versions)
 			if migrator.HasColumn(&tables.TableMCPClient{}, "tools_to_skip_json") {
+				logger.Info("[configstore] %s: dropping column tools_to_skip_json from TableMCPClient", migrationName)
 				if err := migrator.DropColumn(&tables.TableMCPClient{}, "tools_to_skip_json"); err != nil {
 					return fmt.Errorf("failed to drop tools_to_skip_json column: %w", err)
 				}
@@ -1622,6 +1515,7 @@ func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB) erro
 
 			// Alternative column name variations that might exist
 			if migrator.HasColumn(&tables.TableMCPClient{}, "ToolsToSkipJSON") {
+				logger.Info("[configstore] %s: dropping column ToolsToSkipJSON from TableMCPClient", migrationName)
 				if err := migrator.DropColumn(&tables.TableMCPClient{}, "ToolsToSkipJSON"); err != nil {
 					return fmt.Errorf("failed to drop ToolsToSkipJSON column: %w", err)
 				}
@@ -1665,13 +1559,17 @@ func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB) erro
 }
 
 // migrationAddVirtualKeyMCPConfigsTable adds the virtual_key_mcp_configs table
-func migrationAddVirtualKeyMCPConfigsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddVirtualKeyMCPConfigsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_mcp_configs_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vk_mcp_configs_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.TableVirtualKeyMCPConfig{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualKeyMCPConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableVirtualKeyMCPConfig{}); err != nil {
 					return err
 				}
@@ -1681,6 +1579,7 @@ func migrationAddVirtualKeyMCPConfigsTable(ctx context.Context, db *gorm.DB) err
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping table TableVirtualKeyMCPConfig", migrationName)
 			if err := migrator.DropTable(&tables.TableVirtualKeyMCPConfig{}); err != nil {
 				return err
 			}
@@ -1695,9 +1594,12 @@ func migrationAddVirtualKeyMCPConfigsTable(ctx context.Context, db *gorm.DB) err
 }
 
 // migrationAddProviderConfigBudgetRateLimit adds budget_id and rate_limit_id columns with proper foreign key constraints
-func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB) error {
+func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_config_budget_rate_limit"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_config_budget_rate_limit",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -1713,6 +1615,7 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 
 				// Add RateLimitID column if it doesn't exist
 				if !migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id") {
+					logger.Info("[configstore] %s: adding column rate_limit_id to TableVirtualKeyProviderConfig", migrationName)
 					if err := migrator.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id"); err != nil {
 						return fmt.Errorf("failed to add rate_limit_id column: %w", err)
 					}
@@ -1757,6 +1660,7 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 			// Drop columns via raw SQL (budget_id no longer on struct)
 			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
 			if migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id") {
+				logger.Info("[configstore] %s: dropping column rate_limit_id from TableVirtualKeyProviderConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
 				}
@@ -1773,18 +1677,23 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 }
 
 // migrationAddPluginPathColumn adds the path column to the plugin table
-func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "update_plugins_table_for_custom_plugins"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "update_plugins_table_for_custom_plugins",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TablePlugin{}, "path") {
+				logger.Info("[configstore] %s: adding column path to TablePlugin", migrationName)
 				if err := migrator.AddColumn(&tables.TablePlugin{}, "path"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TablePlugin{}, "is_custom") {
+				logger.Info("[configstore] %s: adding column is_custom to TablePlugin", migrationName)
 				if err := migrator.AddColumn(&tables.TablePlugin{}, "is_custom"); err != nil {
 					return err
 				}
@@ -1794,9 +1703,11 @@ func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB) error {
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column path from TablePlugin", migrationName)
 			if err := migrator.DropColumn(&tables.TablePlugin{}, "path"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column is_custom from TablePlugin", migrationName)
 			if err := migrator.DropColumn(&tables.TablePlugin{}, "is_custom"); err != nil {
 				return err
 			}
@@ -1811,13 +1722,17 @@ func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddSessionsTable adds the sessions table
-func migrationAddSessionsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddSessionsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sessions_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_sessions_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.SessionsTable{}) {
+				logger.Info("[configstore] %s: creating table SessionsTable", migrationName)
 				if err := migrator.CreateTable(&tables.SessionsTable{}); err != nil {
 					return err
 				}
@@ -1827,6 +1742,7 @@ func migrationAddSessionsTable(ctx context.Context, db *gorm.DB) error {
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping table SessionsTable", migrationName)
 			if err := migrator.DropTable(&tables.SessionsTable{}); err != nil {
 				return err
 			}
@@ -1841,13 +1757,17 @@ func migrationAddSessionsTable(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddHeadersJSONColumnIntoMCPClient adds the headers_json column to the mcp_client table
-func migrationAddHeadersJSONColumnIntoMCPClient(ctx context.Context, db *gorm.DB) error {
+func migrationAddHeadersJSONColumnIntoMCPClient(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_headers_json_column_into_mcp_client"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_headers_json_column_into_mcp_client",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "headers_json") {
+				logger.Info("[configstore] %s: adding column headers_json to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "headers_json"); err != nil {
 					return err
 				}
@@ -1857,6 +1777,7 @@ func migrationAddHeadersJSONColumnIntoMCPClient(ctx context.Context, db *gorm.DB
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column headers_json from TableMCPClient", migrationName)
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "headers_json"); err != nil {
 				return err
 			}
@@ -1871,13 +1792,17 @@ func migrationAddHeadersJSONColumnIntoMCPClient(ctx context.Context, db *gorm.DB
 }
 
 // migrationAddDisableContentLoggingColumn adds the disable_content_logging column to the client config table
-func migrationAddDisableContentLoggingColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_disable_content_logging_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_disable_content_logging_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "disable_content_logging") {
+				logger.Info("[configstore] %s: adding column disable_content_logging to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "disable_content_logging"); err != nil {
 					return err
 				}
@@ -1887,6 +1812,7 @@ func migrationAddDisableContentLoggingColumn(ctx context.Context, db *gorm.DB) e
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column disable_content_logging from TableClientConfig", migrationName)
 			if err := migrator.DropColumn(&tables.TableClientConfig{}, "disable_content_logging"); err != nil {
 				return err
 			}
@@ -1901,9 +1827,12 @@ func migrationAddDisableContentLoggingColumn(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAddMCPClientIDColumn adds the client_id column to the mcp_clients table and populates unique client IDs
-func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_client_id_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -1920,6 +1849,7 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB) error {
 					return fmt.Errorf("failed to fetch MCP clients: %w", err)
 				}
 
+				logger.Info("[configstore] %s: processing %d mcpClients", migrationName, len(mcpClients))
 				for _, client := range mcpClients {
 					// Generate a UUID for the client_id
 					clientID := uuid.New().String()
@@ -1953,6 +1883,7 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB) error {
 				return fmt.Errorf("failed to drop client_id index: %w", err)
 			}
 
+			logger.Info("[configstore] %s: dropping column client_id from TableMCPClient", migrationName)
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "client_id"); err != nil {
 				return fmt.Errorf("failed to drop client_id column: %w", err)
 			}
@@ -1969,13 +1900,17 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddVertexProjectNumberColumn adds the vertex_project_number column to the key table
-func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_project_number_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vertex_project_number_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableKey{}, "vertex_project_number") {
+				logger.Info("[configstore] %s: adding column vertex_project_number to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "vertex_project_number"); err != nil {
 					return err
 				}
@@ -1985,6 +1920,7 @@ func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB) err
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column vertex_project_number from TableKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableKey{}, "vertex_project_number"); err != nil {
 				return err
 			}
@@ -2000,9 +1936,12 @@ func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB) err
 
 // migrationAddVertexDeploymentsJSONColumn adds the vertex_deployments_json column to the key table.
 // This column is later dropped by migrationDropDeploymentColumnsAndAddAliases after data is migrated.
-func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_deployments_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vertex_deployments_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
@@ -2028,7 +1967,10 @@ func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) e
 	return nil
 }
 
-func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) error {
+func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_and_fill_provider_column_in_key_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	options := &migrator.Options{
 		TableName:                 migrator.DefaultOptions.TableName,
 		IDColumnName:              migrator.DefaultOptions.IDColumnName,
@@ -2037,7 +1979,7 @@ func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) 
 		ValidateUnknownMigrations: migrator.DefaultOptions.ValidateUnknownMigrations,
 	}
 	m := migrator.New(db, options, []*migrator.Migration{{
-		ID: "add_and_fill_provider_column_in_key_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -2046,6 +1988,7 @@ func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) 
 			if migrator.HasColumn(&tables.TableKey{}, "provider") {
 				return nil
 			}
+			logger.Info("[configstore] %s: adding column provider to TableKey", migrationName)
 			if err := migrator.AddColumn(&tables.TableKey{}, "provider"); err != nil {
 				return fmt.Errorf("failed to add provider column: %w", err)
 			}
@@ -2057,6 +2000,7 @@ func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) 
 			}
 
 			// Step 3: Update each key with the provider name from the provider table
+			logger.Info("[configstore] %s: processing %d keys", migrationName, len(keys))
 			for _, key := range keys {
 				var provider tables.TableProvider
 				if err := tx.First(&provider, key.ProviderID).Error; err != nil {
@@ -2078,6 +2022,7 @@ func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column provider from TableKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableKey{}, "provider"); err != nil {
 				return err
 			}
@@ -2092,13 +2037,17 @@ func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) 
 }
 
 // migrationAddToolsToAutoExecuteJSONColumn adds the tools_to_auto_execute_json column to the mcp_client table
-func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_tools_to_auto_execute_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_tools_to_auto_execute_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json") {
+				logger.Info("[configstore] %s: adding column tools_to_auto_execute_json to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json"); err != nil {
 					return err
 				}
@@ -2112,6 +2061,7 @@ func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB) 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column tools_to_auto_execute_json from TableMCPClient", migrationName)
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json"); err != nil {
 				return err
 			}
@@ -2126,13 +2076,17 @@ func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB) 
 }
 
 // migrationAddIsCodeModeClientColumn adds the is_code_mode_client column to the config_mcp_clients table
-func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_is_code_mode_client_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_is_code_mode_client_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "is_code_mode_client") {
+				logger.Info("[configstore] %s: adding column is_code_mode_client to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
 					return err
 				}
@@ -2146,6 +2100,7 @@ func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB) error 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column is_code_mode_client from TableMCPClient", migrationName)
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
 				return err
 			}
@@ -2160,13 +2115,17 @@ func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB) error 
 }
 
 // migrationAddLogRetentionDaysColumn adds the log_retention_days column to the client config table
-func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_log_retention_days_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_log_retention_days_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "log_retention_days") {
+				logger.Info("[configstore] %s: adding column log_retention_days to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "log_retention_days"); err != nil {
 					return err
 				}
@@ -2176,6 +2135,7 @@ func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB) error 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column log_retention_days from TableClientConfig", migrationName)
 			if err := migrator.DropColumn(&tables.TableClientConfig{}, "log_retention_days"); err != nil {
 				return err
 			}
@@ -2190,9 +2150,12 @@ func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB) error 
 }
 
 // migrationAddEnabledColumnToKeyTable adds the enabled column to the config_keys table
-func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_enabled_column_to_key_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_enabled_column_to_key_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -2200,6 +2163,7 @@ func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB) error
 			// Check if column already exists
 			if !mg.HasColumn(&tables.TableKey{}, "enabled") {
 				// Add the column
+				logger.Info("[configstore] %s: adding column enabled to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "enabled"); err != nil {
 					return fmt.Errorf("failed to add enabled column: %w", err)
 				}
@@ -2216,6 +2180,7 @@ func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB) error
 			mg := tx.Migrator()
 
 			if mg.HasColumn(&tables.TableKey{}, "enabled") {
+				logger.Info("[configstore] %s: dropping column enabled from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "enabled"); err != nil {
 					return fmt.Errorf("failed to drop enabled column: %w", err)
 				}
@@ -2232,28 +2197,35 @@ func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB) error
 }
 
 // migrationAddBatchAndCachePricingColumns adds the cache_read_input_token_cost, cache_creation_input_token_cost, input_cost_per_token_batches, and output_cost_per_token_batches columns to the model_pricing table
-func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "update_model_pricing_table_to_add_cache_and_batch_pricing"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "update_model_pricing_table_to_add_cache_and_batch_pricing",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableModelPricing{}, "cache_read_input_token_cost") {
+				logger.Info("[configstore] %s: adding column cache_read_input_token_cost to TableModelPricing", migrationName)
 				if err := migrator.AddColumn(&tables.TableModelPricing{}, "cache_read_input_token_cost"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableModelPricing{}, "cache_creation_input_token_cost") {
+				logger.Info("[configstore] %s: adding column cache_creation_input_token_cost to TableModelPricing", migrationName)
 				if err := migrator.AddColumn(&tables.TableModelPricing{}, "cache_creation_input_token_cost"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableModelPricing{}, "input_cost_per_token_batches") {
+				logger.Info("[configstore] %s: adding column input_cost_per_token_batches to TableModelPricing", migrationName)
 				if err := migrator.AddColumn(&tables.TableModelPricing{}, "input_cost_per_token_batches"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_token_batches") {
+				logger.Info("[configstore] %s: adding column output_cost_per_token_batches to TableModelPricing", migrationName)
 				if err := migrator.AddColumn(&tables.TableModelPricing{}, "output_cost_per_token_batches"); err != nil {
 					return err
 				}
@@ -2263,15 +2235,19 @@ func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB) e
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column cache_read_input_token_cost from TableModelPricing", migrationName)
 			if err := migrator.DropColumn(&tables.TableModelPricing{}, "cache_read_input_token_cost"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column cache_creation_input_token_cost from TableModelPricing", migrationName)
 			if err := migrator.DropColumn(&tables.TableModelPricing{}, "cache_creation_input_token_cost"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column input_cost_per_token_batches from TableModelPricing", migrationName)
 			if err := migrator.DropColumn(&tables.TableModelPricing{}, "input_cost_per_token_batches"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column output_cost_per_token_batches from TableModelPricing", migrationName)
 			if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_token_batches"); err != nil {
 				return err
 			}
@@ -2281,18 +2257,23 @@ func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB) e
 	return m.Migrate()
 }
 
-func migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_agent_depth_and_mcp_tool_execution_timeout_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_agent_depth_and_mcp_tool_execution_timeout_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "mcp_agent_depth") {
+				logger.Info("[configstore] %s: adding column mcp_agent_depth to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "mcp_agent_depth"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "mcp_tool_execution_timeout") {
+				logger.Info("[configstore] %s: adding column mcp_tool_execution_timeout to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "mcp_tool_execution_timeout"); err != nil {
 					return err
 				}
@@ -2302,9 +2283,11 @@ func migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx context.Cont
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column mcp_agent_depth from TableClientConfig", migrationName)
 			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_agent_depth"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column mcp_tool_execution_timeout from TableClientConfig", migrationName)
 			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_tool_execution_timeout"); err != nil {
 				return err
 			}
@@ -2320,13 +2303,17 @@ func migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx context.Cont
 
 // migrationAddMCPCodeModeBindingLevelColumn adds the mcp_code_mode_binding_level column to the client config table.
 // This column stores the code mode binding level preference (server or tool).
-func migrationAddMCPCodeModeBindingLevelColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPCodeModeBindingLevelColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_code_mode_binding_level_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_code_mode_binding_level_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
 			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_binding_level") {
+				logger.Info("[configstore] %s: adding column mcp_code_mode_binding_level to TableClientConfig", migrationName)
 				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_code_mode_binding_level"); err != nil {
 					return err
 				}
@@ -2336,6 +2323,7 @@ func migrationAddMCPCodeModeBindingLevelColumn(ctx context.Context, db *gorm.DB)
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column mcp_code_mode_binding_level from TableClientConfig", migrationName)
 			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_code_mode_binding_level"); err != nil {
 				return err
 			}
@@ -2375,9 +2363,12 @@ func normalizeMCPClientName(name string) string {
 // 1. Replacing hyphens and spaces with underscores
 // 2. Removing leading digits
 // 3. Adding number suffix if name already exists
-func migrationNormalizeMCPClientNames(ctx context.Context, db *gorm.DB) error {
+func migrationNormalizeMCPClientNames(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "normalize_mcp_client_names"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "normalize_mcp_client_names",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -2403,7 +2394,7 @@ func migrationNormalizeMCPClientNames(ctx context.Context, db *gorm.DB) error {
 						assignedNames[baseName] = true
 						// Log normalization even when no collision
 						if originalName != baseName {
-							log.Printf("MCP Client Name Normalized: '%s' -> '%s'", originalName, baseName)
+							logger.Info("MCP Client Name Normalized: '%s' -> '%s'", originalName, baseName)
 						}
 						return baseName, nil
 					} else if err != nil {
@@ -2428,7 +2419,7 @@ func migrationNormalizeMCPClientNames(ctx context.Context, db *gorm.DB) error {
 						if err == gorm.ErrRecordNotFound {
 							// Found available name - log the transformation
 							assignedNames[candidateName] = true
-							log.Printf("MCP Client Name Normalized: '%s' -> '%s'", originalName, candidateName)
+							logger.Info("MCP Client Name Normalized: '%s' -> '%s'", originalName, candidateName)
 							return candidateName, nil
 						} else if err != nil {
 							return "", fmt.Errorf("failed to check name availability: %w", err)
@@ -2439,6 +2430,7 @@ func migrationNormalizeMCPClientNames(ctx context.Context, db *gorm.DB) error {
 			}
 
 			// Process each client
+			logger.Info("[configstore] %s: processing %d mcpClients", migrationName, len(mcpClients))
 			for _, client := range mcpClients {
 				originalName := client.Name
 				needsUpdate := false
@@ -2483,9 +2475,12 @@ func migrationNormalizeMCPClientNames(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationMoveKeysToProviderConfig migrates keys from virtual key level to provider config level
-func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
+func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "move_keys_to_provider_config"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "move_keys_to_provider_config",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			gormMigrator := tx.Migrator()
@@ -2498,6 +2493,7 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 
 			// Create the join table if it doesn't exist
 			if !gormMigrator.HasTable(&tables.TableVirtualKeyProviderConfigKey{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualKeyProviderConfigKey", migrationName)
 				if err := gormMigrator.CreateTable(&tables.TableVirtualKeyProviderConfigKey{}); err != nil {
 					return fmt.Errorf("failed to create join table for provider config keys: %w", err)
 				}
@@ -2516,6 +2512,7 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 				var oldAssociations []OldAssociation
 				if err := tx.Table("governance_virtual_key_keys").Find(&oldAssociations).Error; err == nil {
 					// Process each association
+					logger.Info("[configstore] %s: processing %d oldAssociations", migrationName, len(oldAssociations))
 					for _, assoc := range oldAssociations {
 						// Get only the key ID and provider - using a minimal struct to avoid
 						// querying columns that may not exist yet (added by later migrations)
@@ -2563,6 +2560,7 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 				}
 
 				// Step 3: Drop the old join table
+				logger.Info("[configstore] %s: dropping table governance_virtual_key_keys", migrationName)
 				if err := gormMigrator.DropTable("governance_virtual_key_keys"); err != nil {
 					return fmt.Errorf("failed to drop old governance_virtual_key_keys table: %w", err)
 				}
@@ -2582,6 +2580,7 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 				VirtualKeyID string `gorm:"column:table_virtual_key_id;primaryKey"`
 				KeyID        uint   `gorm:"column:table_key_id;primaryKey"`
 			}
+			logger.Info("[configstore] %s: creating table OldJoinTable", migrationName)
 			if err := gormMigrator.CreateTable(&OldJoinTable{}); err != nil {
 				// Table might already exist, ignore error
 				_ = err
@@ -2597,6 +2596,7 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 			// reconstructing which keys belonged to which virtual keys
 
 			// Drop the new join table
+			logger.Info("[configstore] %s: dropping table governance_virtual_key_provider_config_keys", migrationName)
 			if err := gormMigrator.DropTable("governance_virtual_key_provider_config_keys"); err != nil {
 				return fmt.Errorf("failed to drop governance_virtual_key_provider_config_keys table: %w", err)
 			}
@@ -2612,13 +2612,17 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddPluginVersionColumn adds the version column to the plugin table
-func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_plugin_version_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_plugin_version_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TablePlugin{}, "version") {
+				logger.Info("[configstore] %s: adding column version to TablePlugin", migrationName)
 				if err := migrator.AddColumn(&tables.TablePlugin{}, "version"); err != nil {
 					return err
 				}
@@ -2628,6 +2632,7 @@ func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB) error {
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column version from TablePlugin", migrationName)
 			if err := migrator.DropColumn(&tables.TablePlugin{}, "version"); err != nil {
 				return err
 			}
@@ -2641,13 +2646,17 @@ func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_send_back_raw_request_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_send_back_raw_request_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableProvider{}, "send_back_raw_request") {
+				logger.Info("[configstore] %s: adding column send_back_raw_request to TableProvider", migrationName)
 				if err := migrator.AddColumn(&tables.TableProvider{}, "send_back_raw_request"); err != nil {
 					return err
 				}
@@ -2657,6 +2666,7 @@ func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB) err
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column send_back_raw_request from TableProvider", migrationName)
 			if err := migrator.DropColumn(&tables.TableProvider{}, "send_back_raw_request"); err != nil {
 				return err
 			}
@@ -2671,14 +2681,18 @@ func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB) err
 }
 
 // migrationAddConfigHashColumn adds the config_hash column to the provider and key tables
-func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_config_hash_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_config_hash_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			// Add config_hash to providers table
 			if !migrator.HasColumn(&tables.TableProvider{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableProvider", migrationName)
 				if err := migrator.AddColumn(&tables.TableProvider{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2687,6 +2701,7 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 				if err := tx.Find(&providers).Error; err != nil {
 					return fmt.Errorf("failed to fetch providers for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d providers", migrationName, len(providers))
 				for _, provider := range providers {
 					if provider.ConfigHash == "" {
 						// Convert to ProviderConfig and generate hash
@@ -2710,6 +2725,7 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 			}
 			// Add config_hash to keys table
 			if !migrator.HasColumn(&tables.TableKey{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2718,6 +2734,7 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 				if err := tx.Find(&keys).Error; err != nil {
 					return fmt.Errorf("failed to fetch keys for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d keys", migrationName, len(keys))
 				for _, key := range keys {
 					if key.ConfigHash == "" {
 						// Convert to schemas.Key and generate hash
@@ -2746,9 +2763,11 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column config_hash from TableProvider", migrationName)
 			if err := migrator.DropColumn(&tables.TableProvider{}, "config_hash"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column config_hash from TableKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableKey{}, "config_hash"); err != nil {
 				return err
 			}
@@ -2763,14 +2782,18 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddVirtualKeyConfigHashColumn adds the config_hash column to the virtual keys table
-func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_config_hash_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_virtual_key_config_hash_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			// Add config_hash to virtual keys table
 			if !migrator.HasColumn(&tables.TableVirtualKey{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableVirtualKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableVirtualKey{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2779,6 +2802,7 @@ func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB) er
 				if err := tx.Preload("ProviderConfigs").Preload("ProviderConfigs.Keys").Preload("MCPConfigs").Find(&virtualKeys).Error; err != nil {
 					return fmt.Errorf("failed to fetch virtual keys for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d virtualKeys", migrationName, len(virtualKeys))
 				for _, vk := range virtualKeys {
 					if vk.ConfigHash == "" {
 						hash, err := GenerateVirtualKeyHash(vk)
@@ -2796,6 +2820,7 @@ func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB) er
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column config_hash from TableVirtualKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableVirtualKey{}, "config_hash"); err != nil {
 				return err
 			}
@@ -2811,15 +2836,19 @@ func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB) er
 
 // migrationAddAdditionalConfigHashColumns adds config_hash columns to client config, budget, rate limit,
 // customer, team, MCP client, and plugin tables for reconciliation support
-func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_additional_config_hash_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_additional_config_hash_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			// Add config_hash to client config table
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2828,6 +2857,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 				if err := tx.Find(&clientConfigs).Error; err != nil {
 					return fmt.Errorf("failed to fetch client configs for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d clientConfigs", migrationName, len(clientConfigs))
 				for _, cc := range clientConfigs {
 					if cc.ConfigHash == "" {
 						clientConfig := ClientConfig{
@@ -2854,6 +2884,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 
 			// Add config_hash to budgets table
 			if !migrator.HasColumn(&tables.TableBudget{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableBudget", migrationName)
 				if err := migrator.AddColumn(&tables.TableBudget{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2862,6 +2893,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 				if err := tx.Find(&budgets).Error; err != nil {
 					return fmt.Errorf("failed to fetch budgets for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d budgets", migrationName, len(budgets))
 				for _, budget := range budgets {
 					if budget.ConfigHash == "" {
 						hash, err := GenerateBudgetHash(budget)
@@ -2877,6 +2909,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 
 			// Add config_hash to rate limits table
 			if !migrator.HasColumn(&tables.TableRateLimit{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableRateLimit", migrationName)
 				if err := migrator.AddColumn(&tables.TableRateLimit{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2885,6 +2918,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 				if err := tx.Find(&rateLimits).Error; err != nil {
 					return fmt.Errorf("failed to fetch rate limits for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d rateLimits", migrationName, len(rateLimits))
 				for _, rl := range rateLimits {
 					if rl.ConfigHash == "" {
 						hash, err := GenerateRateLimitHash(rl)
@@ -2900,6 +2934,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 
 			// Add config_hash to customers table
 			if !migrator.HasColumn(&tables.TableCustomer{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableCustomer", migrationName)
 				if err := migrator.AddColumn(&tables.TableCustomer{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2908,6 +2943,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 				if err := tx.Find(&customers).Error; err != nil {
 					return fmt.Errorf("failed to fetch customers for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d customers", migrationName, len(customers))
 				for _, customer := range customers {
 					if customer.ConfigHash == "" {
 						hash, err := GenerateCustomerHash(customer)
@@ -2923,6 +2959,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 
 			// Add config_hash to teams table
 			if !migrator.HasColumn(&tables.TableTeam{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableTeam", migrationName)
 				if err := migrator.AddColumn(&tables.TableTeam{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2931,6 +2968,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 				if err := tx.Find(&teams).Error; err != nil {
 					return fmt.Errorf("failed to fetch teams for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d teams", migrationName, len(teams))
 				for _, team := range teams {
 					if team.ConfigHash == "" {
 						hash, err := GenerateTeamHash(team)
@@ -2946,6 +2984,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 
 			// Add config_hash to MCP clients table
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2954,6 +2993,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 				if err := tx.Find(&mcpClients).Error; err != nil {
 					return fmt.Errorf("failed to fetch MCP clients for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d mcpClients", migrationName, len(mcpClients))
 				for _, mcp := range mcpClients {
 					if mcp.ConfigHash == "" {
 						hash, err := GenerateMCPClientHash(mcp)
@@ -2969,6 +3009,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 
 			// Add config_hash to plugins table
 			if !migrator.HasColumn(&tables.TablePlugin{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TablePlugin", migrationName)
 				if err := migrator.AddColumn(&tables.TablePlugin{}, "config_hash"); err != nil {
 					return err
 				}
@@ -2977,6 +3018,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 				if err := tx.Find(&plugins).Error; err != nil {
 					return fmt.Errorf("failed to fetch plugins for hash migration: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d plugins", migrationName, len(plugins))
 				for _, plugin := range plugins {
 					if plugin.ConfigHash == "" {
 						hash, err := GeneratePluginHash(plugin)
@@ -2995,24 +3037,31 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column config_hash from TableClientConfig", migrationName)
 			if err := migrator.DropColumn(&tables.TableClientConfig{}, "config_hash"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column config_hash from TableBudget", migrationName)
 			if err := migrator.DropColumn(&tables.TableBudget{}, "config_hash"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column config_hash from TableRateLimit", migrationName)
 			if err := migrator.DropColumn(&tables.TableRateLimit{}, "config_hash"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column config_hash from TableCustomer", migrationName)
 			if err := migrator.DropColumn(&tables.TableCustomer{}, "config_hash"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column config_hash from TableTeam", migrationName)
 			if err := migrator.DropColumn(&tables.TableTeam{}, "config_hash"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column config_hash from TableMCPClient", migrationName)
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "config_hash"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column config_hash from TablePlugin", migrationName)
 			if err := migrator.DropColumn(&tables.TablePlugin{}, "config_hash"); err != nil {
 				return err
 			}
@@ -3027,9 +3076,12 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAdd200kTokenPricingColumns adds pricing columns for 200k token tier models
-func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_200k_token_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_200k_token_pricing_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -3043,6 +3095,7 @@ func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error
 
 			for _, field := range columns {
 				if !migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
 					if err := migrator.AddColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to add column %s: %w", field, err)
 					}
@@ -3063,6 +3116,7 @@ func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error
 
 			for _, field := range columns {
 				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
 					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to drop column %s: %w", field, err)
 					}
@@ -3075,9 +3129,12 @@ func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error
 }
 
 // migrationAddImagePricingColumns adds the image generation pricing columns to the model_pricing table
-func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_image_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_image_pricing_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -3092,6 +3149,7 @@ func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB) error {
 
 			for _, field := range columns {
 				if !migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
 					if err := migrator.AddColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to add column %s: %w", field, err)
 					}
@@ -3113,6 +3171,7 @@ func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB) error {
 
 			for _, field := range columns {
 				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
 					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to drop column %s: %w", field, err)
 					}
@@ -3126,15 +3185,19 @@ func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB) error {
 
 // migrationAddUseForBatchAPIColumnAndS3BucketsConfig adds the use_for_batch_api and bedrock_batch_s3_config_json columns to the config_keys table
 // Existing keys are backfilled with use_for_batch_api = TRUE to preserve current behavior
-func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db *gorm.DB) error {
+func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_use_for_batch_api_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_use_for_batch_api_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 
 			// Add use_for_batch_api column
 			if !mg.HasColumn(&tables.TableKey{}, "use_for_batch_api") {
+				logger.Info("[configstore] %s: adding column use_for_batch_api to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "use_for_batch_api"); err != nil {
 					return fmt.Errorf("failed to add use_for_batch_api column: %w", err)
 				}
@@ -3142,6 +3205,7 @@ func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db 
 
 			// Add bedrock_batch_s3_config_json column
 			if !mg.HasColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json") {
+				logger.Info("[configstore] %s: adding column bedrock_batch_s3_config_json to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json"); err != nil {
 					return fmt.Errorf("failed to add bedrock_batch_s3_config_json column: %w", err)
 				}
@@ -3153,12 +3217,14 @@ func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db 
 			mg := tx.Migrator()
 
 			if mg.HasColumn(&tables.TableKey{}, "use_for_batch_api") {
+				logger.Info("[configstore] %s: dropping column use_for_batch_api from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "use_for_batch_api"); err != nil {
 					return fmt.Errorf("failed to drop use_for_batch_api column: %w", err)
 				}
 			}
 
 			if mg.HasColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json") {
+				logger.Info("[configstore] %s: dropping column bedrock_batch_s3_config_json from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json"); err != nil {
 					return fmt.Errorf("failed to drop bedrock_batch_s3_config_json column: %w", err)
 				}
@@ -3175,14 +3241,18 @@ func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db 
 }
 
 // migrationAddHeaderFilterConfigJSONColumn adds the header_filter_config_json column to the config_client table
-func migrationAddHeaderFilterConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddHeaderFilterConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_header_filter_config_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_header_filter_config_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 
 			if !mg.HasColumn(&tables.TableClientConfig{}, "header_filter_config_json") {
+				logger.Info("[configstore] %s: adding column header_filter_config_json to TableClientConfig", migrationName)
 				if err := mg.AddColumn(&tables.TableClientConfig{}, "header_filter_config_json"); err != nil {
 					return fmt.Errorf("failed to add header_filter_config_json column: %w", err)
 				}
@@ -3194,6 +3264,7 @@ func migrationAddHeaderFilterConfigJSONColumn(ctx context.Context, db *gorm.DB) 
 			mg := tx.Migrator()
 
 			if mg.HasColumn(&tables.TableClientConfig{}, "header_filter_config_json") {
+				logger.Info("[configstore] %s: dropping column header_filter_config_json from TableClientConfig", migrationName)
 				if err := mg.DropColumn(&tables.TableClientConfig{}, "header_filter_config_json"); err != nil {
 					return fmt.Errorf("failed to drop header_filter_config_json column: %w", err)
 				}
@@ -3209,23 +3280,29 @@ func migrationAddHeaderFilterConfigJSONColumn(ctx context.Context, db *gorm.DB) 
 }
 
 // migrationAddAzureClientIDAndClientSecretAndTenantIDColumns adds the azure_client_id, azure_client_secret, and azure_tenant_id columns to the key table
-func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_azure_client_id_and_client_secret_and_tenant_id_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_azure_client_id_and_client_secret_and_tenant_id_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableKey{}, "azure_client_id") {
+				logger.Info("[configstore] %s: adding column azure_client_id to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "azure_client_id"); err != nil {
 					return fmt.Errorf("failed to add azure_client_id column: %w", err)
 				}
 			}
 			if !migrator.HasColumn(&tables.TableKey{}, "azure_client_secret") {
+				logger.Info("[configstore] %s: adding column azure_client_secret to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "azure_client_secret"); err != nil {
 					return fmt.Errorf("failed to add azure_client_secret column: %w", err)
 				}
 			}
 			if !migrator.HasColumn(&tables.TableKey{}, "azure_tenant_id") {
+				logger.Info("[configstore] %s: adding column azure_tenant_id to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "azure_tenant_id"); err != nil {
 					return fmt.Errorf("failed to add azure_tenant_id column: %w", err)
 				}
@@ -3235,12 +3312,15 @@ func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Cont
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column azure_client_id from TableKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableKey{}, "azure_client_id"); err != nil {
 				return fmt.Errorf("failed to drop azure_client_id column: %w", err)
 			}
+			logger.Info("[configstore] %s: dropping column azure_client_secret from TableKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableKey{}, "azure_client_secret"); err != nil {
 				return fmt.Errorf("failed to drop azure_client_secret column: %w", err)
 			}
+			logger.Info("[configstore] %s: dropping column azure_tenant_id from TableKey", migrationName)
 			if err := migrator.DropColumn(&tables.TableKey{}, "azure_tenant_id"); err != nil {
 				return fmt.Errorf("failed to drop azure_tenant_id column: %w", err)
 			}
@@ -3253,13 +3333,17 @@ func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Cont
 	return nil
 }
 
-func migrationAddToolPricingJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddToolPricingJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_tool_pricing_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_tool_pricing_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_pricing_json") {
+				logger.Info("[configstore] %s: adding column tool_pricing_json to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_pricing_json"); err != nil {
 					return fmt.Errorf("failed to add tool_pricing_json column: %w", err)
 				}
@@ -3269,6 +3353,7 @@ func migrationAddToolPricingJSONColumn(ctx context.Context, db *gorm.DB) error {
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column tool_pricing_json from TableMCPClient", migrationName)
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_pricing_json"); err != nil {
 				return fmt.Errorf("failed to drop tool_pricing_json column: %w", err)
 			}
@@ -3286,7 +3371,10 @@ func migrationAddToolPricingJSONColumn(ctx context.Context, db *gorm.DB) error {
 //   - tools_to_execute_json: ["calculator_add", "calculator_subtract"] → ["add", "subtract"]
 //   - tools_to_auto_execute_json: ["calculator_multiply"] → ["multiply"]
 //   - tool_pricing_json: {"calculator_add": 0.001, "calculator_subtract": 0.001} → {"add": 0.001, "subtract": 0.001}
-func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) error {
+func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "remove_server_prefix_from_mcp_tools"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	// Helper function to check if a tool name has a prefix matching the client name
 	// Handles both exact matches and legacy normalized forms
 	hasClientPrefix := func(toolName, clientName string) (bool, string) {
@@ -3306,7 +3394,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 	}
 
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "remove_server_prefix_from_mcp_tools",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -3321,6 +3409,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 			}
 
 			// Process each MCP client
+			logger.Info("[configstore] %s: processing %d mcpClients", migrationName, len(mcpClients))
 			for i := range mcpClients {
 				client := &mcpClients[i]
 				clientName := client.Name
@@ -3341,7 +3430,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 						if hasPrefix, unprefixedTool := hasClientPrefix(tool, clientName); hasPrefix {
 							// Check for collision: if unprefixed tool already exists in the list
 							if seenTools[unprefixedTool] {
-								log.Printf("Collision detected when stripping prefix from tool '%s' for client '%s': unprefixed name '%s' already exists. Keeping unprefixed value.", tool, clientName, unprefixedTool)
+								logger.Info("Collision detected when stripping prefix from tool '%s' for client '%s': unprefixed name '%s' already exists. Keeping unprefixed value.", tool, clientName, unprefixedTool)
 								needsUpdate = true
 								continue
 							}
@@ -3351,7 +3440,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 						} else {
 							// Tool already unprefixed or is wildcard "*"
 							if seenTools[tool] {
-								log.Printf("Duplicate tool name '%s' found for client '%s'. Keeping first occurrence.", tool, clientName)
+								logger.Info("Duplicate tool name '%s' found for client '%s'. Keeping first occurrence.", tool, clientName)
 								continue
 							}
 							seenTools[tool] = true
@@ -3384,7 +3473,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 						if hasPrefix, unprefixedTool := hasClientPrefix(tool, clientName); hasPrefix {
 							// Check for collision: if unprefixed tool already exists in the list
 							if seenAutoTools[unprefixedTool] {
-								log.Printf("Collision detected when stripping prefix from auto-execute tool '%s' for client '%s': unprefixed name '%s' already exists. Keeping unprefixed value.", tool, clientName, unprefixedTool)
+								logger.Info("Collision detected when stripping prefix from auto-execute tool '%s' for client '%s': unprefixed name '%s' already exists. Keeping unprefixed value.", tool, clientName, unprefixedTool)
 								needsUpdate = true
 								continue
 							}
@@ -3394,7 +3483,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 						} else {
 							// Tool already unprefixed or is wildcard "*"
 							if seenAutoTools[tool] {
-								log.Printf("Duplicate auto-execute tool name '%s' found for client '%s'. Keeping first occurrence.", tool, clientName)
+								logger.Info("Duplicate auto-execute tool name '%s' found for client '%s'. Keeping first occurrence.", tool, clientName)
 								continue
 							}
 							seenAutoTools[tool] = true
@@ -3426,7 +3515,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 						if hasPrefix, unprefixedTool := hasClientPrefix(toolName, clientName); hasPrefix {
 							// Check for collision: if unprefixed key already exists
 							if existingPrice, exists := updatedPricing[unprefixedTool]; exists {
-								log.Printf("Collision detected when stripping prefix from pricing key '%s' for client '%s': unprefixed key '%s' already exists with price %.6f. Keeping existing unprefixed value (%.6f), discarding prefixed value (%.6f).", toolName, clientName, unprefixedTool, existingPrice, existingPrice, price)
+								logger.Info("Collision detected when stripping prefix from pricing key '%s' for client '%s': unprefixed key '%s' already exists with price %.6f. Keeping existing unprefixed value (%.6f), discarding prefixed value (%.6f).", toolName, clientName, unprefixedTool, existingPrice, existingPrice, price)
 								needsUpdate = true
 								continue
 							}
@@ -3435,7 +3524,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 						} else {
 							// Check for collision: if unprefixed key already exists (from a previously processed prefixed entry)
 							if existingPrice, exists := updatedPricing[toolName]; exists {
-								log.Printf("Collision detected for pricing key '%s' for client '%s': key already exists with price %.6f. Keeping first value (%.6f), discarding duplicate (%.6f).", toolName, clientName, existingPrice, existingPrice, price)
+								logger.Info("Collision detected for pricing key '%s' for client '%s': key already exists with price %.6f. Keeping first value (%.6f), discarding duplicate (%.6f).", toolName, clientName, existingPrice, existingPrice, price)
 								continue
 							}
 							updatedPricing[toolName] = price
@@ -3478,6 +3567,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 			}
 
 			// Process each VK MCP config
+			logger.Info("[configstore] %s: processing %d vkMCPConfigs", migrationName, len(vkMCPConfigs))
 			for i := range vkMCPConfigs {
 				vkConfig := &vkMCPConfigs[i]
 				if vkConfig.MCPClient.Name == "" {
@@ -3550,6 +3640,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 				return fmt.Errorf("failed to fetch MCP clients for rollback: %w", err)
 			}
 
+			logger.Info("[configstore] %s: processing %d mcpClients", migrationName, len(mcpClients))
 			for _, client := range mcpClients {
 				clientName := client.Name
 				needsUpdate := false
@@ -3661,6 +3752,7 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 				return fmt.Errorf("failed to fetch virtual key MCP configs for rollback: %w", err)
 			}
 
+			logger.Info("[configstore] %s: processing %d vkMCPConfigs", migrationName, len(vkMCPConfigs))
 			for _, vkConfig := range vkMCPConfigs {
 				if vkConfig.MCPClient.Name == "" {
 					continue
@@ -3709,9 +3801,12 @@ func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAddDistributedLocksTable adds the distributed_locks table for distributed locking
-func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_distributed_locks_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_distributed_locks_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			// Use raw SQL with IF NOT EXISTS for atomic, race-condition-safe table creation
@@ -3749,13 +3844,17 @@ func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddModelConfigTable adds the governance_model_configs table
-func migrationAddModelConfigTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddModelConfigTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_config_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_model_config_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.TableModelConfig{}) {
+				logger.Info("[configstore] %s: creating table TableModelConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableModelConfig{}); err != nil {
 					return err
 				}
@@ -3765,6 +3864,7 @@ func migrationAddModelConfigTable(ctx context.Context, db *gorm.DB) error {
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping table TableModelConfig", migrationName)
 			if err := migrator.DropTable(&tables.TableModelConfig{}); err != nil {
 				return err
 			}
@@ -3779,9 +3879,12 @@ func migrationAddModelConfigTable(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddProviderGovernanceColumns adds budget_id and rate_limit_id columns to config_providers table
-func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_governance_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_governance_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -3789,6 +3892,7 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 
 			// Add budget_id column if it doesn't exist
 			if !migrator.HasColumn(provider, "budget_id") {
+				logger.Info("[configstore] %s: adding column budget_id to TableProvider", migrationName)
 				if err := migrator.AddColumn(provider, "budget_id"); err != nil {
 					return fmt.Errorf("failed to add budget_id column: %w", err)
 				}
@@ -3802,6 +3906,7 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 
 			// Add rate_limit_id column if it doesn't exist
 			if !migrator.HasColumn(provider, "rate_limit_id") {
+				logger.Info("[configstore] %s: adding column rate_limit_id to TableProvider", migrationName)
 				if err := migrator.AddColumn(provider, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to add rate_limit_id column: %w", err)
 				}
@@ -3835,6 +3940,7 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 
 			// Drop rate_limit_id column if it exists
 			if migrator.HasColumn(provider, "rate_limit_id") {
+				logger.Info("[configstore] %s: dropping column rate_limit_id from TableProvider", migrationName)
 				if err := migrator.DropColumn(provider, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
 				}
@@ -3842,6 +3948,7 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 
 			// Drop budget_id column if it exists
 			if migrator.HasColumn(provider, "budget_id") {
+				logger.Info("[configstore] %s: dropping column budget_id from TableProvider", migrationName)
 				if err := migrator.DropColumn(provider, "budget_id"); err != nil {
 					return fmt.Errorf("failed to drop budget_id column: %w", err)
 				}
@@ -3862,9 +3969,12 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 // to (scope, scope_id, model_name, provider). Existing rows are backfilled to the
 // "global" scope, preserving pre-scope behavior. The new index is created before
 // the old one is dropped so uniqueness is never unenforced during the migration.
-func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_config_scope_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_model_config_scope_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -3872,12 +3982,14 @@ func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error
 
 			// Add scope column (NOT NULL DEFAULT 'global' backfills existing rows).
 			if !migrator.HasColumn(modelConfig, "scope") {
+				logger.Info("[configstore] %s: adding column scope to TableModelConfig", migrationName)
 				if err := migrator.AddColumn(modelConfig, "scope"); err != nil {
 					return fmt.Errorf("failed to add scope column: %w", err)
 				}
 			}
 			// Add scope_id column (nullable).
 			if !migrator.HasColumn(modelConfig, "scope_id") {
+				logger.Info("[configstore] %s: adding column scope_id to TableModelConfig", migrationName)
 				if err := migrator.AddColumn(modelConfig, "scope_id"); err != nil {
 					return fmt.Errorf("failed to add scope_id column: %w", err)
 				}
@@ -3893,12 +4005,14 @@ func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error
 			// unique under it; this ordering avoids any window where uniqueness is
 			// unenforced. CreateIndex reads the struct tags so it is dialect-safe.
 			if !migrator.HasIndex(modelConfig, "idx_model_scope_provider") {
+				logger.Info("[configstore] %s: creating index idx_model_scope_provider on TableModelConfig", migrationName)
 				if err := migrator.CreateIndex(modelConfig, "idx_model_scope_provider"); err != nil {
 					return fmt.Errorf("failed to create idx_model_scope_provider: %w", err)
 				}
 			}
 			// Drop the now-superseded (model_name, provider) unique index.
 			if migrator.HasIndex(modelConfig, "idx_model_provider") {
+				logger.Info("[configstore] %s: dropping index idx_model_provider on TableModelConfig", migrationName)
 				if err := migrator.DropIndex(modelConfig, "idx_model_provider"); err != nil {
 					return fmt.Errorf("failed to drop idx_model_provider: %w", err)
 				}
@@ -3920,9 +4034,12 @@ func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error
 // (scope='global', provider=<name>, model_name='*') "all models on this provider" rows,
 // reusing the same budget/rate-limit rows. It then NULLs the provider FKs so the old
 // provider-governance enforcement path goes inert (single source of truth = model_configs).
-func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
+func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "migrate_provider_governance_to_model_configs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "migrate_provider_governance_to_model_configs",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -3937,30 +4054,63 @@ func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *g
 			}
 
 			now := time.Now()
+			logger.Info("[configstore] %s: processing %d providers", migrationName, len(providers))
 			for i := range providers {
 				p := &providers[i]
 
-				// Idempotency: skip if a global all-models row already exists for this provider.
-				var existing int64
-				if err := tx.Model(&tables.TableModelConfig{}).
-					Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, p.Name).
-					Count(&existing).Error; err != nil {
-					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
-				}
-				if existing == 0 {
+				// Load any existing global all-models row for this provider. This keeps the
+				// migration idempotent (a re-run skips re-insert) AND lossless: if a wildcard
+				// row already exists - hand-created via the UI, or left by a partial prior run -
+				// we merge the provider's governance into it instead of skipping, so clearing
+				// the provider FKs below can never silently drop budget/rate-limit ownership.
+				// Select only the columns that exist at this point in the migration sequence
+				// (later columns like calendar_aligned do not yet exist).
+				var existing tables.TableModelConfig
+				err := tx.
+					Where("scope = ? AND scope_id IS NULL AND model_name = ? AND provider = ?",
+						tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, p.Name).
+					Select("id", "budget_id", "rate_limit_id").
+					First(&existing).Error
+				switch {
+				case err == gorm.ErrRecordNotFound:
 					providerName := p.Name
-					mc := tables.TableModelConfig{
-						ID:          uuid.NewString(),
-						ModelName:   tables.ModelConfigAllModels,
-						Provider:    &providerName,
-						Scope:       tables.ModelConfigScopeGlobal,
-						BudgetID:    p.BudgetID,
-						RateLimitID: p.RateLimitID,
-						CreatedAt:   now,
-						UpdatedAt:   now,
-					}
-					if err := tx.Create(&mc).Error; err != nil {
+					// Insert via an explicit column map rather than the live TableModelConfig
+					// struct: GORM derives the INSERT column list from today's struct, so a
+					// column added by a *later* migration (e.g. calendar_aligned, added by
+					// add_model_config_calendar_aligned_column further down the sequence) would
+					// otherwise appear in this INSERT before its column exists and fail boot.
+					// The map pins this historical migration to the columns present at this point.
+					if err := tx.Table((tables.TableModelConfig{}).TableName()).Create(map[string]any{
+						"id":            uuid.NewString(),
+						"model_name":    tables.ModelConfigAllModels,
+						"provider":      providerName,
+						"scope":         tables.ModelConfigScopeGlobal,
+						"budget_id":     p.BudgetID,
+						"rate_limit_id": p.RateLimitID,
+						"created_at":    now,
+						"updated_at":    now,
+					}).Error; err != nil {
 						return fmt.Errorf("failed to create wildcard model config for provider %q: %w", p.Name, err)
+					}
+				case err != nil:
+					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
+				default:
+					// A wildcard row already exists: backfill only the governance slots it lacks,
+					// so we never overwrite values already present. This is commutative and safe
+					// to repeat (a clean re-run finds nothing to fill and writes nothing).
+					updates := map[string]any{}
+					if existing.BudgetID == nil && p.BudgetID != nil {
+						updates["budget_id"] = p.BudgetID
+					}
+					if existing.RateLimitID == nil && p.RateLimitID != nil {
+						updates["rate_limit_id"] = p.RateLimitID
+					}
+					if len(updates) > 0 {
+						updates["updated_at"] = now
+						if err := tx.Table((tables.TableModelConfig{}).TableName()).
+							Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+							return fmt.Errorf("failed to merge provider governance into wildcard model config for provider %q: %w", p.Name, err)
+						}
 					}
 				}
 
@@ -3990,6 +4140,7 @@ func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *g
 				return fmt.Errorf("failed to load provider wildcard configs: %w", err)
 			}
 
+			logger.Info("[configstore] %s: processing %d wildcards", migrationName, len(wildcards))
 			for i := range wildcards {
 				mc := &wildcards[i]
 				// Re-attach the budget/rate-limit FK rows to the provider row.
@@ -4014,14 +4165,18 @@ func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *g
 // migrationAddBudgetModelConfigIDColumn adds governance_budgets.model_config_id and
 // backfills it from the legacy single governance_model_configs.budget_id, inverting
 // budget ownership so a model config can own multiple budgets via the FK.
-func migrationAddBudgetModelConfigIDColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddBudgetModelConfigIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_model_config_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_budget_model_config_id_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 
 			if !mig.HasColumn(&tables.TableBudget{}, "model_config_id") {
+				logger.Info("[configstore] %s: adding column model_config_id to TableBudget", migrationName)
 				if err := mig.AddColumn(&tables.TableBudget{}, "model_config_id"); err != nil {
 					return fmt.Errorf("failed to add model_config_id column: %w", err)
 				}
@@ -4035,6 +4190,7 @@ func migrationAddBudgetModelConfigIDColumn(ctx context.Context, db *gorm.DB) err
 			if err := tx.Where("budget_id IS NOT NULL").Find(&mcs).Error; err != nil {
 				return fmt.Errorf("failed to load model configs with budgets: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d mcs", migrationName, len(mcs))
 			for i := range mcs {
 				mc := &mcs[i]
 				if mc.BudgetID == nil {
@@ -4098,9 +4254,12 @@ func ensureVKModelConfig(tx *gorm.DB, vkID string, provider *string, calendarAli
 // model_configs as VK-scoped all-models wildcard rows:
 //   - VK top-level budgets/rate-limit -> (scope=virtual_key, scope_id=vk, model_name='*', provider=NULL)
 //   - per-provider-config budgets/rate-limit -> (..., provider=<that provider>)
-func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
+func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "migrate_virtual_key_governance_to_model_configs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "migrate_virtual_key_governance_to_model_configs",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -4118,6 +4277,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 			}
 
 			now := time.Now()
+			logger.Info("[configstore] %s: processing %d vks", migrationName, len(vks))
 			for i := range vks {
 				vk := &vks[i]
 
@@ -4127,6 +4287,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 					if err != nil {
 						return err
 					}
+					logger.Info("[configstore] %s: processing %d vk.Budgets", migrationName, len(vk.Budgets))
 					for _, b := range vk.Budgets {
 						if err := tx.Exec(
 							"UPDATE governance_budgets SET model_config_id = ?, virtual_key_id = NULL WHERE id = ? AND model_config_id IS NULL",
@@ -4146,6 +4307,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 				}
 
 				// Per-provider-config governance -> provider-specific wildcard.
+				logger.Info("[configstore] %s: processing %d vk.ProviderConfigs", migrationName, len(vk.ProviderConfigs))
 				for j := range vk.ProviderConfigs {
 					pc := &vk.ProviderConfigs[j]
 					if len(pc.Budgets) == 0 && pc.RateLimitID == nil {
@@ -4156,6 +4318,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 					if err != nil {
 						return err
 					}
+					logger.Info("[configstore] %s: processing %d pc.Budgets", migrationName, len(pc.Budgets))
 					for _, b := range pc.Budgets {
 						if err := tx.Exec(
 							"UPDATE governance_budgets SET model_config_id = ?, provider_config_id = NULL WHERE id = ? AND model_config_id IS NULL",
@@ -4190,6 +4353,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 				return fmt.Errorf("failed to load VK wildcard model configs: %w", err)
 			}
 
+			logger.Info("[configstore] %s: processing %d mcs", migrationName, len(mcs))
 			for i := range mcs {
 				mc := &mcs[i]
 				if mc.ScopeID == nil {
@@ -4202,6 +4366,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 
 				if mc.Provider == nil {
 					// VK top-level: restore VK ownership + rate limit.
+					logger.Info("[configstore] %s: processing %d budgets", migrationName, len(budgets))
 					for _, b := range budgets {
 						if err := tx.Exec("UPDATE governance_budgets SET virtual_key_id = ?, model_config_id = NULL WHERE id = ?", *mc.ScopeID, b.ID).Error; err != nil {
 							return fmt.Errorf("failed to restore VK budget %q: %w", b.ID, err)
@@ -4221,6 +4386,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 					}
 					if len(pcs) > 0 {
 						pcID := pcs[0].ID
+						logger.Info("[configstore] %s: processing %d budgets", migrationName, len(budgets))
 						for _, b := range budgets {
 							if err := tx.Exec("UPDATE governance_budgets SET provider_config_id = ?, model_config_id = NULL WHERE id = ?", pcID, b.ID).Error; err != nil {
 								return fmt.Errorf("failed to restore provider-config budget %q: %w", b.ID, err)
@@ -4250,14 +4416,18 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 // migrationAddModelConfigCalendarAlignedColumn adds governance_model_configs.calendar_aligned
 // and backfills VK-scoped wildcards from their owning virtual key. Budgets folded out of a
 // calendar-aligned VK then keep snapping resets to calendar boundaries.
-func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_config_calendar_aligned_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_model_config_calendar_aligned_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 
 			if !mig.HasColumn(&tables.TableModelConfig{}, "calendar_aligned") {
+				logger.Info("[configstore] %s: adding column calendar_aligned to TableModelConfig", migrationName)
 				if err := mig.AddColumn(&tables.TableModelConfig{}, "calendar_aligned"); err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column: %w", err)
 				}
@@ -4272,6 +4442,7 @@ func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.
 			if err := tx.Table("governance_virtual_keys").Select("id, calendar_aligned").Scan(&rows).Error; err != nil {
 				return fmt.Errorf("failed to load virtual keys for calendar_aligned backfill: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d rows", migrationName, len(rows))
 			for _, r := range rows {
 				if !r.CalendarAligned {
 					continue // default is already false
@@ -4289,6 +4460,7 @@ func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if mig.HasColumn(&tables.TableModelConfig{}, "calendar_aligned") {
+				logger.Info("[configstore] %s: dropping column calendar_aligned from TableModelConfig", migrationName)
 				if err := mig.DropColumn(&tables.TableModelConfig{}, "calendar_aligned"); err != nil {
 					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
 				}
@@ -4303,13 +4475,17 @@ func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.
 }
 
 // migrationAddAllowedHeadersJSONColumn adds the allowed_headers_json column to the client config table
-func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allowed_headers_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_allowed_headers_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allowed_headers_json") {
+				logger.Info("[configstore] %s: adding column allowed_headers_json to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "allowed_headers_json"); err != nil {
 					return err
 				}
@@ -4320,6 +4496,7 @@ func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableClientConfig{}, "allowed_headers_json") {
+				logger.Info("[configstore] %s: dropping column allowed_headers_json from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allowed_headers_json"); err != nil {
 					return err
 				}
@@ -4335,13 +4512,17 @@ func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 }
 
 // migrationAddDisableDBPingsInHealthColumn adds the disable_db_pings_in_health column to the client config table
-func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_disable_db_pings_in_health_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_disable_db_pings_in_health_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health") {
+				logger.Info("[configstore] %s: adding column disable_db_pings_in_health to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health"); err != nil {
 					return err
 				}
@@ -4352,6 +4533,7 @@ func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB) 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health") {
+				logger.Info("[configstore] %s: dropping column disable_db_pings_in_health from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health"); err != nil {
 					return err
 				}
@@ -4367,13 +4549,17 @@ func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB) 
 }
 
 // migrationAddIsPingAvailableColumnToMCPClientTable adds the is_ping_available column to the config_mcp_clients table
-func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_is_ping_available_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_is_ping_available_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "is_ping_available") {
+				logger.Info("[configstore] %s: adding column is_ping_available to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "is_ping_available"); err != nil {
 					return err
 				}
@@ -4388,6 +4574,7 @@ func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableMCPClient{}, "is_ping_available") {
+				logger.Info("[configstore] %s: dropping column is_ping_available from TableMCPClient", migrationName)
 				if err := migrator.DropColumn(&tables.TableMCPClient{}, "is_ping_available"); err != nil {
 					return err
 				}
@@ -4403,14 +4590,18 @@ func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *
 }
 
 // migrationAddRoutingRulesTable adds the routing rules table for intelligent request routing
-func migrationAddRoutingRulesTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddRoutingRulesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_routing_rules_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_routing_rules_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasTable(&tables.TableRoutingRule{}) {
+				logger.Info("[configstore] %s: creating table TableRoutingRule", migrationName)
 				if err := migrator.CreateTable(&tables.TableRoutingRule{}); err != nil {
 					return err
 				}
@@ -4422,6 +4613,7 @@ func migrationAddRoutingRulesTable(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
+			logger.Info("[configstore] %s: dropping table TableRoutingRule", migrationName)
 			if err := migrator.DropTable(&tables.TableRoutingRule{}); err != nil {
 				return err
 			}
@@ -4437,26 +4629,32 @@ func migrationAddRoutingRulesTable(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddOAuthTables creates the oauth_configs and oauth_tokens tables
-func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
+func migrationAddOAuthTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_oauth_tables",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			// Create oauth_configs table FIRST (before adding FK columns that reference it)
 			if !migrator.HasTable(&tables.TableOauthConfig{}) {
+				logger.Info("[configstore] %s: creating table TableOauthConfig", migrationName)
 				if err := migrator.CreateTable(&tables.TableOauthConfig{}); err != nil {
 					return fmt.Errorf("failed to create oauth_configs table: %w", err)
 				}
 			}
 			// Create oauth_tokens table
 			if !migrator.HasTable(&tables.TableOauthToken{}) {
+				logger.Info("[configstore] %s: creating table TableOauthToken", migrationName)
 				if err := migrator.CreateTable(&tables.TableOauthToken{}); err != nil {
 					return fmt.Errorf("failed to create oauth_tokens table: %w", err)
 				}
 			}
 			// IF MCPClient table is not present, create it first
 			if !migrator.HasTable(&tables.TableMCPClient{}) {
+				logger.Info("[configstore] %s: creating table TableMCPClient", migrationName)
 				if err := migrator.CreateTable(&tables.TableMCPClient{}); err != nil {
 					return fmt.Errorf("failed to create mcp_clients table: %w", err)
 				}
@@ -4464,11 +4662,13 @@ func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
 			// Now update MCPClient table to add auth_type, oauth_config_id columns
 			// (oauth_config_id has FK constraint to oauth_configs table created above)
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "auth_type") {
+				logger.Info("[configstore] %s: adding column auth_type to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "auth_type"); err != nil {
 					return fmt.Errorf("failed to add auth_type column: %w", err)
 				}
 			}
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "oauth_config_id") {
+				logger.Info("[configstore] %s: adding column oauth_config_id to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "oauth_config_id"); err != nil {
 					return fmt.Errorf("failed to add oauth_config_id column: %w", err)
 				}
@@ -4485,12 +4685,14 @@ func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
 
 			// Drop tables in reverse order
 			if migrator.HasTable(&tables.TableOauthToken{}) {
+				logger.Info("[configstore] %s: dropping table TableOauthToken", migrationName)
 				if err := migrator.DropTable(&tables.TableOauthToken{}); err != nil {
 					return fmt.Errorf("failed to drop oauth_tokens table: %w", err)
 				}
 			}
 
 			if migrator.HasTable(&tables.TableOauthConfig{}) {
+				logger.Info("[configstore] %s: dropping table TableOauthConfig", migrationName)
 				if err := migrator.DropTable(&tables.TableOauthConfig{}); err != nil {
 					return fmt.Errorf("failed to drop oauth_configs table: %w", err)
 				}
@@ -4507,20 +4709,25 @@ func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddToolSyncIntervalColumns adds the tool_sync_interval columns to config_client and config_mcp_clients tables
-func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_tool_sync_interval_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_tool_sync_interval_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			// Add mcp_tool_sync_interval column to config_client table (global setting)
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval") {
+				logger.Info("[configstore] %s: adding column mcp_tool_sync_interval to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
 					return err
 				}
 			}
 			// Add tool_sync_interval column to config_mcp_clients table (per-client setting)
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_sync_interval") {
+				logger.Info("[configstore] %s: adding column tool_sync_interval to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
 					return err
 				}
@@ -4531,9 +4738,11 @@ func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
+			logger.Info("[configstore] %s: dropping column mcp_tool_sync_interval from TableClientConfig", migrationName)
 			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping column tool_sync_interval from TableMCPClient", migrationName)
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
 				return err
 			}
@@ -4553,9 +4762,12 @@ func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error
 // Legacy storage used minutes; runtime now persists seconds to preserve
 // sub-minute precision. We only convert positive values; 0 means "use global"
 // and negative values mean "disabled".
-func migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx context.Context, db *gorm.DB) error {
+func migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "convert_mcp_client_tool_sync_interval_minutes_to_seconds"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "convert_mcp_client_tool_sync_interval_minutes_to_seconds",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return tx.Exec(`
@@ -4584,13 +4796,17 @@ func migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx context.Conte
 // migrationAddMCPClientConfigToOAuthConfig adds the mcp_client_config_json column to oauth_configs table
 // This enables multi-instance support by storing pending MCP client config in the database
 // instead of in-memory, so OAuth callbacks can be handled by any server instance
-func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_config_to_oauth_config"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_client_config_to_oauth_config",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableOauthConfig{}, "mcp_client_config_json") {
+				logger.Info("[configstore] %s: adding column mcp_client_config_json to TableOauthConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
 					return err
 				}
@@ -4601,6 +4817,7 @@ func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB) 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableOauthConfig{}, "mcp_client_config_json") {
+				logger.Info("[configstore] %s: dropping column mcp_client_config_json from TableOauthConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
 					return err
 				}
@@ -4616,13 +4833,17 @@ func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB) 
 }
 
 // migrationAddBaseModelPricingColumn adds the base_model column to the model_pricing table
-func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_base_model_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_base_model_pricing_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableModelPricing{}, "base_model") {
+				logger.Info("[configstore] %s: adding column base_model to TableModelPricing", migrationName)
 				if err := migrator.AddColumn(&tables.TableModelPricing{}, "base_model"); err != nil {
 					return fmt.Errorf("failed to add column base_model: %w", err)
 				}
@@ -4633,6 +4854,7 @@ func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB) error 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableModelPricing{}, "base_model") {
+				logger.Info("[configstore] %s: dropping column base_model from TableModelPricing", migrationName)
 				if err := migrator.DropColumn(&tables.TableModelPricing{}, "base_model"); err != nil {
 					return fmt.Errorf("failed to drop column base_model: %w", err)
 				}
@@ -4644,13 +4866,17 @@ func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB) error 
 }
 
 // migrationAddAzureScopesColumn adds the azure_scopes column to the key table for Entra ID OAuth scopes
-func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_azure_scopes_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_azure_scopes_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableKey{}, "azure_scopes") {
+				logger.Info("[configstore] %s: adding column azure_scopes to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "azure_scopes"); err != nil {
 					return fmt.Errorf("failed to add azure_scopes column: %w", err)
 				}
@@ -4661,6 +4887,7 @@ func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableKey{}, "azure_scopes") {
+				logger.Info("[configstore] %s: dropping column azure_scopes from TableKey", migrationName)
 				if err := migrator.DropColumn(&tables.TableKey{}, "azure_scopes"); err != nil {
 					return fmt.Errorf("failed to drop azure_scopes column: %w", err)
 				}
@@ -4676,9 +4903,12 @@ func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB) error {
 
 // migrationAddReplicateDeploymentsJSONColumn adds the replicate_deployments_json column to the key table.
 // This column is later dropped by migrationDropDeploymentColumnsAndAddAliases after data is migrated.
-func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_replicate_deployments_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_replicate_deployments_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
@@ -4707,15 +4937,19 @@ func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB
 // migrationDropDeploymentColumnsAndAddAliases adds the unified aliases_json column, migrates
 // existing per-provider deployment data into it, then drops the legacy columns.
 // Only one deployment column will be populated per row (they were mutually exclusive).
-func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.DB) error {
+func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_deployment_columns_and_add_aliases"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_deployment_columns_and_add_aliases",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			m := tx.Migrator()
 
 			// Add aliases_json column first
 			if !m.HasColumn(&tables.TableKey{}, "aliases_json") {
+				logger.Info("[configstore] %s: adding column aliases_json to TableKey", migrationName)
 				if err := m.AddColumn(&tables.TableKey{}, "aliases_json"); err != nil {
 					return err
 				}
@@ -4790,6 +5024,7 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 				).Scan(&plainRows).Error; err != nil {
 					return fmt.Errorf("failed to fetch aliases for encryption fixup: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d plainRows", migrationName, len(plainRows))
 				for _, row := range plainRows {
 					if row.AliasesJSON == nil || *row.AliasesJSON == "" {
 						continue
@@ -4822,6 +5057,7 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 			).Find(&affectedKeys).Error; err != nil {
 				return fmt.Errorf("failed to fetch keys for hash recomputation: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d affectedKeys", migrationName, len(affectedKeys))
 			for _, key := range affectedKeys {
 				schemaKey := schemas.Key{
 					Name:               key.Name,
@@ -4845,7 +5081,7 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 				if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
 					return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
 				}
-				log.Printf("[Migration] Recomputed config_hash for key '%s' after aliases migration", key.Name)
+				logger.Info("[Migration] Recomputed config_hash for key '%s' after aliases migration", key.Name)
 			}
 			return nil
 		},
@@ -4853,6 +5089,7 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 			tx = tx.WithContext(ctx)
 			m := tx.Migrator()
 			if m.HasColumn(&tables.TableKey{}, "aliases_json") {
+				logger.Info("[configstore] %s: dropping column aliases_json from TableKey", migrationName)
 				if err := m.DropColumn(&tables.TableKey{}, "aliases_json"); err != nil {
 					return err
 				}
@@ -4868,15 +5105,19 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 
 // migrationAddKeyStatusColumns adds status and description columns to config_keys table
 // These columns track the status and description of each individual key
-func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_key_status_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_key_status_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			// Add status column
 			if !migrator.HasColumn(&tables.TableKey{}, "status") {
+				logger.Info("[configstore] %s: adding column status to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "status"); err != nil {
 					return err
 				}
@@ -4884,6 +5125,7 @@ func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB) error {
 
 			// Add description column
 			if !migrator.HasColumn(&tables.TableKey{}, "description") {
+				logger.Info("[configstore] %s: adding column description to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "description"); err != nil {
 					return err
 				}
@@ -4897,6 +5139,7 @@ func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB) error {
 
 			// Drop description column
 			if migrator.HasColumn(&tables.TableKey{}, "description") {
+				logger.Info("[configstore] %s: dropping column description from TableKey", migrationName)
 				if err := migrator.DropColumn(&tables.TableKey{}, "description"); err != nil {
 					return err
 				}
@@ -4904,6 +5147,7 @@ func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB) error {
 
 			// Drop status column
 			if migrator.HasColumn(&tables.TableKey{}, "status") {
+				logger.Info("[configstore] %s: dropping column status from TableKey", migrationName)
 				if err := migrator.DropColumn(&tables.TableKey{}, "status"); err != nil {
 					return err
 				}
@@ -4921,15 +5165,19 @@ func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB) error {
 
 // migrationAddProviderStatusColumns adds status and description columns to config_providers table
 // These columns track the status of model discovery attempts for keyless providers
-func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_status_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_status_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			// Add status column
 			if !migrator.HasColumn(&tables.TableProvider{}, "status") {
+				logger.Info("[configstore] %s: adding column status to TableProvider", migrationName)
 				if err := migrator.AddColumn(&tables.TableProvider{}, "status"); err != nil {
 					return err
 				}
@@ -4937,6 +5185,7 @@ func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB) error {
 
 			// Add description column
 			if !migrator.HasColumn(&tables.TableProvider{}, "description") {
+				logger.Info("[configstore] %s: adding column description to TableProvider", migrationName)
 				if err := migrator.AddColumn(&tables.TableProvider{}, "description"); err != nil {
 					return err
 				}
@@ -4950,6 +5199,7 @@ func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB) error {
 
 			// Drop description column
 			if migrator.HasColumn(&tables.TableProvider{}, "description") {
+				logger.Info("[configstore] %s: dropping column description from TableProvider", migrationName)
 				if err := migrator.DropColumn(&tables.TableProvider{}, "description"); err != nil {
 					return err
 				}
@@ -4957,6 +5207,7 @@ func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB) error {
 
 			// Drop status column
 			if migrator.HasColumn(&tables.TableProvider{}, "status") {
+				logger.Info("[configstore] %s: dropping column status from TableProvider", migrationName)
 				if err := migrator.DropColumn(&tables.TableProvider{}, "status"); err != nil {
 					return err
 				}
@@ -4973,14 +5224,18 @@ func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddAsyncJobResultTTLColumn adds async_job_result_ttl column to config_client table
-func migrationAddAsyncJobResultTTLColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAsyncJobResultTTLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_async_job_result_ttl_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_async_job_result_ttl_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "async_job_result_ttl") {
+				logger.Info("[configstore] %s: adding column async_job_result_ttl to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AsyncJobResultTTL"); err != nil {
 					return fmt.Errorf("failed to add async_job_result_ttl column: %w", err)
 				}
@@ -4993,6 +5248,7 @@ func migrationAddAsyncJobResultTTLColumn(ctx context.Context, db *gorm.DB) error
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableClientConfig{}, "async_job_result_ttl") {
+				logger.Info("[configstore] %s: dropping column async_job_result_ttl from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "async_job_result_ttl"); err != nil {
 					return fmt.Errorf("failed to drop async_job_result_ttl column: %w", err)
 				}
@@ -5008,15 +5264,19 @@ func migrationAddAsyncJobResultTTLColumn(ctx context.Context, db *gorm.DB) error
 }
 
 // migrationAddRateLimitToTeamsAndCustomers adds rate_limit_id column to governance_teams and governance_customers tables
-func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) error {
+func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_rate_limit_to_teams_and_customers"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_rate_limit_to_teams_and_customers",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			// Add rate_limit_id to governance_teams table
 			if !migrator.HasColumn(&tables.TableTeam{}, "rate_limit_id") {
+				logger.Info("[configstore] %s: adding column rate_limit_id to TableTeam", migrationName)
 				if err := migrator.AddColumn(&tables.TableTeam{}, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to add rate_limit_id column to teams: %w", err)
 				}
@@ -5024,6 +5284,7 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) 
 
 			// Add rate_limit_id to governance_customers table
 			if !migrator.HasColumn(&tables.TableCustomer{}, "rate_limit_id") {
+				logger.Info("[configstore] %s: adding column rate_limit_id to TableCustomer", migrationName)
 				if err := migrator.AddColumn(&tables.TableCustomer{}, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to add rate_limit_id column to customers: %w", err)
 				}
@@ -5036,12 +5297,14 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) 
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableTeam{}, "rate_limit_id") {
+				logger.Info("[configstore] %s: dropping column rate_limit_id from TableTeam", migrationName)
 				if err := migrator.DropColumn(&tables.TableTeam{}, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to drop rate_limit_id column from teams: %w", err)
 				}
 			}
 
 			if migrator.HasColumn(&tables.TableCustomer{}, "rate_limit_id") {
+				logger.Info("[configstore] %s: dropping column rate_limit_id from TableCustomer", migrationName)
 				if err := migrator.DropColumn(&tables.TableCustomer{}, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to drop rate_limit_id column from customers: %w", err)
 				}
@@ -5060,9 +5323,12 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) 
 // empty ProviderConfigs or MCPConfigs with all available providers/MCP clients.
 // This preserves the previous "empty means all" behavior for existing VKs after
 // the semantic change to "empty means none" (deny-by-default).
-func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) error {
+func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_empty_virtual_key_configs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "backfill_empty_virtual_key_configs",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -5082,6 +5348,7 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 			// Track which VK IDs were modified so we can recompute their config_hash
 			modifiedVKIDs := make(map[string]struct{})
 
+			logger.Info("[configstore] %s: processing %d allVKs", migrationName, len(allVKs))
 			for _, vk := range allVKs {
 				// Check if this VK has any provider configs
 				var providerConfigCount int64
@@ -5091,6 +5358,7 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 
 				if providerConfigCount == 0 && len(allProviders) > 0 {
 					// VK has no provider configs - backfill with all available providers
+					logger.Info("[configstore] %s: processing %d allProviders", migrationName, len(allProviders))
 					for _, provider := range allProviders {
 						providerConfig := tables.TableVirtualKeyProviderConfig{
 							VirtualKeyID:  vk.ID,
@@ -5104,7 +5372,7 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 						}
 					}
 					modifiedVKIDs[vk.ID] = struct{}{}
-					log.Printf("[Migration] Backfilled VK '%s' with %d provider configs", vk.Name, len(allProviders))
+					logger.Info("[Migration] Backfilled VK '%s' with %d provider configs", vk.Name, len(allProviders))
 				}
 			}
 
@@ -5115,6 +5383,7 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 				return fmt.Errorf("failed to query MCP clients: %w", err)
 			}
 
+			logger.Info("[configstore] %s: processing %d allVKs", migrationName, len(allVKs))
 			for _, vk := range allVKs {
 				// Check if this VK has any MCP configs
 				var mcpConfigCount int64
@@ -5124,6 +5393,7 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 
 				if mcpConfigCount == 0 && len(allMCPClients) > 0 {
 					// VK has no MCP configs - backfill with all available MCP clients with wildcard
+					logger.Info("[configstore] %s: processing %d allMCPClients", migrationName, len(allMCPClients))
 					for _, mcpClient := range allMCPClients {
 						mcpConfig := tables.TableVirtualKeyMCPConfig{
 							VirtualKeyID:   vk.ID,
@@ -5135,13 +5405,14 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 						}
 					}
 					modifiedVKIDs[vk.ID] = struct{}{}
-					log.Printf("[Migration] Backfilled VK '%s' with %d MCP client configs", vk.Name, len(allMCPClients))
+					logger.Info("[Migration] Backfilled VK '%s' with %d MCP client configs", vk.Name, len(allMCPClients))
 				}
 			}
 
 			// Step 3: Recompute and persist config_hash for every VK that was modified.
 			// Without this, subsequent config-sync diff logic would see a stale hash and
 			// attempt to re-reconcile the VK (potentially undoing the backfill).
+			logger.Info("[configstore] %s: processing %d modifiedVKIDs", migrationName, len(modifiedVKIDs))
 			for vkID := range modifiedVKIDs {
 				var vk tables.TableVirtualKey
 				if err := tx.
@@ -5160,7 +5431,7 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 					Update("config_hash", newHash).Error; err != nil {
 					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
 				}
-				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+				logger.Info("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
 			}
 
 			return nil
@@ -5177,14 +5448,18 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAddRequiredHeadersJSONColumn adds the required_headers_json column to the config_client table
-func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_required_headers_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_required_headers_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "required_headers_json") {
+				logger.Info("[configstore] %s: adding column required_headers_json to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "RequiredHeadersJSON"); err != nil {
 					return fmt.Errorf("failed to add required_headers_json column: %w", err)
 				}
@@ -5197,6 +5472,7 @@ func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB) err
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableClientConfig{}, "required_headers_json") {
+				logger.Info("[configstore] %s: dropping column required_headers_json from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "required_headers_json"); err != nil {
 					return fmt.Errorf("failed to drop required_headers_json column: %w", err)
 				}
@@ -5212,19 +5488,24 @@ func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB) err
 }
 
 // migrationAddOutputCostPerVideoPerSecond adds output_cost_per_video_per_second column to governance_model_pricing table
-func migrationAddOutputCostPerVideoPerSecond(ctx context.Context, db *gorm.DB) error {
+func migrationAddOutputCostPerVideoPerSecond(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_output_cost_per_video_per_second_and_output_cost_per_second_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_output_cost_per_video_per_second_and_output_cost_per_second_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second") {
+				logger.Info("[configstore] %s: adding column output_cost_per_video_per_second to TableModelPricing", migrationName)
 				if err := migrator.AddColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second"); err != nil {
 					return fmt.Errorf("failed to add output_cost_per_video_per_second column: %w", err)
 				}
 			}
 			if !migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_second") {
+				logger.Info("[configstore] %s: adding column output_cost_per_second to TableModelPricing", migrationName)
 				if err := migrator.AddColumn(&tables.TableModelPricing{}, "output_cost_per_second"); err != nil {
 					return fmt.Errorf("failed to add output_cost_per_second column: %w", err)
 				}
@@ -5237,12 +5518,14 @@ func migrationAddOutputCostPerVideoPerSecond(ctx context.Context, db *gorm.DB) e
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second") {
+				logger.Info("[configstore] %s: dropping column output_cost_per_video_per_second from TableModelPricing", migrationName)
 				if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second"); err != nil {
 					return fmt.Errorf("failed to drop output_cost_per_video_per_second column: %w", err)
 				}
 			}
 
 			if migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_second") {
+				logger.Info("[configstore] %s: dropping column output_cost_per_second from TableModelPricing", migrationName)
 				if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_second"); err != nil {
 					return fmt.Errorf("failed to drop output_cost_per_second column: %w", err)
 				}
@@ -5258,14 +5541,18 @@ func migrationAddOutputCostPerVideoPerSecond(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAddLoggingHeadersJSONColumn adds the logging_headers_json column to the config_client table
-func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_logging_headers_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_logging_headers_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "logging_headers_json") {
+				logger.Info("[configstore] %s: adding column logging_headers_json to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "LoggingHeadersJSON"); err != nil {
 					return fmt.Errorf("failed to add logging_headers_json column: %w", err)
 				}
@@ -5278,6 +5565,7 @@ func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableClientConfig{}, "logging_headers_json") {
+				logger.Info("[configstore] %s: dropping column logging_headers_json from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "logging_headers_json"); err != nil {
 					return fmt.Errorf("failed to drop logging_headers_json column: %w", err)
 				}
@@ -5293,14 +5581,18 @@ func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 }
 
 // migrationAddHideDeletedVirtualKeysInFiltersColumn adds the hide_deleted_virtual_keys_in_filters column to config_client.
-func migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_hide_deleted_virtual_keys_in_filters_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_hide_deleted_virtual_keys_in_filters_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters") {
+				logger.Info("[configstore] %s: adding column hide_deleted_virtual_keys_in_filters to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "HideDeletedVirtualKeysInFilters"); err != nil {
 					return fmt.Errorf("failed to add hide_deleted_virtual_keys_in_filters column: %w", err)
 				}
@@ -5313,6 +5605,7 @@ func migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx context.Context, db *
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters") {
+				logger.Info("[configstore] %s: dropping column hide_deleted_virtual_keys_in_filters from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters"); err != nil {
 					return fmt.Errorf("failed to drop hide_deleted_virtual_keys_in_filters column: %w", err)
 				}
@@ -5328,13 +5621,17 @@ func migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx context.Context, db *
 }
 
 // migrationAddEnforceSCIMAuthColumn adds the enforce_scim_auth column to the client config table
-func migrationAddEnforceSCIMAuthColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddEnforceSCIMAuthColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_enforce_scim_auth_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_enforce_scim_auth_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "enforce_scim_auth") {
+				logger.Info("[configstore] %s: adding column enforce_scim_auth to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "enforce_scim_auth"); err != nil {
 					return err
 				}
@@ -5345,6 +5642,7 @@ func migrationAddEnforceSCIMAuthColumn(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableClientConfig{}, "enforce_scim_auth") {
+				logger.Info("[configstore] %s: dropping column enforce_scim_auth from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enforce_scim_auth"); err != nil {
 					return err
 				}
@@ -5359,13 +5657,17 @@ func migrationAddEnforceSCIMAuthColumn(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddEnforceAuthOnInferenceColumn adds the enforce_auth_on_inference column to the config_client table
-func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_enforce_auth_on_inference_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_enforce_auth_on_inference_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference") {
+				logger.Info("[configstore] %s: adding column enforce_auth_on_inference to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference"); err != nil {
 					return err
 				}
@@ -5380,6 +5682,7 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference") {
+				logger.Info("[configstore] %s: dropping column enforce_auth_on_inference from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference"); err != nil {
 					return err
 				}
@@ -5393,19 +5696,24 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
-func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) error {
+func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "reconcile_pricing_overrides_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "reconcile_pricing_overrides_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mgr := tx.Migrator()
 
 			if !mgr.HasTable(&tables.TablePricingOverride{}) {
+				logger.Info("[configstore] %s: creating table TablePricingOverride", migrationName)
 				if err := mgr.CreateTable(&tables.TablePricingOverride{}); err != nil {
 					return fmt.Errorf("failed to create governance_pricing_overrides table: %w", err)
 				}
 				return nil
 			}
+			logger.Info("[configstore] %s: auto-migrating TablePricingOverride", migrationName)
 			if err := tx.AutoMigrate(&tables.TablePricingOverride{}); err != nil {
 				return fmt.Errorf("failed to automigrate governance_pricing_overrides table: %w", err)
 			}
@@ -5413,6 +5721,7 @@ func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) e
 				if mgr.HasIndex(&tables.TablePricingOverride{}, indexName) {
 					continue
 				}
+				logger.Info("[configstore] %s: creating index %s on TablePricingOverride", migrationName, indexName)
 				if err := mgr.CreateIndex(&tables.TablePricingOverride{}, indexName); err != nil {
 					return fmt.Errorf("failed to create pricing override index %s: %w", indexName, err)
 				}
@@ -5423,6 +5732,7 @@ func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) e
 			tx = tx.WithContext(ctx)
 			mgr := tx.Migrator()
 			if mgr.HasTable(&tables.TablePricingOverride{}) {
+				logger.Info("[configstore] %s: dropping table TablePricingOverride", migrationName)
 				if err := mgr.DropTable(&tables.TablePricingOverride{}); err != nil {
 					return fmt.Errorf("failed to drop governance_pricing_overrides table: %w", err)
 				}
@@ -5437,9 +5747,12 @@ func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAddEncryptionColumns adds the encryption_status column to the config_keys, governance_virtual_keys, sessions, oauth_configs, oauth_tokens, config_mcp_clients, config_providers, config_vector_store, and config_plugins tables
-func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_encryption_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_encryption_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mgr := tx.Migrator()
@@ -5464,6 +5777,7 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 			for _, t := range targets {
 				for _, col := range t.columns {
 					if !mgr.HasColumn(t.table, col) {
+						logger.Info("[configstore] %s: adding column %s to %T", migrationName, col, t.table)
 						if err := mgr.AddColumn(t.table, col); err != nil {
 							return fmt.Errorf("failed to add column %s: %w", col, err)
 						}
@@ -5483,6 +5797,7 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 				"config_vector_store",
 				"config_plugins",
 			}
+			logger.Info("[configstore] %s: processing %d backfillTables", migrationName, len(backfillTables))
 			for _, table := range backfillTables {
 				if err := tx.Exec(fmt.Sprintf(
 					"UPDATE %s SET encryption_status = 'plain_text' WHERE encryption_status IS NULL OR encryption_status = ''",
@@ -5539,6 +5854,7 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 			for _, d := range drops {
 				for _, col := range d.columns {
 					if mgr.HasColumn(d.table, col) {
+						logger.Info("[configstore] %s: dropping column %s from %T", migrationName, col, d.table)
 						if err := mgr.DropColumn(d.table, col); err != nil {
 							return err
 						}
@@ -5555,13 +5871,17 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationDropEnableGovernanceColumn drops the enable_governance column from the config_client table
-func migrationDropEnableGovernanceColumn(ctx context.Context, db *gorm.DB) error {
+func migrationDropEnableGovernanceColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_enable_governance_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_enable_governance_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableClientConfig{}, "enable_governance") {
+				logger.Info("[configstore] %s: dropping column enable_governance from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enable_governance"); err != nil {
 					return fmt.Errorf("failed to drop enable_governance column: %w", err)
 				}
@@ -5576,18 +5896,23 @@ func migrationDropEnableGovernanceColumn(ctx context.Context, db *gorm.DB) error
 }
 
 // migrationAddVLLMKeyConfigColumns adds vllm_url and vllm_model_name columns to the key table
-func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vllm_key_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vllm_key_config_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableKey{}, "vllm_url") {
+				logger.Info("[configstore] %s: adding column vllm_url to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "vllm_url"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableKey{}, "vllm_model_name") {
+				logger.Info("[configstore] %s: adding column vllm_model_name to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "vllm_model_name"); err != nil {
 					return err
 				}
@@ -5598,11 +5923,13 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableKey{}, "vllm_url") {
+				logger.Info("[configstore] %s: dropping column vllm_url from TableKey", migrationName)
 				if err := migrator.DropColumn(&tables.TableKey{}, "vllm_url"); err != nil {
 					return err
 				}
 			}
 			if migrator.HasColumn(&tables.TableKey{}, "vllm_model_name") {
+				logger.Info("[configstore] %s: dropping column vllm_model_name from TableKey", migrationName)
 				if err := migrator.DropColumn(&tables.TableKey{}, "vllm_model_name"); err != nil {
 					return err
 				}
@@ -5620,9 +5947,12 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
 // encrypted values to TEXT. Encryption adds ~28 bytes of overhead plus base64 expansion (4/3x),
 // so a varchar(255) can only hold ~153-char plaintext. Using TEXT removes any size constraints.
 // SQLite does not enforce varchar(n) size constraints, so no migration is needed there.
-func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) error {
+func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_encrypted_varchar_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "widen_encrypted_varchar_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Dialector.Name() != "postgres" {
@@ -5652,6 +5982,7 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) err
 				// oauth_configs table
 				"ALTER TABLE oauth_configs ALTER COLUMN code_verifier TYPE TEXT",
 			}
+			logger.Info("[configstore] %s: processing %d stmts", migrationName, len(stmts))
 			for _, stmt := range stmts {
 				if err := tx.Exec(stmt).Error; err != nil {
 					return fmt.Errorf("failed to widen column (%s): %w", stmt, err)
@@ -5668,23 +5999,29 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) err
 
 // migrationAddBedrockAssumeRoleColumns adds bedrock_role_arn, bedrock_external_id, and bedrock_role_session_name
 // columns to the config_keys table for STS AssumeRole support in Bedrock keys.
-func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bedrock_assume_role_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_bedrock_assume_role_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableKey{}, "bedrock_role_arn") {
+				logger.Info("[configstore] %s: adding column bedrock_role_arn to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_role_arn"); err != nil {
 					return fmt.Errorf("failed to add bedrock_role_arn column: %w", err)
 				}
 			}
 			if !mg.HasColumn(&tables.TableKey{}, "bedrock_external_id") {
+				logger.Info("[configstore] %s: adding column bedrock_external_id to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_external_id"); err != nil {
 					return fmt.Errorf("failed to add bedrock_external_id column: %w", err)
 				}
 			}
 			if !mg.HasColumn(&tables.TableKey{}, "bedrock_role_session_name") {
+				logger.Info("[configstore] %s: adding column bedrock_role_session_name to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_role_session_name"); err != nil {
 					return fmt.Errorf("failed to add bedrock_role_session_name column: %w", err)
 				}
@@ -5695,16 +6032,19 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableKey{}, "bedrock_role_arn") {
+				logger.Info("[configstore] %s: dropping column bedrock_role_arn from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_role_arn"); err != nil {
 					return fmt.Errorf("failed to drop bedrock_role_arn column: %w", err)
 				}
 			}
 			if mg.HasColumn(&tables.TableKey{}, "bedrock_external_id") {
+				logger.Info("[configstore] %s: dropping column bedrock_external_id from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_external_id"); err != nil {
 					return fmt.Errorf("failed to drop bedrock_external_id column: %w", err)
 				}
 			}
 			if mg.HasColumn(&tables.TableKey{}, "bedrock_role_session_name") {
+				logger.Info("[configstore] %s: dropping column bedrock_role_session_name from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_role_session_name"); err != nil {
 					return fmt.Errorf("failed to drop bedrock_role_session_name column: %w", err)
 				}
@@ -5721,19 +6061,23 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 // migrationAddAllowAllKeysToProviderConfig adds the allow_all_keys column to the provider config table
 // and backfills existing rows: any provider config with no keys in the join table previously meant
 // "allow all keys" (old semantic), so they get allow_all_keys = true to preserve behaviour.
-func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
+func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allow_all_keys_to_provider_config"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	// opts is a value copy: migrator.DefaultOptions is a shared global pointer,
 	// so mutating it in place would disable transactions for other migrations.
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = false
 	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "add_allow_all_keys_to_provider_config",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
 
 			// Add the column if it doesn't exist
 			if !migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				logger.Info("[configstore] %s: adding column allow_all_keys to TableVirtualKeyProviderConfig", migrationName)
 				if err := migratorInstance.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
 					return fmt.Errorf("failed to add allow_all_keys column: %w", err)
 				}
@@ -5751,6 +6095,7 @@ func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) 
 			// and attempt to re-reconcile the VK (potentially undoing the backfill).
 			modifiedVKIDs := make(map[string]struct{})
 
+			logger.Info("[configstore] %s: processing %d allConfigs", migrationName, len(allConfigs))
 			for _, pc := range allConfigs {
 				var keyCount int64
 				if err := tx.Table("governance_virtual_key_provider_config_keys").
@@ -5770,6 +6115,7 @@ func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) 
 			}
 
 			// Recompute and persist config_hash for every VK that was modified.
+			logger.Info("[configstore] %s: processing %d modifiedVKIDs", migrationName, len(modifiedVKIDs))
 			for vkID := range modifiedVKIDs {
 				var vk tables.TableVirtualKey
 				if err := tx.
@@ -5788,7 +6134,7 @@ func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) 
 					Update("config_hash", newHash).Error; err != nil {
 					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
 				}
-				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+				logger.Info("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
 			}
 
 			return nil
@@ -5797,6 +6143,7 @@ func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) 
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
 			if migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				logger.Info("[configstore] %s: dropping column allow_all_keys from TableVirtualKeyProviderConfig", migrationName)
 				if err := migratorInstance.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
 					return fmt.Errorf("failed to drop allow_all_keys column: %w", err)
 				}
@@ -5812,13 +6159,17 @@ func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) 
 
 // migrationAddMCPDisableAutoToolInjectColumn adds the mcp_disable_auto_tool_inject column to the client config table.
 // When true, MCP tools are not automatically injected into requests; only explicit context filters apply.
-func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_disable_auto_tool_inject_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_disable_auto_tool_inject_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
 			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject") {
+				logger.Info("[configstore] %s: adding column mcp_disable_auto_tool_inject to TableClientConfig", migrationName)
 				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
 					return err
 				}
@@ -5828,6 +6179,7 @@ func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column mcp_disable_auto_tool_inject from TableClientConfig", migrationName)
 			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
 				return err
 			}
@@ -5841,13 +6193,17 @@ func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB
 }
 
 // migrationAddMCPEnableTempTokenAuthColumn adds the mcp_enable_temp_token_auth column to the client config table.
-func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_enable_temp_token_auth_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_enable_temp_token_auth_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
 			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth") {
+				logger.Info("[configstore] %s: adding column mcp_enable_temp_token_auth to TableClientConfig", migrationName)
 				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
 					return err
 				}
@@ -5857,6 +6213,7 @@ func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB) 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migratorInstance := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column mcp_enable_temp_token_auth from TableClientConfig", migrationName)
 			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
 				return err
 			}
@@ -5870,9 +6227,12 @@ func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB) 
 }
 
 // migrationAddPricingRefactorColumns adds all new pricing columns introduced in the pricing module refactor
-func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_pricing_refactor_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_pricing_refactor_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -5908,6 +6268,7 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 
 			for _, field := range columns {
 				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
 					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to add column %s: %w", field, err)
 					}
@@ -5950,6 +6311,7 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 
 			for _, field := range columns {
 				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
 					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to drop column %s: %w", field, err)
 					}
@@ -5968,9 +6330,12 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 // column which at 64 chars exceeds PostgreSQL's 63-character identifier limit. PostgreSQL silently truncated
 // it to output_cost_per_image_above_512_and_512_pixels_and_premium_imag (63 chars), while SQLite kept the
 // full 64-char name. This migration renames whichever variant exists to the shorter canonical name.
-func migrationRenameTruncatedPricingColumn(ctx context.Context, db *gorm.DB) error {
+func migrationRenameTruncatedPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "rename_truncated_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "rename_truncated_pricing_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -6007,9 +6372,12 @@ func migrationRenameTruncatedPricingColumn(ctx context.Context, db *gorm.DB) err
 }
 
 // migrationAddImageQualityPricingColumns adds quality-based per-image cost columns (low, medium, high, auto).
-func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_image_quality_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_image_quality_pricing_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -6023,6 +6391,7 @@ func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB) er
 			}
 			for _, field := range columns {
 				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
 					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to add column %s: %w", field, err)
 					}
@@ -6043,6 +6412,7 @@ func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB) er
 			}
 			for _, field := range columns {
 				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
 					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to drop column %s: %w", field, err)
 					}
@@ -6071,15 +6441,19 @@ func (legacyRoutingRuleColumns) TableName() string { return "routing_rules" }
 // migrationAddRoutingTargetsTable creates the routing_targets table and seeds one target row per
 // existing routing rule, migrating the legacy provider/model columns.
 // After seeding, the legacy columns are dropped from routing_rules.
-func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_routing_targets_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_routing_targets_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 
 			// 1. Create routing_targets table
 			if !mg.HasTable(&tables.TableRoutingTarget{}) {
+				logger.Info("[configstore] %s: creating table TableRoutingTarget", migrationName)
 				if err := mg.CreateTable(&tables.TableRoutingTarget{}); err != nil {
 					return fmt.Errorf("failed to create routing_targets table: %w", err)
 				}
@@ -6113,6 +6487,7 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
 			legacyModel := &legacyRoutingRuleColumns{}
 			for _, col := range []string{"provider", "model"} {
 				if mg.HasColumn("routing_rules", col) {
+					logger.Info("[configstore] %s: dropping column %s from %T", migrationName, col, legacyModel)
 					if err := mg.DropColumn(legacyModel, col); err != nil {
 						return fmt.Errorf("failed to drop column %s from routing_rules: %w", col, err)
 					}
@@ -6120,6 +6495,7 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
 			}
 
 			// 4. Seed routing_targets from the legacy data read above (idempotent).
+			logger.Info("[configstore] %s: processing %d legacyRows", migrationName, len(legacyRows))
 			for _, row := range legacyRows {
 				var count int64
 				if err := tx.Table("routing_targets").Where("rule_id = ?", row.ID).Count(&count).Error; err != nil {
@@ -6159,6 +6535,7 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
 			legacyModel := &legacyRoutingRuleColumns{}
 			for _, col := range []string{"provider", "model"} {
 				if !mg.HasColumn("routing_rules", col) {
+					logger.Info("[configstore] %s: adding column %s to %T", migrationName, col, legacyModel)
 					if err := mg.AddColumn(legacyModel, col); err != nil {
 						return fmt.Errorf("failed to add column %s to routing_rules: %w", col, err)
 					}
@@ -6181,6 +6558,7 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
 					ruleData[t.RuleID] = t
 				}
 			}
+			logger.Info("[configstore] %s: processing %d ruleData", migrationName, len(ruleData))
 			for ruleID, t := range ruleData {
 				provider, model := "", ""
 				if t.Provider != nil {
@@ -6203,6 +6581,7 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
 					return fmt.Errorf("failed to drop routing_targets foreign key: %w", err)
 				}
 			}
+			logger.Info("[configstore] %s: dropping table TableRoutingTarget", migrationName)
 			if err := mg.DropTable(&tables.TableRoutingTarget{}); err != nil {
 				return fmt.Errorf("failed to drop routing_targets table: %w", err)
 			}
@@ -6216,7 +6595,10 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddPromptRepoTables adds the prompt repository tables (folders, prompts, versions, sessions)
-func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
+func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_prompt_repo_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_prompt_repo_tables",
 		Migrate: func(tx *gorm.DB) error {
@@ -6225,6 +6607,7 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 
 			// Create folders table
 			if !migrator.HasTable(&tables.TableFolder{}) {
+				logger.Info("[configstore] %s: creating table TableFolder", migrationName)
 				if err := migrator.CreateTable(&tables.TableFolder{}); err != nil {
 					return err
 				}
@@ -6232,6 +6615,7 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 
 			// Create prompts table
 			if !migrator.HasTable(&tables.TablePrompt{}) {
+				logger.Info("[configstore] %s: creating table TablePrompt", migrationName)
 				if err := migrator.CreateTable(&tables.TablePrompt{}); err != nil {
 					return err
 				}
@@ -6239,6 +6623,7 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 
 			// Create prompt_versions table
 			if !migrator.HasTable(&tables.TablePromptVersion{}) {
+				logger.Info("[configstore] %s: creating table TablePromptVersion", migrationName)
 				if err := migrator.CreateTable(&tables.TablePromptVersion{}); err != nil {
 					return err
 				}
@@ -6246,6 +6631,7 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 
 			// Create prompt_version_messages table
 			if !migrator.HasTable(&tables.TablePromptVersionMessage{}) {
+				logger.Info("[configstore] %s: creating table TablePromptVersionMessage", migrationName)
 				if err := migrator.CreateTable(&tables.TablePromptVersionMessage{}); err != nil {
 					return err
 				}
@@ -6253,6 +6639,7 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 
 			// Create prompt_sessions table
 			if !migrator.HasTable(&tables.TablePromptSession{}) {
+				logger.Info("[configstore] %s: creating table TablePromptSession", migrationName)
 				if err := migrator.CreateTable(&tables.TablePromptSession{}); err != nil {
 					return err
 				}
@@ -6260,12 +6647,14 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 
 			// Create prompt_session_messages table
 			if !migrator.HasTable(&tables.TablePromptSessionMessage{}) {
+				logger.Info("[configstore] %s: creating table TablePromptSessionMessage", migrationName)
 				if err := migrator.CreateTable(&tables.TablePromptSessionMessage{}); err != nil {
 					return err
 				}
 			}
 
 			// Apply schema updates (indexes, constraints) to existing tables
+			logger.Info("[configstore] %s: auto-migrating TablePromptVersion and TablePromptSession", migrationName)
 			if err := tx.AutoMigrate(
 				&tables.TablePromptVersion{},
 				&tables.TablePromptSession{},
@@ -6280,21 +6669,27 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 			migrator := tx.Migrator()
 
 			// Drop tables in reverse order (respecting foreign key constraints)
+			logger.Info("[configstore] %s: dropping table TablePromptSessionMessage", migrationName)
 			if err := migrator.DropTable(&tables.TablePromptSessionMessage{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TablePromptSession", migrationName)
 			if err := migrator.DropTable(&tables.TablePromptSession{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TablePromptVersionMessage", migrationName)
 			if err := migrator.DropTable(&tables.TablePromptVersionMessage{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TablePromptVersion", migrationName)
 			if err := migrator.DropTable(&tables.TablePromptVersion{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TablePrompt", migrationName)
 			if err := migrator.DropTable(&tables.TablePrompt{}); err != nil {
 				return err
 			}
+			logger.Info("[configstore] %s: dropping table TableFolder", migrationName)
 			if err := migrator.DropTable(&tables.TableFolder{}); err != nil {
 				return err
 			}
@@ -6313,12 +6708,14 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TablePromptVersionMessage{}, "prompt_id") {
+				logger.Info("[configstore] %s: adding column prompt_id to TablePromptVersionMessage", migrationName)
 				if err := migrator.AddColumn(&tables.TablePromptVersionMessage{}, "PromptID"); err != nil {
 					return err
 				}
 			}
 
 			if !migrator.HasColumn(&tables.TablePromptSessionMessage{}, "prompt_id") {
+				logger.Info("[configstore] %s: adding column prompt_id to TablePromptSessionMessage", migrationName)
 				if err := migrator.AddColumn(&tables.TablePromptSessionMessage{}, "PromptID"); err != nil {
 					return err
 				}
@@ -6331,11 +6728,13 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TablePromptVersionMessage{}, "prompt_id") {
+				logger.Info("[configstore] %s: dropping column prompt_id from TablePromptVersionMessage", migrationName)
 				if err := migrator.DropColumn(&tables.TablePromptVersionMessage{}, "prompt_id"); err != nil {
 					return err
 				}
 			}
 			if migrator.HasColumn(&tables.TablePromptSessionMessage{}, "prompt_id") {
+				logger.Info("[configstore] %s: dropping column prompt_id from TablePromptSessionMessage", migrationName)
 				if err := migrator.DropColumn(&tables.TablePromptSessionMessage{}, "prompt_id"); err != nil {
 					return err
 				}
@@ -6353,6 +6752,7 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.TableModelParameters{}) {
+				logger.Info("[configstore] %s: creating table TableModelParameters", migrationName)
 				if err := migrator.CreateTable(&tables.TableModelParameters{}); err != nil {
 					return err
 				}
@@ -6363,6 +6763,7 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasTable(&tables.TableModelParameters{}) {
+				logger.Info("[configstore] %s: dropping table TableModelParameters", migrationName)
 				if err := migrator.DropTable(&tables.TableModelParameters{}); err != nil {
 					return err
 				}
@@ -6381,9 +6782,12 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 // governance_virtual_key_provider_configs and empty models_json on keys to ["*"],
 // preserving the previous "empty = allow all" semantics for existing records.
 // After this migration the new convention applies: ["*"] = allow all, [] = deny all.
-func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) error {
+func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_allowed_models_wildcard"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "backfill_allowed_models_wildcard",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -6404,6 +6808,7 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 				return fmt.Errorf("failed to query VK IDs for hash recomputation: %w", err)
 			}
 
+			logger.Info("[configstore] %s: processing %d modifiedVKIDs", migrationName, len(modifiedVKIDs))
 			for _, vkID := range modifiedVKIDs {
 				var vk tables.TableVirtualKey
 				if err := tx.
@@ -6426,7 +6831,7 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 					Update("config_hash", newHash).Error; err != nil {
 					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
 				}
-				log.Printf("[Migration] Recomputed config_hash for VK '%s' after allowed_models backfill", vk.Name)
+				logger.Info("[Migration] Recomputed config_hash for VK '%s' after allowed_models backfill", vk.Name)
 			}
 
 			// --- Field 2: provider.key.models (models_json column) ---
@@ -6442,6 +6847,7 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 			if err := tx.Find(&keys).Error; err != nil {
 				return fmt.Errorf("failed to fetch keys for hash recomputation: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d keys", migrationName, len(keys))
 			for _, key := range keys {
 				schemaKey := schemas.Key{
 					Name:               key.Name,
@@ -6483,13 +6889,17 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 }
 
 // migrationAddMCPClientAllowedExtraHeadersJSONColumn adds the allowed_extra_headers_json column to the mcp_client table
-func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_allowed_extra_headers_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_client_allowed_extra_headers_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				logger.Info("[configstore] %s: adding column allowed_extra_headers_json to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
 					return err
 				}
@@ -6500,6 +6910,7 @@ func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				logger.Info("[configstore] %s: dropping column allowed_extra_headers_json from TableMCPClient", migrationName)
 				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
 					return err
 				}
@@ -6513,20 +6924,89 @@ func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db 
 	return nil
 }
 
-// migrationAddPluginOrderColumns adds placement and exec_order columns to config_plugins table
-func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
+// migrationAddSkillsRepoTables adds the skills repository tables.
+// Files belong to skill_versions (not directly to skills); blobs are reused
+// across versions via shared blob_id/storage_key references.
+//
+// Idempotent: guards each table create so retrying after a partially applied
+// migration does not fail when some tables were already created.
+func migrationAddSkillsRepoTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	logger.Info("[configstore] running migrationAddSkillsRepoTables")
+	defer logger.Info("[configstore] migrationAddSkillsRepoTables finished")
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_plugin_order_columns",
+		ID: "add_skills_repo_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			// --- skills table ---
+			if !mg.HasTable(&tables.TableSkill{}) {
+				if err := mg.CreateTable(&tables.TableSkill{}); err != nil {
+					return fmt.Errorf("create skills table: %w", err)
+				}
+			}
+			// --- skill_versions table ---
+			if !mg.HasTable(&tables.TableSkillVersion{}) {
+				if err := mg.CreateTable(&tables.TableSkillVersion{}); err != nil {
+					return fmt.Errorf("create skill_versions table: %w", err)
+				}
+			}
+			// --- skill_file_blobs table ---
+			if !mg.HasTable(&tables.TableSkillFileBlob{}) {
+				if err := mg.CreateTable(&tables.TableSkillFileBlob{}); err != nil {
+					return fmt.Errorf("create skill_file_blobs table: %w", err)
+				}
+			}
+			// --- skill_files table ---
+			if !mg.HasTable(&tables.TableSkillFile{}) {
+				if err := mg.CreateTable(&tables.TableSkillFile{}); err != nil {
+					return fmt.Errorf("create skill_files table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if err := mg.DropTable(&tables.TableSkillFile{}); err != nil {
+				return err
+			}
+			if err := mg.DropTable(&tables.TableSkillVersion{}); err != nil {
+				return err
+			}
+			if err := mg.DropTable(&tables.TableSkill{}); err != nil {
+				return err
+			}
+			if err := mg.DropTable(&tables.TableSkillFileBlob{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running skills repo tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPluginOrderColumns adds placement and exec_order columns to config_plugins table
+func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_plugin_order_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				logger.Info("[configstore] %s: adding column placement to TablePlugin", migrationName)
 				if err := migrator.AddColumn(&tables.TablePlugin{}, "Placement"); err != nil {
 					return fmt.Errorf("failed to add placement column: %w", err)
 				}
 			}
 			if !migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				logger.Info("[configstore] %s: adding column exec_order to TablePlugin", migrationName)
 				if err := migrator.AddColumn(&tables.TablePlugin{}, "Order"); err != nil {
 					return fmt.Errorf("failed to add exec_order column: %w", err)
 				}
@@ -6539,11 +7019,13 @@ func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				logger.Info("[configstore] %s: dropping column placement from TablePlugin", migrationName)
 				if err := migrator.DropColumn(&tables.TablePlugin{}, "placement"); err != nil {
 					return fmt.Errorf("failed to drop placement column: %w", err)
 				}
 			}
 			if migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				logger.Info("[configstore] %s: dropping column exec_order from TablePlugin", migrationName)
 				if err := migrator.DropColumn(&tables.TablePlugin{}, "exec_order"); err != nil {
 					return fmt.Errorf("failed to drop exec_order column: %w", err)
 				}
@@ -6561,9 +7043,12 @@ func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 // input_cost_per_token and output_cost_per_token in governance_model_pricing,
 // allowing models that only have non-token pricing (image, audio, video) to be
 // stored without a placeholder zero value.
-func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB) error {
+func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "make_base_pricing_columns_nullable"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "make_base_pricing_columns_nullable",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			m := tx.Migrator()
@@ -6586,13 +7071,17 @@ func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAddAllowOnAllVirtualKeysColumn adds the allow_on_all_virtual_keys column to the mcp_client table
-func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allow_on_all_virtual_keys_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_allow_on_all_virtual_keys_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				logger.Info("[configstore] %s: adding column allow_on_all_virtual_keys to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
 					return fmt.Errorf("failed to add allow_on_all_virtual_keys column: %w", err)
 				}
@@ -6603,6 +7092,7 @@ func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB) e
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				logger.Info("[configstore] %s: dropping column allow_on_all_virtual_keys from TableMCPClient", migrationName)
 				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
 					return fmt.Errorf("failed to drop allow_on_all_virtual_keys column: %w", err)
 				}
@@ -6617,13 +7107,17 @@ func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB) e
 }
 
 // migrationAddOpenAIConfigJSONColumn adds the open_ai_config_json column to the provider table
-func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_open_ai_config_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_open_ai_config_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableProvider{}, "open_ai_config_json") {
+				logger.Info("[configstore] %s: adding column open_ai_config_json to TableProvider", migrationName)
 				if err := migrator.AddColumn(&tables.TableProvider{}, "OpenAIConfigJSON"); err != nil {
 					return err
 				}
@@ -6634,6 +7128,7 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableProvider{}, "open_ai_config_json") {
+				logger.Info("[configstore] %s: dropping column open_ai_config_json from TableProvider", migrationName)
 				if err := migrator.DropColumn(&tables.TableProvider{}, "open_ai_config_json"); err != nil {
 					return err
 				}
@@ -6648,20 +7143,25 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error 
 }
 
 // migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
-func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_prompt_variables_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_prompt_variables_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				logger.Info("[configstore] %s: adding column variables_json to TablePromptSession", migrationName)
 				if err := migrator.AddColumn(&tables.TablePromptSession{}, "VariablesJSON"); err != nil {
 					return fmt.Errorf("failed to add variables_json column to prompt_sessions: %w", err)
 				}
 			}
 
 			if !migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				logger.Info("[configstore] %s: adding column variables_json to TablePromptVersion", migrationName)
 				if err := migrator.AddColumn(&tables.TablePromptVersion{}, "VariablesJSON"); err != nil {
 					return fmt.Errorf("failed to add variables_json column to prompt_versions: %w", err)
 				}
@@ -6673,11 +7173,13 @@ func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB) error 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				logger.Info("[configstore] %s: dropping column variables_json from TablePromptSession", migrationName)
 				if err := migrator.DropColumn(&tables.TablePromptSession{}, "variables_json"); err != nil {
 					return err
 				}
 			}
 			if migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				logger.Info("[configstore] %s: dropping column variables_json from TablePromptVersion", migrationName)
 				if err := migrator.DropColumn(&tables.TablePromptVersion{}, "variables_json"); err != nil {
 					return err
 				}
@@ -6693,13 +7195,17 @@ func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB) error 
 
 // migrationAddKeyBlacklistedModelsJSONColumn adds blacklisted_models_json to config_keys
 // for per-key model deny lists (JSON array of model ids, default []).
-func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_key_blacklisted_models_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_key_blacklisted_models_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableKey{}, "blacklisted_models_json") {
+				logger.Info("[configstore] %s: adding column blacklisted_models_json to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "blacklisted_models_json"); err != nil {
 					return fmt.Errorf("failed to add blacklisted_models_json column: %w", err)
 				}
@@ -6713,6 +7219,7 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableKey{}, "blacklisted_models_json") {
+				logger.Info("[configstore] %s: dropping column blacklisted_models_json from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "blacklisted_models_json"); err != nil {
 					return fmt.Errorf("failed to drop blacklisted_models_json column: %w", err)
 				}
@@ -6729,13 +7236,17 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 // migrationAddChainRuleColumnToRoutingRules adds chain_rule to routing_rules.
 // When true, the routing engine re-evaluates the full rule set after this rule matches,
 // using the resolved provider/model as the new context input.
-func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB) error {
+func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_chain_rule_column_to_routing_rules"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_chain_rule_column_to_routing_rules",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableRoutingRule{}, "chain_rule") {
+				logger.Info("[configstore] %s: adding column chain_rule to TableRoutingRule", migrationName)
 				if err := mg.AddColumn(&tables.TableRoutingRule{}, "chain_rule"); err != nil {
 					return fmt.Errorf("failed to add chain_rule column: %w", err)
 				}
@@ -6749,6 +7260,7 @@ func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB)
 			if err := tx.Preload("Targets").Find(&rules).Error; err != nil {
 				return fmt.Errorf("failed to load routing rules for config_hash backfill: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d rules", migrationName, len(rules))
 			for _, rule := range rules {
 				hash, err := GenerateRoutingRuleHash(rule)
 				if err != nil {
@@ -6764,6 +7276,7 @@ func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableRoutingRule{}, "chain_rule") {
+				logger.Info("[configstore] %s: dropping column chain_rule from TableRoutingRule", migrationName)
 				if err := mg.DropColumn(&tables.TableRoutingRule{}, "chain_rule"); err != nil {
 					return fmt.Errorf("failed to drop chain_rule column: %w", err)
 				}
@@ -6778,13 +7291,17 @@ func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB)
 }
 
 // migrationAddReplicateKeyConfigColumn adds the replicate_use_deployments_endpoint column to the key table
-func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_replicate_key_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_replicate_key_config_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint") {
+				logger.Info("[configstore] %s: adding column replicate_use_deployments_endpoint to TableKey", migrationName)
 				if err := mg.AddColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
 					return err
 				}
@@ -6808,6 +7325,7 @@ func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB) erro
 				).Find(&affectedKeys).Error; err != nil {
 					return fmt.Errorf("failed to fetch replicate keys for hash recomputation: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d affectedKeys", migrationName, len(affectedKeys))
 				for _, key := range affectedKeys {
 					schemaKey := schemas.Key{
 						Name:               key.Name,
@@ -6831,7 +7349,7 @@ func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB) erro
 					if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
 						return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
 					}
-					log.Printf("[Migration] Recomputed config_hash for replicate key '%s' after replicate config backfill", key.Name)
+					logger.Info("[Migration] Recomputed config_hash for replicate key '%s' after replicate config backfill", key.Name)
 				}
 			}
 			return nil
@@ -6840,6 +7358,7 @@ func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint") {
+				logger.Info("[configstore] %s: dropping column replicate_use_deployments_endpoint from TableKey", migrationName)
 				if err := mg.DropColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
 					return err
 				}
@@ -6856,9 +7375,12 @@ func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB) erro
 // migrationAddBudgetCalendarAlignedColumn was originally for adding calendar_aligned to governance_budgets.
 // Calendar alignment is now a VK-level field (governance_virtual_keys.calendar_aligned) added in migrationAddMultiBudgetTables.
 // This migration is kept as a no-op so the migrator doesn't try to re-run it.
-func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_calendar_aligned_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID:       "add_budget_calendar_aligned_column",
+		ID:       migrationName,
 		Migrate:  func(tx *gorm.DB) error { return nil },
 		Rollback: func(tx *gorm.DB) error { return nil },
 	}})
@@ -6870,13 +7392,17 @@ func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) e
 
 // migrationAddRoutingChainMaxDepthColumn adds routing_chain_max_depth to the client config table.
 // Defaults to 10, which is the built-in default for routing rule chain evaluation depth.
-func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_routing_chain_max_depth_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_routing_chain_max_depth_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableClientConfig{}, "routing_chain_max_depth") {
+				logger.Info("[configstore] %s: adding column routing_chain_max_depth to TableClientConfig", migrationName)
 				if err := mg.AddColumn(&tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
 					return fmt.Errorf("failed to add routing_chain_max_depth column: %w", err)
 				}
@@ -6887,6 +7413,7 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 				if err := tx.Find(&clientConfigs).Error; err != nil {
 					return fmt.Errorf("failed to fetch client configs for hash recompute: %w", err)
 				}
+				logger.Info("[configstore] %s: processing %d clientConfigs", migrationName, len(clientConfigs))
 				for _, cc := range clientConfigs {
 					if cc.ConfigHash == "" {
 						continue // no stored hash to invalidate
@@ -6936,6 +7463,7 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableClientConfig{}, "routing_chain_max_depth") {
+				logger.Info("[configstore] %s: dropping column routing_chain_max_depth from TableClientConfig", migrationName)
 				if err := mg.DropColumn(&tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
 					return fmt.Errorf("failed to drop routing_chain_max_depth column: %w", err)
 				}
@@ -6950,9 +7478,12 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 }
 
 // migrationAddModelCapabilityColumns adds model capability metadata columns to governance_model_pricing.
-func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_capability_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_model_capability_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -6964,6 +7495,7 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error 
 			}
 			for _, column := range columns {
 				if !mg.HasColumn(&tables.TableModelPricing{}, column) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, column)
 					if err := mg.AddColumn(&tables.TableModelPricing{}, column); err != nil {
 						return fmt.Errorf("failed to add %s column: %w", column, err)
 					}
@@ -6982,6 +7514,7 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error 
 			}
 			for _, column := range columns {
 				if mg.HasColumn(&tables.TableModelPricing{}, column) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, column)
 					if err := mg.DropColumn(&tables.TableModelPricing{}, column); err != nil {
 						return fmt.Errorf("failed to drop %s column: %w", column, err)
 					}
@@ -6997,18 +7530,23 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error 
 }
 
 // migrationAddOllamaSGLConfigColumns adds ollama_url and sgl_url columns to the key table
-func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ollama_sgl_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_ollama_sgl_config_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				logger.Info("[configstore] %s: adding column ollama_url to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "ollama_url"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				logger.Info("[configstore] %s: adding column sgl_url to TableKey", migrationName)
 				if err := migrator.AddColumn(&tables.TableKey{}, "sgl_url"); err != nil {
 					return err
 				}
@@ -7020,13 +7558,14 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB) error 
 			if err := tx.Where("name IN ?", []string{"ollama", "sgl"}).Find(&providers).Error; err != nil {
 				return fmt.Errorf("failed to fetch ollama/sgl providers for URL backfill: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d providers", migrationName, len(providers))
 			for _, p := range providers {
 				if p.NetworkConfigJSON == "" {
 					continue
 				}
 				var nc schemas.NetworkConfig
 				if err := json.Unmarshal([]byte(p.NetworkConfigJSON), &nc); err != nil {
-					log.Printf("[Migration] Failed to parse network_config for provider %s (id=%d), skipping: %v", p.Name, p.ID, err)
+					logger.Info("[Migration] Failed to parse network_config for provider %s (id=%d), skipping: %v", p.Name, p.ID, err)
 					continue
 				}
 				if nc.BaseURL == "" {
@@ -7063,7 +7602,7 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB) error 
 				if err := tx.Create(&newKey).Error; err != nil {
 					return fmt.Errorf("failed to create key for provider %s: %w", p.Name, err)
 				}
-				log.Printf("[Migration] Created key '%s' for provider '%s' from network_config.base_url", newKey.Name, p.Name)
+				logger.Info("[Migration] Created key '%s' for provider '%s' from network_config.base_url", newKey.Name, p.Name)
 			}
 
 			return nil
@@ -7072,11 +7611,13 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB) error 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				logger.Info("[configstore] %s: dropping column ollama_url from TableKey", migrationName)
 				if err := migrator.DropColumn(&tables.TableKey{}, "ollama_url"); err != nil {
 					return err
 				}
 			}
 			if migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				logger.Info("[configstore] %s: dropping column sgl_url from TableKey", migrationName)
 				if err := migrator.DropColumn(&tables.TableKey{}, "sgl_url"); err != nil {
 					return err
 				}
@@ -7122,14 +7663,18 @@ func migrationAddGigaChatKeyConfigColumn(ctx context.Context, db *gorm.DB) error
 }
 
 // migrationAddMultiBudgetTables creates junction tables for multi-budget support and backfills existing data.
-func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
+func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_multi_budget_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_multi_budget_tables",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			// Add calendar_aligned to governance_virtual_keys (VK-level setting)
 			if !mg.HasColumn(&tables.TableVirtualKey{}, "calendar_aligned") {
+				logger.Info("[configstore] %s: adding column calendar_aligned to TableVirtualKey", migrationName)
 				if err := mg.AddColumn(&tables.TableVirtualKey{}, "CalendarAligned"); err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to governance_virtual_keys: %w", err)
 				}
@@ -7137,11 +7682,13 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 
 			// Add FK columns on governance_budgets for multi-budget ownership
 			if !mg.HasColumn(&tables.TableBudget{}, "virtual_key_id") {
+				logger.Info("[configstore] %s: adding column virtual_key_id to TableBudget", migrationName)
 				if err := mg.AddColumn(&tables.TableBudget{}, "VirtualKeyID"); err != nil {
 					return fmt.Errorf("failed to add virtual_key_id column to governance_budgets: %w", err)
 				}
 			}
 			if !mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
+				logger.Info("[configstore] %s: adding column provider_config_id to TableBudget", migrationName)
 				if err := mg.AddColumn(&tables.TableBudget{}, "ProviderConfigID"); err != nil {
 					return fmt.Errorf("failed to add provider_config_id column to governance_budgets: %w", err)
 				}
@@ -7149,11 +7696,13 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 
 			// Create indexes on the new FK columns (AddColumn doesn't create indexes from struct tags)
 			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_virtual_key_id") {
+				logger.Info("[configstore] %s: creating index VirtualKeyID on TableBudget", migrationName)
 				if err := mg.CreateIndex(&tables.TableBudget{}, "VirtualKeyID"); err != nil {
 					return fmt.Errorf("failed to create index on governance_budgets.virtual_key_id: %w", err)
 				}
 			}
 			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_provider_config_id") {
+				logger.Info("[configstore] %s: creating index ProviderConfigID on TableBudget", migrationName)
 				if err := mg.CreateIndex(&tables.TableBudget{}, "ProviderConfigID"); err != nil {
 					return fmt.Errorf("failed to create index on governance_budgets.provider_config_id: %w", err)
 				}
@@ -7204,8 +7753,8 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 				// Drop the legacy calendar_aligned column from governance_budgets.
 				// Plain column with no FK references — not a correctness risk if left behind,
 				// but log a warning so it's not invisible.
-				if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN IF EXISTS calendar_aligned").Error; err != nil {
-					log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
+				if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
+					logger.Info("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 				}
 			}
 
@@ -7240,11 +7789,13 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableBudget{}, "virtual_key_id") {
+				logger.Info("[configstore] %s: dropping column virtual_key_id from TableBudget", migrationName)
 				if err := mg.DropColumn(&tables.TableBudget{}, "virtual_key_id"); err != nil {
 					return err
 				}
 			}
 			if mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
+				logger.Info("[configstore] %s: dropping column provider_config_id from TableBudget", migrationName)
 				if err := mg.DropColumn(&tables.TableBudget{}, "provider_config_id"); err != nil {
 					return err
 				}
@@ -7264,8 +7815,9 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 		if err != nil {
 			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
 		sqlDB.SetMaxOpenConns(1)
-		defer sqlDB.SetMaxOpenConns(0) // restore default
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
 
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
@@ -7285,15 +7837,19 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 // migrationAddTeamBudgetsToBudgetsTable pivots team budgets from a single-FK on
 // governance_teams.budget_id to multi-budget ownership via governance_budgets.team_id,
 // mirroring how VK/ProviderConfig budgets were restructured in migrationAddMultiBudgetTables.
-func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_team_budgets_to_budgets_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_team_budgets_to_budgets_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 
 			// Add team_id FK column on governance_budgets
 			if !mg.HasColumn(&tables.TableBudget{}, "team_id") {
+				logger.Info("[configstore] %s: adding column team_id to TableBudget", migrationName)
 				if err := mg.AddColumn(&tables.TableBudget{}, "TeamID"); err != nil {
 					return fmt.Errorf("failed to add team_id column to governance_budgets: %w", err)
 				}
@@ -7301,6 +7857,7 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 
 			// Create index on the new FK column (AddColumn doesn't create indexes from struct tags)
 			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_team_id") {
+				logger.Info("[configstore] %s: creating index TeamID on TableBudget", migrationName)
 				if err := mg.CreateIndex(&tables.TableBudget{}, "TeamID"); err != nil {
 					return fmt.Errorf("failed to create index on governance_budgets.team_id: %w", err)
 				}
@@ -7366,6 +7923,7 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 			if err := tx.Preload("Budgets").Find(&teamsToRehash).Error; err != nil {
 				return fmt.Errorf("failed to fetch teams for hash refresh: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d teamsToRehash", migrationName, len(teamsToRehash))
 			for _, team := range teamsToRehash {
 				if len(team.Budgets) == 0 {
 					continue // hash did not change; skip
@@ -7385,6 +7943,7 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableBudget{}, "team_id") {
+				logger.Info("[configstore] %s: dropping column team_id from TableBudget", migrationName)
 				if err := mg.DropColumn(&tables.TableBudget{}, "team_id"); err != nil {
 					return err
 				}
@@ -7398,8 +7957,9 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 		if err != nil {
 			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
 		sqlDB.SetMaxOpenConns(1)
-		defer sqlDB.SetMaxOpenConns(0)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
 
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
@@ -7416,19 +7976,121 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
-// migrationAddPerUserOAuthTables adds the oauth_user_sessions and oauth_user_tokens tables
-func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
+// migrationAddModelConfigBudgetsFKConstraint adds the missing
+// governance_budgets.model_config_id -> governance_model_configs(id)
+// ON DELETE CASCADE foreign key (defined on TableModelConfig.Budgets via
+// foreignKey:ModelConfigID;constraint:OnDelete:CASCADE).
+//
+// migrationAddMultiBudgetTables created the equivalent cascade FKs for VK- and
+// ProviderConfig-owned budgets but never the model-config edge, and
+// migrationAddBudgetModelConfigIDColumn added the column without a constraint.
+// As a result deleting a model config never cascaded to its multi-budget rows,
+// so they leaked (orphaned governance_budgets whose model_config_id points at a
+// since-deleted config). This makes that cleanup structurally sound at the DB
+// level, underneath the existing application-level cleanup in
+// DeleteModelConfigsForScope/DeleteModelConfig. (The single owned rate-limit is
+// intentionally left to application cleanup — rate-limits use the opposite
+// owner.rate_limit_id convention, so reversing it just for model configs would
+// introduce a one-off ownership split for a one-row-per-config leak surface.)
+func migrationAddModelConfigBudgetsFKConstraint(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_config_budgets_fk_constraint"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_per_user_oauth_tables",
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Pre-clean: budgets whose model_config_id already references a
+			// missing config would violate the FK we're about to add and block
+			// its creation. They are exactly the rows the cascade would have
+			// removed, so delete them — but only when nothing live still
+			// references them via the legacy governance_model_configs.budget_id
+			// (a NO ACTION FK), so this DELETE can't trip that constraint.
+			if err := tx.Exec(`
+				DELETE FROM governance_budgets
+				WHERE model_config_id IS NOT NULL
+				  AND model_config_id NOT IN (SELECT id FROM governance_model_configs)
+				  AND id NOT IN (
+				      SELECT budget_id FROM governance_model_configs WHERE budget_id IS NOT NULL
+				  )
+			`).Error; err != nil {
+				return fmt.Errorf("failed to pre-clean orphaned model-config budgets: %w", err)
+			}
+
+			// Create the cascade FK (no-op if a prior fresh-DB migrate already made it).
+			if !mg.HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableModelConfig{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for ModelConfig -> Budgets: %w", err)
+				}
+			}
+			return nil
+		},
+		// Partially non-rollbackable: dropping the FK restores the previous
+		// schema, but the orphaned governance_budgets rows removed by the
+		// pre-clean are gone permanently. That loss is intentional — they were
+		// exactly the dead rows the missing cascade had leaked — so the schema
+		// rollback below is still provided rather than hard-failing.
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+				if err := mg.DropConstraint(&tables.TableModelConfig{}, "Budgets"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables:
+	// CreateConstraint rebuilds governance_budgets via DROP+RENAME inside a
+	// transaction, which fails while other tables hold FKs into it and
+	// foreign_keys is ON. PRAGMA foreign_keys can't change inside a transaction,
+	// so disable it (pinned to one connection) before the migrator opens its tx.
+	// Postgres supports ALTER TABLE ADD CONSTRAINT natively and needs none of this.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_config_budgets_fk_constraint migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPerUserOAuthTables adds the oauth_user_sessions and oauth_user_tokens tables
+func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_per_user_oauth_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasTable(&tables.TableOauthUserToken{}) {
+				logger.Info("[configstore] %s: creating table TableOauthUserToken", migrationName)
 				if err := mg.CreateTable(&tables.TableOauthUserToken{}); err != nil {
 					return fmt.Errorf("failed to create oauth_user_tokens table: %w", err)
 				}
 			}
 			if !mg.HasTable(&tables.TableOauthUserSession{}) {
+				logger.Info("[configstore] %s: creating table TableOauthUserSession", migrationName)
 				if err := mg.CreateTable(&tables.TableOauthUserSession{}); err != nil {
 					return fmt.Errorf("failed to create oauth_user_sessions table: %w", err)
 				}
@@ -7444,6 +8106,7 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 				&tables.TableOauthUserSession{},
 			} {
 				if mg.HasTable(table) {
+					logger.Info("[configstore] %s: dropping table %T", migrationName, table)
 					if err := mg.DropTable(table); err != nil {
 						return err
 					}
@@ -7459,9 +8122,12 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationMakeOAuthTokenExpiryNullable makes expires_at nullable for OAuth token tables.
-func migrationMakeOAuthTokenExpiryNullable(ctx context.Context, db *gorm.DB) error {
+func migrationMakeOAuthTokenExpiryNullable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "make_oauth_token_expiry_nullable"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "make_oauth_token_expiry_nullable",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -7489,14 +8155,18 @@ func migrationMakeOAuthTokenExpiryNullable(ctx context.Context, db *gorm.DB) err
 }
 
 // migrationAddAllowPerRequestContentStorageOverrideColumn adds the allow_per_request_content_storage_override column to config_client.
-func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allow_per_request_content_storage_override_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_allow_per_request_content_storage_override_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override") {
+				logger.Info("[configstore] %s: adding column allow_per_request_content_storage_override to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AllowPerRequestContentStorageOverride"); err != nil {
 					return fmt.Errorf("failed to add allow_per_request_content_storage_override column: %w", err)
 				}
@@ -7509,6 +8179,7 @@ func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override") {
+				logger.Info("[configstore] %s: dropping column allow_per_request_content_storage_override from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override"); err != nil {
 					return fmt.Errorf("failed to drop allow_per_request_content_storage_override column: %w", err)
 				}
@@ -7524,14 +8195,18 @@ func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context
 }
 
 // migrationAddAllowPerRequestRawOverrideColumn adds the allow_per_request_raw_override column to config_client.
-func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allow_per_request_raw_override_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_allow_per_request_raw_override_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override") {
+				logger.Info("[configstore] %s: adding column allow_per_request_raw_override to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AllowPerRequestRawOverride"); err != nil {
 					return fmt.Errorf("failed to add allow_per_request_raw_override column: %w", err)
 				}
@@ -7544,6 +8219,7 @@ func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override") {
+				logger.Info("[configstore] %s: dropping column allow_per_request_raw_override from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override"); err != nil {
 					return fmt.Errorf("failed to drop allow_per_request_raw_override column: %w", err)
 				}
@@ -7559,18 +8235,23 @@ func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.
 }
 
 // migrationAddMCPClientDiscoveredToolsColumns adds discovered_tools_json and tool_name_mapping_json columns to the mcp_client table
-func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_discovered_tools_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_client_discovered_tools_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "discovered_tools_json") {
+				logger.Info("[configstore] %s: adding column discovered_tools_json to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
 					return err
 				}
 			}
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_name_mapping_json") {
+				logger.Info("[configstore] %s: adding column tool_name_mapping_json to TableMCPClient", migrationName)
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
 					return err
 				}
@@ -7581,11 +8262,13 @@ func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.D
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if migrator.HasColumn(&tables.TableMCPClient{}, "discovered_tools_json") {
+				logger.Info("[configstore] %s: dropping column discovered_tools_json from TableMCPClient", migrationName)
 				if err := migrator.DropColumn(&tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
 					return err
 				}
 			}
 			if migrator.HasColumn(&tables.TableMCPClient{}, "tool_name_mapping_json") {
+				logger.Info("[configstore] %s: dropping column tool_name_mapping_json from TableMCPClient", migrationName)
 				if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
 					return err
 				}
@@ -7602,9 +8285,12 @@ func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.D
 
 // migrationAddPriorityTierPricingColumns adds pricing columns for the 272k token tier
 // and the 200k priority variants.
-func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_priority_tier_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_priority_tier_pricing_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -7622,6 +8308,7 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) er
 
 			for _, field := range columns {
 				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
 					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to add column %s: %w", field, err)
 					}
@@ -7646,6 +8333,7 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) er
 
 			for _, field := range columns {
 				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
 					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to drop column %s: %w", field, err)
 					}
@@ -7661,9 +8349,12 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) er
 }
 
 // migrationAddFlexTierPricingColumns adds pricing columns for the flex service tier
-func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_flex_tier_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_flex_tier_pricing_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -7676,6 +8367,7 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error 
 
 			for _, field := range columns {
 				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
 					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to add column %s: %w", field, err)
 					}
@@ -7695,6 +8387,7 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error 
 
 			for _, field := range columns {
 				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
 					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to drop column %s: %w", field, err)
 					}
@@ -7710,15 +8403,72 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
-// migrationAddWhitelistedRoutesJSONColumn adds the whitelisted_routes_json column to the config_client table
-func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) error {
+// migrationAddFastModePricingColumns adds pricing columns for Anthropic fast mode
+// (research preview, speed:"fast" on Opus 4.6/4.7/4.8).
+func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_fast_mode_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_whitelisted_routes_json_column",
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_fast",
+				"output_cost_per_token_fast",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_fast",
+				"output_cost_per_token_fast",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running fast mode pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWhitelistedRoutesJSONColumn adds the whitelisted_routes_json column to the config_client table
+func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_whitelisted_routes_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "whitelisted_routes_json") {
+				logger.Info("[configstore] %s: adding column whitelisted_routes_json to TableClientConfig", migrationName)
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "WhitelistedRoutesJSON"); err != nil {
 					return fmt.Errorf("failed to add whitelisted_routes_json column: %w", err)
 				}
@@ -7731,6 +8481,7 @@ func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) e
 			migrator := tx.Migrator()
 
 			if migrator.HasColumn(&tables.TableClientConfig{}, "whitelisted_routes_json") {
+				logger.Info("[configstore] %s: dropping column whitelisted_routes_json from TableClientConfig", migrationName)
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "whitelisted_routes_json"); err != nil {
 					return fmt.Errorf("failed to drop whitelisted_routes_json column: %w", err)
 				}
@@ -7748,30 +8499,37 @@ func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) e
 // migrationReplaceEnableLiteLLMWithCompatColumns replaces the single enable_litellm_fallbacks
 // boolean with compat feature columns. If enable_litellm_fallbacks was true,
 // only convert_text_to_chat is set to true (preserving the original behavior).
-func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gorm.DB) error {
+func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "replace_enable_litellm_with_compat_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "replace_enable_litellm_with_compat_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 
 			// Add new columns
 			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat") {
+				logger.Info("[configstore] %s: adding column compat_convert_text_to_chat to TableClientConfig", migrationName)
 				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat"); err != nil {
 					return err
 				}
 			}
 			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses") {
+				logger.Info("[configstore] %s: adding column compat_convert_chat_to_responses to TableClientConfig", migrationName)
 				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses"); err != nil {
 					return err
 				}
 			}
 			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_drop_params") {
+				logger.Info("[configstore] %s: adding column compat_should_drop_params to TableClientConfig", migrationName)
 				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_should_drop_params"); err != nil {
 					return err
 				}
 			}
 			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params") {
+				logger.Info("[configstore] %s: adding column compat_should_convert_params to TableClientConfig", migrationName)
 				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_should_convert_params"); err != nil {
 					return err
 				}
@@ -7786,6 +8544,7 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 				if err := tx.Exec("UPDATE config_client SET compat_convert_text_to_chat = enable_litellm_fallbacks").Error; err != nil {
 					return err
 				}
+				logger.Info("[configstore] %s: dropping column enable_litellm_fallbacks from TableClientConfig", migrationName)
 				if err := mig.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
 					return err
 				}
@@ -7813,6 +8572,7 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 				"compat_should_convert_params",
 			} {
 				if mig.HasColumn(&tables.TableClientConfig{}, col) {
+					logger.Info("[configstore] %s: dropping column %s from TableClientConfig", migrationName, col)
 					if err := mig.DropColumn(&tables.TableClientConfig{}, col); err != nil {
 						return err
 					}
@@ -7831,9 +8591,12 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 // converge to the new default for compat_should_convert_params. The earlier
 // compat migration may already be marked as applied, so changing its body is not
 // sufficient for installed databases.
-func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gorm.DB) error {
+func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "default_compat_should_convert_params_false"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "default_compat_should_convert_params_false",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
@@ -7878,9 +8641,12 @@ func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gor
 
 // migrationAddModelPricingUniqueIndex ensures the composite unique index (model, provider, mode)
 // exists on governance_model_pricing so that atomic ON CONFLICT upserts work correctly.
-func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB) error {
+func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_pricing_unique_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_model_pricing_unique_index",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -7902,10 +8668,11 @@ func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB) error
 				return fmt.Errorf("failed to deduplicate model pricing rows: %w", result.Error)
 			}
 			if result.RowsAffected > 0 {
-				log.Printf("[migration] removed %d duplicate row(s) from governance_model_pricing before creating unique index", result.RowsAffected)
+				logger.Info("[migration] removed %d duplicate row(s) from governance_model_pricing before creating unique index", result.RowsAffected)
 			}
 
 			if !mg.HasIndex(&tables.TableModelPricing{}, "idx_model_provider_mode") {
+				logger.Info("[configstore] %s: creating index idx_model_provider_mode on TableModelPricing", migrationName)
 				if err := mg.CreateIndex(&tables.TableModelPricing{}, "idx_model_provider_mode"); err != nil {
 					return fmt.Errorf("failed to create unique index idx_model_provider_mode: %w", err)
 				}
@@ -7916,6 +8683,7 @@ func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB) error
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasIndex(&tables.TableModelPricing{}, "idx_model_provider_mode") {
+				logger.Info("[configstore] %s: dropping index idx_model_provider_mode on TableModelPricing", migrationName)
 				if err := mg.DropIndex(&tables.TableModelPricing{}, "idx_model_provider_mode"); err != nil {
 					return fmt.Errorf("failed to drop unique index idx_model_provider_mode: %w", err)
 				}
@@ -7931,9 +8699,12 @@ func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB) error
 
 // migrationNormalizeOtelTraceType rewrites the legacy OTEL plugin trace_type value "otel" to "genai_extension".
 // No-op if the plugin row is missing or trace_type is already correct.
-func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB) error {
+func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "normalize_otel_trace_type"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "normalize_otel_trace_type",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -7962,7 +8733,7 @@ func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB) error {
 			if err := tx.Save(&plugin).Error; err != nil {
 				return fmt.Errorf("failed to save normalized otel config: %w", err)
 			}
-			log.Printf("[Migration] Normalized otel trace_type 'otel' to 'genai_extension'")
+			logger.Info("[Migration] Normalized otel trace_type 'otel' to 'genai_extension'")
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error { return nil },
@@ -7975,9 +8746,12 @@ func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrateCalendarAlignedToBudgetsAndRateLimitsTable
-func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *gorm.DB) error {
+func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "migrate_calendar_aligned"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "migrate_calendar_aligned",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			// Adding columns first
@@ -8023,7 +8797,7 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 			`).Error; err != nil {
 				return fmt.Errorf("failed to propagate calendar_aligned to budgets: %w", err)
 			}
-			log.Printf("[Migration] Prefilled calendar_aligned field for existing budgets and rate limits")
+			logger.Info("[Migration] Prefilled calendar_aligned field for existing budgets and rate limits")
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error { return nil },
@@ -8034,9 +8808,12 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 	return nil
 }
 
-func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
+func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ocr_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_ocr_pricing_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8046,6 +8823,7 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
 			}
 			for _, field := range columns {
 				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: adding column %s to TableModelPricing", migrationName, field)
 					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to add column %s: %w", field, err)
 					}
@@ -8062,6 +8840,7 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
 			}
 			for _, field := range columns {
 				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
 					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
 						return fmt.Errorf("failed to drop column %s: %w", field, err)
 					}
@@ -8076,9 +8855,12 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_external_base_url_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_external_base_url_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8109,9 +8891,12 @@ func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB) erro
 	return nil
 }
 
-func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB) error {
+func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "split_mcp_external_base_url_into_server_client"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "split_mcp_external_base_url_into_server_client",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8127,6 +8912,7 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB) error {
 				}
 			}
 			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_client_url") {
+				logger.Info("[configstore] %s: adding column mcp_external_client_url to TableClientConfig", migrationName)
 				if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPExternalClientURL"); err != nil {
 					return fmt.Errorf("failed to add mcp_external_client_url column: %w", err)
 				}
@@ -8159,11 +8945,13 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB) error {
 				).Error; err != nil {
 					return fmt.Errorf("failed to backfill mcp_external_base_url from mcp_external_server_url: %w", err)
 				}
+				logger.Info("[configstore] %s: dropping column mcp_external_server_url from TableClientConfig", migrationName)
 				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_server_url"); err != nil {
 					return fmt.Errorf("failed to drop mcp_external_server_url column: %w", err)
 				}
 			}
 			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_client_url") {
+				logger.Info("[configstore] %s: dropping column mcp_external_client_url from TableClientConfig", migrationName)
 				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_client_url"); err != nil {
 					return fmt.Errorf("failed to drop mcp_external_client_url column: %w", err)
 				}
@@ -8178,13 +8966,17 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddMCPClientDisabledColumn adds the disabled column to the config_mcp_clients table
-func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_disabled_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_client_disabled_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableMCPClient{}, "disabled") {
+				logger.Info("[configstore] %s: adding column disabled to TableMCPClient", migrationName)
 				if err := mg.AddColumn(&tables.TableMCPClient{}, "disabled"); err != nil {
 					return fmt.Errorf("failed to add disabled column: %w", err)
 				}
@@ -8199,6 +8991,7 @@ func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableMCPClient{}, "disabled") {
+				logger.Info("[configstore] %s: dropping column disabled from TableMCPClient", migrationName)
 				if err := mg.DropColumn(&tables.TableMCPClient{}, "disabled"); err != nil {
 					return fmt.Errorf("failed to drop disabled column: %w", err)
 				}
@@ -8216,9 +9009,12 @@ func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error
 // index. Duplicate rows (same name, different ID) have a short UUID suffix
 // appended so no data is lost. The struct tag uniqueIndex makes GORM enforce
 // this on new rows going forward.
-func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "gov_unique_team_names",
+func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "gov_unique_team_names"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -8234,6 +9030,7 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 				return fmt.Errorf("find duplicate team names: %w", err)
 			}
 
+			logger.Info("[configstore] %s: processing %d dups", migrationName, len(dups))
 			for _, d := range dups {
 				// oldest row keeps the original name
 				type row struct {
@@ -8257,6 +9054,7 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 
 			// Add the unique index. Skip if it already exists.
 			if !tx.Migrator().HasIndex(&tables.TableTeam{}, "idx_governance_teams_name") {
+				logger.Info("[configstore] %s: creating index Name on TableTeam", migrationName)
 				if err := tx.Migrator().CreateIndex(&tables.TableTeam{}, "Name"); err != nil {
 					return fmt.Errorf("create unique index on governance_teams.name: %w", err)
 				}
@@ -8264,6 +9062,7 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
+			logger.Info("[configstore] %s: dropping index idx_governance_teams_name on TableTeam", migrationName)
 			_ = tx.Migrator().DropIndex(&tables.TableTeam{}, "idx_governance_teams_name")
 			return nil
 		},
@@ -8275,9 +9074,12 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 // column population, drops the legacy non-unique composite indexes on
 // oauth_user_tokens, and creates partial unique indexes (one per identity
 // dimension).
-func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "add_oauth_auth_mode_columns",
+func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth_auth_mode_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8285,11 +9087,13 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 			// 1) oauth_user_tokens: add status + auth_mode
 			if mg.HasTable(&tables.TableOauthUserToken{}) {
 				if !mg.HasColumn(&tables.TableOauthUserToken{}, "status") {
+					logger.Info("[configstore] %s: adding column status to TableOauthUserToken", migrationName)
 					if err := mg.AddColumn(&tables.TableOauthUserToken{}, "Status"); err != nil {
 						return fmt.Errorf("add status to oauth_user_tokens: %w", err)
 					}
 				}
 				if !mg.HasColumn(&tables.TableOauthUserToken{}, "auth_mode") {
+					logger.Info("[configstore] %s: adding column auth_mode to TableOauthUserToken", migrationName)
 					// Add as nullable first — mg.AddColumn would derive
 					// NOT NULL from the struct tag and fail on tables with
 					// existing rows. The backfill below populates every
@@ -8362,11 +9166,13 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 
 				// Drop legacy non-unique composite indexes. Replaced by partial unique indexes below.
 				if mg.HasIndex(&tables.TableOauthUserToken{}, "idx_vk_mcp") {
+					logger.Info("[configstore] %s: dropping index idx_vk_mcp on TableOauthUserToken", migrationName)
 					if err := mg.DropIndex(&tables.TableOauthUserToken{}, "idx_vk_mcp"); err != nil {
 						return fmt.Errorf("drop idx_vk_mcp: %w", err)
 					}
 				}
 				if mg.HasIndex(&tables.TableOauthUserToken{}, "idx_user_mcp") {
+					logger.Info("[configstore] %s: dropping index idx_user_mcp on TableOauthUserToken", migrationName)
 					if err := mg.DropIndex(&tables.TableOauthUserToken{}, "idx_user_mcp"); err != nil {
 						return fmt.Errorf("drop idx_user_mcp: %w", err)
 					}
@@ -8425,6 +9231,7 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 							)`,
 					)
 				}
+				logger.Info("[configstore] %s: processing %d dedupeStmts", migrationName, len(dedupeStmts))
 				for _, stmt := range dedupeStmts {
 					if err := tx.Exec(stmt).Error; err != nil {
 						return fmt.Errorf("dedupe legacy oauth_user_tokens bindings: %w", err)
@@ -8456,6 +9263,7 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 							WHERE auth_mode = 'session' AND `+sessionCol+` IS NOT NULL AND `+sessionCol+` != ''`,
 					)
 				}
+				logger.Info("[configstore] %s: processing %d partialUniques", migrationName, len(partialUniques))
 				for _, stmt := range partialUniques {
 					if err := tx.Exec(stmt).Error; err != nil {
 						return fmt.Errorf("create partial unique index on oauth_user_tokens: %w", err)
@@ -8475,6 +9283,7 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 			// 2) oauth_user_sessions: add flow_mode
 			if mg.HasTable(&tables.TableOauthUserSession{}) {
 				if !mg.HasColumn(&tables.TableOauthUserSession{}, "flow_mode") {
+					logger.Info("[configstore] %s: adding column flow_mode to TableOauthUserSession", migrationName)
 					if err := mg.AddColumn(&tables.TableOauthUserSession{}, "FlowMode"); err != nil {
 						return fmt.Errorf("add flow_mode to oauth_user_sessions: %w", err)
 					}
@@ -8520,13 +9329,16 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 					return fmt.Errorf("restore idx_user_mcp: %w", err)
 				}
 				if mg.HasColumn(&tables.TableOauthUserToken{}, "status") {
+					logger.Info("[configstore] %s: dropping column Status from TableOauthUserToken", migrationName)
 					_ = mg.DropColumn(&tables.TableOauthUserToken{}, "Status")
 				}
 				if mg.HasColumn(&tables.TableOauthUserToken{}, "auth_mode") {
+					logger.Info("[configstore] %s: dropping column AuthMode from TableOauthUserToken", migrationName)
 					_ = mg.DropColumn(&tables.TableOauthUserToken{}, "AuthMode")
 				}
 			}
 			if mg.HasTable(&tables.TableOauthUserSession{}) && mg.HasColumn(&tables.TableOauthUserSession{}, "flow_mode") {
+				logger.Info("[configstore] %s: dropping column FlowMode from TableOauthUserSession", migrationName)
 				_ = mg.DropColumn(&tables.TableOauthUserSession{}, "FlowMode")
 			}
 
@@ -8551,9 +9363,12 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 // Order: add SessionID first, then drop the legacy columns + their indexes.
 // No data backfill: existing rows are dev-only test data; production hasn't
 // landed yet.
-func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "replace_oauth_session_token_with_session_id",
+func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "replace_oauth_session_token_with_session_id"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8561,6 +9376,7 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 			// 1) oauth_user_sessions: add session_id, drop legacy columns + index.
 			if mg.HasTable(&tables.TableOauthUserSession{}) {
 				if !mg.HasColumn(&tables.TableOauthUserSession{}, "session_id") {
+					logger.Info("[configstore] %s: adding column session_id to TableOauthUserSession", migrationName)
 					if err := mg.AddColumn(&tables.TableOauthUserSession{}, "SessionID"); err != nil {
 						return fmt.Errorf("add session_id to oauth_user_sessions: %w", err)
 					}
@@ -8574,11 +9390,13 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 					return fmt.Errorf("drop legacy session_token_hash index on oauth_user_sessions: %w", err)
 				}
 				if mg.HasColumn(&tables.TableOauthUserSession{}, "session_token_hash") {
+					logger.Info("[configstore] %s: dropping column session_token_hash from TableOauthUserSession", migrationName)
 					if err := mg.DropColumn(&tables.TableOauthUserSession{}, "session_token_hash"); err != nil {
 						return fmt.Errorf("drop session_token_hash from oauth_user_sessions: %w", err)
 					}
 				}
 				if mg.HasColumn(&tables.TableOauthUserSession{}, "session_token") {
+					logger.Info("[configstore] %s: dropping column session_token from TableOauthUserSession", migrationName)
 					if err := mg.DropColumn(&tables.TableOauthUserSession{}, "session_token"); err != nil {
 						return fmt.Errorf("drop session_token from oauth_user_sessions: %w", err)
 					}
@@ -8590,6 +9408,7 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 			// its key column (session_token_hash) is being removed.
 			if mg.HasTable(&tables.TableOauthUserToken{}) {
 				if !mg.HasColumn(&tables.TableOauthUserToken{}, "session_id") {
+					logger.Info("[configstore] %s: adding column session_id to TableOauthUserToken", migrationName)
 					if err := mg.AddColumn(&tables.TableOauthUserToken{}, "SessionID"); err != nil {
 						return fmt.Errorf("add session_id to oauth_user_tokens: %w", err)
 					}
@@ -8601,11 +9420,13 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 					return fmt.Errorf("drop legacy session_token_hash index on oauth_user_tokens: %w", err)
 				}
 				if mg.HasColumn(&tables.TableOauthUserToken{}, "session_token_hash") {
+					logger.Info("[configstore] %s: dropping column session_token_hash from TableOauthUserToken", migrationName)
 					if err := mg.DropColumn(&tables.TableOauthUserToken{}, "session_token_hash"); err != nil {
 						return fmt.Errorf("drop session_token_hash from oauth_user_tokens: %w", err)
 					}
 				}
 				if mg.HasColumn(&tables.TableOauthUserToken{}, "session_token") {
+					logger.Info("[configstore] %s: dropping column session_token from TableOauthUserToken", migrationName)
 					if err := mg.DropColumn(&tables.TableOauthUserToken{}, "session_token"); err != nil {
 						return fmt.Errorf("drop session_token from oauth_user_tokens: %w", err)
 					}
@@ -8652,6 +9473,7 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 			}
 			for _, model := range []interface{}{&tables.TableOauthUserSession{}, &tables.TableOauthUserToken{}} {
 				if mg.HasTable(model) && mg.HasColumn(model, "session_id") {
+					logger.Info("[configstore] %s: dropping column SessionID from %T", migrationName, model)
 					_ = mg.DropColumn(model, "SessionID")
 				}
 			}
@@ -8678,9 +9500,12 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 // in the code, so any rows present are orphans referring to a removed code path.
 // Rollback recreates the tables empty (best-effort schema-only; original data
 // is gone).
-func migrationDropLegacyOAuthServerTables(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "drop_legacy_oauth_server_tables",
+func migrationDropLegacyOAuthServerTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_legacy_oauth_server_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -8731,9 +9556,12 @@ func migrationDropLegacyOAuthServerTables(ctx context.Context, db *gorm.DB) erro
 // are stale credentials that wouldn't satisfy a lookup under the new flow.
 // Affected users / clients re-authenticate fresh — the alternative is carrying
 // forward dead state that surfaces in the sessions UI but can never refresh.
-func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "drop_non_vk_oauth_user_rows",
+func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_non_vk_oauth_user_rows"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8776,9 +9604,12 @@ func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB) error {
 // The companion mcp_external_client_url column is retained — it's still used
 // as the redirect_uri base when Bifrost acts as an OAuth *client* to upstream
 // MCP servers.
-func migrationDropMCPExternalServerURL(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "drop_mcp_external_server_url_column",
+func migrationDropMCPExternalServerURL(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_mcp_external_server_url_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8809,9 +9640,12 @@ func migrationDropMCPExternalServerURL(ctx context.Context, db *gorm.DB) error {
 // SELECT + UPDATE on the same table — that combination was observed to lock
 // config_client indefinitely on contended Postgres instances. See the same
 // split for migrationDropAllowDirectKeysColumn.
-func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
-		ID: "refresh_config_hash_after_mcp_external_server_url_removal",
+func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "refresh_config_hash_after_mcp_external_server_url_removal"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -8846,6 +9680,7 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 				Find(&clientConfigs).Error; err != nil {
 				return fmt.Errorf("fetch client configs for hash recompute: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d clientConfigs", migrationName, len(clientConfigs))
 			for _, cc := range clientConfigs {
 				if cc.ConfigHash == "" {
 					continue
@@ -8908,20 +9743,23 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 // reset time. The columns were re-added by migrate_calendar_aligned after
 // add_multi_budget_tables dropped governance_budgets.calendar_aligned, so any
 // DB that ran both still has them — this migration cleans them up.
-func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB) error {
+func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_legacy_calendar_aligned_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_legacy_calendar_aligned_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			// Use raw `ALTER TABLE ... DROP COLUMN IF EXISTS` instead of GORM's Migrator.DropColumn,
-			// which on SQLite does a full table rebuild that aborts on pre-existing FK violations;
-			// since these unconstrained boolean columns are safe to leave behind, we log a warning
-			// rather than fail boot.
-			if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN calendar_aligned").Error; err != nil {
-				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
+			// Use a raw `ALTER TABLE ... DROP COLUMN` (dialect-aware via dropColumnSQL) instead of
+			// GORM's Migrator.DropColumn, which on SQLite does a full table rebuild that aborts on
+			// pre-existing FK violations; since these unconstrained boolean columns are safe to
+			// leave behind, we log a warning rather than fail boot.
+			if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
+				logger.Info("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 			}
-			if err := tx.Exec("ALTER TABLE governance_rate_limits DROP COLUMN calendar_aligned").Error; err != nil {
-				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_rate_limits: %v", err)
+			if err := tx.Exec(dropColumnSQL(tx, "governance_rate_limits", "calendar_aligned")).Error; err != nil {
+				logger.Info("[Migration] warning: could not drop legacy calendar_aligned column from governance_rate_limits: %v", err)
 			}
 			return nil
 		},
@@ -8936,13 +9774,17 @@ func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB)
 // migrationAddTeamCalendarAlignedColumn adds calendar_aligned to governance_teams so
 // team-level calendar alignment (governing all team budgets and the team rate limit)
 // can be persisted.
-func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_team_calendar_aligned_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_team_calendar_aligned_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if !mig.HasColumn(&tables.TableTeam{}, "calendar_aligned") {
+				logger.Info("[configstore] %s: adding column calendar_aligned to TableTeam", migrationName)
 				if err := mig.AddColumn(&tables.TableTeam{}, "CalendarAligned"); err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to governance_teams: %w", err)
 				}
@@ -8980,6 +9822,7 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if mig.HasColumn(&tables.TableTeam{}, "calendar_aligned") {
+				logger.Info("[configstore] %s: dropping column calendar_aligned from TableTeam", migrationName)
 				return mig.DropColumn(&tables.TableTeam{}, "calendar_aligned")
 			}
 			return nil
@@ -8992,13 +9835,17 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 }
 
 // migrationAddModelParametersURLColumn adds the model_parameters_url column to framework_configs.
-func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_parameters_url_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_model_parameters_url_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if !mig.HasColumn(&tables.TableFrameworkConfig{}, "model_parameters_url") {
+				logger.Info("[configstore] %s: adding column model_parameters_url to TableFrameworkConfig", migrationName)
 				if err := mig.AddColumn(&tables.TableFrameworkConfig{}, "ModelParametersURL"); err != nil {
 					return fmt.Errorf("failed to add model_parameters_url column to framework_configs: %w", err)
 				}
@@ -9009,6 +9856,7 @@ func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if mig.HasColumn(&tables.TableFrameworkConfig{}, "model_parameters_url") {
+				logger.Info("[configstore] %s: dropping column model_parameters_url from TableFrameworkConfig", migrationName)
 				return mig.DropColumn(&tables.TableFrameworkConfig{}, "model_parameters_url")
 			}
 			return nil
@@ -9022,13 +9870,17 @@ func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) erro
 
 // migrationAddFrameworkConfigHashColumn adds the config_hash column to framework_configs
 // so that file-vs-DB precedence can be determined via hash comparison on restart.
-func migrationAddFrameworkConfigHashColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddFrameworkConfigHashColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_framework_config_hash_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_framework_config_hash_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if !mig.HasColumn(&tables.TableFrameworkConfig{}, "config_hash") {
+				logger.Info("[configstore] %s: adding column config_hash to TableFrameworkConfig", migrationName)
 				if err := mig.AddColumn(&tables.TableFrameworkConfig{}, "ConfigHash"); err != nil {
 					return fmt.Errorf("failed to add config_hash column to framework_configs: %w", err)
 				}
@@ -9039,6 +9891,7 @@ func migrationAddFrameworkConfigHashColumn(ctx context.Context, db *gorm.DB) err
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if mig.HasColumn(&tables.TableFrameworkConfig{}, "config_hash") {
+				logger.Info("[configstore] %s: dropping column config_hash from TableFrameworkConfig", migrationName)
 				return mig.DropColumn(&tables.TableFrameworkConfig{}, "config_hash")
 			}
 			return nil
@@ -9052,13 +9905,17 @@ func migrationAddFrameworkConfigHashColumn(ctx context.Context, db *gorm.DB) err
 
 // migrationAddTempTokensTable creates the temp_tokens table that backs the
 // temptoken service.
-func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_temp_tokens_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_temp_tokens_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if !mig.HasTable(&tables.TempToken{}) {
+				logger.Info("[configstore] %s: creating table TempToken", migrationName)
 				if err := mig.CreateTable(&tables.TempToken{}); err != nil {
 					return fmt.Errorf("failed to create temp_tokens table: %w", err)
 				}
@@ -9069,6 +9926,7 @@ func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if mig.HasTable(&tables.TempToken{}) {
+				logger.Info("[configstore] %s: dropping table TempToken", migrationName)
 				if err := mig.DropTable(&tables.TempToken{}); err != nil {
 					return err
 				}
@@ -9087,13 +9945,17 @@ func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
 // This migration performs the DDL only. The data backfill and config_hash recompute are
 // done by migrationBackfillVirtualKeyBlacklistedModels so the ALTER's ACCESS EXCLUSIVE
 // lock is not held across the backfill SELECT + UPDATE, which can deadlock Postgres.
-func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_provider_config_blacklisted_models_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vk_provider_config_blacklisted_models_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				logger.Info("[configstore] %s: adding column blacklisted_models to TableVirtualKeyProviderConfig", migrationName)
 				if err := mg.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
 					return fmt.Errorf("failed to add blacklisted_models column: %w", err)
 				}
@@ -9115,9 +9977,12 @@ func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm
 // recomputes config_hash for every virtual key so they do not appear stale after upgrade.
 // It is a separate migration from the column-add so the DDL's ACCESS EXCLUSIVE lock is
 // never held across this SELECT + UPDATE backfill.
-func migrationBackfillVirtualKeyBlacklistedModels(ctx context.Context, db *gorm.DB) error {
+func migrationBackfillVirtualKeyBlacklistedModels(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_vk_provider_config_blacklisted_models"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "backfill_vk_provider_config_blacklisted_models",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
@@ -9137,6 +10002,7 @@ func migrationBackfillVirtualKeyBlacklistedModels(ctx context.Context, db *gorm.
 				Find(&virtualKeys).Error; err != nil {
 				return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d virtualKeys", migrationName, len(virtualKeys))
 			for _, vk := range virtualKeys {
 				newHash, err := GenerateVirtualKeyHash(vk)
 				if err != nil {
@@ -9161,9 +10027,12 @@ func migrationBackfillVirtualKeyBlacklistedModels(ctx context.Context, db *gorm.
 }
 
 // migrationAddVKAccessProfileIDColumn adds the access_profile_id column to governance_virtual_keys.
-func migrationAddVKAccessProfileIDColumn(_ context.Context, db *gorm.DB) error {
+func migrationAddVKAccessProfileIDColumn(_ context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_access_profile_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vk_access_profile_id_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			return nil
 		},
@@ -9176,9 +10045,12 @@ func migrationAddVKAccessProfileIDColumn(_ context.Context, db *gorm.DB) error {
 
 // migrationDropVKAccessProfileIDColumn drops the access_profile_id column and its
 // index from governance_virtual_keys, reverting migrationAddVKAccessProfileIDColumn.
-func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
+func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_vk_access_profile_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_vk_access_profile_id_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			// DROP INDEX IF EXISTS avoids aborting the Postgres transaction when
@@ -9203,6 +10075,7 @@ func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				logger.Info("[configstore] %s: dropping column blacklisted_models from TableVirtualKeyProviderConfig", migrationName)
 				if err := mg.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
 					return fmt.Errorf("failed to drop blacklisted_models column: %w", err)
 				}
@@ -9222,9 +10095,12 @@ func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) erro
 // migrationAddOAuthAuthModeColumns so the per-user-headers credentials are
 // keyed by (auth_mode, identity, mcp_client_id) the same way per-user OAuth
 // tokens are. Forward-only on data — no rows exist yet.
-func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
+func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_per_user_header_credentials_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_per_user_header_credentials_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
@@ -9233,6 +10109,7 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
 			//    schema of required header names; nullable / empty for all
 			//    other auth types).
 			if !mg.HasColumn(&tables.TableMCPClient{}, "per_user_header_keys_json") {
+				logger.Info("[configstore] %s: adding column per_user_header_keys_json to TableMCPClient", migrationName)
 				if err := mg.AddColumn(&tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
 					return fmt.Errorf("add per_user_header_keys_json column to config_mcp_clients: %w", err)
 				}
@@ -9240,6 +10117,7 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
 
 			// 2) mcp_per_user_header_credentials table.
 			if !mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				logger.Info("[configstore] %s: creating table TableMCPPerUserHeaderCredential", migrationName)
 				if err := mg.CreateTable(&tables.TableMCPPerUserHeaderCredential{}); err != nil {
 					return fmt.Errorf("create mcp_per_user_header_credentials table: %w", err)
 				}
@@ -9259,6 +10137,7 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
 					ON mcp_per_user_header_credentials (session_id, mcp_client_id)
 					WHERE auth_mode = 'session' AND session_id IS NOT NULL AND session_id != ''`,
 			}
+			logger.Info("[configstore] %s: processing %d partialUniques", migrationName, len(partialUniques))
 			for _, stmt := range partialUniques {
 				if err := tx.Exec(stmt).Error; err != nil {
 					return fmt.Errorf("create partial unique index on mcp_per_user_header_credentials: %w", err)
@@ -9274,6 +10153,7 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
 					ON mcp_per_user_header_credentials (mcp_client_id)
 					WHERE status = 'needs_update'`,
 			}
+			logger.Info("[configstore] %s: processing %d statusIndexes", migrationName, len(statusIndexes))
 			for _, stmt := range statusIndexes {
 				if err := tx.Exec(stmt).Error; err != nil {
 					return fmt.Errorf("create status partial index on mcp_per_user_header_credentials: %w", err)
@@ -9297,11 +10177,13 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
 				}
 			}
 			if mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				logger.Info("[configstore] %s: dropping table TableMCPPerUserHeaderCredential", migrationName)
 				if err := mg.DropTable(&tables.TableMCPPerUserHeaderCredential{}); err != nil {
 					return fmt.Errorf("drop mcp_per_user_header_credentials: %w", err)
 				}
 			}
 			if mg.HasColumn(&tables.TableMCPClient{}, "per_user_header_keys_json") {
+				logger.Info("[configstore] %s: dropping column PerUserHeaderKeysJSON from TableMCPClient", migrationName)
 				if err := mg.DropColumn(&tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
 					return fmt.Errorf("drop per_user_header_keys_json column from config_mcp_clients: %w", err)
 				}
@@ -9323,13 +10205,17 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
 // rows. Lives in its own migration so it can land on DBs that already
 // applied migrationAddPerUserHeadersTables (which only created the
 // credentials table).
-func migrationAddPerUserHeadersFlowsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddPerUserHeadersFlowsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_per_user_header_flows_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_per_user_header_flows_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasTable(&tables.TableMCPPerUserHeaderFlow{}) {
+				logger.Info("[configstore] %s: creating table TableMCPPerUserHeaderFlow", migrationName)
 				if err := mg.CreateTable(&tables.TableMCPPerUserHeaderFlow{}); err != nil {
 					return fmt.Errorf("create mcp_per_user_header_flows table: %w", err)
 				}
@@ -9340,6 +10226,7 @@ func migrationAddPerUserHeadersFlowsTable(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasTable(&tables.TableMCPPerUserHeaderFlow{}) {
+				logger.Info("[configstore] %s: dropping table TableMCPPerUserHeaderFlow", migrationName)
 				if err := mg.DropTable(&tables.TableMCPPerUserHeaderFlow{}); err != nil {
 					return fmt.Errorf("drop mcp_per_user_header_flows: %w", err)
 				}
@@ -9354,9 +10241,12 @@ func migrationAddPerUserHeadersFlowsTable(ctx context.Context, db *gorm.DB) erro
 }
 
 // migrationAddCreatedByUserIDColumnForVirtualKeys adds the created_by_user_id column to the governance_virtual_keys table.
-func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *gorm.DB) error {
+func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_created_by_user_id_column_for_virtual_keys"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_created_by_user_id_column_for_virtual_keys",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
@@ -9383,9 +10273,12 @@ func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *go
 }
 
 // migrationDropAzureAPIVersionColumn adds the created_by_user_id column to the governance_virtual_keys table
-func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error {
+func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_azure_api_version_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_azure_api_version_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
@@ -9414,9 +10307,12 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error 
 // migrationReAddAllowDirectKeysColumn re-adds the allow_direct_keys column to config_client.
 // The column was originally added then dropped in v1.5.0 when the direct key bypass feature
 // was removed. It is re-added here as the feature is being restored with header-gated access.
-func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "re_add_allow_direct_keys_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "re_add_allow_direct_keys_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
@@ -9429,6 +10325,7 @@ func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				logger.Info("[configstore] %s: dropping column allow_direct_keys from TableClientConfig", migrationName)
 				if err := tx.Migrator().DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
 					return fmt.Errorf("failed to drop allow_direct_keys column: %w", err)
 				}
@@ -9443,9 +10340,12 @@ func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error
 }
 
 // migrationAddMCPClientTLSConfigColumn adds the tls_config_json column to the config_mcp_clients table.
-func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_tls_config_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_mcp_client_tls_config_json_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableMCPClient{}, "tls_config_json") {
@@ -9476,12 +10376,16 @@ func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB) erro
 // metadata (e.g. description) as a JSON blob. It is intentionally excluded
 // from UpsertModelPrices' update list so the 24-hour pricing sync never
 // overwrites it.
-func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB) error {
+func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_additional_attributes_to_pricing"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_additional_attributes_to_pricing",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableModelPricing{}, "additional_attributes") {
+				logger.Info("[configstore] %s: adding column AdditionalAttributesJSON to TableModelPricing", migrationName)
 				if err := tx.Migrator().AddColumn(&tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
 					return fmt.Errorf("failed to add additional_attributes column: %w", err)
 				}
@@ -9491,6 +10395,7 @@ func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB)
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableModelPricing{}, "additional_attributes") {
+				logger.Info("[configstore] %s: dropping column AdditionalAttributesJSON from TableModelPricing", migrationName)
 				if err := tx.Migrator().DropColumn(&tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
 					return fmt.Errorf("failed to drop additional_attributes column: %w", err)
 				}
@@ -9509,13 +10414,17 @@ func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB)
 // legacy per-budget/per-rate-limit calendar_aligned columns were dropped by
 // drop_legacy_calendar_aligned_columns before this migration runs, and calendar_aligned
 // never worked for customers, so there is no prior behavior to preserve.
-func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_customer_calendar_aligned_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_customer_calendar_aligned_column",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if !mig.HasColumn(&tables.TableCustomer{}, "calendar_aligned") {
+				logger.Info("[configstore] %s: adding column calendar_aligned to TableCustomer", migrationName)
 				if err := mig.AddColumn(&tables.TableCustomer{}, "CalendarAligned"); err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to governance_customers: %w", err)
 				}
@@ -9526,6 +10435,7 @@ func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if mig.HasColumn(&tables.TableCustomer{}, "calendar_aligned") {
+				logger.Info("[configstore] %s: dropping column calendar_aligned from TableCustomer", migrationName)
 				return mig.DropColumn(&tables.TableCustomer{}, "calendar_aligned")
 			}
 			return nil
@@ -9540,15 +10450,19 @@ func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB)
 // migrationAddCustomerBudgetsToBudgetsTable pivots customer budgets from a single-FK on
 // governance_customers.budget_id to multi-budget ownership via governance_budgets.customer_id,
 // mirroring how team budgets were restructured in migrationAddTeamBudgetsToBudgetsTable.
-func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) error {
+func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_customer_budgets_to_budgets_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_customer_budgets_to_budgets_table",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 
 			// Add customer_id FK column on governance_budgets.
 			if !mg.HasColumn(&tables.TableBudget{}, "customer_id") {
+				logger.Info("[configstore] %s: adding column customer_id to TableBudget", migrationName)
 				if err := mg.AddColumn(&tables.TableBudget{}, "CustomerID"); err != nil {
 					return fmt.Errorf("failed to add customer_id column to governance_budgets: %w", err)
 				}
@@ -9556,6 +10470,7 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 
 			// Create index on the new FK column (AddColumn doesn't create indexes from struct tags).
 			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_customer_id") {
+				logger.Info("[configstore] %s: creating index CustomerID on TableBudget", migrationName)
 				if err := mg.CreateIndex(&tables.TableBudget{}, "CustomerID"); err != nil {
 					return fmt.Errorf("failed to create index on governance_budgets.customer_id: %w", err)
 				}
@@ -9611,6 +10526,7 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 			if err := tx.Preload("Budgets").Find(&customersToRehash).Error; err != nil {
 				return fmt.Errorf("failed to fetch customers for hash refresh: %w", err)
 			}
+			logger.Info("[configstore] %s: processing %d customersToRehash", migrationName, len(customersToRehash))
 			for _, c := range customersToRehash {
 				if len(c.Budgets) == 0 {
 					continue
@@ -9630,6 +10546,7 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableBudget{}, "customer_id") {
+				logger.Info("[configstore] %s: dropping column customer_id from TableBudget", migrationName)
 				if err := mg.DropColumn(&tables.TableBudget{}, "customer_id"); err != nil {
 					return err
 				}
@@ -9637,8 +10554,377 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 			return nil
 		},
 	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables: GORM's
+	// CreateConstraint (Customer -> Budgets) rebuilds governance_budgets via DROP+RENAME,
+	// which fails when other tables hold FKs into it and foreign_keys is ON. PRAGMA
+	// foreign_keys cannot change inside a transaction, so disable it on a pinned single
+	// connection before the migrator opens its transaction, then restore it.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationNullLegacyCustomerBudgetID clears the legacy governance_customers.budget_id
+// values left behind by migrationAddCustomerBudgetsToBudgetsTable. The column and its
+// FK (fk_governance_customers_budget) are intentionally kept — dropping either is
+// deferred to a major release — but rows still holding a value make DeleteCustomer's
+// `DELETE FROM governance_budgets WHERE customer_id = ?` fail that FK check. Ownership
+// already lives on governance_budgets.customer_id, so after a defensive backfill the
+// legacy values can be nulled; a null reference satisfies the FK unconditionally.
+func migrationNullLegacyCustomerBudgetID(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "null_legacy_customer_budget_id_refs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if !legacyExists {
+				return nil
+			}
+			// Customers the defensive backfill below will attach a budget to.
+			// GenerateCustomerHash includes sorted budget IDs, so their stored
+			// config_hash goes stale once the budget is linked and must be refreshed.
+			var affectedCustomerIDs []string
+			if err := tx.Raw(`
+				SELECT DISTINCT c.id
+				FROM governance_customers c
+				JOIN governance_budgets b ON b.id = c.budget_id
+				WHERE b.customer_id IS NULL
+				  AND b.virtual_key_id IS NULL AND b.team_id IS NULL
+				  AND b.provider_config_id IS NULL AND b.model_config_id IS NULL
+			`).Scan(&affectedCustomerIDs).Error; err != nil {
+				return fmt.Errorf("failed to identify customers affected by budget backfill: %w", err)
+			}
+			// Defensive backfill (same shape as migrationAddCustomerBudgetsToBudgetsTable)
+			// in case a budget_id was written after that migration ran, e.g. by an older
+			// instance in a mixed-version cluster. Only claims budgets with no owner yet.
+			if err := tx.Exec(`
+				UPDATE governance_budgets SET customer_id = (
+					SELECT id FROM governance_customers
+					WHERE governance_customers.budget_id = governance_budgets.id
+				) WHERE customer_id IS NULL
+				  AND virtual_key_id IS NULL AND team_id IS NULL
+				  AND provider_config_id IS NULL AND model_config_id IS NULL
+				  AND EXISTS (
+					SELECT 1 FROM governance_customers
+					WHERE governance_customers.budget_id = governance_budgets.id
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to backfill customer budget customer_id: %w", err)
+			}
+			// Refresh config_hash for customers whose budgets just got linked, keeping
+			// migration and runtime hash generation in parity (same as
+			// migrationAddCustomerBudgetsToBudgetsTable).
+			logger.Info("[configstore] %s: processing %d affectedCustomerIDs", migrationName, len(affectedCustomerIDs))
+			for _, customerID := range affectedCustomerIDs {
+				var customer tables.TableCustomer
+				if err := tx.Preload("Budgets").First(&customer, "id = ?", customerID).Error; err != nil {
+					return fmt.Errorf("failed to reload customer %s for hash refresh: %w", customerID, err)
+				}
+				hash, err := GenerateCustomerHash(customer)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for customer %s: %w", customerID, err)
+				}
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", customerID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for customer %s: %w", customerID, err)
+				}
+			}
+			if err := tx.Exec(`UPDATE governance_customers SET budget_id = NULL WHERE budget_id IS NOT NULL`).Error; err != nil {
+				return fmt.Errorf("failed to clear legacy governance_customers.budget_id values: %w", err)
+			}
+			return nil
+		},
+		// Best-effort inverse: repopulate budget_id from governance_budgets.customer_id.
+		// The legacy column held a single value while the new model allows several
+		// budgets per customer, so for multi-budget customers the oldest budget is
+		// picked — for any customer that predates the pivot that is the original
+		// legacy budget, since later additions sort newer.
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if !legacyExists {
+				return nil
+			}
+			if err := tx.Exec(`
+				UPDATE governance_customers SET budget_id = (
+					SELECT id FROM governance_budgets
+					WHERE governance_budgets.customer_id = governance_customers.id
+					ORDER BY created_at ASC, id ASC
+					LIMIT 1
+				) WHERE budget_id IS NULL AND EXISTS (
+					SELECT 1 FROM governance_budgets
+					WHERE governance_budgets.customer_id = governance_customers.id
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to restore legacy governance_customers.budget_id values: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running null_legacy_customer_budget_id_refs migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibraryTable creates the mcp_library table, the synced-only
+// catalog of discoverable MCP servers. Rows are populated from the external MCP
+// library datasheet on a configurable interval (mirroring the model-pricing
+// sync), so this migration only stands up the schema; no rows exist yet.
+func migrationAddMCPLibraryTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_library_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableMCPLibrary{}) {
+				logger.Info("[configstore] %s: creating table TableMCPLibrary", migrationName)
+				if err := mg.CreateTable(&tables.TableMCPLibrary{}); err != nil {
+					return fmt.Errorf("create mcp_library table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableMCPLibrary{}) {
+				logger.Info("[configstore] %s: dropping table TableMCPLibrary", migrationName)
+				if err := mg.DropTable(&tables.TableMCPLibrary{}); err != nil {
+					return fmt.Errorf("drop mcp_library table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibraryConfigColumns adds the mcp_library_url and
+// mcp_library_sync_interval columns to framework_configs. These store the sync
+// source + interval for the MCP server library catalog, mirroring pricing_url /
+// pricing_sync_interval. Idempotent via HasColumn guards.
+func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_library_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_url") {
+				logger.Info("[configstore] %s: adding column mcp_library_url to TableFrameworkConfig", migrationName)
+				if err := mg.AddColumn(&tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
+					return fmt.Errorf("add mcp_library_url column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_sync_interval") {
+				logger.Info("[configstore] %s: adding column mcp_library_sync_interval to TableFrameworkConfig", migrationName)
+				if err := mg.AddColumn(&tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
+					return fmt.Errorf("add mcp_library_sync_interval column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_url") {
+				logger.Info("[configstore] %s: dropping column MCPLibraryURL from TableFrameworkConfig", migrationName)
+				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
+					return fmt.Errorf("drop mcp_library_url column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_sync_interval") {
+				logger.Info("[configstore] %s: dropping column MCPLibrarySyncInterval from TableFrameworkConfig", migrationName)
+				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
+					return fmt.Errorf("drop mcp_library_sync_interval column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_config_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibrarySourceColumns adds the source and deleted_at columns to
+// mcp_library. `source` marks a row as remote-synced or org-internal ("custom")
+// so the sync can protect custom rows; `deleted_at` is a soft-delete tombstone
+// so a user-hidden row (remote or custom) is never resurrected by the next sync.
+// Idempotent via HasColumn guards.
+func migrationAddMCPLibrarySourceColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_library_source_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableMCPLibrary{}, "source") {
+				logger.Info("[configstore] %s: adding column source to TableMCPLibrary", migrationName)
+				if err := mg.AddColumn(&tables.TableMCPLibrary{}, "Source"); err != nil {
+					return fmt.Errorf("add source column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableMCPLibrary{}, "deleted_at") {
+				logger.Info("[configstore] %s: adding column deleted_at to TableMCPLibrary", migrationName)
+				if err := mg.AddColumn(&tables.TableMCPLibrary{}, "DeletedAt"); err != nil {
+					return fmt.Errorf("add deleted_at column: %w", err)
+				}
+			}
+			// Create indexes on the new columns (AddColumn doesn't create indexes
+			// from struct tags). `deleted_at IS NULL` is the leading predicate on
+			// every paginated library query, so the index avoids a full table scan.
+			if !mg.HasIndex(&tables.TableMCPLibrary{}, "idx_mcp_library_source") {
+				logger.Info("[configstore] %s: creating index Source on TableMCPLibrary", migrationName)
+				if err := mg.CreateIndex(&tables.TableMCPLibrary{}, "Source"); err != nil {
+					return fmt.Errorf("create index on mcp_library.source: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableMCPLibrary{}, "idx_mcp_library_deleted_at") {
+				logger.Info("[configstore] %s: creating index DeletedAt on TableMCPLibrary", migrationName)
+				if err := mg.CreateIndex(&tables.TableMCPLibrary{}, "DeletedAt"); err != nil {
+					return fmt.Errorf("create index on mcp_library.deleted_at: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is intentionally a no-op: dropping `source` and
+			// `deleted_at` would destroy custom-row protection markers and
+			// soft-delete tombstones, letting the next sync resurrect rows the
+			// user hid. This migration is one-way.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_source_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerNameUniqueConstraint deduplicates governance_customers by
+// appending -1, -2, … to later occurrences of the same name (ordered by
+// created_at then id), then adds a unique index on the name column.
+func migrationAddCustomerNameUniqueConstraint(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_customer_name_unique_constraint_dedup"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	const idxName = "idx_governance_customers_name"
+
+	// Step 1 (transactional): rename duplicate customer names so the later
+	// CREATE UNIQUE INDEX cannot fail due to pre-existing duplicates.
+	if err := RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_customer_name_unique_constraint_dedup",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Fetch all customers in a stable order so the earliest-created row
+			// always keeps the original name and later duplicates receive suffixes.
+			var customers []tables.TableCustomer
+			if err := tx.Order("created_at ASC, id ASC").Find(&customers).Error; err != nil {
+				return fmt.Errorf("failed to fetch customers: %w", err)
+			}
+
+			// taken tracks every name that is currently (or will be) in use so
+			// suffix search never collides with an existing original name.
+			taken := make(map[string]bool, len(customers))
+			for _, c := range customers {
+				taken[c.Name] = true
+			}
+
+			firstSeen := make(map[string]bool, len(customers))
+			logger.Info("[configstore] %s: processing %d customers", migrationName, len(customers))
+			for _, c := range customers {
+				if !firstSeen[c.Name] {
+					firstSeen[c.Name] = true
+					continue // earliest occurrence keeps its name
+				}
+				// Find the lowest suffix whose candidate name is not already taken.
+				suffix := 1
+				candidate := fmt.Sprintf("%s-%d", c.Name, suffix)
+				for taken[candidate] {
+					suffix++
+					candidate = fmt.Sprintf("%s-%d", c.Name, suffix)
+				}
+				taken[candidate] = true
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", c.ID).Update("name", candidate).Error; err != nil {
+					return fmt.Errorf("failed to rename customer %s to %q: %w", c.ID, candidate, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil // name renames are not reversed; dropping the index in step 2 restores the invariant
+		},
+	}); err != nil {
+		return err
+	}
+
+	// Step 2 (non-transactional): create the unique index.
+	// UseTransaction must be false because CREATE INDEX CONCURRENTLY cannot
+	// execute inside a transaction block. IF NOT EXISTS makes this step safe
+	// to re-run if the process crashes after the index is built but before
+	// the migration record is written.
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	return RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: "add_customer_name_unique_constraint_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite does not support CONCURRENTLY; use the plain form there.
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE UNIQUE INDEX IF NOT EXISTS " + idxName + " ON governance_customers (name)"
+			} else {
+				stmt = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " + idxName + " ON governance_customers (name)"
+			}
+			if err := tx.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("failed to create unique index on governance_customers.name: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec("DROP INDEX IF EXISTS " + idxName).Error
+		},
+	})
 }

@@ -117,7 +117,7 @@ func testGigaChatListModelsConverterFiltersAndAliases(t *testing.T) {
 		schemas.GigaChat,
 		schemas.WhiteList{"pro-alias"},
 		nil,
-		map[string]string{"pro-alias": "GigaChat-Pro"},
+		schemas.KeyAliases{"pro-alias": {ModelID: "GigaChat-Pro"}},
 		false,
 	)
 	if converted == nil {

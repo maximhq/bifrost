@@ -1,0 +1,96 @@
+---
+title: "Supported applications"
+description: "The AI apps and surfaces Bifrost Edge governs today, across desktop apps, coding agents, browser AI, providers, and MCP discovery. Don't see your app? Request it in one click."
+icon: "list"
+---
+
+Bifrost Edge governs a growing list of AI applications and surfaces out of the box. The categories below cover what Edge can route and govern today. If an app you rely on is missing, request support and we will prioritize it.
+
+<button
+  data-tally-open="QK4pxG"
+  data-tally-layout="modal"
+  data-tally-width="700"
+  data-tally-hide-title="1"
+  data-tally-transparent-background="1"
+  className="not-prose mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border-0 bg-[rgb(var(--primary-dark))] px-5 py-2.5 text-sm font-semibold text-white no-underline transition-opacity hover:opacity-90"
+>
+  Request support for an application
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+</button>
+
+## Desktop apps
+
+| Application | What Edge does |
+| --- | --- |
+| Claude Desktop | Routes and governs AI traffic from the Claude desktop app. |
+| ChatGPT (desktop) | Routes and governs AI traffic from the ChatGPT desktop app. |
+| Cursor | Governs AI requests from the Cursor editor. |
+| Codex (desktop) | Routes and governs AI traffic from the Codex desktop app. |
+
+## Coding agents
+
+| Application | What Edge does |
+| --- | --- |
+| Claude Code | Governs AI traffic from the Claude Code CLI agent. |
+| Codex CLI | Governs AI traffic from the Codex command-line agent. |
+| OpenCode | Governs AI traffic from the OpenCode agent. |
+
+## AI in the browser
+
+| Surface | What Edge does |
+| --- | --- |
+| ChatGPT web | Governs AI conversations on chatgpt.com. |
+| Claude web | Governs AI traffic on claude.ai. |
+
+## Providers
+
+Edge governs traffic to every provider Bifrost supports, so requests from any tool pointed at them stay under your policies. See the full capability matrix in [Supported providers](/providers/supported-providers/overview).
+
+<CardGroup cols={3}>
+  <Card title="OpenAI" icon="openai" href="/providers/supported-providers/openai" />
+  <Card title="Anthropic" icon="asterisk" href="/providers/supported-providers/anthropic" />
+  <Card title="Azure OpenAI" icon="microsoft" href="/providers/supported-providers/azure" />
+  <Card title="AWS Bedrock" icon="aws" href="/providers/supported-providers/bedrock" />
+  <Card title="Google Gemini" icon="diamond" href="/providers/supported-providers/gemini" />
+  <Card title="Vertex AI" icon="google" href="/providers/supported-providers/vertex" />
+  <Card title="Cerebras" icon="c" href="/providers/supported-providers/cerebras" />
+  <Card title="Cohere" icon="c" href="/providers/supported-providers/cohere" />
+  <Card title="Databricks" icon="database" href="/providers/supported-providers/databricks" />
+  <Card title="ElevenLabs" icon="waveform-lines" href="/providers/supported-providers/elevenlabs" />
+  <Card title="Fireworks" icon="sparkles" href="/providers/supported-providers/fireworks" />
+  <Card title="Groq" icon="bolt" href="/providers/supported-providers/groq" />
+  <Card title="Hugging Face" icon="face-smile" href="/providers/supported-providers/huggingface" />
+  <Card title="Mistral" icon="m" href="/providers/supported-providers/mistral" />
+  <Card title="Nebius" icon="n" href="/providers/supported-providers/nebius" />
+  <Card title="Ollama" icon="server" href="/providers/supported-providers/ollama" />
+  <Card title="OpenRouter" icon="split" href="/providers/supported-providers/openrouter" />
+  <Card title="Parasail" icon="sailboat" href="/providers/supported-providers/parasail" />
+  <Card title="Perplexity" icon="hexagon-nodes" href="/providers/supported-providers/perplexity" />
+  <Card title="Replicate" icon="clone" href="/providers/supported-providers/replicate" />
+  <Card title="Runway" icon="film" href="/providers/supported-providers/runway" />
+  <Card title="SGLang" icon="s" href="/providers/supported-providers/sgl" />
+  <Card title="vLLM" icon="v" href="/providers/supported-providers/vllm" />
+  <Card title="xAI" icon="x" href="/providers/supported-providers/xai" />
+</CardGroup>
+
+## MCP server discovery
+
+Edge inventories the MCP servers configured inside these apps so you can allow or deny each one. See [Govern MCP servers](/edge/mcp-governance) for details.
+
+| Application | MCP discovery |
+| --- | --- |
+| Claude Code | Discovers and enforces MCP server policy. |
+| Claude Desktop | Discovers and enforces MCP server policy. |
+| Gemini CLI | Discovers and enforces MCP server policy. |
+| OpenCode | Discovers and enforces MCP server policy. |
+| Codex | Discovers and enforces MCP server policy. |
+| Cursor | Discovers and enforces MCP server policy. |
+
+---
+
+## Next steps
+
+- See how routing works in [How it works](/edge/how-it-works).
+- Set policy in [Govern AI apps](/edge/app-governance) and [Govern MCP servers](/edge/mcp-governance).

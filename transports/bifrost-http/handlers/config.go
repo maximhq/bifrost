@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -147,29 +150,30 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				}
 			}
 			mapConfig["auth_config"] = map[string]any{
-				"admin_username":            authConfig.AdminUserName,
-				"admin_password":            passwordEnvVar,
-				"is_enabled":                authConfig.IsEnabled,
-				"disable_auth_on_inference": authConfig.DisableAuthOnInference,
+				"admin_username": authConfig.AdminUserName,
+				"admin_password": passwordEnvVar,
+				"is_enabled":     authConfig.IsEnabled,
 			}
 		} else {
 			// No auth config exists yet, return default empty EnvVar values
 			mapConfig["auth_config"] = map[string]any{
-				"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-				"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-				"is_enabled":                false,
-				"disable_auth_on_inference": true,
+				"admin_username": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+				"admin_password": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+				"is_enabled":     false,
 			}
 		}
 	} else {
 		mapConfig["auth_config"] = map[string]any{
-			"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-			"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-			"is_enabled":                false,
-			"disable_auth_on_inference": true,
+			"admin_username": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+			"admin_password": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+			"is_enabled":     false,
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
+	if h.store.EnvLabel != "" {
+		mapConfig["env_label"] = h.store.EnvLabel
+	}
+	mapConfig["is_git_available"] = CheckGitAvailability()
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
 	// Fetching proxy config
@@ -264,32 +268,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
-		// Checking the accessibility of the pricing URL
-		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
-		if err != nil {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 	}
 	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
-		urlCheckClient := &http.Client{Timeout: 60 * time.Second}
-		resp, err := urlCheckClient.Get(*payload.FrameworkConfig.ModelParametersURL)
-		if err != nil {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.ModelParametersURL); err != nil {
 			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
 			return
 		}
 	}
@@ -298,6 +286,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.FrameworkConfig.PricingSyncInterval != nil && *payload.FrameworkConfig.PricingSyncInterval <= 0 {
 		logger.Warn("pricing sync interval must be greater than 0")
 		SendError(ctx, fasthttp.StatusBadRequest, "pricing sync interval must be greater than 0")
+		return
+	}
+
+	// Validate MCP library catalog URL override (only when set and non-default)
+	if payload.FrameworkConfig.MCPLibraryURL != nil && *payload.FrameworkConfig.MCPLibraryURL != "" && *payload.FrameworkConfig.MCPLibraryURL != modelcatalog.DefaultMCPLibraryURL {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.MCPLibraryURL); err != nil {
+			logger.Warn("failed to check the accessibility of the MCP library URL: %v", err)
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the MCP library URL: %v", err))
+			return
+		}
+	}
+	// Checking the MCP library sync interval
+	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
+		logger.Warn("MCP library sync interval must be greater than 0")
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
 		return
 	}
 
@@ -546,10 +549,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// if framework config is nil, we will use the default pricing config
 	if frameworkConfig == nil {
 		frameworkConfig = &configstoreTables.TableFrameworkConfig{
-			ID:                  0,
-			PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
-			ModelParametersURL:  bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
+			ID:                     0,
+			PricingURL:             bifrost.Ptr(modelcatalog.DefaultPricingURL),
+			PricingSyncInterval:    bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
+			ModelParametersURL:     bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
+			MCPLibraryURL:          bifrost.Ptr(modelcatalog.DefaultMCPLibraryURL),
+			MCPLibrarySyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
 		}
 	}
 	// Handling individual nil cases
@@ -562,20 +567,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if frameworkConfig.ModelParametersURL == nil {
 		frameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
 	}
+	if frameworkConfig.MCPLibraryURL == nil {
+		frameworkConfig.MCPLibraryURL = bifrost.Ptr(modelcatalog.DefaultMCPLibraryURL)
+	}
+	if frameworkConfig.MCPLibrarySyncInterval == nil {
+		frameworkConfig.MCPLibrarySyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds()))
+	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
-		// Checking the accessibility of the pricing URL
-		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
-		if err != nil {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 		frameworkConfig.PricingURL = payload.FrameworkConfig.PricingURL
@@ -595,21 +598,30 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
 			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
-				urlCheckClient := &http.Client{Timeout: 60 * time.Second}
-				resp, err := urlCheckClient.Get(effectiveModelParamsURL)
-				if err != nil {
+				if err := checkURLAccessibility(effectiveModelParamsURL); err != nil {
 					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
-					return
-				}
-				defer resp.Body.Close()
-				if resp.StatusCode != http.StatusOK {
-					logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
 					return
 				}
 			}
 			frameworkConfig.ModelParametersURL = &effectiveModelParamsURL
+			shouldReloadFrameworkConfig = true
+		}
+	}
+	if payload.FrameworkConfig.MCPLibraryURL != nil {
+		effectiveMCPLibraryURL := *payload.FrameworkConfig.MCPLibraryURL
+		if effectiveMCPLibraryURL == "" {
+			effectiveMCPLibraryURL = modelcatalog.DefaultMCPLibraryURL
+		}
+		if frameworkConfig.MCPLibraryURL == nil || effectiveMCPLibraryURL != *frameworkConfig.MCPLibraryURL {
+			frameworkConfig.MCPLibraryURL = &effectiveMCPLibraryURL
+			shouldReloadFrameworkConfig = true
+		}
+	}
+	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil {
+		syncInterval := *payload.FrameworkConfig.MCPLibrarySyncInterval
+		if frameworkConfig.MCPLibrarySyncInterval == nil || syncInterval != *frameworkConfig.MCPLibrarySyncInterval {
+			frameworkConfig.MCPLibrarySyncInterval = &syncInterval
 			shouldReloadFrameworkConfig = true
 		}
 	}
@@ -623,9 +635,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		h.store.FrameworkConfig = &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
-				PricingURL:          frameworkConfig.PricingURL,
-				PricingSyncInterval: &syncSeconds,
-				ModelParametersURL:  frameworkConfig.ModelParametersURL,
+				PricingURL:             frameworkConfig.PricingURL,
+				PricingSyncInterval:    &syncSeconds,
+				ModelParametersURL:     frameworkConfig.ModelParametersURL,
+				MCPLibraryURL:          frameworkConfig.MCPLibraryURL,
+				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
 			},
 		}
 		// Saving framework config
@@ -1009,5 +1023,41 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 		return fmt.Errorf("the following headers are not allowed to be configured: %s. These headers are security headers and are always blocked", strings.Join(foundSecurityHeaders, ", "))
 	}
 
+	return nil
+}
+
+// checkURLAccessibility verifies that the given URL is reachable.
+// For file:// URLs it checks that the path exists on disk.
+// For http(s):// URLs it performs a GET and expects a 200 OK.
+func checkURLAccessibility(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Scheme == "file" {
+		info, err := os.Stat(parsed.Path)
+		if err != nil {
+			return fmt.Errorf("file not accessible: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("path is not a regular file")
+		}
+		return nil
+	}
+	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		return fmt.Errorf("URL validation failed: %w", err)
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
 	return nil
 }

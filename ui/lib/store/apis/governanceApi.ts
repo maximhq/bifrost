@@ -39,6 +39,7 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
+import { AnalyzerConfig } from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -65,6 +66,12 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.team_id && { team_id: params.team_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
+					}),
+					...(params?.exclude_assigned_virtual_keys === true && {
+						exclude_assigned_virtual_keys: "true",
+					}),
+					...(params?.for_user_assignment === true && {
+						for_user_assignment: "true",
 					}),
 					...(params?.sort_by && { sort_by: params.sort_by }),
 					...(params?.order && { order: params.order }),
@@ -819,6 +826,32 @@ export const governanceApi = baseApi.injectEndpoints({
 				}
 			},
 		}),
+
+		// Complexity Analyzer Config
+		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "GET",
+			}),
+			providesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
+			query: (data) => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config/reset",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
 	}),
 });
 
@@ -881,6 +914,11 @@ export const {
 	useGetProviderGovernanceQuery,
 	useUpdateProviderGovernanceMutation,
 	useDeleteProviderGovernanceMutation,
+
+	// Complexity Analyzer Config
+	useGetComplexityAnalyzerConfigQuery,
+	useUpdateComplexityAnalyzerConfigMutation,
+	useResetComplexityAnalyzerConfigMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

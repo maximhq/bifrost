@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -236,7 +237,7 @@ func buildModelConfigMultiBudget(id, model string, provider *string, budgets []*
 
 func TestStore_CheckModelBudget_MultiBudget_OneExceededBlocks(t *testing.T) {
 	logger := NewMockLogger()
-	within := buildBudget("b-day", 100.0, "1d")             // plenty of headroom
+	within := buildBudget("b-day", 100.0, "1d")                  // plenty of headroom
 	exceeded := buildBudgetWithUsage("b-hour", 10.0, 10.0, "1h") // at limit
 	mc := buildModelConfigMultiBudget("mc-multi", "gpt-4", nil, []*configstoreTables.TableBudget{within, exceeded})
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
@@ -1869,6 +1870,174 @@ func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
 	assert.NotNil(t, shortCircuit2, "Second request should fail PreLLMHook due to token limit exceeded")
 	assert.Contains(t, shortCircuit2.Error.Error.Message, "token limit exceeded", "Error should indicate token limit exceeded")
+}
+
+// TestPostHook_TracksVirtualKeyUsageWhenUserIDPresent verifies user attribution
+// does not suppress VK usage tracking.
+func TestPostHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer plugin.Cleanup()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user1")
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gpt-4",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     600,
+				CompletionTokens: 400,
+				TotalTokens:      1000,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4",
+			},
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx, result, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+
+	updated, exists := store.GetGovernanceData(context.Background()).RateLimits["vk-rl"]
+	require.True(t, exists)
+	assert.Equal(t, int64(1000), updated.TokenCurrentUsage)
+	assert.Equal(t, int64(1), updated.RequestCurrentUsage)
+}
+
+// TestPostHook_SkipVirtualKeyUsageTrackingFlag verifies callers can explicitly
+// suppress VK usage while keeping VK auth and user attribution on the context.
+func TestPostHook_SkipVirtualKeyUsageTrackingFlag(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer plugin.Cleanup()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user1")
+	ctx.SetValue(schemas.BifrostContextKeySkipVirtualKeyUsageTracking, true)
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gpt-4",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     600,
+				CompletionTokens: 400,
+				TotalTokens:      1000,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4",
+			},
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx, result, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+
+	updated, exists := store.GetGovernanceData(context.Background()).RateLimits["vk-rl"]
+	require.True(t, exists)
+	assert.Equal(t, int64(0), updated.TokenCurrentUsage)
+	assert.Equal(t, int64(0), updated.RequestCurrentUsage)
+	assert.Equal(t, "user1", bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID))
+}
+
+// TestPostMCPHook_TracksVirtualKeyUsageWhenUserIDPresent verifies user
+// attribution does not suppress MCP VK request usage tracking.
+func TestPostMCPHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer plugin.Cleanup()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user1")
+	resp := &schemas.BifrostMCPResponse{
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeExecuteTool,
+			ClientName:     "client",
+			ToolName:       "tool",
+		},
+	}
+
+	_, _, err = plugin.PostMCPHook(ctx, resp, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+
+	updated, exists := store.GetGovernanceData(context.Background()).RateLimits["vk-rl"]
+	require.True(t, exists)
+	assert.Equal(t, int64(0), updated.TokenCurrentUsage)
+	assert.Equal(t, int64(1), updated.RequestCurrentUsage)
+}
+
+// TestPostMCPHook_SkipVirtualKeyUsageTrackingFlag verifies MCP callers can
+// explicitly suppress VK usage while preserving user attribution.
+func TestPostMCPHook_SkipVirtualKeyUsageTrackingFlag(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer plugin.Cleanup()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user1")
+	ctx.SetValue(schemas.BifrostContextKeySkipVirtualKeyUsageTracking, true)
+	resp := &schemas.BifrostMCPResponse{
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeExecuteTool,
+			ClientName:     "client",
+			ToolName:       "tool",
+		},
+	}
+
+	_, _, err = plugin.PostMCPHook(ctx, resp, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+
+	updated, exists := store.GetGovernanceData(context.Background()).RateLimits["vk-rl"]
+	require.True(t, exists)
+	assert.Equal(t, int64(0), updated.TokenCurrentUsage)
+	assert.Equal(t, int64(0), updated.RequestCurrentUsage)
+	assert.Equal(t, "user1", bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID))
 }
 
 func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {

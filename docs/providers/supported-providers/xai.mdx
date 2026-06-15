@@ -22,6 +22,7 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 | Responses API | ✅ | ✅ | `/v1/responses` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Image Generation | ✅ | - | `/v1/images/generations` |
+| Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -205,6 +206,16 @@ Responses are unmarshaled directly into `BifrostImageGenerationResponse`.
 # 5. List Models
 
 Lists available xAI models with their capabilities and context lengths.
+
+---
+
+# 6. Context Compaction
+
+xAI supports context compaction via its OpenAI-compatible `/v1/responses/compact` endpoint. Bifrost forwards the request to `https://api.x.ai/v1/responses/compact`.
+
+Request and response format is identical to [OpenAI Context Compaction](/providers/supported-providers/openai#14-context-compaction). The response `output` contains the original user messages plus a final item with `type: "response.compaction"` and `encrypted_content`. Pass this output as `input` to future xAI Responses API calls.
+
+**Endpoint**: `POST /v1/responses/compact`
 
 ---
 

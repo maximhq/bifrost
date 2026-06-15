@@ -323,6 +323,7 @@ type AllowedRequests struct {
 	Responses             bool `json:"responses"`
 	ResponsesStream       bool `json:"responses_stream"`
 	CountTokens           bool `json:"count_tokens"`
+	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
 	OCR                   bool `json:"ocr"`
@@ -395,6 +396,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ResponsesStream
 	case CountTokensRequest:
 		return ar.CountTokens
+	case CompactionRequest:
+		return ar.Compaction
 	case EmbeddingRequest:
 		return ar.Embedding
 	case RerankRequest:
@@ -606,6 +609,8 @@ type Provider interface {
 	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// CountTokens performs a count tokens request
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
+	// Compaction compacts a conversation context window (OpenAI-only; other providers return unsupported)
+	Compaction(ctx *BifrostContext, key Key, request *BifrostCompactionRequest) (*BifrostCompactionResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query

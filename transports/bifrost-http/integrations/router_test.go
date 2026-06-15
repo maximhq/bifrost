@@ -377,17 +377,14 @@ func TestOpenAIChatStructuredOutputRequestParserAndConverter(t *testing.T) {
 	assert.Contains(t, responseFormat, "json_schema")
 }
 
-func TestCreateHandler_AnthropicRouteConstrainsCatalogProvidersWhenAvailableProvidersSet(t *testing.T) {
+func TestCreateHandler_AnthropicRouteClears_UseRawRequestBody_WhenCatalogSelectsBedrock(t *testing.T) {
 	handlerStore := &mockHandlerStore{
-		availableProviders: []schemas.ModelProvider{
-			schemas.Anthropic,
-			schemas.Azure,
-			schemas.Bedrock,
-			schemas.Vertex,
-		},
+		availableProviders: []schemas.ModelProvider{schemas.Bedrock},
 	}
 
-	var capturedProviders []schemas.ModelProvider
+	var capturedUseRaw interface{}
+	var capturedSendRawResponse interface{}
+	var capturedPassthroughOverrides interface{}
 	route := RouteConfig{
 		Type:   RouteConfigTypeAnthropic,
 		Path:   "/v1/messages",
@@ -398,10 +395,11 @@ func TestCreateHandler_AnthropicRouteConstrainsCatalogProvidersWhenAvailableProv
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicMessageRequest{}
 		},
-		GetRequestModel: anthropicModelGetter,
-		PreCallback:     checkAnthropicPassthrough,
+		PreCallback: checkAnthropicPassthrough,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-			capturedProviders, _ = ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+			capturedUseRaw = ctx.Value(schemas.BifrostContextKeyUseRawRequestBody)
+			capturedSendRawResponse = ctx.Value(schemas.BifrostContextKeySendBackRawResponse)
+			capturedPassthroughOverrides = ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent)
 			return nil, fmt.Errorf("stop before bifrost execution")
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
@@ -412,58 +410,15 @@ func TestCreateHandler_AnthropicRouteConstrainsCatalogProvidersWhenAvailableProv
 	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
-	ctx.SetUserValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{
-		schemas.Azure,
-		schemas.OpenAI,
-		schemas.Ollama,
-	})
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
 	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
 
 	router.createHandler(route)(ctx)
 
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
-	require.Equal(t, []schemas.ModelProvider{schemas.Azure}, capturedProviders)
-}
-
-func TestCreateHandler_AnthropicRouteKeepsCatalogProvidersWhenAvailableProvidersUnset(t *testing.T) {
-	handlerStore := &mockHandlerStore{
-		availableProviders: []schemas.ModelProvider{
-			schemas.Bedrock,
-			schemas.Vertex,
-		},
-	}
-
-	var capturedProviders []schemas.ModelProvider
-	route := RouteConfig{
-		Type:   RouteConfigTypeAnthropic,
-		Path:   "/v1/messages",
-		Method: fasthttp.MethodPost,
-		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.ResponsesRequest
-		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &anthropic.AnthropicMessageRequest{}
-		},
-		GetRequestModel: anthropicModelGetter,
-		PreCallback:     checkAnthropicPassthrough,
-		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-			capturedProviders, _ = ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
-			return nil, fmt.Errorf("stop before bifrost execution")
-		},
-		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
-		},
-	}
-
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
-	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
-
-	router.createHandler(route)(ctx)
-
-	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
-	require.Equal(t, []schemas.ModelProvider{schemas.Bedrock, schemas.Vertex}, capturedProviders)
+	require.Equal(t, false, capturedUseRaw, "UseRawRequestBody should be cleared when catalog selects Bedrock")
+	require.Equal(t, false, capturedSendRawResponse, "SendBackRawResponse should be cleared when catalog selects Bedrock")
+	require.Equal(t, false, capturedPassthroughOverrides, "PassthroughOverridesPresent should be cleared when catalog selects Bedrock")
 }
 
 func TestCreateHandler_CustomParserFailureClosesConnection(t *testing.T) {

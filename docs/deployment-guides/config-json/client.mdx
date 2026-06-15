@@ -101,6 +101,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 | `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB |
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |
+| `allow_direct_keys` | boolean | `false` | Allow callers to bypass the registered key pool by sending `x-bf-direct-key: true` and a raw provider key in `Authorization` / `x-api-key` / `x-goog-api-key`. See [Direct API Key](../../providers/request-options#direct-api-key) |
 
 ```json
 {

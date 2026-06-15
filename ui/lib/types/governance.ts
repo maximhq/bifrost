@@ -261,6 +261,8 @@ export interface GetVirtualKeysParams {
 	customer_id?: string;
 	team_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
+	exclude_assigned_virtual_keys?: boolean;
+	for_user_assignment?: boolean;
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";
 	export?: boolean;
@@ -418,6 +420,8 @@ export interface PricingOverridePatch {
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
+	input_cost_per_token_fast?: number;
+	output_cost_per_token_fast?:number;
 	// 128k tier
 	input_cost_per_token_above_128k_tokens?: number;
 	output_cost_per_token_above_128k_tokens?: number;

@@ -994,6 +994,11 @@ func (provider *GigaChatProvider) CountTokens(ctx *schemas.BifrostContext, key s
 	return response, bifrostErr
 }
 
+// Compaction is not supported by the GigaChat provider skeleton.
+func (provider *GigaChatProvider) Compaction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, provider.unsupported(schemas.CompactionRequest)
+}
+
 // Embedding sends a non-streaming v1 embeddings request to GigaChat.
 func (provider *GigaChatProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {

@@ -132,7 +132,9 @@ type Log struct {
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
-	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"` // Set when model was resolved via alias mapping; the original name the caller used
+	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
+	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
+	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
@@ -154,6 +156,12 @@ type Log struct {
 	CustomerName            *string   `gorm:"type:varchar(255)" json:"customer_name"`
 	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_id" json:"business_unit_id"`
 	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
+	TeamIDs                 *string   `gorm:"type:text" json:"-"`
+	TeamNames               *string   `gorm:"type:text" json:"-"`
+	CustomerIDs             *string   `gorm:"type:text" json:"-"`
+	CustomerNames           *string   `gorm:"type:text" json:"-"`
+	BusinessUnitIDs         *string   `gorm:"type:text" json:"-"`
+	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
 	InputHistory            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
@@ -249,6 +257,12 @@ type Log struct {
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
 	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
 	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
+	TeamIDsParsed               []string                                `gorm:"-" json:"team_ids,omitempty"`
+	TeamNamesParsed             []string                                `gorm:"-" json:"team_names,omitempty"`
+	CustomerIDsParsed           []string                                `gorm:"-" json:"customer_ids,omitempty"`
+	CustomerNamesParsed         []string                                `gorm:"-" json:"customer_names,omitempty"`
+	BusinessUnitIDsParsed       []string                                `gorm:"-" json:"business_unit_ids,omitempty"`
+	BusinessUnitNamesParsed     []string                                `gorm:"-" json:"business_unit_names,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -577,6 +591,55 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if len(l.TeamIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.TeamIDsParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.TeamIDs = &s
+		}
+	}
+	if len(l.TeamNamesParsed) > 0 {
+		if data, err := sonic.Marshal(l.TeamNamesParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.TeamNames = &s
+		}
+	}
+	if len(l.CustomerIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.CustomerIDsParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.CustomerIDs = &s
+		}
+	}
+	if len(l.CustomerNamesParsed) > 0 {
+		if data, err := sonic.Marshal(l.CustomerNamesParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.CustomerNames = &s
+		}
+	}
+	if len(l.BusinessUnitIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.BusinessUnitIDsParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.BusinessUnitIDs = &s
+		}
+	}
+	if len(l.BusinessUnitNamesParsed) > 0 {
+		if data, err := sonic.Marshal(l.BusinessUnitNamesParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.BusinessUnitNames = &s
+		}
+	}
+
 	// Build content summary for search.
 	// Skip if already set (e.g., by the hybrid log store which builds input-only summaries).
 	if l.ContentSummary == "" {
@@ -810,6 +873,37 @@ func (l *Log) DeserializeFields() error {
 	if l.RateLimitIDs != nil && *l.RateLimitIDs != "" {
 		if err := sonic.Unmarshal([]byte(*l.RateLimitIDs), &l.RateLimitIDsParsed); err != nil {
 			l.RateLimitIDsParsed = nil
+		}
+	}
+
+	if l.TeamIDs != nil && *l.TeamIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.TeamIDs), &l.TeamIDsParsed); err != nil {
+			l.TeamIDsParsed = nil
+		}
+	}
+	if l.TeamNames != nil && *l.TeamNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.TeamNames), &l.TeamNamesParsed); err != nil {
+			l.TeamNamesParsed = nil
+		}
+	}
+	if l.CustomerIDs != nil && *l.CustomerIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerIDs), &l.CustomerIDsParsed); err != nil {
+			l.CustomerIDsParsed = nil
+		}
+	}
+	if l.CustomerNames != nil && *l.CustomerNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerNames), &l.CustomerNamesParsed); err != nil {
+			l.CustomerNamesParsed = nil
+		}
+	}
+	if l.BusinessUnitIDs != nil && *l.BusinessUnitIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.BusinessUnitIDs), &l.BusinessUnitIDsParsed); err != nil {
+			l.BusinessUnitIDsParsed = nil
+		}
+	}
+	if l.BusinessUnitNames != nil && *l.BusinessUnitNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.BusinessUnitNames), &l.BusinessUnitNamesParsed); err != nil {
+			l.BusinessUnitNamesParsed = nil
 		}
 	}
 
@@ -1601,6 +1695,13 @@ type DimensionRankingWithTrend struct {
 type DimensionRankingResult struct {
 	Rankings  []DimensionRankingWithTrend `json:"rankings"`
 	Dimension RankingDimension            `json:"dimension"`
+	// TotalActualRequests / TotalAttributedRequests are only set for fan-out
+	// dimensions (team / business unit / customer) on Postgres. Attributed
+	// counts credit a request to every dimension value it touches, so their
+	// sum can exceed the real request count; actual is COUNT(DISTINCT id)
+	// over the same attributed population. Zero/omitted when not computed.
+	TotalActualRequests     int64 `json:"total_actual_requests,omitempty"`
+	TotalAttributedRequests int64 `json:"total_attributed_requests,omitempty"`
 }
 
 // NodeUsageCursor identifies the last log row included in a node usage scan.

@@ -231,58 +231,50 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
-export const gigachatKeyConfigSchema = z
-	.object({
-		_auth_type: z.enum(["credentials", "access_token", "password", "mtls"]).optional(),
-		credentials: envVarSchema.optional(),
-		scope: z.string().optional(),
-		user: envVarSchema.optional(),
-		password: envVarSchema.optional(),
-		access_token: envVarSchema.optional(),
-		auth_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
-		base_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
-		cert_file: z.string().optional(),
-		key_file: z.string().optional(),
-		ca_bundle_file: z.string().optional(),
-	})
-	.superRefine((data, ctx) => {
-		const hasUser = isEnvVarSet(data.user);
-		const hasPassword = isEnvVarSet(data.password);
-		if (hasUser !== hasPassword) {
-			ctx.addIssue({
-				code: "custom",
-				message: "User and password must both be provided",
-				path: ["user"],
-			});
-		}
+// Model family enum schema — must mirror schemas.ModelFamily in Go.
+export const modelFamilySchema = z.enum([
+	"anthropic",
+	"openai",
+	"mistral",
+	"cohere",
+	"gemini",
+	"gemma",
+	"llama",
+	"imagen",
+	"veo",
+	"nova",
+	"titan",
+]);
 
-		const hasCertFile = isStringSet(data.cert_file);
-		const hasKeyFile = isStringSet(data.key_file);
-		if (hasCertFile !== hasKeyFile) {
-			ctx.addIssue({
-				code: "custom",
-				message: "Certificate file and key file must both be provided",
-				path: ["cert_file"],
-			});
-		}
+// AliasConfig schema — mirrors schemas.AliasConfig with the embedded
+// provider sub-configs flattened to top-level optional fields (matches Go's
+// embedded-pointer-struct JSON output).
+const aliasConfigObjectSchema = z.object({
+	model_id: z.string().trim().min(1, "Model ID is required"),
+	model_name: z.string().trim().optional(),
+	model_family: modelFamilySchema.optional(),
+	description: z.string().optional(),
+	region: envVarSchema.optional(),
+	// Azure overrides
+	api_version: z.string().optional(),
+	anthropic_version: z.string().optional(),
+	endpoint: envVarSchema.optional(),
+	// Vertex overrides
+	project_id: envVarSchema.optional(),
+	project_number: envVarSchema.optional(),
+	// Bedrock overrides
+	inference_profile_arn: envVarSchema.optional(),
+	// Replicate overrides
+	use_deployments_endpoint: z.boolean().optional(),
+});
 
-	});
-
-function isGigaChatAuthConfigured(config: z.infer<typeof gigachatKeyConfigSchema> | undefined): boolean {
-	if (!config) return false;
-	if (isEnvVarSet(config.credentials) || isEnvVarSet(config.access_token)) {
-		return true;
-	}
-	if (isEnvVarSet(config.user) && isEnvVarSet(config.password)) {
-		return true;
-	}
-	return false;
-}
-
-function isGigaChatMTLSConfigured(config: z.infer<typeof gigachatKeyConfigSchema> | undefined): boolean {
-	if (!config) return false;
-	return isStringSet(config.cert_file) && isStringSet(config.key_file);
-}
+// The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
+// for aliases that only carry ModelID — see AliasConfig.MarshalJSON. Accept
+// both shapes here so edit-time validation doesn't reject hydrated state.
+export const aliasConfigSchema = z.preprocess(
+	(value) => (typeof value === "string" ? { model_id: value } : value),
+	aliasConfigObjectSchema,
+);
 
 // Model provider key schema
 export const modelProviderKeySchema = z
@@ -310,7 +302,7 @@ export const modelProviderKeySchema = z
 				return num;
 			})
 			.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
-		aliases: z.record(z.string(), z.string()).optional(),
+		aliases: z.record(z.string(), aliasConfigSchema).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
@@ -757,6 +749,7 @@ export const bifrostConfigSchema = z.object({
 	is_db_connected: z.boolean(),
 	is_cache_connected: z.boolean(),
 	is_logs_connected: z.boolean(),
+	is_git_available: z.boolean().optional().default(false),
 });
 
 // Network and proxy form schema - combined for the NetworkFormFragment
@@ -836,6 +829,7 @@ export const otelConfigSchema = z
 		metrics_endpoint: envVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
+		disable_content_logging: z.boolean().default(false),
 	})
 	.superRefine((data, ctx) => {
 		// A disabled profile is not sent anywhere, so skip all validation for it.

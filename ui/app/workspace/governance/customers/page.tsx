@@ -1,10 +1,10 @@
 import CustomersTable from "@/app/workspace/governance/views/customerTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { parseAsSafeString } from "@/lib/queryParamsParser";
-import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
@@ -89,7 +89,7 @@ export default function GovernanceCustomersPage() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl h-[calc(100vh_-_50px)] flex flex-col">
+		<div className="no-padding-parent mx-auto h-[calc(100dvh-1rem)] w-full p-4 flex flex-col">
 			<CustomersTable
 				customers={customersData?.customers || []}
 				totalCount={customersData?.total_count || 0}

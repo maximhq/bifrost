@@ -1850,7 +1850,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 	}
 
 	// Extract provider from model ID (format: "bedrock/model-name")
-	provider, model := schemas.ParseModelString(request.ModelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(request.ModelID, "")
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,
@@ -1921,11 +1921,12 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 					continue
 				}
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, schemas.ResponsesTool{Type: toolType})
-			} else if tool.CachePoint != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+			} else if tool.CachePoint != nil && !schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				// add cache control to last tool in tools array
 				if len(bifrostReq.Params.Tools) > 0 {
 					bifrostReq.Params.Tools[len(bifrostReq.Params.Tools)-1].CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  tool.CachePoint.TTL,
 					}
 				}
 			}
@@ -2018,7 +2019,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 							if request.InferenceConfig != nil && request.InferenceConfig.MaxTokens != nil {
 								defaultMaxTokens = *request.InferenceConfig.MaxTokens
 							}
-							if schemas.IsAnthropicModel(bifrostReq.Model) {
+							if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 								minBudgetTokens = anthropic.MinimumReasoningMaxTokens
 							}
 							effort := providerUtils.GetReasoningEffortFromBudgetTokens(maxTokens, minBudgetTokens, defaultMaxTokens)
@@ -2151,7 +2152,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// map bifrost messages to bedrock messages using the new conversion method
 	if bifrostReq.Input != nil {
 		input := bifrostReq.Input
-		if schemas.IsAnthropicModel(bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+		if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 			trimmed := len(input)
 			for trimmed > 0 && input[trimmed-1].Role != nil && *input[trimmed-1].Role == schemas.ResponsesInputMessageRoleAssistant {
 				trimmed--
@@ -2180,7 +2181,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		// Trim trailing whitespace from the last assistant message text blocks
 		// (only for Anthropic models which use text-based prefill)
 		lastMsgIndex := len(bedrockReq.Messages) - 1
-		if schemas.IsAnthropicModel(bifrostReq.Model) && lastMsgIndex >= 0 && bedrockReq.Messages[lastMsgIndex].Role == BedrockMessageRoleAssistant {
+		if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && lastMsgIndex >= 0 && bedrockReq.Messages[lastMsgIndex].Role == BedrockMessageRoleAssistant {
 			blocks := bedrockReq.Messages[lastMsgIndex].Content
 			for j := len(blocks) - 1; j >= 0; j-- {
 				if blocks[j].Text != nil {
@@ -2217,15 +2218,26 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					// setting it to default max tokens
 					tokenBudget = anthropic.MinimumReasoningMaxTokens
 				}
-				if schemas.IsAnthropicModel(bifrostReq.Model) && tokenBudget < anthropic.MinimumReasoningMaxTokens {
-					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
-				}
-				if schemas.IsAnthropicModel(bifrostReq.Model) {
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-						"type":          "enabled",
-						"budget_tokens": tokenBudget,
-					})
-				} else if schemas.IsNovaModel(bifrostReq.Model) {
+				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+					if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+							"type": "adaptive",
+						})
+						// Preserve a co-present effort — these models support effort,
+						// and the budget is otherwise dropped.
+						if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+							setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+						}
+					} else {
+						if tokenBudget < anthropic.MinimumReasoningMaxTokens {
+							return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
+						}
+						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+							"type":          "enabled",
+							"budget_tokens": tokenBudget,
+						})
+					}
+				} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					minBudgetTokens := MinimumReasoningMaxTokens
 					modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 					defaultMaxTokens := modelDefaultMaxTokens
@@ -2258,7 +2270,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					if schemas.IsNovaModel(bifrostReq.Model) {
+					if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 						effort := *bifrostReq.Params.Reasoning.Effort
 						typeStr := "enabled"
 						switch effort {
@@ -2283,7 +2295,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						}
 
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
-					} else if schemas.IsAnthropicModel(bifrostReq.Model) {
+					} else if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 						if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
 							// Opus 4.6+: adaptive thinking + output_config.effort
 							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
@@ -2297,7 +2309,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 								} else {
 									thinkingConfig["display"] = "summarized"
 								}
-							} else if anthropic.IsOpus47Plus(bifrostReq.Model) {
+							} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 								thinkingConfig["display"] = "summarized"
 							}
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -2338,11 +2350,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						})
 					}
 				} else {
-					if schemas.IsAnthropicModel(bifrostReq.Model) {
-						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-							"type": "disabled",
-						})
-					} else if schemas.IsNovaModel(bifrostReq.Model) {
+					if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+						if !anthropic.IsFableFamily(bifrostReq.Model) {
+							// Fable/Mythos reject thinking:{type:"disabled"}; omit it
+							// entirely (adaptive thinking is always on for that family).
+							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+								"type": "disabled",
+							})
+						}
+					} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",
 						})
@@ -2449,11 +2465,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 				bedrockTools = append(bedrockTools, bedrockTool)
 
-				if tool.CacheControl != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+				if tool.CacheControl != nil && !schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					bedrockTools = append(bedrockTools, BedrockTool{
-						CachePoint: &BedrockCachePoint{
-							Type: BedrockCachePointTypeDefault,
-						},
+						CachePoint: newBedrockCachePoint(tool.CacheControl.TTL),
 					})
 				}
 			}
@@ -2480,7 +2494,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		// behavior. See per-model support matrix at
 		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
 		// (mirrors the gate in convertToolConfigFromFiltered for ChatCompletions).
-		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModel(bifrostReq.Model) {
+		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModelFamily(ctx, bifrostReq.Model) {
 			bedrockToolChoice = nil
 		}
 		if bedrockToolChoice != nil {
@@ -2510,7 +2524,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-		if !schemas.IsLlamaModel(bifrostReq.Model) && !thinkingEnabled {
+		if !schemas.IsLlamaModelFamily(ctx, bifrostReq.Model) && !thinkingEnabled {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responsesStructuredOutputTool.ToolSpec.Name,
@@ -2941,8 +2955,9 @@ type ToolCallStateManager struct {
 	batches      []*ToolCallBatch
 
 	// Pending operations
-	pendingToolCallIDs []string               // Tool calls waiting to be emitted
+	pendingToolCallIDs []string               // Tool calls waiting to be emitted, in registration order
 	pendingResults     map[string]*ToolResult // Results waiting to be matched
+	pendingResultIDs   []string               // Insertion-order tracking for pendingResults
 }
 
 // NewToolCallStateManager creates a new state manager
@@ -2995,6 +3010,7 @@ func (m *ToolCallStateManager) RegisterToolResult(callID string, content []Bedro
 	}
 
 	m.pendingResults[callID] = result
+	m.pendingResultIDs = append(m.pendingResultIDs, callID)
 
 	// If we have the corresponding tool call, attach the result
 	if toolCall, exists := m.toolCalls[callID]; exists {
@@ -3055,17 +3071,34 @@ func (m *ToolCallStateManager) MarkToolCallsEmitted(callIDs []string, assistantM
 	}
 }
 
-// GetPendingResults returns all pending results that are ready to be emitted
+// GetPendingResults returns all pending results that are ready to be emitted.
+// Deprecated: use GetPendingResultsOrdered to guarantee deterministic ordering.
 func (m *ToolCallStateManager) GetPendingResults() map[string]*ToolResult {
 	return m.pendingResults
 }
 
+// GetPendingResultsOrdered returns pending result IDs in registration order.
+// Callers must look up each ID in the map returned by GetPendingResults.
+// Use this instead of iterating GetPendingResults directly to avoid the
+// non-deterministic map iteration that causes Bedrock to reject requests.
+func (m *ToolCallStateManager) GetPendingResultsOrdered() []string {
+	ids := make([]string, 0, len(m.pendingResultIDs))
+	for _, id := range m.pendingResultIDs {
+		if _, ok := m.pendingResults[id]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // MarkResultsEmitted marks results as having been emitted in a user message
 func (m *ToolCallStateManager) MarkResultsEmitted(callIDs []string) {
+	emitted := make(map[string]bool, len(callIDs))
 	for _, callID := range callIDs {
 		if result, exists := m.pendingResults[callID]; exists {
 			result.Emitted = true
 			delete(m.pendingResults, callID)
+			emitted[callID] = true
 
 			// Update tool call state
 			if toolCall, exists := m.toolCalls[callID]; exists {
@@ -3073,6 +3106,14 @@ func (m *ToolCallStateManager) MarkResultsEmitted(callIDs []string) {
 			}
 		}
 	}
+	// Remove emitted IDs from the ordered tracking slice.
+	filtered := m.pendingResultIDs[:0]
+	for _, id := range m.pendingResultIDs {
+		if !emitted[id] {
+			filtered = append(filtered, id)
+		}
+	}
+	m.pendingResultIDs = filtered
 }
 
 // HasPendingToolCalls checks if there are tool calls waiting to be emitted
@@ -3116,9 +3157,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 		// Emit any pending results from the state manager
 		if stateManager.HasPendingResults() {
 			pendingResults := stateManager.GetPendingResults()
+			orderedIDs := stateManager.GetPendingResultsOrdered()
 			var resultBlocks []BedrockContentBlock
-			resultIDs := []string{}
-			for callID, result := range pendingResults {
+			for _, callID := range orderedIDs {
+				result := pendingResults[callID]
 				resultBlocks = append(resultBlocks, BedrockContentBlock{
 					ToolResult: &BedrockToolResult{
 						ToolUseID: callID,
@@ -3128,10 +3170,9 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				})
 				if result.CacheControl != nil {
 					resultBlocks = append(resultBlocks, BedrockContentBlock{
-						CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+						CachePoint: newBedrockCachePoint(result.CacheControl.TTL),
 					})
 				}
-				resultIDs = append(resultIDs, callID)
 			}
 
 			if len(resultBlocks) > 0 {
@@ -3139,7 +3180,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 					Role:    BedrockMessageRoleUser,
 					Content: resultBlocks,
 				})
-				stateManager.MarkResultsEmitted(resultIDs)
+				stateManager.MarkResultsEmitted(orderedIDs)
 			}
 		}
 	}
@@ -3178,7 +3219,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 					contentBlocks = append(contentBlocks, *toolUseBlock)
 					if toolCall.CacheControl != nil {
 						contentBlocks = append(contentBlocks, BedrockContentBlock{
-							CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+							CachePoint: newBedrockCachePoint(toolCall.CacheControl.TTL),
 						})
 					}
 				}
@@ -3325,7 +3366,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							contentBlocks = append(contentBlocks, *toolUseBlock)
 							if toolCall.CacheControl != nil {
 								contentBlocks = append(contentBlocks, BedrockContentBlock{
-									CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+									CachePoint: newBedrockCachePoint(toolCall.CacheControl.TTL),
 								})
 							}
 						}
@@ -3343,9 +3384,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				// Emit pending results after tool calls
 				if stateManager.HasPendingResults() {
 					pendingResults := stateManager.GetPendingResults()
+					orderedIDs := stateManager.GetPendingResultsOrdered()
 					var resultBlocks []BedrockContentBlock
-					resultIDs := []string{}
-					for callID, result := range pendingResults {
+					for _, callID := range orderedIDs {
+						result := pendingResults[callID]
 						resultBlocks = append(resultBlocks, BedrockContentBlock{
 							ToolResult: &BedrockToolResult{
 								ToolUseID: callID,
@@ -3355,10 +3397,9 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						})
 						if result.CacheControl != nil {
 							resultBlocks = append(resultBlocks, BedrockContentBlock{
-								CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+								CachePoint: newBedrockCachePoint(result.CacheControl.TTL),
 							})
 						}
-						resultIDs = append(resultIDs, callID)
 					}
 
 					if len(resultBlocks) > 0 {
@@ -3366,7 +3407,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							Role:    BedrockMessageRoleUser,
 							Content: resultBlocks,
 						})
-						stateManager.MarkResultsEmitted(resultIDs)
+						stateManager.MarkResultsEmitted(orderedIDs)
 					}
 				}
 			}
@@ -3419,9 +3460,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			// Emit any pending results after tool calls
 			if stateManager.HasPendingResults() {
 				pendingResults := stateManager.GetPendingResults()
+				orderedIDs := stateManager.GetPendingResultsOrdered()
 				var resultBlocks []BedrockContentBlock
-				resultIDs := []string{}
-				for callID, result := range pendingResults {
+				for _, callID := range orderedIDs {
+					result := pendingResults[callID]
 					resultBlocks = append(resultBlocks, BedrockContentBlock{
 						ToolResult: &BedrockToolResult{
 							ToolUseID: callID,
@@ -3429,7 +3471,6 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							Status:    schemas.Ptr(result.Status),
 						},
 					})
-					resultIDs = append(resultIDs, callID)
 				}
 
 				if len(resultBlocks) > 0 {
@@ -3437,7 +3478,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						Role:    BedrockMessageRoleUser,
 						Content: resultBlocks,
 					})
-					stateManager.MarkResultsEmitted(resultIDs)
+					stateManager.MarkResultsEmitted(orderedIDs)
 				}
 			}
 
@@ -3649,9 +3690,7 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 					})
 					if block.CacheControl != nil {
 						systemMessages = append(systemMessages, BedrockSystemMessage{
-							CachePoint: &BedrockCachePoint{
-								Type: BedrockCachePointTypeDefault,
-							},
+							CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 						})
 					}
 				}
@@ -3696,6 +3735,7 @@ func convertBedrockSystemMessageToBifrostMessages(systemMessages []BedrockSystem
 				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
 					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  sysMsg.CachePoint.TTL,
 					}
 				}
 			}
@@ -4149,11 +4189,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
 					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  block.CachePoint.TTL,
 					}
 				} else {
 					// Fallback: set on message itself (for function_call/function_call_output)
 					lastMessage.CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  block.CachePoint.TTL,
 					}
 				}
 			}
@@ -4372,9 +4414,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 
 			if block.CacheControl != nil {
 				blocks = append(blocks, BedrockContentBlock{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 				})
 			}
 		}

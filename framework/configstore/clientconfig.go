@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hash"
 	"maps"
 	"math"
@@ -1118,6 +1119,58 @@ func GenerateProviderGovernanceHash(p tables.TableProvider) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateComplexityAnalyzerConfigHashes returns stable section hashes for
+// config.json-sourced analyzer config.
+func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (ComplexityAnalyzerConfigHashes, error) {
+	if config == nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	normalized.ConfigHashes = ComplexityAnalyzerConfigHashes{}
+	if err := normalized.Validate(); err != nil {
+		return ComplexityAnalyzerConfigHashes{}, err
+	}
+
+	tierHash, err := hashComplexityValue(normalized.TierBoundaries)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
+	}
+	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
+	}
+	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
+	}
+	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
+	}
+	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
+	}
+
+	return ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    tierHash,
+		CodeKeywords:      codeHash,
+		ReasoningKeywords: reasoningHash,
+		TechnicalKeywords: technicalHash,
+		SimpleKeywords:    simpleHash,
+	}, nil
+}
+
+func hashComplexityValue(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // writeHashField writes a field identifier and a length-prefixed value so the
 // resulting byte stream is unambiguous and cannot collide via concatenation.
 func writeHashField(hash hash.Hash, fieldID, value string) {
@@ -1390,14 +1443,42 @@ type frameworkConfigHashPayload struct {
 	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
 }
 
+type frameworkConfigHashPayloadWithMCP struct {
+	PricingURL             *string `json:"pricing_url"`
+	ModelParametersURL     *string `json:"model_parameters_url"`
+	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
+	MCPLibraryURL          *string `json:"mcp_library_url"`
+	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
+}
+
+// FrameworkConfigHashOptions adds optional framework config fields to the
+// config.json change-detection hash while preserving the legacy pricing-only
+// hash when omitted.
+type FrameworkConfigHashOptions struct {
+	MCPLibraryURL          *string
+	MCPLibrarySyncInterval *int64
+}
+
 // GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
 // This is used to detect changes to framework config between config.json and database.
-func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64) (string, error) {
-	data, err := sonic.Marshal(frameworkConfigHashPayload{
-		PricingURL:          pricingURL,
-		ModelParametersURL:  modelParametersURL,
-		PricingSyncInterval: pricingSyncInterval,
-	})
+func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64, opts ...FrameworkConfigHashOptions) (string, error) {
+	var data []byte
+	var err error
+	if len(opts) > 0 {
+		data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
+			PricingURL:             pricingURL,
+			ModelParametersURL:     modelParametersURL,
+			PricingSyncInterval:    pricingSyncInterval,
+			MCPLibraryURL:          opts[0].MCPLibraryURL,
+			MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
+		})
+	} else {
+		data, err = sonic.Marshal(frameworkConfigHashPayload{
+			PricingURL:          pricingURL,
+			ModelParametersURL:  modelParametersURL,
+			PricingSyncInterval: pricingSyncInterval,
+		})
+	}
 	if err != nil {
 		return "", err
 	}
@@ -1407,10 +1488,9 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
-	AdminUserName          *schemas.EnvVar `json:"admin_username"`
-	AdminPassword          *schemas.EnvVar `json:"admin_password"`
-	IsEnabled              bool            `json:"is_enabled"`
-	DisableAuthOnInference bool            `json:"disable_auth_on_inference"`
+	AdminUserName *schemas.EnvVar `json:"admin_username"`
+	AdminPassword *schemas.EnvVar `json:"admin_password"`
+	IsEnabled     bool            `json:"is_enabled"`
 }
 
 // ConfigMap maps provider names to their configurations.
@@ -1419,14 +1499,15 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
-	Teams            []tables.TableTeam            `json:"teams"`
-	Customers        []tables.TableCustomer        `json:"customers"`
-	Budgets          []tables.TableBudget          `json:"budgets"`
-	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
-	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
-	Providers        []tables.TableProvider        `json:"providers"`
-	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
-	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
-	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
+	VirtualKeys              []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams                    []tables.TableTeam            `json:"teams"`
+	Customers                []tables.TableCustomer        `json:"customers"`
+	Budgets                  []tables.TableBudget          `json:"budgets"`
+	RateLimits               []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs             []tables.TableModelConfig     `json:"model_configs"`
+	Providers                []tables.TableProvider        `json:"providers"`
+	RoutingRules             []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides         []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
+	AuthConfig               *AuthConfig                   `json:"auth_config,omitempty"`
+	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
 }

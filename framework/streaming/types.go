@@ -244,6 +244,7 @@ type ProcessedStreamResponse struct {
 	Provider       schemas.ModelProvider
 	RequestedModel string // original model requested by the caller
 	ResolvedModel  string // actual model used by the provider (equals RequestedModel when no alias mapping exists)
+	RoutingInfo    schemas.RoutingInfo
 	Data           *AccumulatedData
 	RawRequest     *interface{}
 }

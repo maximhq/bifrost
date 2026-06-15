@@ -1166,42 +1166,8 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	}
 
 	// Clean up model configs scoped to this provider (and their owned budgets/rate-limits).
-	// Delete by snapshotted IDs rather than a second WHERE provider=? pass to avoid a race
-	// where a concurrent CreateModelConfig lands between the snapshot and the delete, leaving
-	// its owned budget/rate-limit rows dangling.
-	var providerModelConfigs []tables.TableModelConfig
-	if err := txDB.WithContext(ctx).Preload("Budgets").Where("provider = ?", string(provider)).Find(&providerModelConfigs).Error; err != nil {
+	if err := s.deleteModelConfigsWhere(ctx, txDB, "provider = ?", string(provider)); err != nil {
 		return err
-	}
-	if len(providerModelConfigs) > 0 {
-		var mcIDs []string
-		var budgetIDs []string
-		var rateLimitIDs []string
-		for i := range providerModelConfigs {
-			mcIDs = append(mcIDs, providerModelConfigs[i].ID)
-			for j := range providerModelConfigs[i].Budgets {
-				budgetIDs = append(budgetIDs, providerModelConfigs[i].Budgets[j].ID)
-			}
-			if providerModelConfigs[i].BudgetID != nil {
-				budgetIDs = append(budgetIDs, *providerModelConfigs[i].BudgetID)
-			}
-			if providerModelConfigs[i].RateLimitID != nil {
-				rateLimitIDs = append(rateLimitIDs, *providerModelConfigs[i].RateLimitID)
-			}
-		}
-		if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
-			return err
-		}
-		if len(budgetIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
-				return err
-			}
-		}
-		if len(rateLimitIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
-				return err
-			}
-		}
 	}
 
 	return nil
@@ -1645,7 +1611,294 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 	return clients, totalCount, nil
 }
 
-// GetMCPClientByID retrieves an MCP client by ID from the database.
+// mcpLibrarySortColumns whitelists the columns the MCP library list endpoint
+// may sort by. Restricting to a fixed set keeps the ORDER BY clause free of
+// caller-supplied identifiers.
+var mcpLibrarySortColumns = map[string]string{
+	"name":       "name",
+	"category":   "category",
+	"publisher":  "publisher",
+	"created_at": "created_at",
+	"updated_at": "updated_at",
+}
+
+// GetMCPLibraryPaginated retrieves MCP library catalog entries with optional
+// search, filtering, sorting, and pagination. Returns the page of rows and the
+// total count matching the filters (before pagination).
+func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
+	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPLibrary{}).Where("deleted_at IS NULL")
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where(
+			"LOWER(name) LIKE ? OR LOWER(description) LIKE ? OR LOWER(publisher) LIKE ?",
+			search, search, search,
+		)
+	}
+	if len(params.Categories) > 0 {
+		baseQuery = baseQuery.Where("category IN ?", params.Categories)
+	}
+	if len(params.ConnectionTypes) > 0 {
+		baseQuery = baseQuery.Where("connection_type IN ?", params.ConnectionTypes)
+	}
+	if len(params.AuthTypes) > 0 {
+		baseQuery = baseQuery.Where("auth_type IN ?", params.AuthTypes)
+	}
+	// Tags are stored as a JSON-encoded array string; match rows whose JSON
+	// contains any requested tag as a quoted token. This is a substring match
+	// over the serialized array, which is sufficient for the catalog's small,
+	// well-formed tag values and avoids a DB-specific JSON operator. LIKE
+	// metacharacters in the tag are escaped (with an explicit ESCAPE clause) so
+	// a tag containing % or _ matches literally instead of as a wildcard.
+	likeEscaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	for _, tag := range params.Tags {
+		if tag == "" {
+			continue
+		}
+		escapedTag := likeEscaper.Replace(tag)
+		baseQuery = baseQuery.Where(`tags LIKE ? ESCAPE '\'`, `%"`+escapedTag+`"%`)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	sortColumn := "name"
+	if col, ok := mcpLibrarySortColumns[params.SortBy]; ok {
+		sortColumn = col
+	}
+	dir := "ASC"
+	if strings.EqualFold(params.Order, "desc") {
+		dir = "DESC"
+	}
+	// id as a stable tiebreaker so paging is deterministic across equal keys.
+	orderClause := fmt.Sprintf("%s %s, id ASC", sortColumn, dir)
+
+	var entries []tables.TableMCPLibrary
+	if err := baseQuery.
+		Order(orderClause).
+		Offset(offset).
+		Limit(limit).
+		Find(&entries).Error; err != nil {
+		return nil, 0, err
+	}
+	return entries, totalCount, nil
+}
+
+// GetMCPLibraryFilterData returns the distinct facet values for the MCP library
+// filter sidebar: categories, connection types, auth types, and tags. Empty
+// values are skipped. Tags are stored as JSON arrays, so they are decoded and
+// unioned in Go rather than via a DB-specific JSON operator.
+func (s *RDBConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error) {
+	db := s.DB().WithContext(ctx)
+	result := &MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}
+
+	distinct := func(column string, dst *[]string) error {
+		var values []string
+		if err := db.Model(&tables.TableMCPLibrary{}).
+			Distinct(column).
+			Where("deleted_at IS NULL").
+			Where(column+" IS NOT NULL AND "+column+" != ?", "").
+			Order(column+" ASC").
+			Pluck(column, &values).Error; err != nil {
+			return err
+		}
+		*dst = append(*dst, values...)
+		return nil
+	}
+
+	if err := distinct("category", &result.Categories); err != nil {
+		return nil, err
+	}
+	if err := distinct("connection_type", &result.ConnectionTypes); err != nil {
+		return nil, err
+	}
+	if err := distinct("auth_type", &result.AuthTypes); err != nil {
+		return nil, err
+	}
+
+	// Tags: gather distinct JSON blobs, decode, and union the values.
+	var tagBlobs []string
+	if err := db.Model(&tables.TableMCPLibrary{}).
+		Distinct("tags").
+		Where("deleted_at IS NULL").
+		Where("tags IS NOT NULL AND tags != ?", "").
+		Pluck("tags", &tagBlobs).Error; err != nil {
+		return nil, err
+	}
+	tagSet := make(map[string]struct{})
+	for _, blob := range tagBlobs {
+		var tags []string
+		if err := json.Unmarshal([]byte(blob), &tags); err != nil {
+			continue // skip malformed blobs rather than failing the whole request
+		}
+		for _, tag := range tags {
+			if tag == "" {
+				continue
+			}
+			tagSet[tag] = struct{}{}
+		}
+	}
+	for tag := range tagSet {
+		result.Tags = append(result.Tags, tag)
+	}
+	sort.Strings(result.Tags)
+
+	return result, nil
+}
+
+// mcpLibrarySyncUpdateColumns enumerates the columns the MCP library sync may
+// overwrite on conflict. The list is explicit (not UpdateAll) so id/created_at
+// are preserved and any future editorial-only columns can be excluded.
+var mcpLibrarySyncUpdateColumns = []string{
+	"name",
+	"description",
+	"category",
+	"connection_type",
+	"connection_url",
+	"stdio_config",
+	"auth_type",
+	"required_header_keys",
+	"icon_url",
+	"docs_url",
+	"publisher",
+	"tags",
+	"metadata",
+	"updated_at",
+}
+
+// UpsertMCPLibraryEntry creates or updates an MCP library catalog row, keyed by
+// the unique slug. Mirrors UpsertModelPrices: a single atomic ON CONFLICT
+// statement so concurrent syncs across nodes don't deadlock.
+func (s *RDBConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "slug"}},
+		DoUpdates: clause.AssignmentColumns(mcpLibrarySyncUpdateColumns),
+		// Atomically protect custom/tombstoned rows: only overwrite an existing
+		// row if it is still a live remote row. This closes the TOCTOU race where
+		// a row turns custom or is soft-deleted between the snapshot taken by
+		// GetProtectedMCPLibrarySlugs and this upsert. INSERTs are unaffected.
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "mcp_library.source = 'remote' AND mcp_library.deleted_at IS NULL"},
+		}},
+	}).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+// Source is forced to "custom" regardless of what the caller passed. The unique
+// slug index prevents duplicates; parseGormError maps that to ErrAlreadyExists.
+func (s *RDBConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
+	entry.Source = "custom"
+	if err := s.DB().WithContext(ctx).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at to
+// now) so it no longer appears in listings and the remote sync respects the
+// tombstone. Works on both "remote" and "custom" rows.
+func (s *RDBConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Update("deleted_at", time.Now())
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteMCPLibraryEntry removes a library row by ID, branching on its source:
+//   - "custom" (org-internal) rows are hard-deleted so their unique slug is
+//     freed and the same server can be added again later. There is no remote
+//     sync that could resurrect a custom slug, so no tombstone is needed.
+//   - "remote" (synced) rows are tombstoned via SoftDeleteMCPLibraryEntry so the
+//     remote sync respects the user's removal instead of recreating the row.
+func (s *RDBConfigStore) DeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var entry tables.TableMCPLibrary
+		if err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "source").
+			Where("id = ? AND deleted_at IS NULL", id).
+			First(&entry).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		if entry.Source != "custom" {
+			result := tx.
+				Model(&tables.TableMCPLibrary{}).
+				Where("id = ?", id).
+				Update("deleted_at", time.Now())
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return ErrNotFound
+			}
+			return nil
+		}
+
+		result := tx.
+			Where("id = ?", id).
+			Delete(&tables.TableMCPLibrary{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must skip:
+// custom rows (any source != "remote") and soft-deleted rows (deleted_at set).
+func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
+	var slugs []string
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("source != 'remote' OR deleted_at IS NOT NULL").
+		Pluck("slug", &slugs).Error; err != nil {
+		return nil, err
+	}
+	return slugs, nil
+}
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
 	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
@@ -2128,6 +2381,8 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_token_priority",
 	"input_cost_per_token_flex",
 	"output_cost_per_token_flex",
+	"input_cost_per_token_fast",
+	"output_cost_per_token_fast",
 	"input_cost_per_character",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
@@ -2526,11 +2781,22 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		plugin.IsCustom = false
 	}
-	if err := txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", plugin.Name).Error; err != nil {
-		if localTx {
-			txDB.Rollback()
+	var existing tables.TablePlugin
+	if err := txDB.WithContext(ctx).Where("name = ?", plugin.Name).First(&existing).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			if localTx {
+				txDB.Rollback()
+			}
+			return err
 		}
-		return err
+		// not found — nothing to delete
+	} else {
+		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
+			if localTx {
+				txDB.Rollback()
+			}
+			return err
+		}
 	}
 	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
 		if localTx {
@@ -2552,7 +2818,14 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 	} else {
 		txDB = s.DB()
 	}
-	return txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", name).Error
+	var plugin tables.TablePlugin
+	if err := txDB.WithContext(ctx).Where("name = ?", name).First(&plugin).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return txDB.WithContext(ctx).Delete(&plugin).Error
 }
 
 // GOVERNANCE METHODS
@@ -2619,6 +2892,12 @@ func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
 // PostgreSQL's extended protocol parameter limit during GORM preloads.
 const virtualKeyInternalPageSize = 1000
 
+// modelConfigInternalPageSize bounds the page size when loading every model config
+// with preloaded relationships, for the same reason as virtualKeyInternalPageSize:
+// a single un-paginated Find with preloads generates an IN(...) clause with one
+// bind parameter per row and exceeds PostgreSQL's 65535-parameter limit at scale.
+const modelConfigInternalPageSize = 1000
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
 	var allVirtualKeys []tables.TableVirtualKey
@@ -2626,11 +2905,20 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 	var lastID string
 	hasCursor := false
 
+	start := time.Now()
+	pageCount := 0
+	defer func() {
+		if s.logger != nil {
+			s.logger.Info("[startup-timing] GetVirtualKeys loaded %d keys across %d pages in %v", len(allVirtualKeys), pageCount, time.Since(start))
+		}
+	}()
+
 	for {
 		virtualKeys, err := s.getVirtualKeysPage(ctx, virtualKeyInternalPageSize, lastCreatedAt, lastID, hasCursor)
 		if err != nil {
 			return nil, err
 		}
+		pageCount++
 		if len(virtualKeys) == 0 {
 			return allVirtualKeys, nil
 		}
@@ -2666,6 +2954,53 @@ func (s *RDBConfigStore) getVirtualKeysPage(ctx context.Context, limit int, last
 		return nil, err
 	}
 	return virtualKeys, nil
+}
+
+// getGovernanceConfigVirtualKeys loads every virtual key with the preloads needed
+// by GetGovernanceConfig (ProviderConfigs and their Keys). It pages with a
+// cursor so each preload's generated IN(...) clause stays within PostgreSQL's
+// 65535 bind-parameter limit. A single un-paginated Find with these preloads
+// fails once the key count exceeds ~65535 ("extended protocol limited to 65535
+// parameters"). Mirrors GetVirtualKeys, which is paginated for the same reason.
+func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
+
+	for {
+		var page []tables.TableVirtualKey
+		query := s.DB().WithContext(ctx).
+			Preload("ProviderConfigs").
+			Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+				return db.Select("id, name, key_id, models_json, provider")
+			})
+		if hasCursor {
+			query = query.Where(
+				"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+				lastCreatedAt,
+				lastCreatedAt,
+				lastID,
+			)
+		}
+		if err := query.
+			Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+			Limit(virtualKeyInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allVirtualKeys, nil
+		}
+		allVirtualKeys = append(allVirtualKeys, page...)
+		last := page[len(page)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(page) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
 }
 
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
@@ -3008,42 +3343,12 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		// Delete model configs scoped to this virtual key, along with their owned
 		// budgets/rate-limits. scope_id has no FK constraint, so this cleanup must be
 		// explicit; otherwise per-VK model limits would orphan and leak budget/rate-limit rows.
-		// Model configs are deleted first (matching DeleteModelConfig order) before their
-		// owned budget/rate-limit rows.
-		var scopedModelConfigs []tables.TableModelConfig
-		if err := txDB.WithContext(ctx).
-			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
-			Find(&scopedModelConfigs).Error; err != nil {
+		if err := s.DeleteModelConfigsForScope(ctx, txDB, tables.ModelConfigScopeVirtualKey, id); err != nil {
 			return err
-		}
-		budgetIDs := make([]string, 0, len(scopedModelConfigs))
-		rateLimitIDs := make([]string, 0, len(scopedModelConfigs))
-		for _, mc := range scopedModelConfigs {
-			if mc.BudgetID != nil {
-				budgetIDs = append(budgetIDs, *mc.BudgetID)
-			}
-			if mc.RateLimitID != nil {
-				rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
-			}
-		}
-		if err := txDB.WithContext(ctx).
-			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
-			Delete(&tables.TableModelConfig{}).Error; err != nil {
-			return err
-		}
-		if len(budgetIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
-				return err
-			}
-		}
-		if len(rateLimitIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
-				return err
-			}
 		}
 		rateLimitID := virtualKey.RateLimitID
-		// Delete the virtual key
-		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error; err != nil {
+		// Delete the virtual key (use hydrated struct so AfterDelete vault cleanup fires correctly)
+		if err := txDB.WithContext(ctx).Delete(&virtualKey).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -3973,8 +4278,12 @@ func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gor
 
 // UpdateBudgetUsage updates only the current_usage field of a budget.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
-	result := s.DB().WithContext(ctx).
+func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).
 		Session(&gorm.Session{SkipHooks: true}).
 		Model(&tables.TableBudget{}).
 		Where("id = ?", id).
@@ -3990,8 +4299,12 @@ func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curre
 
 // UpdateRateLimitUsage updates only the usage fields of a rate limit.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
-	result := s.DB().WithContext(ctx).
+func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).
 		Session(&gorm.Session{SkipHooks: true}).
 		Model(&tables.TableRateLimit{}).
 		Where("id = ?", id).
@@ -4273,11 +4586,32 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 
 // GetModelConfigs retrieves all model configs from the database.
 func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
-	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
-		return nil, err
+	var allModelConfigs []tables.TableModelConfig
+	lastID := ""
+	hasCursor := false
+
+	for {
+		var page []tables.TableModelConfig
+		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
+		if hasCursor {
+			query = query.Where("governance_model_configs.id > ?", lastID)
+		}
+		if err := query.
+			Order("governance_model_configs.id ASC").
+			Limit(modelConfigInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allModelConfigs, nil
+		}
+		allModelConfigs = append(allModelConfigs, page...)
+		lastID = page[len(page)-1].ID
+		hasCursor = true
+		if len(page) < modelConfigInternalPageSize {
+			return allModelConfigs, nil
+		}
 	}
-	return modelConfigs, nil
 }
 
 // GetModelConfigsByScopeAndScopeIDs retrieves model configs for a specific scope limited to the given scope IDs.
@@ -4389,16 +4723,138 @@ func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*ta
 	return &modelConfig, nil
 }
 
+// deleteModelConfigsWhere deletes every model config matching the given condition,
+// along with the budgets and rate-limits those configs own. It is the single source
+// of truth for tearing down model configs when their owner (a virtual key, provider,
+// user, …) is removed — every owner-delete path funnels through here so the cleanup,
+// including the easy-to-forget preload of multi-budget rows, lives in exactly one place.
+//
+// Owned budgets are gathered from BOTH the active Budgets slice (owned via
+// ModelConfigID) and the legacy single BudgetID column. Deletion happens by
+// snapshotted ID rather than re-running the WHERE clause, so a concurrent
+// CreateModelConfig that lands between the snapshot and the delete can't leave its
+// owned budget/rate-limit rows dangling. The snapshot is taken FOR UPDATE
+// (mirroring DeleteModelConfig) so a concurrent UpdateModelConfig can't swap
+// BudgetID/RateLimitID after the IDs are collected; rows are locked in stable id
+// order to keep concurrent deleters deadlock-free. Configs are removed before
+// their owned rows, matching DeleteModelConfig's order.
+func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm.DB, query string, args ...any) error {
+	var modelConfigs []tables.TableModelConfig
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").Order("id").Where(query, args...).Find(&modelConfigs).Error; err != nil {
+		return err
+	}
+	if len(modelConfigs) == 0 {
+		return nil
+	}
+
+	mcIDs := make([]string, 0, len(modelConfigs))
+	budgetIDs := make([]string, 0, len(modelConfigs))
+	rateLimitIDs := make([]string, 0, len(modelConfigs))
+	for i := range modelConfigs {
+		mcIDs = append(mcIDs, modelConfigs[i].ID)
+		for j := range modelConfigs[i].Budgets {
+			budgetIDs = append(budgetIDs, modelConfigs[i].Budgets[j].ID)
+		}
+		if modelConfigs[i].BudgetID != nil {
+			budgetIDs = append(budgetIDs, *modelConfigs[i].BudgetID)
+		}
+		if modelConfigs[i].RateLimitID != nil {
+			rateLimitIDs = append(rateLimitIDs, *modelConfigs[i].RateLimitID)
+		}
+	}
+
+	if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
+		return err
+	}
+	if len(budgetIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+			return err
+		}
+	}
+	if len(rateLimitIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteModelConfigsForScope removes all model configs targeting a given scope owner
+// (e.g. scope=virtual_key, scopeID=<vk id>) along with their owned budgets/rate-limits.
+// Thin wrapper over deleteModelConfigsWhere for the scope/scope_id axis. Exported so
+// out-of-package owner-delete paths (e.g. the enterprise user-deletion flow cleaning up
+// scope=user configs) funnel through the same cleanup instead of reimplementing it.
+func (s *RDBConfigStore) DeleteModelConfigsForScope(ctx context.Context, txDB *gorm.DB, scope, scopeID string) error {
+	// The tx is required (not variadic) on purpose: this cleanup must be atomic
+	// with the owner's delete. Guard against nil rather than falling back to
+	// s.DB(), which would silently run the cleanup outside that transaction.
+	if txDB == nil {
+		return fmt.Errorf("DeleteModelConfigsForScope requires the owner-delete transaction, got nil tx")
+	}
+	return s.deleteModelConfigsWhere(ctx, txDB, "scope = ? AND scope_id = ?", scope, scopeID)
+}
+
 // CreateModelConfig creates a new model config in the database.
 func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
-	var txDB *gorm.DB
-	if len(tx) > 0 {
-		txDB = tx[0]
-	} else {
-		txDB = s.DB()
+	// Locking the scope owner and inserting the config must be atomic, so wrap in a
+	// transaction when the caller didn't supply one.
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.CreateModelConfig(ctx, modelConfig, transaction)
+		})
 	}
+	txDB := tx[0]
+
+	// Serialize against deletion of the scope owner. A scoped config's scope_id carries
+	// no FK, so without this a CreateModelConfig for scope=virtual_key could commit just
+	// after a concurrent DeleteVirtualKey, leaving the config (and its owned budgets/
+	// rate-limits) pointing at a virtual key that no longer exists. Locking the owner row
+	// makes the two transactions mutually exclusive and surfaces an already-deleted owner
+	// as ErrNotFound. Callers that create owner-scoped configs must create the owner first.
+	if err := s.lockModelConfigScopeOwner(ctx, txDB, modelConfig); err != nil {
+		return err
+	}
+
 	if err := txDB.WithContext(ctx).Create(modelConfig).Error; err != nil {
 		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// lockModelConfigScopeOwner takes a FOR UPDATE lock on the row a scoped model config
+// targets and confirms it still exists, returning ErrNotFound when the owner is gone.
+// Global configs (no scope owner) are a no-op. Only scopes whose owner table lives in
+// this store are locked; other scopes (e.g. the enterprise "user" scope, whose owner
+// table is out of package) are the responsibility of their own create path. The lock is
+// FOR UPDATE on Postgres and a plain existence check on SQLite (whose writer
+// serialization already prevents the interleave), mirroring lockBudgetOwner.
+//
+// Provider-bound configs (any scope) are additionally serialized against
+// DeleteProvider, which tears down every config matching the provider column. The
+// provider row is optional — providers may be env-configured with no DB row — so
+// absence is tolerated rather than treated as a missing owner.
+func (s *RDBConfigStore) lockModelConfigScopeOwner(ctx context.Context, txDB *gorm.DB, mc *tables.TableModelConfig) error {
+	if mc == nil {
+		return nil
+	}
+	if mc.Provider != nil && *mc.Provider != "" {
+		var provider tables.TableProvider
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&provider, "name = ?", *mc.Provider).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if mc.ScopeID == nil || *mc.ScopeID == "" {
+		return nil
+	}
+	switch mc.Scope {
+	case tables.ModelConfigScopeVirtualKey:
+		var vk tables.TableVirtualKey
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&vk, "id = ?", *mc.ScopeID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -4511,14 +4967,11 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var pricingOverrides []tables.TablePricingOverride
 	var governanceConfigs []tables.TableGovernanceConfig
 
-	if err := s.DB().WithContext(ctx).
-		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id, name, key_id, models_json, provider")
-		}).
-		Find(&virtualKeys).Error; err != nil {
+	loadedVKs, err := s.getGovernanceConfigVirtualKeys(ctx)
+	if err != nil {
 		return nil, err
 	}
+	virtualKeys = loadedVKs
 	if err := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
 		Find(&teams).Error; err != nil {
@@ -4554,12 +5007,12 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		return nil, nil
 	}
 	var authConfig *AuthConfig
+	var complexityAnalyzerConfig *ComplexityAnalyzerConfig
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
 		var username *string
 		var password *string
 		var isEnabled bool
-		var disableAuthOnInference bool
 		for _, entry := range governanceConfigs {
 			switch entry.Key {
 			case tables.ConfigAdminUsernameKey:
@@ -4568,31 +5021,105 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 				password = bifrost.Ptr(entry.Value)
 			case tables.ConfigIsAuthEnabledKey:
 				isEnabled = entry.Value == "true"
-			case tables.ConfigDisableAuthOnInferenceKey:
-				disableAuthOnInference = entry.Value == "true"
+			case tables.ConfigComplexityAnalyzerConfigKey:
+				if strings.TrimSpace(entry.Value) == "" {
+					continue
+				}
+				decoded, err := DecodeComplexityAnalyzerConfig([]byte(entry.Value))
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("failed to load complexity analyzer config from governance_config: %v", err)
+					}
+					continue
+				}
+				complexityAnalyzerConfig = decoded
 			}
 		}
 		if username != nil && password != nil {
 			authConfig = &AuthConfig{
-				AdminUserName:          schemas.NewEnvVar(*username),
-				AdminPassword:          schemas.NewEnvVar(*password),
-				IsEnabled:              isEnabled,
-				DisableAuthOnInference: disableAuthOnInference,
+				AdminUserName: schemas.NewEnvVar(*username),
+				AdminPassword: schemas.NewEnvVar(*password),
+				IsEnabled:     isEnabled,
 			}
 		}
 	}
 	return &GovernanceConfig{
-		VirtualKeys:      virtualKeys,
-		Teams:            teams,
-		Customers:        customers,
-		Budgets:          budgets,
-		RateLimits:       rateLimits,
-		ModelConfigs:     modelConfigs,
-		Providers:        providers,
-		RoutingRules:     routingRules,
-		PricingOverrides: pricingOverrides,
-		AuthConfig:       authConfig,
+		VirtualKeys:              virtualKeys,
+		Teams:                    teams,
+		Customers:                customers,
+		Budgets:                  budgets,
+		RateLimits:               rateLimits,
+		ModelConfigs:             modelConfigs,
+		Providers:                providers,
+		RoutingRules:             routingRules,
+		PricingOverrides:         pricingOverrides,
+		AuthConfig:               authConfig,
+		ComplexityAnalyzerConfig: complexityAnalyzerConfig,
 	}, nil
+}
+
+// GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config.
+func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
+	return s.getComplexityAnalyzerConfigWithDB(ctx, s.DB())
+}
+
+func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, db *gorm.DB) (*ComplexityAnalyzerConfig, error) {
+	if db == nil {
+		db = s.DB()
+	}
+
+	var configEntry tables.TableGovernanceConfig
+	err := db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(configEntry.Value) == "" {
+		return nil, nil
+	}
+	decoded, err := DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed analyzer config.
+func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if config == nil {
+		return fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+
+	txDB := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		txDB = tx[0]
+	}
+
+	if normalized.ConfigHashes.Empty() {
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, txDB)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			normalized.ConfigHashes = existing.ConfigHashes
+		}
+	}
+
+	raw, err := encodeComplexityAnalyzerConfig(normalized)
+	if err != nil {
+		return err
+	}
+	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: string(raw),
+	}, tx...)
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.
@@ -4600,7 +5127,6 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	var username *string
 	var password *string
 	var isEnabled bool
-	var disableAuthOnInference bool
 	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminUsernameKey).Select("value").Scan(&username).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
@@ -4616,23 +5142,13 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 			return nil, err
 		}
 	}
-	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigDisableAuthOnInferenceKey).Select("value").Scan(&disableAuthOnInference).Error; err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-	}
 	if username == nil || password == nil {
 		return nil, nil
 	}
-	// We are no longer keeping this option in the database
-	if !isEnabled {
-		disableAuthOnInference = true
-	}
 	return &AuthConfig{
-		AdminUserName:          schemas.NewEnvVar(*username),
-		AdminPassword:          schemas.NewEnvVar(*password),
-		IsEnabled:              isEnabled,
-		DisableAuthOnInference: disableAuthOnInference,
+		AdminUserName: schemas.NewEnvVar(*username),
+		AdminPassword: schemas.NewEnvVar(*password),
+		IsEnabled:     isEnabled,
 	}, nil
 }
 
@@ -4654,12 +5170,6 @@ func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfi
 		if err := tx.Save(&tables.TableGovernanceConfig{
 			Key:   tables.ConfigIsAuthEnabledKey,
 			Value: fmt.Sprintf("%t", config.IsEnabled),
-		}).Error; err != nil {
-			return err
-		}
-		if err := tx.Save(&tables.TableGovernanceConfig{
-			Key:   tables.ConfigDisableAuthOnInferenceKey,
-			Value: fmt.Sprintf("%t", config.DisableAuthOnInference),
 		}).Error; err != nil {
 			return err
 		}
@@ -4791,13 +5301,17 @@ func (s *RDBConfigStore) CreateSession(ctx context.Context, session *tables.Sess
 // DeleteSession deletes a session from the database.
 func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error {
 	tokenHash := encrypt.HashSHA256(token)
-	result := s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token_hash = ?", tokenHash)
+	var session tables.SessionsTable
+	if err := s.DB().WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Fall back to plaintext lookup for backward compatibility
+			return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error // vault token is saved via tokenHash, so this case will not hit the vault scenario, but we keep it for backward compatibility with any existing plaintext tokens
+		}
+		return err
+	}
+	result := s.DB().WithContext(ctx).Delete(&session)
 	if result.Error != nil {
 		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		// Fall back to plaintext lookup for backward compatibility
-		return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error
 	}
 	return nil
 }
@@ -5148,7 +5662,16 @@ func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Tab
 
 // DeleteOauthToken deletes an OAuth token by its ID
 func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthToken{})
+	var existing tables.TableOauthToken
+	// Check if the token exists before attempting to delete
+	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&existing).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil // Token doesn't exist, consider it deleted
+		}
+		return fmt.Errorf("failed to check existence of oauth token: %w", err)
+	}
+	result := s.DB().WithContext(ctx).Delete(&existing)
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete oauth token: %w", result.Error)
 	}

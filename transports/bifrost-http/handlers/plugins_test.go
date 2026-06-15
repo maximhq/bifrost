@@ -51,6 +51,7 @@ func (noopPluginsLoader) RemovePlugin(_ context.Context, _ string) error { retur
 func (noopPluginsLoader) GetPluginStatus(_ context.Context) map[string]schemas.PluginStatus {
 	return nil
 }
+func (noopPluginsLoader) GetLoadedPluginNames() []string { return nil }
 func (noopPluginsLoader) NormalizePluginConfig(_ string, _ map[string]any) (map[string]any, error) {
 	return nil, nil
 }
@@ -161,5 +162,47 @@ func TestUpdatePlugin_ConfigMerge_NewPlugin(t *testing.T) {
 	// Should succeed even when no existing plugin is found (creates then updates).
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// namedPluginsLoader is a noopPluginsLoader that returns a fixed set of loaded
+// plugin names, used to assert the getLoadedPlugins response contract.
+type namedPluginsLoader struct {
+	noopPluginsLoader
+	names []string
+}
+
+func (l namedPluginsLoader) GetLoadedPluginNames() []string { return l.names }
+
+// TestGetLoadedPlugins verifies that getLoadedPlugins returns the loader's plugin
+// names under the "plugins" JSON key, locking the response shape the UI depends on.
+func TestGetLoadedPlugins(t *testing.T) {
+	want := []string{"logging", "telemetry", "enterprise-governance"}
+	h := &PluginsHandler{
+		pluginsLoader: namedPluginsLoader{names: want},
+		configStore:   nil,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	h.getLoadedPlugins(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	var response struct {
+		Plugins []string `json:"plugins"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Plugins) != len(want) {
+		t.Fatalf("expected %d plugins, got %d: %v", len(want), len(response.Plugins), response.Plugins)
+	}
+	for i, name := range want {
+		if response.Plugins[i] != name {
+			t.Errorf("plugins[%d] = %q, want %q", i, response.Plugins[i], name)
+		}
 	}
 }
