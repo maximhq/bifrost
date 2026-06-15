@@ -50,6 +50,20 @@ func (m *MCPManager) GetClientForTool(toolName string) *schemas.MCPClientState {
 	return nil
 }
 
+// GetToolDefinition returns a deep copy of the matching tool definition.
+func (m *MCPManager) GetToolDefinition(toolName string) *schemas.ChatTool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, client := range m.clientMap {
+		if tool, exists := client.ToolMap[toolName]; exists {
+			toolCopy := schemas.DeepCopyChatTool(tool)
+			return &toolCopy
+		}
+	}
+	return nil
+}
+
 // GetToolPerClient returns all tools from connected MCP clients.
 // Applies client filtering if specified in the context.
 // Returns a map of client name to its available tools.

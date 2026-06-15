@@ -20,6 +20,7 @@ import (
 type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
 	GetClientForTool(toolName string) *schemas.MCPClientState
+	GetToolDefinition(toolName string) *schemas.ChatTool
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
 	GetPluginPipeline() PluginPipeline
 	ReleasePluginPipeline(pipeline PluginPipeline)

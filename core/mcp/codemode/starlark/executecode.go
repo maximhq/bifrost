@@ -459,18 +459,12 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			Arguments: string(argsJSON),
 		},
 	}
-	var toolDefinition *schemas.ChatTool
-	if tool, ok := client.ToolMap[toolName]; ok {
-		toolCopy := schemas.DeepCopyChatTool(tool)
-		toolDefinition = &toolCopy
-	}
-
 	// Create BifrostMCPRequest. ClientName is set explicitly so the plugin gate
 	// can attribute short-circuit responses without re-parsing the prefixed name.
 	mcpRequest := &schemas.BifrostMCPRequest{
 		RequestType:                  schemas.MCPRequestTypeChatToolCall,
 		ClientName:                   clientName,
-		ToolDefinition:               toolDefinition,
+		ToolDefinition:               s.clientManager.GetToolDefinition(toolName),
 		ChatAssistantMessageToolCall: &toolCallReq,
 	}
 

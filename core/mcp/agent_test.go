@@ -91,6 +91,10 @@ func (m *MockClientManager) GetClientForTool(toolName string) *schemas.MCPClient
 	return nil // Return nil to simulate no client found
 }
 
+func (m *MockClientManager) GetToolDefinition(toolName string) *schemas.ChatTool {
+	return nil
+}
+
 func (m *MockClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return nil
 }
@@ -100,7 +104,7 @@ func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 }
 
 func (m *MockClientManager) GetPluginPipeline() PluginPipeline             { return nil }
-func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline)  {}
+func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 func (m *MockClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
 }
@@ -584,6 +588,10 @@ func (m *MockAutoClientManager) GetClientForTool(toolName string) *schemas.MCPCl
 			ToolsToAutoExecute: []string{"*"},
 		},
 	}
+}
+
+func (m *MockAutoClientManager) GetToolDefinition(toolName string) *schemas.ChatTool {
+	return nil
 }
 
 func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
