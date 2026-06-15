@@ -237,6 +237,7 @@
               "features/telemetry",
               "features/otel",
               "features/semantic-caching",
+              "features/skills-repository",
               {
                 "group": "Prompt Repository",
                 "icon": "folder",
