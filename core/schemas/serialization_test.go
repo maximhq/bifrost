@@ -1574,7 +1574,16 @@ func TestChatStreamResponseChoiceDeltaAnnotationsSerialization(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if len(decoded.Annotations) != 1 || decoded.Annotations[0].URLCitation.Title != "Example" {
+	if len(decoded.Annotations) != 1 {
+		t.Fatalf("annotations not round-tripped: %+v", decoded.Annotations)
+	}
+	got := decoded.Annotations[0]
+	if got.Type != "url_citation" ||
+		got.URLCitation.StartIndex != 0 ||
+		got.URLCitation.EndIndex != 10 ||
+		got.URLCitation.Title != "Example" ||
+		got.URLCitation.URL == nil ||
+		*got.URLCitation.URL != "https://example.com" {
 		t.Fatalf("annotations not round-tripped: %+v", decoded.Annotations)
 	}
 

@@ -4603,17 +4603,13 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		}
 		resp := buildResponse(metadata).ToBifrostChatResponse()
 		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
-		if msg.ChatAssistantMessage != nil {
-			assert.Empty(t, msg.ChatAssistantMessage.Annotations)
-		}
+		assert.Nil(t, msg.ChatAssistantMessage)
 	})
 
 	t.Run("no grounding no annotations", func(t *testing.T) {
 		resp := buildResponse(nil).ToBifrostChatResponse()
 		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
-		if msg.ChatAssistantMessage != nil {
-			assert.Empty(t, msg.ChatAssistantMessage.Annotations)
-		}
+		assert.Nil(t, msg.ChatAssistantMessage)
 	})
 }
 

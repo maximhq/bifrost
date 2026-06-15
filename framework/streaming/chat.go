@@ -12,6 +12,37 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
+func deepCopyChatAnnotations(src []schemas.ChatAssistantMessageAnnotation) []schemas.ChatAssistantMessageAnnotation {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]schemas.ChatAssistantMessageAnnotation, len(src))
+	for i, a := range src {
+		c := schemas.ChatAssistantMessageAnnotation{
+			Type: a.Type,
+			URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+				StartIndex: a.URLCitation.StartIndex,
+				EndIndex:   a.URLCitation.EndIndex,
+				Title:      a.URLCitation.Title,
+			},
+		}
+		if a.URLCitation.URL != nil {
+			u := *a.URLCitation.URL
+			c.URLCitation.URL = &u
+		}
+		if a.URLCitation.Sources != nil {
+			s := *a.URLCitation.Sources
+			c.URLCitation.Sources = &s
+		}
+		if a.URLCitation.Type != nil {
+			t := *a.URLCitation.Type
+			c.URLCitation.Type = &t
+		}
+		dst[i] = c
+	}
+	return dst
+}
+
 // deepCopyChatStreamDelta creates a deep copy of ChatStreamResponseChoiceDelta
 // to prevent shared data mutation between different chunks
 func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *schemas.ChatStreamResponseChoiceDelta {
@@ -104,7 +135,7 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 
 	// Deep copy Annotations slice
 	if len(original.Annotations) > 0 {
-		copy.Annotations = append([]schemas.ChatAssistantMessageAnnotation(nil), original.Annotations...)
+		copy.Annotations = deepCopyChatAnnotations(original.Annotations)
 	}
 
 	// Deep copy Audio
@@ -243,7 +274,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			}
 			completeMessage.ChatAssistantMessage.Annotations = append(
 				completeMessage.ChatAssistantMessage.Annotations,
-				chunk.Delta.Annotations...,
+				deepCopyChatAnnotations(chunk.Delta.Annotations)...,
 			)
 		}
 		// Accumulate tool calls by index
