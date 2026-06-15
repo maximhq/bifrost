@@ -24,6 +24,11 @@ func mantleURL(region, path string) string {
 	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/v1/%s", region, path)
 }
 
+// mantleOpenAIURL builds the Bedrock Mantle OpenAI-prefixed endpoint URL for the given region and API path.
+func mantleOpenAIURL(region, path string) string {
+	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/openai/v1/%s", region, path)
+}
+
 // mantleSigV4Headers computes SigV4 auth headers for a mantle request by signing a dummy
 // net/http.Request. jsonData must be the exact bytes that will be sent. accept must match
 // the Accept header the actual request will send, since SigV4 signs all request headers.
@@ -163,7 +168,7 @@ func (provider *BedrockProvider) responsesViaMantle(
 	request *schemas.BifrostResponsesRequest,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "responses")
+	url := mantleOpenAIURL(region, "responses")
 
 	extraHeaders := make(map[string]string, len(provider.networkConfig.ExtraHeaders))
 	maps.Copy(extraHeaders, provider.networkConfig.ExtraHeaders)
@@ -205,7 +210,7 @@ func (provider *BedrockProvider) responsesStreamViaMantle(
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "responses")
+	url := mantleOpenAIURL(region, "responses")
 
 	// Bearer: identical to Groq / any OpenAI-compatible provider.
 	if key.Value.GetValue() != "" {
