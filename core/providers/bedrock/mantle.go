@@ -7,7 +7,6 @@ import (
 	"maps"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	openai "github.com/maximhq/bifrost/core/providers/openai"
@@ -106,32 +105,6 @@ func (provider *BedrockProvider) mantleAnthropicHeaders(
 	return headers, nil
 }
 
-// completeMantleRequest sends a unary native-Anthropic request to the Bedrock Mantle
-// endpoint with the supplied auth/version headers and parses the response via the shared
-// Bedrock execution path.
-func (provider *BedrockProvider) completeMantleRequest(
-	ctx *schemas.BifrostContext,
-	jsonData []byte,
-	requestURL string,
-	headers map[string]string,
-) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, 0, nil, providerUtils.NewBifrostOperationError("error creating request", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	if filtered := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Bedrock, provider.networkConfig.BetaHeaderOverrides); len(filtered) > 0 {
-		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(filtered, ","))
-	}
-	// Apply the (possibly SigV4-signed) auth/version headers last so they win over any
-	// network-config overrides; these are the exact headers covered by the signature.
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	return provider.executeBedrockRequest(req)
-}
-
 // mantleChatCompletions dispatches non-streaming chat completions on the Bedrock Mantle
 // endpoint by model family: Anthropic-family (Claude) models use the native Anthropic
 // Messages path; all other (OpenAI-family) models use the OpenAI-compatible path.
@@ -157,12 +130,17 @@ func (provider *BedrockProvider) mantleChatCompletionsAnthropic(
 	_, bareModel := parseBedrockRegionAndModel(request.Model)
 	url := mantleAnthropicURL(region)
 
-	jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+	config := anthropic.AnthropicRequestBuildConfig{
 		Provider:                  schemas.Bedrock,
 		Model:                     bareModel,
+		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 		ShouldSendBackRawResponse: provider.sendBackRawResponse,
-	})
+	}
+
+	// Pre-build the body so SigV4 can sign it; HandleAnthropicChatCompletionRequest rebuilds the
+	// same bytes (deterministic marshaling), so the signature stays valid.
+	jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, config)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -172,35 +150,16 @@ func (provider *BedrockProvider) mantleChatCompletionsAnthropic(
 		return nil, bifrostErr
 	}
 
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeMantleRequest(ctx, jsonData, url, headers)
-	if providerResponseHeaders != nil {
-		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
-	}
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-	}
-
-	anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-	defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
-
-	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-	}
-	bifrostResponse := anthropicResponse.ToBifrostChatResponse(ctx)
-
-	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		bifrostResponse.ExtraFields.RawRequest = rawRequest
-	}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	return bifrostResponse, nil
+	return anthropic.HandleAnthropicChatCompletionRequest(
+		ctx,
+		provider.mantleClient,
+		url,
+		request,
+		config,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		provider.logger,
+	)
 }
 
 // mantleChatCompletionsOpenAI handles non-streaming chat completions for OpenAI-family
@@ -397,13 +356,18 @@ func (provider *BedrockProvider) mantleResponsesAnthropic(
 	_, bareModel := parseBedrockRegionAndModel(request.Model)
 	url := mantleAnthropicURL(region)
 
-	jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+	config := anthropic.AnthropicRequestBuildConfig{
 		Provider:                  schemas.Bedrock,
 		Model:                     bareModel,
 		ValidateTools:             true,
+		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 		ShouldSendBackRawResponse: provider.sendBackRawResponse,
-	})
+	}
+
+	// Pre-build the body so SigV4 can sign it; HandleAnthropicResponsesRequest rebuilds the
+	// same bytes (deterministic marshaling), so the signature stays valid.
+	jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, config)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -413,34 +377,16 @@ func (provider *BedrockProvider) mantleResponsesAnthropic(
 		return nil, bifrostErr
 	}
 
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeMantleRequest(ctx, jsonData, url, headers)
-	if providerResponseHeaders != nil {
-		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
-	}
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-	}
-
-	anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
-	defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
-
-	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
-	}
-	bifrostResponse := anthropicResponse.ToBifrostResponsesResponse(ctx)
-
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		bifrostResponse.ExtraFields.RawRequest = rawRequest
-	}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	return bifrostResponse, nil
+	return anthropic.HandleAnthropicResponsesRequest(
+		ctx,
+		provider.mantleClient,
+		url,
+		request,
+		config,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		provider.logger,
+	)
 }
 
 // mantleResponsesOpenAI handles non-streaming Responses API requests for OpenAI-family
