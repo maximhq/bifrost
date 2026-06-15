@@ -18,7 +18,7 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	// Create the BifrostResponsesRequest
 	bifrostReq := &schemas.BifrostResponsesRequest{
@@ -116,7 +116,7 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input)
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, bifrostReq.Model, bifrostReq.Provider)
 		if err != nil {
 			return nil, err
 		}
@@ -1942,6 +1942,45 @@ func convertGeminiSystemInstructionToResponsesMessage(systemInstruction *Content
 	}
 }
 
+// stripFunctionResponseMediaRefs returns the textual payload of a Gemini functionResponse.Response
+// to carry alongside reconstructed media blocks. It drops top-level keys whose value is a
+// {"$ref": ...} placeholder — those reference the media we materialize as content blocks, and
+// re-emitting them would re-trigger the Gemini Developer API "$ref" bug — while preserving every
+// other field so multimodal tool results are not lossy. The Gemini spec lets callers use any keys
+// (output, result, error, ...), not just "output". When only the conventional "output" field
+// remains it is unwrapped to keep the common round-trip shape; a media-only response yields "".
+func stripFunctionResponseMediaRefs(response json.RawMessage) string {
+	if len(response) == 0 {
+		return ""
+	}
+	root := providerUtils.GetJSONField(response, "@this")
+	if !root.IsObject() {
+		return string(response)
+	}
+
+	cleaned := []byte(response)
+	remaining := 0
+	for key, value := range root.Map() {
+		if value.IsObject() && value.Get("$ref").Exists() {
+			if updated, err := providerUtils.DeleteJSONField(cleaned, key); err == nil {
+				cleaned = updated
+			}
+			continue
+		}
+		remaining++
+	}
+
+	if remaining == 0 {
+		return "" // media-only result; the forward path emits an empty "output" placeholder
+	}
+	if remaining == 1 {
+		if out := providerUtils.GetJSONField(cleaned, "output"); out.Exists() {
+			return out.String()
+		}
+	}
+	return string(cleaned)
+}
+
 func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
 	// Track function call IDs by name to match with responses
@@ -2025,13 +2064,48 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					}
 				}
 
+				output := &schemas.ResponsesToolMessageOutputStruct{}
+				if len(part.FunctionResponse.Parts) > 0 {
+					// Multimodal function response (Gemini 3 series): the tool returned images/files
+					// nested in functionResponse.parts. Reconstruct them as content blocks so the media
+					// is preserved on the way in, instead of being collapsed to the text "output" field.
+					// Mirrors the forward conversion in convertResponsesMessagesToGeminiContents.
+					var blocks []schemas.ResponsesMessageContentBlock
+					// Preserve the structured response text alongside the media. The Gemini spec allows
+					// any keys (output, result, error, ...), so keep the whole response object minus the
+					// {"$ref": ...} placeholders (those point at the media we materialize as blocks below).
+					if textPayload := stripFunctionResponseMediaRefs(part.FunctionResponse.Response); textPayload != "" {
+						blocks = append(blocks, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: &textPayload,
+						})
+					}
+					for _, p := range part.FunctionResponse.Parts {
+						var block *schemas.ResponsesMessageContentBlock
+						switch {
+						case p.InlineData != nil:
+							block = convertGeminiInlineDataToContentBlock(p.InlineData)
+						case p.FileData != nil:
+							block = convertGeminiFileDataToContentBlock(p.FileData)
+						}
+						if block != nil {
+							blocks = append(blocks, *block)
+						}
+					}
+					if len(blocks) > 0 {
+						output.ResponsesFunctionToolCallOutputBlocks = blocks
+					} else {
+						output.ResponsesToolCallOutputStr = &responseStr
+					}
+				} else {
+					output.ResponsesToolCallOutputStr = &responseStr
+				}
+
 				msg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID: &responseID,
-						Output: &schemas.ResponsesToolMessageOutputStruct{
-							ResponsesToolCallOutputStr: &responseStr,
-						},
+						Output: output,
 					},
 				}
 
@@ -2967,8 +3041,13 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 	return config
 }
 
-// convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage) ([]Content, *Content, error) {
+// convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents.
+// model is used to gate features that are only valid on Gemini 3+ (e.g. multimodal function
+// responses, where a tool returns images/files nested in functionResponse.parts). provider
+// distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
+// function responses must be referenced (see the FunctionCallOutput handling below).
+func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider) ([]Content, *Content, error) {
+	isVertex := provider == schemas.Vertex
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		content := Content{Role: "user"}
@@ -3150,6 +3229,9 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				// must be sent in a single message with only functionResponse parts (no text/content parts)
 				if msg.ResponsesToolMessage.CallID != nil {
 					responseMap := make(map[string]any)
+					// Multimodal blocks (images, files) returned by the function are collected here
+					// and attached to FunctionResponse.Parts (Gemini 3+ only).
+					var funcMediaParts []*Part
 
 					// Extract output from ResponsesToolMessage.Output
 					if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
@@ -3160,12 +3242,48 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							responseMap["output"] = output
 						}
 					} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-						// Handle structured output blocks (e.g. from Anthropic Responses API format
-						// where output is an array of content blocks like [{"type":"input_text","text":"..."}])
+						// Handle structured output blocks (e.g. from the OpenAI/Anthropic Responses API
+						// format where output is an array of content blocks like
+						// [{"type":"input_text","text":"..."}, {"type":"input_image","image_url":"..."}]).
+						//
+						// Text blocks go into responseMap["output"]. Multimodal blocks (images, files)
+						// cannot live inside the structured response; per the Gemini docs they must be
+						// nested as sibling FunctionResponse.Parts (inlineData/fileData). This is a
+						// Gemini 3+ feature, so for older models we drop the media and keep text only
+						// (sending parts to e.g. gemini-2.5 returns a hard "not supported" 400).
+						//
+						// Referencing the media from the structured response differs by provider:
+						//   - Vertex AI: emit a "<displayName>_ref": {"$ref": "<displayName>"} entry into
+						//     the response (the documented format; Vertex resolves the ref to the part).
+						//   - Gemini Developer API: do NOT emit $ref — the API rejects it
+						//     ("does not match to a display_name", a known upstream bug). The model
+						//     still reads the media directly from parts.
+						supportsMultimodalToolOutput := isGemini3Plus(model)
 						var textParts []string
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil && *block.Text != "" {
 								textParts = append(textParts, *block.Text)
+								continue
+							}
+							if !supportsMultimodalToolOutput {
+								continue // older models can't accept media in a function response
+							}
+							mediaPart, err := convertContentBlockToGeminiPart(block)
+							if err != nil {
+								return nil, nil, fmt.Errorf("failed to convert function output content block: %w", err)
+							}
+							if mediaPart == nil {
+								continue
+							}
+							displayName := fmt.Sprintf("media_%d", len(funcMediaParts))
+							if mediaPart.InlineData != nil {
+								mediaPart.InlineData.DisplayName = displayName
+							} else if mediaPart.FileData != nil {
+								mediaPart.FileData.DisplayName = displayName
+							}
+							funcMediaParts = append(funcMediaParts, mediaPart)
+							if isVertex {
+								responseMap[displayName+"_ref"] = map[string]string{"$ref": displayName}
 							}
 						}
 						if len(textParts) > 0 {
@@ -3175,13 +3293,13 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							} else {
 								responseMap["output"] = combined
 							}
-						} else {
-							// Fallback for non-text blocks (e.g. images, files): marshal the raw blocks
-							// so responseMap["output"] is never left empty when blocks are present
-							rawBlocks, err := providerUtils.MarshalSorted(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
-							if err == nil && len(rawBlocks) > 0 {
-								responseMap["output"] = json.RawMessage(rawBlocks)
-							}
+						} else if len(funcMediaParts) > 0 {
+							// Media-only result: the content lives in parts. We intentionally emit
+							// {"output": ""} rather than leaving response as {} — an empty object would
+							// be treated by Gemini as the full (empty) function output. The reverse
+							// converter's stripFunctionResponseMediaRefs reads this "" back as no text
+							// block, so the media-only round-trip stays clean.
+							responseMap["output"] = ""
 						}
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility
@@ -3209,6 +3327,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							Name:     funcName,
 							Response: json.RawMessage(responseBytes),
 							ID:       *msg.ResponsesToolMessage.CallID,
+							Parts:    funcMediaParts,
 						},
 					}
 					pendingFunctionResponseParts = append(pendingFunctionResponseParts, part)

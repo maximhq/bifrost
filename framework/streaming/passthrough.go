@@ -61,6 +61,7 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 			StreamType:     StreamTypePassthrough,
 			RequestedModel: requestedModel,
 			ResolvedModel:  resolvedModel,
+			RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 			Provider:       provider,
 			Data:           nil,
 		}, nil
@@ -134,6 +135,7 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 		StreamType:     StreamTypePassthrough,
 		RequestedModel: requestedModel,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Provider:       provider,
 		Data:           data,
 		RawRequest:     &rawRequest,

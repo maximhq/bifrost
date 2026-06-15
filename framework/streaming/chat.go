@@ -568,6 +568,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			Provider:       provider,
 			RequestedModel: model,
 			ResolvedModel:  resolvedModel,
+			RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 			Data:           data,
 			RawRequest:     &rawRequest,
 		}, nil
@@ -580,6 +581,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		Provider:       provider,
 		RequestedModel: model,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
 }

@@ -220,7 +220,7 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `alias` - Alias resolved to this model (empty if none)
 - `method` - Request type (chat, completion, embedding, etc.)
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
-- `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`)
+- `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — fallback transitions or retry transitions.
 - `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
 - `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
 - `fallback_index` - Fallback position

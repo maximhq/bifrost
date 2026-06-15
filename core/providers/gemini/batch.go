@@ -236,16 +236,6 @@ func parseGeminiTimestamp(timestamp string) int64 {
 	return t.Unix()
 }
 
-// extractBatchIDFromName extracts the batch ID from the full resource name.
-// e.g., "batches/abc123" -> "abc123"
-func extractBatchIDFromName(name string) string {
-	if name == "" {
-		return ""
-	}
-	parts := strings.Split(name, "/")
-	return parts[len(parts)-1]
-}
-
 // downloadBatchResultsFile downloads and parses a batch results file from Gemini.
 // Returns the parsed result items from the JSONL file and any parse errors encountered.
 func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, key schemas.Key, fileName string) ([]schemas.BatchResultItem, []schemas.BatchError, *schemas.BifrostError) {

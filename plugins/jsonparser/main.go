@@ -98,6 +98,11 @@ func (p *JsonParserPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *JsonParserPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook is not used for this plugin as we only process responses
 // Parameters:
 //   - ctx: The Bifrost context

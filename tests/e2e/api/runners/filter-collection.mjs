@@ -52,6 +52,7 @@ const PROVIDER_KEYWORDS = {
   vertex: ["vertex", "/genai/v1beta/models/{{vertexModel}}"],
   azure: ["azure", "deployments"],
   passthrough: ["_passthrough"],
+  openrouter: ["openrouter"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -102,6 +103,12 @@ const itemMatchesProvider = (item, ancestorNames) => {
   if (!PROVIDER) return true;
   const keywords = PROVIDER_KEYWORDS[PROVIDER] || [PROVIDER];
   const haystack = buildHaystack(item, ancestorNames);
+  // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
+  // gpt-/claude-/gemini, so they'd otherwise be claimed by the openai/anthropic/gemini
+  // partitions too. Route them exclusively to the openrouter partition.
+  const isOpenRouter = haystack.includes("openrouter");
+  if (PROVIDER === "openrouter") return isOpenRouter;
+  if (isOpenRouter) return false;
   return keywords.some((k) => haystack.includes(k));
 };
 

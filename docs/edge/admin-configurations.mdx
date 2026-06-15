@@ -1,0 +1,39 @@
+---
+title: "Configurations"
+description: "Set the fleet-wide options for Bifrost Edge: the organization certificate and how often agents check in."
+icon: "sliders"
+---
+
+The Configurations dashboard holds the fleet-wide settings for Edge. These are set once by an admin and apply to every machine.
+
+<Frame>
+  <img src="/media/edge/edge-settings.png" alt="Edge configuration dashboard with certificate authority and sync settings" />
+</Frame>
+
+## Organization certificate
+
+Edge routes encrypted AI traffic through your Bifrost, which requires a trusted organization certificate on each machine. You can:
+
+- Generate a new certificate, or
+- Import an existing one.
+
+The dashboard shows the active certificate's fingerprint and lets you copy or download it.
+
+<Note>
+The private key is shown only when you generate or import a certificate. Store it safely, as it is not displayed again afterward.
+</Note>
+
+## Sync interval
+
+Agents check in with Bifrost on a set interval to pick up the latest policy and configuration. You can change how often this happens. A shorter interval means changes reach machines sooner. The interval has a minimum of a few seconds.
+
+## Access
+
+These settings are controlled by role-based access control. Only administrators with the right permission can view or change them.
+
+---
+
+## Next steps
+
+- View the fleet in [Devices](/edge/admin-devices).
+- Approve or deny apps and MCP servers in [Approvals](/edge/admin-approvals).

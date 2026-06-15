@@ -101,6 +101,9 @@ func normalizeOpenAIReasoningEffort(model string, effort string) string {
 	case "minimal":
 		return "low"
 	case "max":
+		if supportsMaxReasoningEffort(model) {
+			return effort
+		}
 		if supportsOpenAIXHighReasoningEffort(model) {
 			return "xhigh"
 		}
@@ -125,6 +128,15 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
 		strings.HasPrefix(modelLower, "gpt-5.4") ||
 		strings.HasPrefix(modelLower, "gpt-5.5")
+}
+
+// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. DeepSeek V4).
+func supportsMaxReasoningEffort(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	return strings.HasPrefix(strings.ToLower(model), "deepseek-v4")
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field

@@ -188,7 +188,6 @@ type legacyBudgetTeam struct {
 // TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
-
 // sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
@@ -864,6 +863,24 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddModelConfigBudgetsFKConstraint(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPLibraryTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPLibraryConfigColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPLibrarySourceColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddFastModePricingColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCustomerNameUniqueConstraint(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationNullLegacyCustomerBudgetID(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -7820,6 +7837,54 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
+// migrationAddFastModePricingColumns adds pricing columns for Anthropic fast mode
+// (research preview, speed:"fast" on Opus 4.6/4.7/4.8).
+func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_fast_mode_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_fast",
+				"output_cost_per_token_fast",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_fast",
+				"output_cost_per_token_fast",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running fast mode pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddWhitelistedRoutesJSONColumn adds the whitelisted_routes_json column to the config_client table
 func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -9774,4 +9839,323 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationNullLegacyCustomerBudgetID clears the legacy governance_customers.budget_id
+// values left behind by migrationAddCustomerBudgetsToBudgetsTable. The column and its
+// FK (fk_governance_customers_budget) are intentionally kept — dropping either is
+// deferred to a major release — but rows still holding a value make DeleteCustomer's
+// `DELETE FROM governance_budgets WHERE customer_id = ?` fail that FK check. Ownership
+// already lives on governance_budgets.customer_id, so after a defensive backfill the
+// legacy values can be nulled; a null reference satisfies the FK unconditionally.
+func migrationNullLegacyCustomerBudgetID(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "null_legacy_customer_budget_id_refs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if !legacyExists {
+				return nil
+			}
+			// Customers the defensive backfill below will attach a budget to.
+			// GenerateCustomerHash includes sorted budget IDs, so their stored
+			// config_hash goes stale once the budget is linked and must be refreshed.
+			var affectedCustomerIDs []string
+			if err := tx.Raw(`
+				SELECT DISTINCT c.id
+				FROM governance_customers c
+				JOIN governance_budgets b ON b.id = c.budget_id
+				WHERE b.customer_id IS NULL
+				  AND b.virtual_key_id IS NULL AND b.team_id IS NULL
+				  AND b.provider_config_id IS NULL AND b.model_config_id IS NULL
+			`).Scan(&affectedCustomerIDs).Error; err != nil {
+				return fmt.Errorf("failed to identify customers affected by budget backfill: %w", err)
+			}
+			// Defensive backfill (same shape as migrationAddCustomerBudgetsToBudgetsTable)
+			// in case a budget_id was written after that migration ran, e.g. by an older
+			// instance in a mixed-version cluster. Only claims budgets with no owner yet.
+			if err := tx.Exec(`
+				UPDATE governance_budgets SET customer_id = (
+					SELECT id FROM governance_customers
+					WHERE governance_customers.budget_id = governance_budgets.id
+				) WHERE customer_id IS NULL
+				  AND virtual_key_id IS NULL AND team_id IS NULL
+				  AND provider_config_id IS NULL AND model_config_id IS NULL
+				  AND EXISTS (
+					SELECT 1 FROM governance_customers
+					WHERE governance_customers.budget_id = governance_budgets.id
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to backfill customer budget customer_id: %w", err)
+			}
+			// Refresh config_hash for customers whose budgets just got linked, keeping
+			// migration and runtime hash generation in parity (same as
+			// migrationAddCustomerBudgetsToBudgetsTable).
+			for _, customerID := range affectedCustomerIDs {
+				var customer tables.TableCustomer
+				if err := tx.Preload("Budgets").First(&customer, "id = ?", customerID).Error; err != nil {
+					return fmt.Errorf("failed to reload customer %s for hash refresh: %w", customerID, err)
+				}
+				hash, err := GenerateCustomerHash(customer)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for customer %s: %w", customerID, err)
+				}
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", customerID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for customer %s: %w", customerID, err)
+				}
+			}
+			if err := tx.Exec(`UPDATE governance_customers SET budget_id = NULL WHERE budget_id IS NOT NULL`).Error; err != nil {
+				return fmt.Errorf("failed to clear legacy governance_customers.budget_id values: %w", err)
+			}
+			return nil
+		},
+		// Best-effort inverse: repopulate budget_id from governance_budgets.customer_id.
+		// The legacy column held a single value while the new model allows several
+		// budgets per customer, so for multi-budget customers the oldest budget is
+		// picked — for any customer that predates the pivot that is the original
+		// legacy budget, since later additions sort newer.
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if !legacyExists {
+				return nil
+			}
+			if err := tx.Exec(`
+				UPDATE governance_customers SET budget_id = (
+					SELECT id FROM governance_budgets
+					WHERE governance_budgets.customer_id = governance_customers.id
+					ORDER BY created_at ASC, id ASC
+					LIMIT 1
+				) WHERE budget_id IS NULL AND EXISTS (
+					SELECT 1 FROM governance_budgets
+					WHERE governance_budgets.customer_id = governance_customers.id
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to restore legacy governance_customers.budget_id values: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running null_legacy_customer_budget_id_refs migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibraryTable creates the mcp_library table, the synced-only
+// catalog of discoverable MCP servers. Rows are populated from the external MCP
+// library datasheet on a configurable interval (mirroring the model-pricing
+// sync), so this migration only stands up the schema; no rows exist yet.
+func migrationAddMCPLibraryTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_library_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableMCPLibrary{}) {
+				if err := mg.CreateTable(&tables.TableMCPLibrary{}); err != nil {
+					return fmt.Errorf("create mcp_library table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableMCPLibrary{}) {
+				if err := mg.DropTable(&tables.TableMCPLibrary{}); err != nil {
+					return fmt.Errorf("drop mcp_library table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibraryConfigColumns adds the mcp_library_url and
+// mcp_library_sync_interval columns to framework_configs. These store the sync
+// source + interval for the MCP server library catalog, mirroring pricing_url /
+// pricing_sync_interval. Idempotent via HasColumn guards.
+func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_library_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_url") {
+				if err := mg.AddColumn(&tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
+					return fmt.Errorf("add mcp_library_url column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_sync_interval") {
+				if err := mg.AddColumn(&tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
+					return fmt.Errorf("add mcp_library_sync_interval column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_url") {
+				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
+					return fmt.Errorf("drop mcp_library_url column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_sync_interval") {
+				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
+					return fmt.Errorf("drop mcp_library_sync_interval column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_config_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibrarySourceColumns adds the source and deleted_at columns to
+// mcp_library. `source` marks a row as remote-synced or org-internal ("custom")
+// so the sync can protect custom rows; `deleted_at` is a soft-delete tombstone
+// so a user-hidden row (remote or custom) is never resurrected by the next sync.
+// Idempotent via HasColumn guards.
+func migrationAddMCPLibrarySourceColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_library_source_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableMCPLibrary{}, "source") {
+				if err := mg.AddColumn(&tables.TableMCPLibrary{}, "Source"); err != nil {
+					return fmt.Errorf("add source column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableMCPLibrary{}, "deleted_at") {
+				if err := mg.AddColumn(&tables.TableMCPLibrary{}, "DeletedAt"); err != nil {
+					return fmt.Errorf("add deleted_at column: %w", err)
+				}
+			}
+			// Create indexes on the new columns (AddColumn doesn't create indexes
+			// from struct tags). `deleted_at IS NULL` is the leading predicate on
+			// every paginated library query, so the index avoids a full table scan.
+			if !mg.HasIndex(&tables.TableMCPLibrary{}, "idx_mcp_library_source") {
+				if err := mg.CreateIndex(&tables.TableMCPLibrary{}, "Source"); err != nil {
+					return fmt.Errorf("create index on mcp_library.source: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableMCPLibrary{}, "idx_mcp_library_deleted_at") {
+				if err := mg.CreateIndex(&tables.TableMCPLibrary{}, "DeletedAt"); err != nil {
+					return fmt.Errorf("create index on mcp_library.deleted_at: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is intentionally a no-op: dropping `source` and
+			// `deleted_at` would destroy custom-row protection markers and
+			// soft-delete tombstones, letting the next sync resurrect rows the
+			// user hid. This migration is one-way.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_source_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerNameUniqueConstraint deduplicates governance_customers by
+// appending -1, -2, … to later occurrences of the same name (ordered by
+// created_at then id), then adds a unique index on the name column.
+func migrationAddCustomerNameUniqueConstraint(ctx context.Context, db *gorm.DB) error {
+	const idxName = "idx_governance_customers_name"
+
+	// Step 1 (transactional): rename duplicate customer names so the later
+	// CREATE UNIQUE INDEX cannot fail due to pre-existing duplicates.
+	if err := RunSingleMigration(ctx, nil, db, &migrator.Migration{
+		ID: "add_customer_name_unique_constraint_dedup",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Fetch all customers in a stable order so the earliest-created row
+			// always keeps the original name and later duplicates receive suffixes.
+			var customers []tables.TableCustomer
+			if err := tx.Order("created_at ASC, id ASC").Find(&customers).Error; err != nil {
+				return fmt.Errorf("failed to fetch customers: %w", err)
+			}
+
+			// taken tracks every name that is currently (or will be) in use so
+			// suffix search never collides with an existing original name.
+			taken := make(map[string]bool, len(customers))
+			for _, c := range customers {
+				taken[c.Name] = true
+			}
+
+			firstSeen := make(map[string]bool, len(customers))
+			for _, c := range customers {
+				if !firstSeen[c.Name] {
+					firstSeen[c.Name] = true
+					continue // earliest occurrence keeps its name
+				}
+				// Find the lowest suffix whose candidate name is not already taken.
+				suffix := 1
+				candidate := fmt.Sprintf("%s-%d", c.Name, suffix)
+				for taken[candidate] {
+					suffix++
+					candidate = fmt.Sprintf("%s-%d", c.Name, suffix)
+				}
+				taken[candidate] = true
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", c.ID).Update("name", candidate).Error; err != nil {
+					return fmt.Errorf("failed to rename customer %s to %q: %w", c.ID, candidate, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil // name renames are not reversed; dropping the index in step 2 restores the invariant
+		},
+	}); err != nil {
+		return err
+	}
+
+	// Step 2 (non-transactional): create the unique index.
+	// UseTransaction must be false because CREATE INDEX CONCURRENTLY cannot
+	// execute inside a transaction block. IF NOT EXISTS makes this step safe
+	// to re-run if the process crashes after the index is built but before
+	// the migration record is written.
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	return RunSingleMigration(ctx, &noTxOpts, db, &migrator.Migration{
+		ID: "add_customer_name_unique_constraint_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite does not support CONCURRENTLY; use the plain form there.
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE UNIQUE INDEX IF NOT EXISTS " + idxName + " ON governance_customers (name)"
+			} else {
+				stmt = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " + idxName + " ON governance_customers (name)"
+			}
+			if err := tx.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("failed to create unique index on governance_customers.name: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec("DROP INDEX IF EXISTS " + idxName).Error
+		},
+	})
 }

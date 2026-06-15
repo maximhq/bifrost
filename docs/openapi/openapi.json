@@ -40043,7 +40043,7 @@
       "get": {
         "operationId": "getVirtualKeyQuota",
         "summary": "Get virtual key quota",
-        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider budgets and rate limits.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
+        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
         "tags": [
           "Governance"
         ],
@@ -49027,6 +49027,466 @@
         }
       }
     },
+    "/api/governance/complexity-analyzer-config": {
+      "get": {
+        "operationId": "getComplexityAnalyzerConfig",
+        "summary": "Get complexity analyzer config",
+        "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.",
+        "tags": [
+          "Governance"
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateComplexityAnalyzerConfig",
+        "summary": "Update complexity analyzer config",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the governance plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+        "tags": [
+          "Governance"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Full runtime configuration for complexity routing analysis.",
+                "additionalProperties": false,
+                "required": [
+                  "tier_boundaries",
+                  "keywords"
+                ],
+                "properties": {
+                  "tier_boundaries": {
+                    "type": "object",
+                    "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                    "additionalProperties": false,
+                    "required": [
+                      "simple_medium",
+                      "medium_complex",
+                      "complex_reasoning"
+                    ],
+                    "properties": {
+                      "simple_medium": {
+                        "type": "number",
+                        "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "medium_complex": {
+                        "type": "number",
+                        "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "complex_reasoning": {
+                        "type": "number",
+                        "description": "Score boundary between COMPLEX and REASONING tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      }
+                    }
+                  },
+                  "keywords": {
+                    "type": "object",
+                    "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                    "additionalProperties": false,
+                    "required": [
+                      "code_keywords",
+                      "reasoning_keywords",
+                      "technical_keywords",
+                      "simple_keywords"
+                    ],
+                    "properties": {
+                      "code_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "reasoning_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "technical_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "simple_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/complexity-analyzer-config/reset": {
+      "post": {
+        "operationId": "resetComplexityAnalyzerConfig",
+        "summary": "Reset complexity analyzer config",
+        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the governance plugin.",
+        "tags": [
+          "Governance"
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config reset successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs": {
       "get": {
         "operationId": "getLogs",
@@ -57493,6 +57953,16 @@
       },
       "InternalError": {
         "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
+      "ConfigStoreUnavailable": {
+        "description": "Config store not available",
         "content": {
           "application/json": {
             "schema": {
@@ -68031,7 +68501,9 @@
                 "type": "boolean"
               },
               "disable_auth_on_inference": {
-                "type": "boolean"
+                "type": "boolean",
+                "deprecated": true,
+                "description": "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
               }
             }
           },
@@ -68296,7 +68768,9 @@
                 "type": "boolean"
               },
               "disable_auth_on_inference": {
-                "type": "boolean"
+                "type": "boolean",
+                "deprecated": true,
+                "description": "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
               }
             }
           }
@@ -70566,7 +71040,8 @@
           "is_active",
           "budgets",
           "rate_limit",
-          "provider_configs"
+          "provider_configs",
+          "model_configs"
         ],
         "properties": {
           "virtual_key_name": {
@@ -70582,9 +71057,60 @@
               "array",
               "null"
             ],
-            "description": "Overall budget quotas assigned to this virtual key",
+            "description": "Overall budget quotas for this virtual key. Each budget also carries the actual per-model spend (from request logs) accumulated in its current cycle.\n",
             "items": {
-              "$ref": "#/components/schemas/Budget"
+              "description": "A virtual key budget with the actual per-model spend (from request logs) accumulated in its current cycle [last_reset, now]. The per-model totals reconcile with current_usage. The models list is empty when the logging plugin is not enabled.\n",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Budget"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "per_model_usage"
+                  ],
+                  "properties": {
+                    "per_model_usage": {
+                      "type": "array",
+                      "description": "Per-model actual usage within this budget's current cycle",
+                      "items": {
+                        "type": "object",
+                        "description": "One model's actual usage (from request logs) within a budget cycle",
+                        "required": [
+                          "model",
+                          "total_requests",
+                          "total_tokens",
+                          "total_cost"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string",
+                            "description": "The model name"
+                          },
+                          "provider": {
+                            "type": "string",
+                            "description": "Provider that served the model; omitted when unknown"
+                          },
+                          "total_requests": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Number of requests to this model in the cycle"
+                          },
+                          "total_tokens": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Total tokens consumed by this model in the cycle"
+                          },
+                          "total_cost": {
+                            "type": "number",
+                            "description": "Total cost in dollars for this model in the cycle"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
             }
           },
           "rate_limit": {
@@ -70605,6 +71131,47 @@
             "description": "Per-provider budget quotas and rate limits (provider-level splits and limits)",
             "items": {
               "$ref": "#/components/schemas/VirtualKeyProviderConfig"
+            }
+          },
+          "model_configs": {
+            "type": "array",
+            "description": "Per-model budget quotas and rate limits configured for this virtual key (model-level limits). Always an array — the endpoint fails closed (500) rather than returning null when the model-config lookup errors.\n",
+            "items": {
+              "type": "object",
+              "description": "Per-model budgets and rate limit (with current usage) for a model governed under a virtual key",
+              "required": [
+                "model_name"
+              ],
+              "properties": {
+                "model_name": {
+                  "type": "string",
+                  "description": "The model this usage applies to"
+                },
+                "provider": {
+                  "type": "string",
+                  "description": "Provider this model config is scoped to; omitted when it applies to all providers"
+                },
+                "budgets": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "description": "Budget quotas for this model",
+                  "items": {
+                    "$ref": "#/components/schemas/Budget"
+                  }
+                },
+                "rate_limit": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/RateLimit"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
             }
           }
         }

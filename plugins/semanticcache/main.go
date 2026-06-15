@@ -330,6 +330,11 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook performs the cache lookup before the request reaches the
 // provider. It runs the direct hash path first (cheapest), falls back to
 // semantic similarity search when configured, and short-circuits the

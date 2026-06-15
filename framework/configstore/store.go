@@ -51,6 +51,30 @@ type MCPClientsQueryParams struct {
 	Search string
 }
 
+// MCPLibraryQueryParams holds pagination, filtering, search, and sort
+// parameters for MCP library catalog queries. All fields are optional — an
+// empty struct returns the first default-sized page ordered by name.
+type MCPLibraryQueryParams struct {
+	Limit           int
+	Offset          int
+	Search          string   // matches name/description/publisher (case-insensitive)
+	Categories      []string // exact category filter(s), OR semantics
+	ConnectionTypes []string // exact connection_type filter(s) (http | stdio | sse)
+	AuthTypes       []string // exact auth_type filter(s)
+	Tags            []string // match rows carrying any of these tags
+	SortBy          string   // name, category, publisher, created_at, updated_at (default: name)
+	Order           string   // asc, desc (default: asc)
+}
+
+// MCPLibraryFilterData holds the distinct facet values surfaced by the filter
+// sidebar on the MCP library page. Populated via GetMCPLibraryFilterData.
+type MCPLibraryFilterData struct {
+	Categories      []string `json:"categories"`
+	ConnectionTypes []string `json:"connection_types"`
+	AuthTypes       []string `json:"auth_types"`
+	Tags            []string `json:"tags"`
+}
+
 // TeamsQueryParams holds pagination, filtering, and search parameters for team queries.
 type TeamsQueryParams struct {
 	Limit      int
@@ -166,6 +190,20 @@ type ConfigStore interface {
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
+	// MCP library catalog (synced + org-custom)
+	GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error)
+	GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error)
+	UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error
+	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+	// Returns ErrAlreadyExists when the slug collides with an existing entry.
+	CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error
+	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
+	// so it is hidden from listings and never resurrected by the remote sync.
+	SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must not
+	// overwrite or recreate: custom rows and soft-deleted (tombstoned) rows.
+	GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error)
+
 	// Vector store config CRUD
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
 	GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error)
@@ -177,6 +215,10 @@ type ConfigStore interface {
 	// Config CRUD
 	GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error)
 	UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error
+	// GetComplexityAnalyzerConfig retrieves the persisted analyzer config, if configured.
+	GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error)
+	// UpdateComplexityAnalyzerConfig persists the normalized analyzer config.
+	UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)

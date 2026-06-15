@@ -40,6 +40,7 @@ type BifrostChatResponse struct {
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
 	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
+	Speed             *string                    `json:"speed,omitempty"` // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`

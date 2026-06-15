@@ -1,0 +1,21 @@
+---
+title: "v2.1.22"
+description: "Helm v2.1.22 changelog - 2026-06-08"
+---
+
+<Update label="Bifrost Helm" description="v2.1.22">
+
+## Changelog
+
+- Added `bifrost.governance.roles` array to `values.yaml`, `values.schema.json`, and `_helpers.tpl`. Each role requires a `name` and accepts optional `description`, `dac` (`own-data` | `team-data` | `all-data`, default `all-data`), `access_profile`, and `permissions[]` (`resource` + `operation`).
+- `bifrost.plugins.otel.config` now accepts either the existing single-profile shape or a new `profiles` wrapper (`otelProfilesConfig`) with an array of profiles. Each profile is independently enabled/disabled. A shared `plugin_span_filter` can be set at the top level in either shape.
+- Added `disable_content_logging` to OTEL config (both single-profile and per-profile). When `true`, message content (input/output messages, embeddings, tool definitions, tool call arguments/results) is dropped from exported spans - only metadata (model, tokens, latency) is sent to the collector.
+- Added `otelPluginSpanFilter` (`mode`: `include`/`exclude`, `plugins` array) to the OTEL config schema, available in both single-profile and multi-profile shapes.
+- Added `calendar_aligned` to `bifrost.governance.modelConfigs[]`. When `true`, the config's budget reset windows snap to calendar boundaries rather than rolling windows; `virtual_key`-scoped configs inherit the virtual key's setting. Default `false`.
+- Added `model_config_id` and `customer_id` as budget owner fields in `governance.budgets[]`, alongside the existing `virtual_key_id`, `provider_config_id`, and `team_id`.
+- Extended `attributeTeamMappings` and `attributeBusinessUnitMappings` in SCIM auth config with optional `attributeType` (`user` | `group`) and `attributeValue` fields to enable SCIM-driven team/business-unit provisioning.
+- Added OAuth MCP client config example to `values.yaml` showing `authType: oauth` with `oauthConfigId`.
+- Added `bifrost.sourceOfTruth` (`split` | `config.json`, optional). When set to `"config.json"`, sections explicitly present in the file become authoritative on startup - database-only rows for those sections are pruned. Omitting the field preserves the default `"split"` merge behavior.
+- Added `allow_private_network` to `networkConfig` in `values.schema.json`. When `true`, allows connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x) - useful for providers on a k8s pod network, LAN, or private VPC.
+
+</Update>

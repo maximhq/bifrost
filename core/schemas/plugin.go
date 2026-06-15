@@ -170,12 +170,22 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // PostHooks are executed in the reverse order of PreHooks.
 //
 // Execution order:
-// 1. HTTPTransportPreHook (HTTP transport only, executed in registration order)
-// 2. PreLLMHook (executed in registration order)
-// 3. Provider call
-// 4. PostLLMHook (executed in reverse order of PreHooks)
-// 5. HTTPTransportPostHook (HTTP transport only, executed in reverse order)
-// 5a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
+// 1. HTTPTransportPreHook (HTTP transport only, once per request, executed in registration order)
+// 2. PreRequestHook (once per request, executed in registration order)
+// 3. PreLLMHook (executed in registration order, runs again on each fallback attempt)
+// 4. Provider call
+// 5. PostLLMHook (executed in reverse order of PreHooks, runs on each fallback attempt)
+// 6. HTTPTransportPostHook (HTTP transport only, once per request, executed in reverse order)
+// 6a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
+//
+// Per-request vs per-attempt phases:
+// - HTTPTransportPreHook, PreRequestHook, HTTPTransportPostHook run ONCE per top-level request.
+// - PreLLMHook, PostLLMHook run ONCE PER ATTEMPT: the primary provider call, plus once per
+//   fallback attempt. Mutations a PreLLMHook makes to the request only carry to later
+//   fallbacks where prepareFallbackRequest happens to share pointers (shallow copy) —
+//   visibility across fallbacks is incidental. PreRequestHook is the explicit phase whose
+//   mutations are committed to the request before any fan-out and are observed by every
+//   subsequent plugin, every PreLLMHook invocation, the provider call, and every fallback.
 //
 // Common use cases: rate limiting, caching, logging, monitoring, request transformation, governance.
 //
@@ -256,6 +266,22 @@ type HTTPTransportPlugin interface {
 
 type LLMPlugin interface {
 	BasePlugin
+
+	// PreRequestHook is called once per top-level request, after HTTPTransportPreHook and before
+	// PreLLMHook. It is the canonical phase for deciding which provider/model/fallbacks the
+	// request should be sent to. Plugins are free to mutate any field on req (Provider, Model,
+	// Fallbacks, Input, Params, Tools, ...) — unlike PreLLMHook, mutations made here are
+	// committed to the request and are observed by all subsequent plugins, the provider call,
+	// and every fallback attempt.
+	//
+	// Error semantics match PreLLMHook: a non-nil error is non-blocking — it is logged as a
+	// warning, the request continues, and the pipeline moves on to the next plugin. PreRequestHook
+	// CANNOT abort the request via error return. Plugins that need to gate or reject a request
+	// (e.g., authorization, content policy) must do so in HTTPTransportPreHook or via a
+	// short-circuit response in PreLLMHook — not by returning an error here.
+	//
+	// Plugins that don't participate in routing should return nil.
+	PreRequestHook(ctx *BifrostContext, req *BifrostRequest) error
 
 	PreLLMHook(ctx *BifrostContext, req *BifrostRequest) (*BifrostRequest, *LLMPluginShortCircuit, error)
 	PostLLMHook(ctx *BifrostContext, resp *BifrostResponse, bifrostErr *BifrostError) (*BifrostResponse, *BifrostError, error)

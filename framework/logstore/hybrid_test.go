@@ -594,7 +594,7 @@ func TestHybrid_Tags(t *testing.T) {
 	assert.Equal(t, "2026-04-03", tags["date"])
 }
 
-func TestHybrid_MetadataIsRetainedInDBAndExcludedFromObjectPayload(t *testing.T) {
+func TestHybrid_MetadataIsRetainedInDBAndWrittenToObjectPayload(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -625,14 +625,16 @@ func TestHybrid_MetadataIsRetainedInDBAndExcludedFromObjectPayload(t *testing.T)
 	require.NotNil(t, dbLog.Metadata)
 	assert.Contains(t, *dbLog.Metadata, "cortex-user-id")
 
-	// Metadata is DB-authoritative and must never be written to the object
-	// store snapshot.
+	// Metadata is DB-authoritative but a copy is written to the object store
+	// snapshot so consumers reading objects directly see custom attributes.
 	key := ObjectKey("test", ts, "metadata-1")
 	rawPayload, err := objStore.Get(ctx, key)
 	require.NoError(t, err)
 	var payload map[string]string
 	require.NoError(t, sonic.Unmarshal(rawPayload, &payload))
-	assert.NotContains(t, payload, "metadata", "metadata must not be written to the object store snapshot")
+	require.Contains(t, payload, "metadata", "metadata must be written to the object store snapshot")
+	assert.Contains(t, payload["metadata"], "cortex-user-id")
+	assert.Contains(t, payload["metadata"], "payments")
 
 	// Hydration still returns metadata, sourced from the DB row.
 	found, err := hybrid.FindByID(ctx, "metadata-1")

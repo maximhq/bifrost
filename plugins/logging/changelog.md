@@ -1,7 +1,0 @@
-- feat: multiple customers logs and usage tracking (#4066)
-- feat: multiple team and business unit support in logstore (#4041)
-- feat: OpenAI compaction support (#4053)
-- feat: `request_headers` pattern capture with wildcard support (#4012)
-- feat: wildcard pattern support for logging header capture, e.g. `x-custom-*` (#3958)
-- feat: render file attachments in logs (#3931)
-- fix: passthrough budgets (#3941)

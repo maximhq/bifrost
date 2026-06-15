@@ -258,7 +258,12 @@ const SidebarItemView = ({
   const hasSubItems =
     "subItems" in item && item.subItems && item.subItems.length > 0;
   const isRouteMatch = (url: string) => {
-    if (url === "/workspace/custom-pricing") return pathname === url;
+    // Exact-match base paths that have sibling tab routes nested under them, so the base
+    // tab isn't also highlighted when a child tab (e.g. /settings) is active.
+    if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
+    // Avoid double-highlighting with "/workspace/mcp-registry/library"
+    if (url === "/workspace/mcp-registry")
+      return !pathname.startsWith("/workspace/mcp-registry/library") && pathname.startsWith(url);
     return pathname.startsWith(url);
   };
   const isAnySubItemActive =
@@ -813,6 +818,13 @@ export default function AppSidebar() {
             hasAccess: hasRoutingRulesAccess,
           },
           {
+            title: "Complexity Router",
+            url: "/workspace/complexity-router",
+            icon: Settings2Icon,
+            description: "Complexity tier routing",
+            hasAccess: hasRoutingRulesAccess,
+          },
+          {
             title: "Pricing Overrides",
             url: "/workspace/custom-pricing/overrides",
             icon: SlidersHorizontal,
@@ -840,6 +852,13 @@ export default function AppSidebar() {
             url: "/workspace/mcp-registry",
             icon: LayoutGrid,
             description: "MCP tool catalog",
+            hasAccess: hasMCPGatewayAccess,
+          },
+          {
+            title: "MCP Library",
+            url: "/workspace/mcp-registry/library",
+            icon: Boxes,
+            description: "Install curated MCP servers",
             hasAccess: hasMCPGatewayAccess,
           },
           {
@@ -978,8 +997,24 @@ export default function AppSidebar() {
         title: "Adaptive Routing",
         url: "/workspace/adaptive-routing",
         icon: Shuffle,
-        description: "Manage adaptive load balancer",
+        description: "Manage adaptive routing",
         hasAccess: isAdaptiveRoutingAllowed,
+        subItems: [
+          {
+            title: "Dashboard",
+            url: "/workspace/adaptive-routing",
+            icon: ChartColumnBig,
+            description: "Adaptive routing metrics",
+            hasAccess: isAdaptiveRoutingAllowed,
+          },
+          {
+            title: "Settings",
+            url: "/workspace/adaptive-routing/settings",
+            icon: Settings,
+            description: "Adaptive routing settings",
+            hasAccess: isAdaptiveRoutingAllowed,
+          },
+        ],
       },
       ...(isDbConnected
         ? [
@@ -1173,7 +1208,7 @@ export default function AppSidebar() {
   useEffect(() => {
     const newExpandedItems = new Set<string>();
     const isRouteMatch = (url: string) => {
-      if (url === "/workspace/custom-pricing") return pathname === url;
+      if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
       return pathname.startsWith(url);
     };
     items.forEach((item) => {

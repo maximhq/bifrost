@@ -131,8 +131,10 @@ type ComprehensiveTestConfig struct {
 	VideoGenerationModel     string                 // Model for video generation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
-	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
-	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
+	BatchExtraParams         map[string]interface{}     // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
+	BatchOutputFolder        *schemas.BatchOutputFolder // Typed batch output location (e.g., GCS gs:// prefix for Vertex)
+	FileExtraParams          map[string]interface{}     // Extra params for file operations (e.g., s3_bucket for Bedrock)
+	FileStorageConfig        *schemas.FileStorageConfig // Typed storage config for file operations (e.g., GCS bucket for Vertex)
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
 	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
@@ -241,12 +243,12 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{
 				Models: []string{"*"},
 				Weight: 1.0,
-				Aliases: map[string]string{
-					"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-					"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
-					"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-					"claude-4.6-sonnet": "global.anthropic.claude-sonnet-4-6",
-					"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+				Aliases: schemas.KeyAliases{
+					"claude-3.7-sonnet": {ModelID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"},
+					"claude-4-sonnet":   {ModelID: "global.anthropic.claude-sonnet-4-20250514-v1:0"},
+					"claude-4.5-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+					"claude-4.6-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-6"},
+					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -259,13 +261,13 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{
 				Models: []string{"*"},
 				Weight: 1.0,
-				Aliases: map[string]string{
-					"claude-3.5-sonnet": "anthropic.claude-3-5-sonnet-20240620-v1:0",
-					"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-					"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
-					"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-					"claude-4.6-sonnet": "global.anthropic.claude-sonnet-4-6",
-					"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+				Aliases: schemas.KeyAliases{
+					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
+					"claude-3.7-sonnet": {ModelID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"},
+					"claude-4-sonnet":   {ModelID: "global.anthropic.claude-sonnet-4-20250514-v1:0"},
+					"claude-4.5-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+					"claude-4.6-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-6"},
+					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -303,13 +305,13 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"*"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
-					"gpt-4o":                 "gpt-4o",
-					"gpt-4o-backup":          "gpt-4o-3",
-					"claude-opus-4-5":        "claude-opus-4-5",
-					"o1":                     "o1",
-					"gpt-image-1":            "gpt-image-1",
-					"text-embedding-ada-002": "text-embedding-ada-002",
-					"sora-2":                 "sora-2",
+					"gpt-4o":                 {ModelID: "gpt-4o"},
+					"gpt-4o-backup":          {ModelID: "gpt-4o-3"},
+					"claude-opus-4-5":        {ModelID: "claude-opus-4-5"},
+					"o1":                     {ModelID: "o1"},
+					"gpt-image-1":            {ModelID: "gpt-image-1"},
+					"text-embedding-ada-002": {ModelID: "text-embedding-ada-002"},
+					"sora-2":                 {ModelID: "sora-2"},
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:     *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
@@ -324,10 +326,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"*"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
-					"whisper":                   "whisper",
-					"whisper-1":                 "whisper",
-					"gpt-4o-mini-tts":           "gpt-4o-mini-tts",
-					"gpt-4o-mini-audio-preview": "gpt-4o-mini-audio-preview",
+					"whisper":                   {ModelID: "whisper"},
+					"whisper-1":                 {ModelID: "whisper"},
+					"gpt-4o-mini-tts":           {ModelID: "gpt-4o-mini-tts"},
+					"gpt-4o-mini-audio-preview": {ModelID: "gpt-4o-mini-audio-preview"},
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
@@ -365,9 +367,9 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"claude-sonnet-4-5", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
-					"claude-sonnet-4-5": "claude-sonnet-4-5",
-					"claude-4.5-haiku":  "claude-haiku-4-5@20251001",
-					"claude-opus-4-5":   "claude-opus-4-5",
+					"claude-sonnet-4-5": {ModelID: "claude-sonnet-4-5"},
+					"claude-4.5-haiku":  {ModelID: "claude-haiku-4-5@20251001"},
+					"claude-opus-4-5":   {ModelID: "claude-opus-4-5"},
 				},
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),

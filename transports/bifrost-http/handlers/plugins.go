@@ -18,6 +18,7 @@ import (
 
 type PluginsLoader interface {
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
+	GetLoadedPluginNames() []string
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	// NormalizePluginConfig converts a raw config map to DB-storage format using
@@ -95,6 +96,7 @@ func (h *PluginsHandler) expandPluginConfigForAPI(name string, config map[string
 func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/plugins", lib.ChainMiddlewares(h.getPlugins, middlewares...))
 	r.GET("/api/plugins/builtins", lib.ChainMiddlewares(h.getBuiltinPlugins, middlewares...))
+	r.GET("/api/plugins/loaded", lib.ChainMiddlewares(h.getLoadedPlugins, middlewares...))
 	r.GET("/api/plugins/{name}", lib.ChainMiddlewares(h.getPlugin, middlewares...))
 	r.POST("/api/plugins", lib.ChainMiddlewares(h.createPlugin, middlewares...))
 	r.PUT("/api/plugins/{name}", lib.ChainMiddlewares(h.updatePlugin, middlewares...))
@@ -159,10 +161,18 @@ func (h *PluginsHandler) buildPluginResponseWithStatuses(plugin *configstoreTabl
 	}
 }
 
-// getBuiltinPlugins returns the canonical list of built-in plugin names
+// getBuiltinPlugins returns the canonical list of built-in plugin names.
 func (h *PluginsHandler) getBuiltinPlugins(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{
 		"plugins": lib.GetBuiltinPluginNames(),
+	})
+}
+
+// getLoadedPlugins returns the names of all plugins currently loaded at runtime, whose
+// spans an observability connector can filter.
+func (h *PluginsHandler) getLoadedPlugins(ctx *fasthttp.RequestCtx) {
+	SendJSON(ctx, map[string]any{
+		"plugins": h.pluginsLoader.GetLoadedPluginNames(),
 	})
 }
 

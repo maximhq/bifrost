@@ -178,7 +178,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 		Provider:   "bedrock",
 		KeyID:      "bedrock-uuid-1",
 		Value:      *schemas.NewEnvVar("bedrock-val"),
-		Aliases:    schemas.KeyAliases{"model-a": "profile-a"},
+		Aliases:    schemas.KeyAliases{"model-a": {ModelID: "profile-a"}},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -224,7 +224,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:iam::123456789:role/test", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-a", found.Aliases["model-a"])
+	assert.Equal(t, "profile-a", found.Aliases["model-a"].ModelID)
 	require.NotNil(t, found.BedrockKeyConfig.BatchS3Config)
 	require.Len(t, found.BedrockKeyConfig.BatchS3Config.Buckets, 1)
 	assert.Equal(t, "my-batch-bucket", found.BedrockKeyConfig.BatchS3Config.Buckets[0].BucketName)
@@ -1156,7 +1156,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 		Provider:   "custom",
 		KeyID:      "multi-uuid",
 		Value:      *schemas.NewEnvVar("multi-api-key"),
-		Aliases:    schemas.KeyAliases{"claude-3": "profile-claude"},
+		Aliases:    schemas.KeyAliases{"claude-3": {ModelID: "profile-claude"}},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint:     *schemas.NewEnvVar("https://azure.endpoint.com"),
 			ClientID:     schemas.NewEnvVar("multi-azure-cid"),
@@ -1230,7 +1230,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "eu-west-1", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-claude", found.Aliases["claude-3"])
+	assert.Equal(t, "profile-claude", found.Aliases["claude-3"].ModelID)
 }
 
 // ============================================================================
@@ -1918,4 +1918,140 @@ func TestTableKey_VertexPlainValue_RoundTrip(t *testing.T) {
 	assert.Equal(t, "my-gcp-project", found.VertexKeyConfig.ProjectID.GetValue())
 	assert.False(t, found.VertexKeyConfig.ProjectID.FromEnv)
 	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue())
+}
+
+// TestTableKey_AliasesJSON_LegacyWireShape verifies that a KeyAliases value
+// containing only ModelID (the unenriched shape) is persisted to the DB as the
+// legacy {"k":"v"} string-valued JSON, preserving byte-for-byte wire compat
+// with pre-refactor consumers and keeping config_hash stable.
+func TestTableKey_AliasesJSON_LegacyWireShape(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "openai-key",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "openai-uuid-aliases-legacy",
+		Value:      *schemas.NewEnvVar("sk-test"),
+		Aliases: schemas.KeyAliases{
+			"best-model": {ModelID: "gpt-4o-deployment"},
+			"backup":     {ModelID: "gpt-3.5-turbo"},
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	rawAliasesVal := raw["aliases_json"]
+	var rawAliasesStr string
+	switch v := rawAliasesVal.(type) {
+	case string:
+		rawAliasesStr = v
+	case []byte:
+		rawAliasesStr = string(v)
+	}
+	require.NotEmpty(t, rawAliasesStr)
+
+	plaintext, err := encrypt.Decrypt(rawAliasesStr)
+	require.NoError(t, err, "aliases_json should be decryptable")
+
+	// Both expected shapes are valid JSON encodings (map iteration order is not stable).
+	candidates := []string{
+		`{"best-model":"gpt-4o-deployment","backup":"gpt-3.5-turbo"}`,
+		`{"backup":"gpt-3.5-turbo","best-model":"gpt-4o-deployment"}`,
+	}
+	assert.Contains(t, candidates, plaintext, "legacy ModelID-only aliases should marshal to the string-valued legacy wire shape")
+}
+
+// TestTableKey_AliasesJSON_RichRoundTrip verifies that an enriched AliasConfig
+// (with ModelName/ModelFamily/sub-config populated) survives the full DB
+// encrypt → save → load → decrypt round-trip with no loss of information.
+func TestTableKey_AliasesJSON_RichRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	apiVersion := "2024-08-01-preview"
+	canonical := "claude-3-5-sonnet"
+	family := schemas.ModelFamilyAnthropic
+
+	key := &TableKey{
+		Name:       "azure-rich",
+		ProviderID: 1,
+		Provider:   "azure",
+		KeyID:      "azure-uuid-aliases-rich",
+		Value:      *schemas.NewEnvVar("sk-test"),
+		Aliases: schemas.KeyAliases{
+			"best-model": {
+				ModelID:     "azure-deployment-xyz",
+				ModelName:   &canonical,
+				ModelFamily: &family,
+				Description: "prod summarizer",
+				AzureAliasCfg: &schemas.AzureAliasCfg{
+					APIVersion: &apiVersion,
+				},
+			},
+			"plain": {ModelID: "gpt-4o-fallback"},
+		},
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint: *schemas.NewEnvVar("https://example.openai.azure.com"),
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.Aliases)
+	require.Len(t, found.Aliases, 2)
+
+	rich := found.Aliases["best-model"]
+	assert.Equal(t, "azure-deployment-xyz", rich.ModelID)
+	require.NotNil(t, rich.ModelName)
+	assert.Equal(t, canonical, *rich.ModelName)
+	require.NotNil(t, rich.ModelFamily)
+	assert.Equal(t, schemas.ModelFamilyAnthropic, *rich.ModelFamily)
+	assert.Equal(t, "prod summarizer", rich.Description)
+	require.NotNil(t, rich.AzureAliasCfg)
+	require.NotNil(t, rich.AzureAliasCfg.APIVersion)
+	assert.Equal(t, apiVersion, *rich.AzureAliasCfg.APIVersion)
+
+	// The unenriched sibling stays a legacy-shape entry — proves marshaling
+	// only escalates to the rich object form for entries that need it.
+	plain := found.Aliases["plain"]
+	assert.Equal(t, "gpt-4o-fallback", plain.ModelID)
+	assert.Nil(t, plain.ModelName)
+	assert.Nil(t, plain.ModelFamily)
+	assert.Nil(t, plain.AzureAliasCfg)
+}
+
+// TestTableKey_AliasesJSON_LegacyInputRoundTrip simulates a row written before
+// the refactor — raw legacy {"k":"v"} JSON in the aliases_json column — and
+// verifies AfterFind promotes it to AliasConfig{ModelID: v} transparently.
+func TestTableKey_AliasesJSON_LegacyInputRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	// First create a key without aliases so the row exists.
+	key := &TableKey{
+		Name:       "openai-key",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "openai-uuid-aliases-legacy-input",
+		Value:      *schemas.NewEnvVar("sk-test"),
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	// Then write the legacy-shaped JSON directly into the aliases_json column,
+	// bypassing BeforeSave — this is what a pre-refactor row looks like.
+	legacy := `{"best-model":"gpt-4o-deployment"}`
+	encrypted, err := encrypt.Encrypt(legacy)
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("UPDATE config_keys SET aliases_json = ? WHERE id = ?", encrypted, key.ID).Error)
+
+	// Read back through GORM — AfterFind should decrypt + UnmarshalJSON should
+	// promote the legacy string value into AliasConfig{ModelID: ...}.
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.Aliases)
+	require.Len(t, found.Aliases, 1)
+	got := found.Aliases["best-model"]
+	assert.Equal(t, "gpt-4o-deployment", got.ModelID)
+	assert.Nil(t, got.ModelName)
+	assert.Nil(t, got.ModelFamily)
 }

@@ -877,6 +877,12 @@ export function LogDetailView({
 							/>
 							{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={log.model} />}
 							{!isContainer && log.alias && <LogEntryDetailsView className="w-full" label="Alias" value={log.alias} />}
+							{!isContainer && log.canonical_model_name && (
+								<LogEntryDetailsView className="w-full" label="Canonical Model" value={log.canonical_model_name} />
+							)}
+							{!isContainer && log.alias_model_family && (
+								<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
+							)}
 							<LogEntryDetailsView
 								className="w-full"
 								label="Type"
@@ -1092,10 +1098,10 @@ export function LogDetailView({
 											{log.routing_engines_used.map((engine) => (
 												<Badge
 													key={engine}
-													className={RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}
+													className={cn("border-0 py-1 uppercase", RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800")}
 												>
 													<div className="flex items-center gap-2">
-														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.()}
+														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.({ className: "h-3.5 w-3.5" })}
 														<span>{RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine}</span>
 													</div>
 												</Badge>

@@ -1,5 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { envVarSchema } from "@/lib/types/schemas";
+import { aliasConfigSchema, envVarSchema } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -151,9 +151,9 @@ const KeySchema = z.object({
 	models: z.array(z.string()),
 	weight: z.number().min(0.1, "Key weights must be between 0.1 and 1").max(1, "Key weights must be between 0.1 and 1"),
 	aliases: z
-		.union([z.record(z.string(), z.string()), z.string()])
+		.record(z.string(), aliasConfigSchema)
 		.optional()
-		.refine((value) => !value || isValidAliases(value), { message: "Aliases must be a valid JSON object" }),
+		.refine((value) => !value || isValidAliases(value), { message: "Deployments must have a Model ID set on every row" }),
 	azure_key_config: AzureKeyConfigSchema.optional(),
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
