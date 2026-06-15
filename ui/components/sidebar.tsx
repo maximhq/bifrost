@@ -1068,7 +1068,6 @@ export default function AppSidebar() {
               icon: BookOpenText,
               description: "Skills repository",
               hasAccess: hasSkillsRepositoryAccess,
-              new: true,
             },
           ]
         : []),

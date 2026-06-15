@@ -384,6 +384,7 @@ interface MoveDestinationMenuProps {
   triggerLabel: string;
   tooltip: string;
   onMove: (folderPath: string) => void;
+  onOpenChange?: (open: boolean) => void;
   isDisabledDestination?: (folderPath: string) => boolean;
 }
 
@@ -393,6 +394,7 @@ function MoveDestinationMenu({
   triggerLabel,
   tooltip,
   onMove,
+  onOpenChange,
   isDisabledDestination,
 }: MoveDestinationMenuProps) {
   const [query, setQuery] = useState("");
@@ -413,6 +415,7 @@ function MoveDestinationMenu({
   return (
     <DropdownMenu
       onOpenChange={(open) => {
+        onOpenChange?.(open);
         if (!open) {
           setQuery("");
           firstEnabledDestinationRef.current = null;
@@ -528,9 +531,15 @@ function buildTree(files: SkillFileEntry[]) {
   return root;
 }
 
-function AddMenu({ onSelect }: { onSelect: (sourceType: string) => void }) {
+function AddMenu({
+  onSelect,
+  onOpenChange,
+}: {
+  onSelect: (sourceType: string) => void;
+  onOpenChange?: (open: boolean) => void;
+}) {
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
@@ -683,6 +692,9 @@ export function FileManagerSection({
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>(
     {},
   );
+  const [activeDropdownNodeId, setActiveDropdownNodeId] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     const foldersFromFiles = files.flatMap((file) =>
@@ -1297,8 +1309,15 @@ export function FileManagerSection({
         );
       }
 
+      const fileDropdownActive = activeDropdownNodeId === item.id;
+
       return (
-        <div className="group flex items-center gap-3 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted/50">
+        <div
+          className={cn(
+            "group flex items-center gap-3 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted/50",
+            fileDropdownActive && "bg-muted/50",
+          )}
+        >
           <div className="flex min-w-0 items-center gap-2">
             <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate font-mono text-xs">
@@ -1328,12 +1347,20 @@ export function FileManagerSection({
             )}
           </div>
           {!readOnly && (
-            <div className="flex-1 justify-end flex shrink-0 items-center gap-1 opacity-100 md:opacity-0 transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+            <div
+              className={cn(
+                "flex-1 justify-end flex shrink-0 items-center gap-1 opacity-100 md:opacity-0 transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100",
+                fileDropdownActive && "md:opacity-100",
+              )}
+            >
               <MoveDestinationMenu
                 destinations={availableFolderPaths}
                 currentFolder={dirname(file.path)}
                 triggerLabel={`Move ${file.path}`}
                 tooltip="Move file"
+                onOpenChange={(open) =>
+                  setActiveDropdownNodeId(open ? item.id : null)
+                }
                 onMove={(folderPath) => {
                   setEditingFileIndex(null);
                   setEditingFileOriginal(null);
@@ -1399,11 +1426,14 @@ export function FileManagerSection({
     }
 
     const isRoot = item.kind === "root";
+    const folderDropdownActive = activeDropdownNodeId === item.id;
+
     return (
       <div
         className={cn(
           "group flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted/40",
           hasChildren && "cursor-pointer",
+          folderDropdownActive && "bg-muted/40",
         )}
         onClick={() => {
           if (hasChildren) onToggle();
@@ -1451,7 +1481,10 @@ export function FileManagerSection({
         )}
         {!readOnly && editingFullFileIndex == null && (
           <div
-            className="ml-auto flex items-center gap-1 opacity-100 md:opacity-0 transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+            className={cn(
+              "ml-auto flex items-center gap-1 opacity-100 md:opacity-0 transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100",
+              folderDropdownActive && "md:opacity-100",
+            )}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => event.stopPropagation()}
           >
@@ -1496,6 +1529,9 @@ export function FileManagerSection({
               </>
             )}
             <AddMenu
+              onOpenChange={(open) =>
+                setActiveDropdownNodeId(open ? item.id : null)
+              }
               onSelect={(sourceType) => {
                 expandFolder(item.path || "root");
                 setAddingFile({ folderPath: item.path, sourceType });
@@ -1538,6 +1574,9 @@ export function FileManagerSection({
                 currentFolder={dirname(item.path)}
                 triggerLabel={`Move folder ${item.path}`}
                 tooltip="Move folder"
+                onOpenChange={(open) =>
+                  setActiveDropdownNodeId(open ? item.id : null)
+                }
                 isDisabledDestination={(folderPath) =>
                   folderPath === item.path ||
                   folderPath.startsWith(`${item.path}/`)
