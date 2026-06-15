@@ -334,11 +334,12 @@ export function SkillDetailView({
               {/* Version History Table */}
               {versionsData && versionsData.versions.length > 0 && (
                 <FormSection title="Version History">
+                  <div>
                   <div className="overflow-hidden rounded-sm border">
-                    <Table>
+                    <Table className="w-full table-fixed">
                       <TableHeader className="bg-muted">
                         <TableRow className="hover:bg-transparent">
-                          <TableHead className="w-[200px]">
+                          <TableHead className="w-[180px]">
                             <Button
                               variant="ghost"
                               aria-label="Sort by version"
@@ -407,7 +408,7 @@ export function SkillDetailView({
                   </div>
                   {/* Pagination */}
                   {versionsData.total > 0 && (
-                    <div className="flex shrink-0 items-center justify-between pt-3 text-xs">
+                    <div className="flex shrink-0 items-center justify-between text-xs">
                       <div className="text-muted-foreground flex items-center gap-2">
                         {(versionsPage * versionsPageSize + 1).toLocaleString()}
                         –
@@ -450,6 +451,7 @@ export function SkillDetailView({
                       </div>
                     </div>
                   )}
+                  </div>
                 </FormSection>
               )}
             </div>
