@@ -2706,9 +2706,10 @@ type BifrostResponsesStreamResponse struct {
 	Annotation      *ResponsesOutputMessageContentTextAnnotation `json:"annotation,omitempty"`
 	AnnotationIndex *int                                         `json:"annotation_index,omitempty"`
 
-	Code    *string `json:"code,omitempty"`
-	Message *string `json:"message,omitempty"`
-	Param   *string `json:"param,omitempty"`
+	Error   *ResponsesResponseError `json:"error,omitempty"`
+	Code    *string                 `json:"code,omitempty"`
+	Message *string                 `json:"message,omitempty"`
+	Param   *string                 `json:"param,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 
