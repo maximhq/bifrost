@@ -124,13 +124,6 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ToolsToAutoExecuteJSON = "[]"
 	}
 
-	if schemas.VaultStoreEnabled() {
-		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context,
-			schemas.VaultBasePath(c.TableName(), c.ClientID), c); err != nil {
-			return err
-		}
-	}
-
 	if c.Headers != nil {
 		headersToSerialize := make(map[string]string, len(c.Headers))
 		for key, value := range c.Headers {
@@ -303,9 +296,6 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (c *TableMCPClient) AfterDelete(tx *gorm.DB) error {
-	base := schemas.VaultBasePath(c.TableName(), c.ClientID)
-	schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, c)
-	return nil
-}
+// VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
+// callback can compute the vault base path for this model automatically.
+func (c *TableMCPClient) VaultPathKey() string { return c.ClientID }
