@@ -1065,6 +1065,23 @@ postgresql:
     port: 5432
     user: bifrost
     password: ""
+    # Command executed by Bifrost to produce the PostgreSQL password on stdout.
+    # Use for dynamic credentials such as AWS RDS IAM auth tokens.
+    # passwordCommand:
+    #   command: aws
+    #   args:
+    #     - rds
+    #     - generate-db-auth-token
+    #     - --hostname
+    #     - your-rds-endpoint.us-east-1.rds.amazonaws.com
+    #     - --port
+    #     - "5432"
+    #     - --region
+    #     - us-east-1
+    #     - --username
+    #     - bifrost
+    #   timeout: 10s
+    # connMaxLifetime: 10m
     database: bifrost
     sslMode: disable
     # Use existing Kubernetes secret for password (takes precedence over password field)
