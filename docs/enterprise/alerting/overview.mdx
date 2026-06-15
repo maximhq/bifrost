@@ -1,0 +1,157 @@
+---
+title: "Alerting"
+description: "Define CEL-based alert rules over runtime metrics and dispatch notifications to Slack, Microsoft Teams, PagerDuty, and webhooks when budgets, error rates, latency, or key health cross your thresholds."
+icon: "bell"
+keywords: ["alerting", "alerts", "notifications", "monitoring", "slack", "pagerduty", "webhook", "cel"]
+---
+
+## Overview
+
+**Alerting** in Bifrost Enterprise evaluates **alert rules** against live gateway metrics and dispatches notifications through **alert channels** when a rule's condition is met. Rules are expressed as [CEL](https://github.com/google/cel-spec) expressions over metrics such as spend, error rate, request volume, latency, and API key health, and can be scoped globally or to a specific provider, virtual key, team, or customer.
+
+Every evaluation is recorded so you can review what fired, what did not, and why. Delivery attempts are kept in **alert history**, evaluation decisions in **evaluation logs**, and configuration changes in an **audit trail**.
+
+<Frame>
+  <img src="/media/ui-alerting-overview.png" alt="Bifrost alerting dashboard" />
+</Frame>
+
+{/* TODO: capture screenshot of /workspace/alerting and save as docs/media/ui-alerting-overview.png */}
+
+### Key features
+
+| Feature | Description |
+| --- | --- |
+| **CEL-based rules** | Express conditions as CEL expressions over runtime metrics, including compound conditions with `&&` and `\|\|`. |
+| **Multi-scope** | Scope rules globally or to a provider, virtual key, team, or customer. |
+| **Multiple channels** | Notify Slack, Microsoft Teams, PagerDuty, or any HTTP webhook. |
+| **Rolling-window + sweep evaluation** | Anomaly metrics use rolling windows; budget and rate-limit metrics are evaluated on a periodic sweep. |
+| **Cluster-aware** | In a cluster, window snapshots are merged and only the leader dispatches, so alerts reflect cluster-wide state without duplicates. |
+| **Cooldowns** | Per-rule and optional per-channel cooldowns prevent alert storms. |
+| **Auditing** | Evaluation logs and a configuration audit trail for every rule and channel change. |
+
+---
+
+## How it works
+
+Bifrost collects signals from three sources, evaluates the matching rules, and dispatches notifications subject to cooldowns.
+
+<Steps>
+  <Step title="Signals are collected">
+    Three paths feed the alert engine:
+    - **Usage observer** — after every usage update, request counts, errors, and cost are recorded into per-scope rolling windows.
+    - **Sweeper (every 60s)** — refreshes governance snapshots and evaluates `budget` and `rate_limit` rules, merges cluster window snapshots, and evaluates anomaly rules (`error_rate`, `volume`, `cost`).
+    - **Load balancer observer** — feeds `latency`, `provider_degradation`, and `key_health` signals from real-time provider and key health checks.
+  </Step>
+  <Step title="Rules are evaluated">
+    Each rule's CEL expression is evaluated against the current metric values for its scope. Compound rules can combine metrics from different sources because the latest value of each metric is cached per scope.
+  </Step>
+  <Step title="Cooldowns are applied">
+    When a rule triggers, its cooldown (default 5 minutes) suppresses repeat notifications for the same rule and scope until the cooldown elapses. Channels can define their own optional cooldown on top of the rule cooldown.
+  </Step>
+  <Step title="Notifications are dispatched">
+    The rule's channels are notified with retries and exponential backoff. Every outcome — triggered, not triggered, skipped, or errored — is written to the evaluation logs, and every delivery attempt is written to alert history.
+  </Step>
+</Steps>
+
+---
+
+## Conditions and metrics
+
+A rule's condition references one or more metrics. Each metric maps to a `condition_type` that determines which evaluation path produces it.
+
+| Metric | `condition_type` | Unit | Meaning |
+| --- | --- | --- | --- |
+| `budget_usage` | `budget` | percent | Percentage of the configured budget cap consumed. |
+| `rate_limit_usage` | `rate_limit` | percent | Percentage of the configured rate limit consumed. |
+| `error_rate` | `error_rate` | percent | Percentage of requests failing in the rolling window (0–100). |
+| `request_volume` | `volume` | count | Number of requests in the rolling window. |
+| `cost` | `cost` | dollars | Total spend in the rolling window. |
+| `latency_ms` | `latency` | score | Latency penalty score from `0` to `1` (see note below). |
+| `provider_health` | `provider_degradation` | severity | `2` when a provider is failed (all keys down). |
+| `key_health` | `key_health` | severity | Per–API key: `0` healthy, `1` degraded, `2` failed. |
+| `key_fail_reason` | `key_health` | code | Why a key stopped working: `1` auth, `2` billing, `3` rate limit, `4` other, `0` none. |
+
+<Warning>
+Despite its name, `latency_ms` is a normalized latency **penalty score** between `0` and `1` produced by adaptive load balancing — not a millisecond value. Threshold accordingly (for example, `latency_ms > 0.2`).
+</Warning>
+
+Supported operators are `=` (equals), `!=`, `>`, `<`, `>=`, and `<=`. See [Alert Rules](/enterprise/alerting/alert-rules) for CEL examples.
+
+---
+
+## Scopes
+
+Every rule has a scope that determines which traffic it applies to.
+
+| Scope | Description |
+| --- | --- |
+| `global` | Applies to all traffic. Must not set a scope ID. |
+| `provider` | A specific provider. |
+| `virtual_key` | A specific virtual key. |
+| `team` | A specific team. |
+| `customer` | A specific customer. |
+
+For scoped rules, an empty scope ID acts as a **wildcard** that matches all entities of that scope type, while a specific scope ID matches only that entity.
+
+<Note>
+The `latency`, `provider_degradation`, and `key_health` conditions can only be scoped to `global` or `provider`. Their signals originate from the load balancer at provider and key granularity, so virtual key, team, and customer scopes are rejected for these conditions.
+</Note>
+
+The provider scope uses two namespaces depending on the condition: `budget` and `rate_limit` rules reference a provider **configuration ID**, while signal conditions (such as `error_rate` or `latency`) reference the provider **name** (for example, `openai`).
+
+---
+
+## Clustering behavior
+
+When Bifrost runs as a [cluster](/enterprise/clustering), alerting stays correct and deduplicated:
+
+- Each node gossips a compact window snapshot (request count, error count, total cost) for each scope.
+- The **leader merges** snapshots from all nodes and evaluates anomaly rules against the cluster-wide view, so metrics like `error_rate` and `cost` reflect total traffic.
+- **Only the leader dispatches** notifications. A follower that evaluates a trigger relays it to the leader, which sends it — avoiding duplicate alerts.
+
+No additional configuration is required; cluster-aware alerting activates automatically in cluster mode.
+
+---
+
+## Configuration
+
+Global alerting behavior is controlled by the `alerting_config` section of your `config.json`:
+
+```json
+{
+  "alerting_config": {
+    "allow_insecure_webhooks": false,
+    "log_retention_days": 365
+  }
+}
+```
+
+### Configuration fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `allow_insecure_webhooks` | boolean | `false` | When `true`, permits `http://` webhook URLs and disables SSRF protection for webhook channels. Use only for internal or air-gapped networks. |
+| `log_retention_days` | integer | `365` | Number of days to retain evaluation logs before the daily prune. |
+
+<Warning>
+Leaving `allow_insecure_webhooks` at `false` is strongly recommended. When enabled, webhook channels can reach internal addresses, which exposes your network to server-side request forgery (SSRF). See [Alert Channels](/enterprise/alerting/alert-channels#security) for details.
+</Warning>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Channels" icon="megaphone" href="/enterprise/alerting/alert-channels">
+    Configure where alerts are delivered: Slack, Microsoft Teams, PagerDuty, and webhooks.
+  </Card>
+  <Card title="Alert Rules" icon="gavel" href="/enterprise/alerting/alert-rules">
+    Define the conditions, scopes, and channels that trigger alerts.
+  </Card>
+  <Card title="Alert History" icon="clock-rotate-left" href="/enterprise/alerting/alert-history">
+    Review delivered notifications, evaluation decisions, and the configuration audit trail.
+  </Card>
+  <Card title="Clustering" icon="circle-nodes" href="/enterprise/clustering">
+    Learn how alerting stays correct and deduplicated across a cluster.
+  </Card>
+</CardGroup>

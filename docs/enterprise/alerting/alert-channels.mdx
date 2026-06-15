@@ -1,0 +1,227 @@
+---
+title: "Alert Channels"
+description: "Configure where Bifrost Enterprise delivers alerts — Slack, Microsoft Teams, PagerDuty, or any HTTP webhook — with encrypted config, SSRF protection, and per-channel cooldowns."
+icon: "megaphone"
+keywords: ["alert channels", "slack", "microsoft teams", "pagerduty", "webhook", "notifications"]
+---
+
+## Overview
+
+An **alert channel** is a notification destination. When an [alert rule](/enterprise/alerting/alert-rules) triggers, Bifrost dispatches a notification to each channel attached to that rule. Channel configuration (URLs, keys, headers) is encrypted at rest.
+
+<Frame>
+  <img src="/media/ui-alerting-channels.png" alt="Alert channels page" />
+</Frame>
+
+{/* TODO: capture screenshot of /workspace/alerting/channels and save as docs/media/ui-alerting-channels.png */}
+
+## Channel types
+
+| Type | `channel_type` | Required config | Payload format |
+| --- | --- | --- | --- |
+| **Slack** | `slack` | `url` | Slack Block Kit message with severity color. |
+| **Microsoft Teams** | `teams` | `url` | Adaptive Card (28 KB payload limit). |
+| **PagerDuty** | `pagerduty` | `routing_key` | PagerDuty Events API v2 event. |
+| **Webhook** | `webhook` | `url` | Generic JSON payload. |
+
+Every channel also accepts an optional **name**, an optional **team** association, optional **custom blocks**, and an optional per-channel **cooldown**.
+
+---
+
+## Slack
+
+Create a Slack [incoming webhook](https://api.slack.com/messaging/webhooks) and provide its URL.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | Yes | Slack incoming webhook URL (HTTPS). |
+
+```json
+{
+  "name": "Engineering Slack",
+  "channel_type": "slack",
+  "config": {
+    "url": "https://hooks.slack.com/services/T000/B000/XXXX"
+  }
+}
+```
+
+Notifications are sent as Block Kit messages. The attachment color reflects severity — `good`, `warning` at 75 and above, and `danger` at 90 and above.
+
+---
+
+## Microsoft Teams
+
+Provide a Teams incoming webhook or Workflows URL.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | Yes | Teams webhook URL (HTTPS). |
+
+```json
+{
+  "name": "Platform Teams",
+  "channel_type": "teams",
+  "config": {
+    "url": "https://prod-00.westus.logic.azure.com/workflows/XXXX"
+  }
+}
+```
+
+Notifications are sent as Adaptive Cards. Teams enforces a **28 KB** payload limit, so very large custom block sets may be truncated.
+
+---
+
+## PagerDuty
+
+Use a PagerDuty service integration key (routing key) from an Events API v2 integration.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `routing_key` | string | Yes | PagerDuty Events API v2 integration (routing) key. |
+| `url` | string | No | Override the Events API endpoint. Defaults to `https://events.pagerduty.com/v2/enqueue`. |
+
+```json
+{
+  "name": "On-call",
+  "channel_type": "pagerduty",
+  "config": {
+    "routing_key": "R0XXXXXXXXXXXXXXXXXXXXXXXX"
+  }
+}
+```
+
+Events are sent via the PagerDuty Events API v2. Severity maps to `critical` (100+), `error` (75+), `warning` (50+), or `info`, and the deduplication key is derived from the rule and scope so repeated triggers update the same incident. When a condition recovers, a resolve event is sent.
+
+---
+
+## Webhook
+
+Send a generic JSON payload to any HTTPS endpoint.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | Yes | Destination URL. HTTPS required unless `allow_insecure_webhooks` is enabled. |
+| `headers` | object | No | Additional HTTP headers to send. Sensitive headers are stripped (see [Security](#security)). |
+
+```json
+{
+  "name": "Internal webhook",
+  "channel_type": "webhook",
+  "config": {
+    "url": "https://hooks.example.com/alerts",
+    "headers": {
+      "X-API-Key": "your-secret"
+    }
+  }
+}
+```
+
+### Webhook payload
+
+```json
+{
+  "event": "alert.triggered",
+  "timestamp": "2026-06-11T12:00:00Z",
+  "rule": { "id": "rule_123", "name": "High error rate on OpenAI" },
+  "scope": { "type": "provider", "id": "openai" },
+  "condition": { "type": "error_rate", "value": "" },
+  "cel_expression": "error_rate > 10.0",
+  "current_values": { "error_rate": 25.0 },
+  "message": "Alert triggered for provider openai",
+  "custom_blocks": { "env": "prod" }
+}
+```
+
+---
+
+## Custom blocks
+
+Custom blocks are key-value pairs attached to notifications, useful for adding context such as environment or owning team. Blocks can be set on a channel and on a rule; when a key exists in both, the **rule-level** value wins.
+
+---
+
+## Cooldowns
+
+Each channel can define an optional cooldown that applies on top of the rule's cooldown. Leave it empty to rely solely on the rule cooldown. Per-channel cooldowns are useful when one channel (such as PagerDuty) should be notified less frequently than another (such as Slack) for the same rule.
+
+---
+
+## Security
+
+All channels enforce network safety controls:
+
+- **HTTPS required.** Slack, Teams, and PagerDuty channels must use HTTPS. Webhook channels may use HTTP only when `allow_insecure_webhooks` is enabled in `alerting_config`.
+- **SSRF protection.** Destination hosts that resolve to private, loopback, or link-local addresses are blocked, including `localhost`, the AWS instance metadata endpoint (`169.254.169.254`), and `metadata.google.internal`. For webhook channels, this protection is disabled when `allow_insecure_webhooks` is `true`.
+- **Header sanitization.** Sensitive outbound headers (`host`, `cookie`, `set-cookie`, `authorization`, `proxy-authorization`) are stripped from webhook requests.
+
+<Warning>
+Enable `allow_insecure_webhooks` only for trusted internal or air-gapped networks. It permits plain HTTP and disables SSRF protection for webhook channels.
+</Warning>
+
+---
+
+## Testing channels
+
+Before attaching a channel to rules, send a test notification to confirm connectivity:
+
+- **UI** — open **Alerting → Channels**, then use **Test Connection** in the channel form or the channel's row menu.
+- **API** — `POST /api/governance/alert-channels/{id}/test` for a saved channel, or `POST /api/governance/alert-channels/test` with an inline `{ "channel_type", "config" }` body to test before saving.
+
+If a test fails, verify the destination URL, outbound firewall rules, DNS, and TLS trust.
+
+---
+
+## Setup
+
+<Tabs group="setup-method">
+<Tab title="UI">
+
+1. Open **Alerting → Channels** in the Bifrost dashboard.
+2. Click **Add Channel**.
+3. Enter a **Channel Name** and select a **Channel Type**.
+4. Provide the type-specific configuration (webhook URL, routing key, and so on).
+5. Optionally set a **Team**, **Cooldown**, **Custom Blocks**, and (for webhooks) **Custom Headers**.
+6. Click **Test Connection**, then **Add Channel**.
+
+</Tab>
+<Tab title="API">
+
+All endpoints are under `/api/governance/` and require the `AlertRules` RBAC permission.
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/alert-channels` | List channels. |
+| `GET` | `/alert-channels/{id}` | Get a channel. |
+| `POST` | `/alert-channels` | Create a channel. |
+| `PUT` | `/alert-channels/{id}` | Update a channel. |
+| `DELETE` | `/alert-channels/{id}` | Delete a channel and detach it from all rules. |
+| `POST` | `/alert-channels/{id}/test` | Send a test notification through a saved channel. |
+| `POST` | `/alert-channels/test` | Test an inline channel config without saving. |
+
+```bash
+curl -X POST https://your-bifrost-gateway/api/governance/alert-channels \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Engineering Slack",
+    "channel_type": "slack",
+    "config": { "url": "https://hooks.slack.com/services/T000/B000/XXXX" }
+  }'
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Rules" icon="gavel" href="/enterprise/alerting/alert-rules">
+    Attach channels to rules and define trigger conditions.
+  </Card>
+  <Card title="Alert History" icon="clock-rotate-left" href="/enterprise/alerting/alert-history">
+    Review delivery outcomes for every channel.
+  </Card>
+</CardGroup>

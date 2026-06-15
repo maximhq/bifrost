@@ -1,0 +1,210 @@
+---
+title: "Alert Rules"
+description: "Define CEL-based alert rules in Bifrost Enterprise — scope them globally or per provider, virtual key, team, or customer, set evaluation windows and cooldowns, and route triggers to channels."
+icon: "gavel"
+keywords: ["alert rules", "cel", "conditions", "thresholds", "scope", "cooldown", "window"]
+---
+
+## Overview
+
+An **alert rule** defines a condition over runtime metrics and the channels to notify when that condition is met. Conditions are expressed as [CEL](https://github.com/google/cel-spec) expressions, which the dashboard builds for you from a visual rule builder.
+
+<Frame>
+  <img src="/media/ui-alert-rules.png" alt="Alert rules page" />
+</Frame>
+
+{/* TODO: capture screenshot of /workspace/alerting/rules and save as docs/media/ui-alert-rules.png */}
+
+## Anatomy of a rule
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | string | Human-readable rule name. |
+| `scope_type` | string | One of `global`, `provider`, `virtual_key`, `team`, `customer`. |
+| `scope_id` | string | The scoped entity. Empty acts as a wildcard; must be empty for `global`. |
+| `condition_type` | string | Derived from the metric used (for example `error_rate`, `budget`, `key_health`). |
+| `cel_expression` | string | The condition evaluated against current metric values. |
+| `channel_ids` | array | One or more [channel](/enterprise/alerting/alert-channels) IDs to notify. At least one is required. |
+| `window_period` | integer | Rolling-window length in seconds for anomaly conditions. Default `300`. |
+| `cooldown_seconds` | integer | Minimum seconds between notifications for the same rule and scope. Default `300`. |
+| `custom_blocks` | object | Key-value pairs merged into notifications (override channel blocks on conflict). |
+| `enabled` | boolean | Whether the rule is active. Default `true`. |
+
+---
+
+## Conditions and operators
+
+A rule references one or more [metrics](/enterprise/alerting/overview#conditions-and-metrics). Supported operators are:
+
+| Operator | Meaning |
+| --- | --- |
+| `=` | Equals (`==` in CEL). |
+| `!=` | Not equal. |
+| `>` | Greater than. |
+| `<` | Less than. |
+| `>=` | Greater than or equal. |
+| `<=` | Less than or equal. |
+
+Conditions can be combined into compound expressions using `&&` (and) and `||` (or). Compound rules can mix metrics from different evaluation paths because the latest value of each metric is cached per scope.
+
+### CEL examples
+
+```python
+# Error rate above 10% for a provider
+error_rate > 10.0
+```
+
+```python
+# Any API key degraded or failed
+key_health >= 1.0
+```
+
+```python
+# Latency penalty score above 0.2 (not milliseconds)
+latency_ms > 0.2
+```
+
+```python
+# Compound: high spend AND budget nearly exhausted
+budget_usage > 80.0 && cost > 1000.0
+```
+
+<Note>
+`latency_ms` is a normalized penalty score from `0` to `1`, not a millisecond value. See [Conditions and metrics](/enterprise/alerting/overview#conditions-and-metrics).
+</Note>
+
+---
+
+## Scopes and restrictions
+
+Rules are scoped `global`, `provider`, `virtual_key`, `team`, or `customer`. For scoped rules, an empty scope ID matches all entities of that type (wildcard), and a specific scope ID matches one entity.
+
+<Warning>
+The `latency`, `provider_degradation`, and `key_health` conditions can only be scoped to `global` or `provider`. Other scopes are rejected at create and update time because these signals come from the load balancer at provider and key granularity.
+</Warning>
+
+See [Scopes](/enterprise/alerting/overview#scopes) for the provider scope's dual-namespace behavior.
+
+---
+
+## Evaluation windows
+
+Anomaly conditions (`error_rate`, `volume`, `cost`, `latency`) are evaluated over a rolling window. Choose the window that matches how quickly you want to detect a change.
+
+| Window | `window_period` |
+| --- | --- |
+| 1 minute | `60` |
+| 5 minutes | `300` |
+| 15 minutes | `900` |
+| 30 minutes | `1800` |
+| 1 hour | `3600` |
+
+The `budget` and `rate_limit` conditions are snapshot-driven and evaluated on the 60-second sweep rather than over a window.
+
+---
+
+## Cooldowns
+
+After a rule triggers, its cooldown (default 300 seconds) suppresses further notifications for the same rule and scope until the cooldown elapses. For `key_health` rules, cooldowns are tracked independently per API key, so one degraded key does not silence alerts for another. Channels can add their own [per-channel cooldown](/enterprise/alerting/alert-channels#cooldowns) on top of the rule cooldown.
+
+---
+
+## Creating a rule
+
+<Tabs group="setup-method">
+<Tab title="UI">
+
+1. Open **Alerting → Rules** and click **Add Rule**.
+2. Enter a **Rule Name**.
+3. Choose a **Scope** and, for non-global scopes, a **Scope ID**.
+4. For anomaly conditions, choose a **Window Period**.
+5. Build the **Conditions** with the rule builder. The generated CEL is shown in the **CEL Expression Preview**.
+6. Select one or more **Notification Channels** (or create one inline).
+7. Optionally set a **Cooldown** and **Custom Blocks**.
+8. Use **Send Test Alert** to verify, then click **Create Rule**.
+
+</Tab>
+<Tab title="API">
+
+All endpoints are under `/api/governance/` and require the `AlertRules` RBAC permission.
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/alert-rules` | List rules. |
+| `GET` | `/alert-rules/{id}` | Get a rule. |
+| `POST` | `/alert-rules` | Create a rule. |
+| `PUT` | `/alert-rules/{id}` | Update a rule. |
+| `DELETE` | `/alert-rules/{id}` | Delete a rule. |
+| `POST` | `/alert-rules/test` | Evaluate and dispatch a rule against synthetic values. |
+
+Creating a rule validates that the name and scope are set, the CEL expression compiles, at least one referenced channel exists, the scope and condition combination is allowed, and the scope entity exists.
+
+```bash
+curl -X POST https://your-bifrost-gateway/api/governance/alert-rules \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "High error rate on OpenAI",
+    "condition_type": "error_rate",
+    "scope_type": "provider",
+    "scope_id": "openai",
+    "cel_expression": "error_rate > 10.0",
+    "channel_ids": ["chan_123"],
+    "window_period": 300,
+    "cooldown_seconds": 300,
+    "enabled": true
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+Alert rules are managed through the dashboard or API rather than declared statically. Global alerting behavior is configured in `alerting_config`:
+
+```json
+{
+  "alerting_config": {
+    "allow_insecure_webhooks": false,
+    "log_retention_days": 365
+  }
+}
+```
+
+See the [Overview](/enterprise/alerting/overview#configuration) for field descriptions.
+
+</Tab>
+</Tabs>
+
+---
+
+## Testing rules
+
+Send a test alert to confirm a rule's channels work end to end. The test compiles the CEL expression and evaluates it against synthetic metric values:
+
+| Metric | Test value |
+| --- | --- |
+| `budget_usage` | `85` |
+| `rate_limit_usage` | `90` |
+| `error_rate` | `12.5` |
+| `request_volume` | `5000` |
+| `cost` | `1000` |
+| `latency_ms` | `500` |
+| `provider_health` | `2` |
+| `key_health` | `2` |
+| `key_fail_reason` | `1` |
+
+- **UI** — use **Send Test Alert** in the rule form.
+- **API** — `POST /api/governance/alert-rules/test`. The response reports whether the rule triggered, how many channels were notified, and any channel errors.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Channels" icon="megaphone" href="/enterprise/alerting/alert-channels">
+    Configure the destinations a rule notifies.
+  </Card>
+  <Card title="Alert History" icon="clock-rotate-left" href="/enterprise/alerting/alert-history">
+    Review which rules fired and why.
+  </Card>
+</CardGroup>

@@ -1,0 +1,95 @@
+---
+title: "Alert History"
+description: "Review delivered alert notifications, evaluation decisions, and the configuration audit trail in Bifrost Enterprise."
+icon: "clock-rotate-left"
+keywords: ["alert history", "evaluation logs", "audit", "alert delivery", "notifications"]
+---
+
+## Overview
+
+Bifrost records alerting activity at three levels:
+
+- **Alert history** — one record per channel delivery attempt (what was sent, and whether it succeeded).
+- **Evaluation logs** — one record per evaluation decision (why a rule did or did not fire).
+- **Audit logs** — a trail of configuration changes to rules and channels.
+
+<Frame>
+  <img src="/media/ui-alert-history.png" alt="Alert history page" />
+</Frame>
+
+{/* TODO: capture screenshot of /workspace/alerting/history and save as docs/media/ui-alert-history.png */}
+
+---
+
+## Alert history
+
+Open **Alerting → History** to review notifications. Enable **Live** for near-real-time updates, and use the date-range picker to scope the view.
+
+| Column | Description |
+| --- | --- |
+| **Time** | When the notification was dispatched. |
+| **Rule** | The rule that triggered. |
+| **Channel** | The channel that received the notification. |
+| **Condition** | The condition type (Error Rate, Budget, Key Health, and so on). |
+| **Scope** | The scope type and ID the alert applied to. |
+| **Key** | For key-health alerts, the affected API key and failure reason. |
+| **Type** | Whether the event was a **Degradation** or a **Recovered** notification. |
+| **Status** | Delivery outcome: **sent**, **failed**, or **resolved**. |
+
+You can filter history by rule, channel, scope type, and status. Selecting a record opens a detail view with the message, condition expression, current metric values, and any delivery error.
+
+The available API filters are:
+
+| Method | Endpoint | Filters |
+| --- | --- | --- |
+| `GET` | `/api/governance/alert-history` | `rule_id`, `channel_id`, `scope_type`, `status`, `start_time`, `end_time`, `limit`, `offset` |
+| `GET` | `/api/governance/alert-history/{id}` | — |
+
+---
+
+## Evaluation logs
+
+Evaluation logs capture every decision the engine makes, even when no notification is sent. They answer "why didn't this rule fire?" and are deduplicated on state change, so volume tracks decision transitions rather than request rate.
+
+| Decision | Meaning |
+| --- | --- |
+| `triggered` | The condition was met and dispatch proceeded. |
+| `not_triggered` | The condition was evaluated but not met. |
+| `skipped_cooldown` | The condition was met but suppressed by the cooldown. |
+| `skipped_no_window` | Insufficient window data to evaluate. |
+| `cel_error` | The CEL expression failed to evaluate. |
+| `resolved` | A previously triggered condition recovered. |
+
+Each log also records the **source** that produced the evaluation: `usage_observer`, `anomaly_sweeper`, `lb_latency`, `lb_degradation`, or `lb_key_health`.
+
+| Method | Endpoint | Filters |
+| --- | --- | --- |
+| `GET` | `/api/governance/alert-logs` | `rule_id`, `scope_type`, `decision`, `source`, `start_time`, `end_time`, `limit`, `offset` |
+| `GET` | `/api/governance/alert-rules/{id}/logs` | Same filters, scoped to one rule. |
+
+Evaluation logs are retained for `log_retention_days` (default 365) and pruned daily. See [Configuration](/enterprise/alerting/overview#configuration).
+
+---
+
+## Audit logs
+
+Every create, update, and delete of an alert rule or channel is recorded with the actor, action, and the previous and new values.
+
+| Method | Endpoint | Filters |
+| --- | --- | --- |
+| `GET` | `/api/governance/alert-audit-logs` | `channel_id`, `rule_id`, `user_id`, `action`, `start_time`, `end_time`, `limit`, `offset` |
+
+For administrative activity across all of Bifrost Enterprise, see [Audit Logs](/enterprise/audit-logs).
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Rules" icon="gavel" href="/enterprise/alerting/alert-rules">
+    Tune conditions, scopes, and cooldowns based on what you see in history.
+  </Card>
+  <Card title="Audit Logs" icon="scroll" href="/enterprise/audit-logs">
+    Review administrative activity across the gateway.
+  </Card>
+</CardGroup>
