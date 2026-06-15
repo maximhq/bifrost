@@ -44,7 +44,7 @@ export interface SkillVersion {
   created_at: string;
 }
 
-// Lean version summary returned in skill detail and version list responses.
+// Lean version summary returned in version list responses.
 export type SkillVersionSummary = Pick<
   SkillVersion,
   "id" | "skill_id" | "version" | "created_by" | "created_at"

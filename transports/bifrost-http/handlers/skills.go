@@ -265,7 +265,7 @@ func (h *SkillsHandler) cleanupOrphanFiles(ctx *fasthttp.RequestCtx) {
 }
 
 // CleanupOrphanSkillFiles removes DB fallback blobs and unreferenced upload objects.
-// When force is false, a 30-minute grace period protects freshly uploaded pending files.
+// When force is false, a 24-hour grace period protects freshly uploaded pending files.
 func CleanupOrphanSkillFiles(ctx context.Context, store configstore.ConfigStore, objectStore objectstore.ObjectStore, force bool) (SkillOrphanCleanupResult, error) {
 	var result SkillOrphanCleanupResult
 	if store == nil {
@@ -304,7 +304,7 @@ func CleanupOrphanSkillFiles(ctx context.Context, store configstore.ConfigStore,
 		referenced[key] = struct{}{}
 	}
 
-	// Only reap unreferenced objects older than 30 minutes unless force is set.
+	// Only reap unreferenced objects older than the grace period unless force is set.
 	orphanKeys := make([]string, 0)
 	if force {
 		for _, obj := range uploadObjects {
@@ -313,7 +313,7 @@ func CleanupOrphanSkillFiles(ctx context.Context, store configstore.ConfigStore,
 			}
 		}
 	} else {
-		cutoff := time.Now().Add(-30 * time.Minute)
+		cutoff := time.Now().Add(-configstore.SkillOrphanCleanupGracePeriod)
 		for _, obj := range uploadObjects {
 			if _, ok := referenced[obj.Key]; !ok && obj.LastModified.Before(cutoff) {
 				orphanKeys = append(orphanKeys, obj.Key)
