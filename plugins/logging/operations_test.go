@@ -382,6 +382,76 @@ func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
 	}
 }
 
+// TestActiveStreamSurvivesCleanup is the regression test for the prod issue where
+// streaming requests running longer than the pending TTL had their in-memory
+// pending entry evicted mid-flight (causing the final log row to be lost and a
+// per-chunk "no pending log data found" warning). An entry whose CreatedAt is
+// older than the TTL but whose LastActivity is recent must NOT be reaped.
+func TestActiveStreamSurvivesCleanup(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	oldCreatedAt := time.Now().Add(-pendingLogTTL - time.Minute)
+	pending := &PendingLogData{
+		RequestID:   "req-active-stream",
+		Timestamp:   oldCreatedAt,
+		Status:      "processing",
+		InitialData: &InitialLogData{Object: "chat.completion.chunk"},
+		CreatedAt:   oldCreatedAt,
+	}
+	// Simulate a chunk that arrived just now: request started long ago but is
+	// still actively streaming.
+	pending.LastActivity.Store(time.Now().UnixNano())
+	plugin.pendingLogsEntries.Store("req-active-stream", pending)
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingLogsEntries.Load("req-active-stream"); !ok {
+		t.Fatal("expected actively-streaming pending entry to survive cleanup")
+	}
+}
+
+// TestIdlePendingEntryEvicted verifies the reaper still removes genuinely dead
+// requests: an entry whose CreatedAt AND LastActivity are both older than the
+// TTL (no chunk activity for the whole idle window) must be deleted.
+func TestIdlePendingEntryEvicted(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+	pending := &PendingLogData{
+		RequestID:   "req-idle",
+		Timestamp:   stale,
+		Status:      "processing",
+		InitialData: &InitialLogData{Object: "chat.completion.chunk"},
+		CreatedAt:   stale,
+	}
+	pending.LastActivity.Store(stale.UnixNano())
+	plugin.pendingLogsEntries.Store("req-idle", pending)
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingLogsEntries.Load("req-idle"); ok {
+		t.Fatal("expected idle pending entry to be evicted by cleanup")
+	}
+}
+
 // TestPreMCPHookSkipsPrefixedCodemodeTool verifies that PreMCP skips codemode
 // meta-tools invoked with a client prefix (e.g. "myclient-executeToolCode"),
 // not just bare names. Otherwise PostMCP — which sees the stripped bare name —
