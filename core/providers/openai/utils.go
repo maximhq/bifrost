@@ -139,6 +139,21 @@ func supportsMaxReasoningEffort(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "deepseek-v4")
 }
 
+// isDeepSeekReasoningModel reports whether the model is a DeepSeek model that
+// supports the thinking toggle. Only reasoning-capable DeepSeek models accept
+// the "thinking" parameter; non-reasoning models (deepseek-chat, deepseek-coder,
+// deepseek-v3) will reject it with a 400 error.
+func isDeepSeekReasoningModel(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.DeepSeek)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	modelLower := strings.ToLower(model)
+	return strings.HasPrefix(modelLower, "deepseek-reasoner") ||
+		strings.HasPrefix(modelLower, "deepseek-r1") ||
+		strings.HasPrefix(modelLower, "deepseek-v4")
+}
+
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
 const MaxUserFieldLength = 64
 

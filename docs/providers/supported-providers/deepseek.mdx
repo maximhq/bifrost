@@ -1,0 +1,308 @@
+---
+title: "DeepSeek"
+description: "DeepSeek API conversion guide - OpenAI-compatible format, thinking mode, reasoning effort, KV cache tracking, and tool support"
+icon: "brain"
+---
+
+## Overview
+
+DeepSeek is an **OpenAI-compatible provider** offering chat completions with native thinking/reasoning support. 
+Bifrost delegates most functionality to the OpenAI provider implementation with DeepSeek-specific handling for thinking mode and KV cache reporting. 
+
+Key features:
+- **Full OpenAI compatibility** - Identical request/response format for basic chat
+- **Thinking mode** - Native chain-of-thought reasoning with effort control via the `thinking` toggle
+- **Reasoning effort control** - Supports `max` (DeepSeek V4) and `high` levels
+- **KV cache tracking** - `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` reported per-request
+- **Streaming support** - Server-Sent Events with delta-based updates
+- **Tool calling** - Complete function definition and execution support
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` (converted) |
+| List Models | ✅ | - | `/v1/models` |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream DeepSeek API. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure DeepSeek as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **DeepSeek** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **DeepSeek**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your DeepSeek API key directly or use an environment variable (for example, `env.DEEPSEEK_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "deepseek": {
+      "keys": [
+        {
+          "name": "deepseek-key-1",
+          "value": "env.DEEPSEEK_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+The default Base URL is `https://api.deepseek.com`. Override via `network_config.base_url` if needed.
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.DeepSeek:
+    return []schemas.Key{{
+        Name:   "deepseek-key-1",
+        Value:  *schemas.NewEnvVar("env.DEEPSEEK_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+DeepSeek supports all standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Thinking Mode
+
+DeepSeek provides a native thinking/reasoning toggle that controls whether the model produces chain-of-thought reasoning before the final answer. Bifrost maps the internal `Reasoning` structure to DeepSeek's `thinking` field:
+
+| Bifrost Input | DeepSeek Wire Format | Behavior |
+|--------------|---------------------|----------|
+| `reasoning: { enabled: true }` | `"thinking": {"type": "enabled"}` | Enables thinking mode (default) |
+| `reasoning: { enabled: false }` | `"thinking": {"type": "disabled"}` | Disables thinking mode |
+| `reasoning: { effort: "none" }` | `"thinking": {"type": "disabled"}` | Also disables thinking |
+| *(no reasoning config)* | `"thinking": {"type": "enabled"}` | DeepSeek default is enabled |
+
+### Reasoning Effort
+
+DeepSeek V4 supports two effort levels via `reasoning_effort`. Bifrost normalizes values as follows:
+
+| Input Effort | Normalized | DeepSeek Behavior |
+|-------------|-----------|-------------------|
+| `"max"` | `"max"` | Preserved for `deepseek-v4*` models |
+| `"high"` | `"high"` | Passed through |
+| `"medium"` | `"medium"` | DeepSeek internally maps to `high` |
+| `"low"` | `"low"` | DeepSeek internally maps to `high` |
+| `"xhigh"` | `"max"` (V4) / `"high"` (other) | Mapped to `max` for V4 models |
+| `"minimal"` | `"low"` | Normalized down |
+| `"none"` | — | Disables thinking mode |
+
+### Dropped Parameters
+
+These parameters are silently removed before sending to DeepSeek:
+- `prompt_cache_key` - Not supported
+- `verbosity` - Anthropic-specific
+- `store` - Not supported
+- `prediction` - Not supported
+- `web_search_options` - Not supported
+
+<Note>
+**Temperature, top_p, presence_penalty, frequency_penalty**: These parameters are accepted by DeepSeek but will have no effect when thinking mode is enabled.
+</Note>
+
+### KV Cache Tracking
+
+DeepSeek reports cache hit/miss information in every response. Bifrost captures these fields in the `usage` object:
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 160,
+    "prompt_tokens_details": {
+      "cached_tokens": 128
+    },
+    "completion_tokens": 45,
+    "total_tokens": 205,
+    "prompt_cache_hit_tokens": 128,
+    "prompt_cache_miss_tokens": 32
+  }
+}
+```
+
+| Field | Source | Description |
+|-------|--------|-------------|
+| `prompt_cache_hit_tokens` | DeepSeek KV cache API | Tokens served from disk cache |
+| `prompt_cache_miss_tokens` | DeepSeek KV cache API | Tokens that missed cache |
+| `prompt_tokens_details.cached_tokens` | OpenAI standard aggregate | Sum of cached prompt tokens |
+
+The `prompt_cache_hit_tokens` field feeds into the pricing engine: cached tokens are billed at the cache read rate when available (`cache_read_input_token_cost`) instead of the full input rate.
+
+The KV cache operates on a best-effort basis. Cache prefix units are persisted at request boundaries, common prefix detection, and fixed token intervals. See [DeepSeek KV Cache docs](https://api-docs.deepseek.com/guides/kv_cache) for details.
+
+## Reasoning Content
+
+When thinking mode is enabled, the response includes chain-of-thought reasoning accessible via `reasoning_content` and `reasoning_details`:
+
+```json
+{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": "The capital of France is Paris.",
+      "reasoning_content": "The user is asking about the capital of France. I know that Paris is the capital...",
+      "reasoning_details": [{
+        "type": "reasoning.text",
+        "text": "The user is asking about the capital of France..."
+      }]
+    }
+  }],
+  "usage": {
+    "completion_tokens_details": {
+      "reasoning_tokens": 42
+    }
+  }
+}
+```
+
+## Message Conversion
+
+DeepSeek uses OpenAI message format with the following content type limitations:
+
+**Content Types Supported:**
+- ✅ Text content (strings)
+- ❌ Images (neither URL nor base64)
+- ❌ Audio input
+- ❌ Files
+
+For all other message handling, tools, responses, and streaming formats, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+The Responses API is converted internally to Chat Completions:
+
+```go
+// Responses request → Chat request conversion
+request.ToChatRequest() → ChatCompletion → ToBifrostResponsesResponse()
+```
+
+Same parameter mapping and message conversion as Chat Completions, including the thinking toggle and reasoning effort normalization.
+
+---
+
+# 3. List Models
+
+DeepSeek's model listing endpoint returns available models. Models are typically `deepseek-v4-flash` and `deepseek-v4-pro`. When the API key is invalid, Bifrost gracefully falls back to the static pricing datasheet for model metadata.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Image URLs | DeepSeek doesn't support image inputs |
+| Image Base64 | DeepSeek doesn't support image inputs |
+| Multiple Images | DeepSeek doesn't support image inputs |
+| Embedding | Not offered by DeepSeek API |
+| Speech/TTS | Not offered by DeepSeek API |
+| Transcription/STT | Not offered by DeepSeek API |
+| Batch Operations | Not offered by DeepSeek API |
+| File Management | Not offered by DeepSeek API |
+
+---
+
+## Pricing
+
+DeepSeek pricing is sourced from the [Bifrost pricing datasheet](https://getbifrost.ai/datasheet), synced every 24 hours. Current entries cover `deepseek-chat`, `deepseek-v3`, `deepseek-r1`, `deepseek-coder`, and `deepseek-reasoner`.
+
+DeepSeek V4 models (`deepseek-v4-flash`, `deepseek-v4-pro`) do not yet have dedicated datasheet entries. Bifrost falls back through `deepseek-chat` then generic `deepseek` pricing when no exact match is found.
+
+### Pricing Overrides
+
+For exact per-model pricing, use `pricing_overrides` in your configuration. These take precedence over the datasheet:
+
+```json
+{
+  "general": { "port": 8080 },
+  "providers": {
+    "deepseek": {
+      "keys": [
+        {
+          "value": "env.DEEPSEEK_API_KEY",
+          "models": ["*"]
+        }
+      ]
+    }
+  },
+  "pricing_overrides": [
+    {
+      "model": "deepseek-v4-flash",
+      "provider": "deepseek",
+      "mode": "chat",
+      "input_cost_per_token": 2.8e-07,
+      "output_cost_per_token": 4.2e-07,
+      "cache_read_input_token_cost": 2.8e-08,
+      "cache_creation_input_token_cost": 0
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "provider": "deepseek",
+      "mode": "chat",
+      "input_cost_per_token": 5.5e-07,
+      "output_cost_per_token": 2.19e-06,
+      "cache_read_input_token_cost": 7.0e-08,
+      "cache_creation_input_token_cost": 0
+    }
+  ]
+}
+```
+
+Refer to DeepSeek's [official pricing page](https://api-docs.deepseek.com/quick_start/pricing) for current rates.
+
+## Caveats
+
+<Accordion title="Reasoning Effort on non-V4 models">
+**Severity**: Low
+**Behavior**: `reasoning_effort: "max"` is normalized to `"high"` for models other than `deepseek-v4*`
+**Impact**: Non-V4 models don't support the `max` effort level
+</Accordion>
+
+<Accordion title="KV Cache Persistence">
+**Severity**: Low
+**Behavior**: Cache prefixes are persisted on a best-effort basis. A cache hit requires exact prefix unit matching.
+**Impact**: Cache hit rate depends on prompt similarity. Short prompts (~10 tokens) rarely hit cache.
+**Docs**: [DeepSeek KV Cache Guide](https://api-docs.deepseek.com/guides/kv_cache)
+</Accordion>
+
+<Accordion title="Pricing Fallback">
+**Severity**: Low
+**Behavior**: DeepSeek V4 models (`deepseek-v4-flash`, `deepseek-v4-pro`) fall back to `deepseek-chat` pricing when no exact datasheet entry exists
+**Resolution**: Use `pricing_overrides` in `config.json` (see [Pricing section](#pricing)) for exact per-model rates
+</Accordion>

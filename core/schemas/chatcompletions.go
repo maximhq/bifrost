@@ -1615,6 +1615,12 @@ type BifrostLLMUsage struct {
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
 	Cost                    *BifrostCost                 `json:"cost,omitempty"` // Only for the providers which support cost calculation
+
+	// DeepSeek-specific: raw cache hit/miss breakdown (required in DeepSeek responses).
+	// These sit alongside prompt_tokens_details.cached_tokens which DeepSeek also sends.
+	// prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens.
+	PromptCacheHitTokens    int                          `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens   int                          `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 type ChatPromptTokensDetails struct {

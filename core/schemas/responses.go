@@ -803,6 +803,12 @@ type ResponsesResponseInputTokens struct {
 	CachedReadTokens        int                          `json:"cached_read_tokens"`
 	CachedWriteTokens       int                          `json:"cached_write_tokens"`
 	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
+
+	// DeepSeek-specific: raw cache hit/miss breakdown.
+	// These sit alongside cached_read_tokens which DeepSeek also sends.
+	// prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens.
+	PromptCacheHitTokens    int                          `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens   int                          `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
@@ -815,6 +821,8 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
 		CachedTokens            *int                         `json:"cached_tokens"`
+		PromptCacheHitTokens    int                          `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens   int                          `json:"prompt_cache_miss_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -825,9 +833,16 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	d.CachedReadTokens = raw.CachedReadTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
 	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
+	d.PromptCacheHitTokens = raw.PromptCacheHitTokens
+	d.PromptCacheMissTokens = raw.PromptCacheMissTokens
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
+	}
+	// Fallback: if DeepSeek-specific prompt_cache_hit_tokens is available but
+	// CachedReadTokens was not populated via cached_tokens, use it directly.
+	if d.CachedReadTokens == 0 && raw.PromptCacheHitTokens > 0 {
+		d.CachedReadTokens = raw.PromptCacheHitTokens
 	}
 	return nil
 }
@@ -842,6 +857,8 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 		CachedTokens            int                          `json:"cached_tokens"`
+		PromptCacheHitTokens    int                          `json:"prompt_cache_hit_tokens,omitempty"`
+		PromptCacheMissTokens   int                          `json:"prompt_cache_miss_tokens,omitempty"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -851,6 +868,8 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens + d.CachedWriteTokens,
+		PromptCacheHitTokens:    d.PromptCacheHitTokens,
+		PromptCacheMissTokens:   d.PromptCacheMissTokens,
 	})
 }
 

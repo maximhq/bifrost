@@ -51,6 +51,7 @@ export const ModelPlaceholders = {
 	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
+	deepseek: "e.g. deepseek-chat, deepseek-v4-pro",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -79,6 +80,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	runway: true,
 	vllm: false,
 	fireworks: true,
+	deepseek: true,
 };
 
 export const DefaultNetworkConfig = {

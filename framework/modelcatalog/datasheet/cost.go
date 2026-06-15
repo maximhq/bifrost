@@ -364,6 +364,13 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		}
 	}
 
+	// DeepSeek-specific fallback: prompt_cache_hit_tokens is a top-level usage field
+	// that DeepSeek always includes. Use it when PromptTokensDetails.CachedReadTokens
+	// is unavailable (e.g. responses API path or older provider versions).
+	if cachedReadTokens == 0 && usage.PromptCacheHitTokens > 0 {
+		cachedReadTokens = usage.PromptCacheHitTokens
+	}
+
 	inputRate := tieredInputRate(pricing, totalTokens, tier)
 	outputRate := tieredOutputRate(pricing, totalTokens, tier)
 	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, totalTokens, tier)
@@ -1138,6 +1145,46 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 				if ok {
 					return &pricing, true
 				}
+			}
+		}
+	}
+
+	// DeepSeek-specific fallback: V4 models (deepseek-v4-flash, deepseek-v4-pro)
+	// may not have specific pricing entries in the datasheet yet. Fall back through
+	// the model hierarchy: 1) deepseek-chat (latest chat), 2) generic deepseek.
+	// TODO: scheduled for removal
+	// WHEN: datasheed updated for deepseek pricing
+	// WHY: fallbacks hopefully not necessary anymore at that point
+	if provider == string(schemas.DeepSeek) {
+		if strings.HasPrefix(model, "deepseek-v4") {
+			s.logger.Debug("primary lookup failed, trying deepseek-chat pricing for %s", model)
+			pricing, ok = s.pricingData[makeKey("deepseek-chat", provider, mode)]
+			if ok {
+				return &pricing, true
+			}
+
+			// Lookup in chat if responses/compaction not found
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
+				s.logger.Debug("secondary lookup failed, trying deepseek-chat in chat completion for %s", model)
+				pricing, ok = s.pricingData[makeKey("deepseek-chat", provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+				if ok {
+					return &pricing, true
+				}
+			}
+		}
+
+		s.logger.Debug("tertiary lookup failed, trying generic deepseek pricing for %s", model)
+		pricing, ok = s.pricingData[makeKey("deepseek", provider, mode)]
+		if ok {
+			return &pricing, true
+		}
+
+		// Lookup in chat if responses/compaction not found
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
+			s.logger.Debug("quaternary lookup failed, trying generic deepseek in chat completion for %s", model)
+			pricing, ok = s.pricingData[makeKey("deepseek", provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			if ok {
+				return &pricing, true
 			}
 		}
 	}
