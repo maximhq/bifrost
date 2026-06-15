@@ -259,6 +259,36 @@ Offload LLM request/response logs and MCP tool logs from the database to S3 or G
 <Tabs>
 <Tab title="AWS S3">
 
+#### Required IAM Permissions
+
+The IAM user or role needs the following permissions on your bucket:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketAccess",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::bifrost-logs"
+    },
+    {
+      "Sid": "ObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:PutObjectTagging",
+        "s3:GetObjectTagging"
+      ],
+      "Resource": "arn:aws:s3:::bifrost-logs/*"
+    }
+  ]
+}
+```
+
 ```json
 {
   "logs_store": {
