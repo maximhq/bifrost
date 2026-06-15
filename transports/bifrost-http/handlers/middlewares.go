@@ -869,7 +869,7 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// Check user-configured whitelisted routes
 		if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
 			if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-				if strings.HasSuffix(route, "*") {
+				if _, found := strings.CutSuffix(route, "*"); found {
 					return strings.HasPrefix(url, strings.TrimSuffix(route, "*"))
 				}
 				return false

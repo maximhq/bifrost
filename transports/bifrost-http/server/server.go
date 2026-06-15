@@ -836,6 +836,11 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
 		s.AuthMiddleware.UpdateTempTokenAuthEnabled(config.MCPEnableTempTokenAuth)
 	}
+	// Updating governance plugin
+	governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
+	if govErr == nil && governancePlugin != nil {
+		governancePlugin.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
+	}
 	// Reloading config in bifrost client
 	if s.Client != nil {
 		account := lib.NewBaseAccount(s.Config)

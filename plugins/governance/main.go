@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ type BaseGovernancePlugin interface {
 	PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
+	UpdateWhitelistedRoutes(routes []string)
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -86,6 +88,9 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+
+	// Whitelisted routes to skip VK checks
+	whitelistedRoutes atomic.Pointer[[]string]
 
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 }
@@ -331,6 +336,11 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 	}
+	// Loading whitelisted routes from config store
+	clientConfig, err := configStore.GetClientConfig(context.Background())
+	if err == nil && clientConfig != nil {
+		plugin.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
+	}
 	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, nil))
 	return plugin, nil
 }
@@ -338,6 +348,11 @@ func InitFromStore(
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
+func (p *GovernancePlugin) UpdateWhitelistedRoutes(routes []string) {
+	p.whitelistedRoutes.Store(&routes)
 }
 
 // ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
@@ -357,6 +372,7 @@ func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.Anal
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
 }
 
+// resolveAnalyzerConfigFromStoreOrArg returns the complexity analyzer config from the store or the provided config argument.
 func resolveAnalyzerConfigFromStoreOrArg(
 	ctx context.Context,
 	logger schemas.Logger,
@@ -399,6 +415,17 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 // large-payload requests via PreRequestHook reading LargePayloadMetadata, and realtime WS
 // upgrades via the realtime handler's explicit RunPreRequestHooks call.
 func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	// Here if whitelisted paths are available - we will add it to the context
+	if configuredRoutes := p.whitelistedRoutes.Load(); configuredRoutes != nil {
+		if slices.Contains(*configuredRoutes, req.Path) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
+			if _, found := strings.CutSuffix(route, "*"); found {
+				return strings.HasPrefix(req.Path, strings.TrimSuffix(route, "*"))
+			}
+			return false
+		}) != -1 {
+			ctx.SetValue(schemas.BifrostContextKeyWhitelistedRoute, true)
+		}
+	}
 	return nil, nil
 }
 
