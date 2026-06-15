@@ -807,7 +807,7 @@ func (tracker *gigaChatResponsesCallIDTracker) FunctionCallID(toolsStateID *stri
 	if trimmed == "" {
 		return fallback
 	}
-	publicID := tracker.nextCallID(trimmed)
+	publicID := tracker.nextCallID(trimmed, name)
 	if tracker != nil {
 		key := tracker.invocationKey(trimmed, name)
 		tracker.pendingByInvocation[key] = append(tracker.pendingByInvocation[key], publicID)
@@ -832,25 +832,26 @@ func (tracker *gigaChatResponsesCallIDTracker) FunctionResultID(toolsStateID *st
 			return publicID
 		}
 	}
-	return tracker.nextCallID(trimmed)
+	return tracker.nextCallID(trimmed, name)
 }
 
-func (tracker *gigaChatResponsesCallIDTracker) nextCallID(toolsStateID string) string {
+func (tracker *gigaChatResponsesCallIDTracker) nextCallID(toolsStateID string, name string) string {
 	ordinal := 0
 	if tracker != nil {
 		ordinal = tracker.counts[toolsStateID]
 		tracker.counts[toolsStateID] = ordinal + 1
 	}
-	return newGigaChatResponsesGeneratedCallID(toolsStateID, ordinal)
+	return newGigaChatResponsesGeneratedCallID(toolsStateID, name, ordinal)
 }
 
 func (tracker *gigaChatResponsesCallIDTracker) invocationKey(toolsStateID string, name string) string {
 	return toolsStateID + "\x00" + strings.TrimSpace(name)
 }
 
-func newGigaChatResponsesGeneratedCallID(toolsStateID string, ordinal int) string {
+func newGigaChatResponsesGeneratedCallID(toolsStateID string, name string, ordinal int) string {
 	encodedToolsStateID := base64.RawURLEncoding.EncodeToString([]byte(toolsStateID))
-	return fmt.Sprintf("%s%s.%s.%d", gigaChatResponsesGeneratedCallIDPrefix, gigaChatResponsesGeneratedCallIDVersion, encodedToolsStateID, ordinal)
+	encodedName := base64.RawURLEncoding.EncodeToString([]byte(strings.TrimSpace(name)))
+	return fmt.Sprintf("%s%s.%s.%s.%d", gigaChatResponsesGeneratedCallIDPrefix, gigaChatResponsesGeneratedCallIDVersion, encodedToolsStateID, encodedName, ordinal)
 }
 
 func toGigaChatResponsesMessageToolStateID(message GigaChatResponsesMessage) *string {
@@ -1287,6 +1288,9 @@ func toGigaChatResponsesFunctionResultMessage(message schemas.ResponsesMessage, 
 		name = functionCallNamesByID[trimStringPtr(message.ID)]
 	}
 	if name == "" {
+		name = toGigaChatResponsesFunctionNameFromCallID(trimStringPtr(message.ResponsesToolMessage.CallID))
+	}
+	if name == "" {
 		return nil, fmt.Errorf("function_call_output item name is required")
 	}
 
@@ -1322,27 +1326,52 @@ func toGigaChatResponsesToolsStateIDFromCallID(callID string) string {
 	if trimmed == "" {
 		return ""
 	}
-	if !strings.HasPrefix(trimmed, gigaChatResponsesGeneratedCallIDPrefix) {
+	toolsStateID, _, ok := decodeGigaChatResponsesGeneratedCallID(trimmed)
+	if !ok {
 		return trimmed
+	}
+	return toolsStateID
+}
+
+func toGigaChatResponsesFunctionNameFromCallID(callID string) string {
+	_, name, ok := decodeGigaChatResponsesGeneratedCallID(callID)
+	if !ok {
+		return ""
+	}
+	return name
+}
+
+func decodeGigaChatResponsesGeneratedCallID(callID string) (string, string, bool) {
+	trimmed := strings.TrimSpace(callID)
+	if trimmed == "" || !strings.HasPrefix(trimmed, gigaChatResponsesGeneratedCallIDPrefix) {
+		return "", "", false
 	}
 
 	encoded := strings.TrimPrefix(trimmed, gigaChatResponsesGeneratedCallIDPrefix)
 	parts := strings.Split(encoded, ".")
-	if len(parts) != 3 || parts[0] != gigaChatResponsesGeneratedCallIDVersion {
-		return trimmed
+	if (len(parts) != 3 && len(parts) != 4) || parts[0] != gigaChatResponsesGeneratedCallIDVersion {
+		return "", "", false
 	}
-	if _, err := strconv.Atoi(parts[2]); err != nil {
-		return trimmed
+	ordinalIndex := len(parts) - 1
+	if _, err := strconv.Atoi(parts[ordinalIndex]); err != nil {
+		return "", "", false
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
+	decodedToolsStateID, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return trimmed
+		return "", "", false
 	}
-	toolsStateID := strings.TrimSpace(string(decoded))
+	toolsStateID := strings.TrimSpace(string(decodedToolsStateID))
 	if toolsStateID == "" {
-		return trimmed
+		return "", "", false
 	}
-	return toolsStateID
+	if len(parts) == 3 {
+		return toolsStateID, "", true
+	}
+	decodedName, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", "", false
+	}
+	return toolsStateID, strings.TrimSpace(string(decodedName)), true
 }
 
 func toGigaChatResponsesReasoningMessage(message schemas.ResponsesMessage) ([]GigaChatResponsesMessage, error) {
