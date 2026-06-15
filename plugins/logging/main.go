@@ -312,6 +312,7 @@ type LoggerPlugin struct {
 	logMsgPool             sync.Pool             // Pool for reusing LogMessage structs
 	updateDataPool         sync.Pool             // Pool for reusing UpdateLogData structs
 	pendingLogsEntries     sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	evictedPartials        sync.Map              // Maps requestID -> time.Time: partial rows persisted at eviction, awaiting DB-fallback reconcile
 	pendingLogsToInject    sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	pendingMCPLogsToInject sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
 	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
@@ -823,6 +824,51 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
 
 	if !hasPending {
+		// DB fallback: a request whose in-memory pending entry was evicted (e.g. a
+		// long-idle request) may still have a partial "processing" row that
+		// cleanupStalePendingLogs persisted before dropping it. On a terminal call,
+		// reconcile the output onto that row via a batched UPDATE instead of losing
+		// the log. Guarded by the same terminal condition as the pending lookup above
+		// so non-final streaming chunks never hit the DB on every chunk.
+		//
+		// Presence is decided by the in-memory evictedPartials marker first (set
+		// synchronously at eviction, so it is race-free even when the partial insert
+		// is still queued — the insert is enqueued before this update and processBatch
+		// applies inserts before updates). Only if that misses — e.g. a partial row
+		// persisted by a previous process instance — do we fall back to a DB read,
+		// using p.ctx (not the request ctx, which may already be cancelled on timeout).
+		if !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil {
+			_, present := p.evictedPartials.LoadAndDelete(requestID)
+			if !present {
+				if ok, perr := p.store.IsLogEntryPresent(p.ctx, requestID); perr == nil && ok {
+					present = true
+				}
+			}
+			if present {
+				p.logger.Warn("no pending log data found for request %s, reconciling output onto persisted partial row", requestID)
+				// No in-memory pending: tracer/traceID and metadata are unavailable, so
+				// streaming content cannot be re-accumulated — only the final result/error
+				// is persisted. The update writes non-zero output fields only, so the
+				// partial row's input and metadata columns are left intact.
+				upd := &logstore.Log{ID: requestID}
+				p.applyPostHookOutputToEntry(ctx, upd, &postHookOutput{
+					result: result, bifrostErr: bifrostErr, requestType: requestType, isFinalChunk: isFinalChunk,
+					selectedKeyID: selectedKeyID, selectedKeyName: selectedKeyName,
+					virtualKeyID: virtualKeyID, virtualKeyName: virtualKeyName,
+					routingRuleID: routingRuleID, routingRuleName: routingRuleName,
+					selectedPromptID: selectedPromptID, selectedPromptName: selectedPromptName, selectedPromptVersion: selectedPromptVersion,
+					teamID: teamID, teamName: teamName, customerID: customerID, customerName: customerName,
+					userID: userID, userName: userName, businessUnitID: businessUnitID, businessUnitName: businessUnitName,
+					numberOfRetries: numberOfRetries, attemptTrail: attemptTrail,
+					originalModelRequested: originalModelRequested, resolvedModelUsed: resolvedModelUsed,
+					resolvedKeyAlias: resolvedKeyAlias, shouldStoreRaw: shouldStoreRaw,
+					contentLoggingEnabled: contentLoggingEnabled, routingEngineLogs: formatRoutingEngineLogs(ctx.GetRoutingEngineLogs()),
+				})
+				p.enqueueLogUpdate(upd, p.makePostWriteCallback(nil))
+				p.scheduleDeferredUsageUpdate(ctx, requestID, upd.TokenUsageParsed != nil)
+				return result, bifrostErr, nil
+			}
+		}
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
 		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
 		// here means the error is completely lost.
@@ -913,6 +959,99 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	// Metadata comes from the in-memory pending input; merge any realtime metadata.
+	entry.MetadataParsed = pending.InitialData.Metadata
+	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
+
+	p.applyPostHookOutputToEntry(ctx, entry, &postHookOutput{
+		result: result, bifrostErr: bifrostErr, requestType: requestType, isFinalChunk: isFinalChunk,
+		tracer: tracer, traceID: traceID,
+		selectedKeyID: selectedKeyID, selectedKeyName: selectedKeyName,
+		virtualKeyID: virtualKeyID, virtualKeyName: virtualKeyName,
+		routingRuleID: routingRuleID, routingRuleName: routingRuleName,
+		selectedPromptID: selectedPromptID, selectedPromptName: selectedPromptName, selectedPromptVersion: selectedPromptVersion,
+		teamID: teamID, teamName: teamName, customerID: customerID, customerName: customerName,
+		userID: userID, userName: userName, businessUnitID: businessUnitID, businessUnitName: businessUnitName,
+		numberOfRetries: numberOfRetries, attemptTrail: attemptTrail,
+		originalModelRequested: originalModelRequested, resolvedModelUsed: resolvedModelUsed,
+		resolvedKeyAlias: resolvedKeyAlias, shouldStoreRaw: shouldStoreRaw,
+		contentLoggingEnabled: contentLoggingEnabled, routingEngineLogs: routingEngineLogs,
+	})
+	p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
+	return result, bifrostErr, nil
+}
+
+// postHookOutput bundles the response- and context-derived values needed to
+// populate output fields on a log entry. It is gathered once in PostLLMHook and
+// passed to applyPostHookOutputToEntry, which is shared by the normal write path
+// and the DB-fallback reconciliation path (evicted-pending recovery).
+type postHookOutput struct {
+	result       *schemas.BifrostResponse
+	bifrostErr   *schemas.BifrostError
+	requestType  schemas.RequestType
+	isFinalChunk bool
+	tracer       schemas.Tracer
+	traceID      string
+
+	// Identity / governance scalars forwarded to applyOutputFieldsToEntry.
+	selectedKeyID, selectedKeyName                              string
+	virtualKeyID, virtualKeyName                                string
+	routingRuleID, routingRuleName                              string
+	selectedPromptID, selectedPromptName, selectedPromptVersion string
+	teamID, teamName                                            string
+	customerID, customerName                                    string
+	userID, userName                                            string
+	businessUnitID, businessUnitName                            string
+	numberOfRetries                                             int
+	attemptTrail                                                []schemas.KeyAttemptRecord
+
+	originalModelRequested, resolvedModelUsed string
+	resolvedKeyAlias                          *schemas.ResolvedKeyAlias
+
+	shouldStoreRaw, contentLoggingEnabled bool
+	routingEngineLogs                     string
+}
+
+// applyPostHookOutputToEntry populates output, governance, cost, and status fields
+// on entry from the PostLLMHook response/context. It mutates entry only and does NOT
+// persist — callers own the write (insert on the normal path, BatchUpdate on the
+// DB-fallback path). Input and metadata fields are expected to already be present on
+// entry (normal path) or in the existing DB row (fallback path); this function never
+// writes them, so a partial-update caller leaves them intact.
+func (p *LoggerPlugin) applyPostHookOutputToEntry(ctx *schemas.BifrostContext, entry *logstore.Log, o *postHookOutput) {
+	result := o.result
+	bifrostErr := o.bifrostErr
+	requestType := o.requestType
+	isFinalChunk := o.isFinalChunk
+	tracer := o.tracer
+	traceID := o.traceID
+	selectedKeyID := o.selectedKeyID
+	selectedKeyName := o.selectedKeyName
+	virtualKeyID := o.virtualKeyID
+	virtualKeyName := o.virtualKeyName
+	routingRuleID := o.routingRuleID
+	routingRuleName := o.routingRuleName
+	selectedPromptID := o.selectedPromptID
+	selectedPromptName := o.selectedPromptName
+	selectedPromptVersion := o.selectedPromptVersion
+	teamID := o.teamID
+	teamName := o.teamName
+	customerID := o.customerID
+	customerName := o.customerName
+	userID := o.userID
+	userName := o.userName
+	businessUnitID := o.businessUnitID
+	businessUnitName := o.businessUnitName
+	numberOfRetries := o.numberOfRetries
+	attemptTrail := o.attemptTrail
+	originalModelRequested := o.originalModelRequested
+	resolvedModelUsed := o.resolvedModelUsed
+	resolvedKeyAlias := o.resolvedKeyAlias
+	shouldStoreRaw := o.shouldStoreRaw
+	contentLoggingEnabled := o.contentLoggingEnabled
+	routingEngineLogs := o.routingEngineLogs
+
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
@@ -954,8 +1093,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
 		entry.CustomerNamesParsed = customerNames
 	}
-	entry.MetadataParsed = pending.InitialData.Metadata
-	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
 
 	// Branch based on response type to populate output-specific fields
@@ -1004,9 +1141,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
-		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
-		return result, bifrostErr, nil
+		return
 	}
 
 	// Path B: Streaming final chunk
@@ -1096,9 +1231,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
 		}
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
-		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
-		return result, bifrostErr, nil
+		return
 	}
 
 	// Path C: Non-streaming response
@@ -1165,9 +1298,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			Name: *entry.RoutingRuleName,
 		}
 	}
-	p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
-	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
-	return result, bifrostErr, nil
 }
 
 // Cleanup is called when the plugin is being shut down. It stops the
