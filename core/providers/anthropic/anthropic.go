@@ -171,13 +171,40 @@ func extractAnthropicResponsesUsageFromPrefetch(data []byte) *schemas.ResponsesR
 	}
 }
 
-// completeRequest sends a request to Anthropic's API and handles the response.
-// It constructs the API URL, sets up authentication, and processes the response.
-// Returns the response body or an error if the request fails.
-// When large response streaming is activated (BifrostContextKeyLargeResponseMode set in ctx),
-// returns (nil, latency, nil) — callers must check the context flag.
-func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, requestType schemas.RequestType) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
-	// Create the request with the JSON body
+// anthropicRequestHeaders builds the auth/version headers for an Anthropic request: the API
+// version plus x-api-key when a key is present and Claude Code max-mode is off. Shared by the
+// provider's unary (completeRequest / HandleAnthropic*Request) and streaming paths.
+func (provider *AnthropicProvider) anthropicRequestHeaders(ctx *schemas.BifrostContext, key schemas.Key) map[string]string {
+	headers := map[string]string{
+		"anthropic-version": provider.apiVersion,
+	}
+	if key.Value.GetValue() != "" && !IsClaudeCodeMaxMode(ctx) {
+		headers["x-api-key"] = key.Value.GetValue()
+	}
+	return headers
+}
+
+// completeRequest sends a non-streaming Anthropic Messages API request over fasthttp and
+// returns the buffered response body, latency, and provider response headers. It is the single
+// unary request core for the package: the exported HandleAnthropic*Request handlers call it
+// (then parse), and the provider's TextCompletion / CountTokens paths call it directly. It
+// mirrors the request shaping of HandleAnthropicChatCompletionStreaming (header application,
+// beta filtering, large-payload request body, large-response detection) but reads a full
+// response instead of a stream. Auth and version headers are supplied by the caller via the
+// headers map. On a large response it returns a nil body and signals via the
+// BifrostContextKeyLargeResponseMode context value (set by FinalizeResponseWithLargeDetection).
+func completeRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	jsonBody []byte,
+	headers map[string]string,
+	extraHeaders map[string]string,
+	betaHeaderOverrides map[string]bool,
+	providerName schemas.ModelProvider,
+	requestType schemas.RequestType,
+	logger schemas.Logger,
+) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -188,35 +215,37 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 		}
 	}()
 
-	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
+
+	// Set network-config extra headers, excluding anthropic-beta (set explicitly below).
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+
+	// Force JSON content type after extra headers so network config can't override it
+	// (matches the original per-provider completeRequest ordering).
 	req.Header.SetContentType("application/json")
 
-	// Can be empty in case of passthrough or keyless custom provider
-	// Here we can avoid this - in case of passthrough completely
-	if key != "" && !IsClaudeCodeMaxMode(ctx) {
-		req.Header.Set("x-api-key", key)
-	}
-	req.Header.Set("anthropic-version", provider.apiVersion)
-
-	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Anthropic, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 	} else {
 		req.Header.Del(AnthropicBetaHeader)
 	}
 
-	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonData)
+	// Apply caller-supplied auth/version headers last so they win over network-config headers.
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
-	requestClient := provider.client
+	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
+
+	requestClient := client
 	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
 	isCountTokens := requestType == schemas.CountTokensRequest
-	// CountTokens responses are always tiny — skip streaming client so the response
-	// is buffered normally (same approach as OpenAI and Gemini count_tokens handlers).
+	// Count-tokens responses are always tiny — skip the large-response streaming client so the
+	// response is buffered normally.
 	if responseThreshold > 0 && !isCountTokens {
 		resp.StreamBody = true
-		requestClient = providerUtils.BuildLargeResponseClient(provider.client, responseThreshold)
+		requestClient = providerUtils.BuildLargeResponseClient(client, responseThreshold)
 	}
 
 	// Send the request
@@ -235,11 +264,11 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	// Handle error response — materialize stream body for error parsing
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		provider.logger.Debug("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body()))
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, latency, providerResponseHeaders, parseAnthropicError(resp)
 	}
 
-	// CountTokens uses buffered response (streaming skipped above) — decode directly.
+	// Count-tokens uses a buffered response (large-response streaming skipped above).
 	if isCountTokens {
 		body, err := providerUtils.CheckAndDecodeBody(resp)
 		if err != nil {
@@ -249,7 +278,7 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	}
 
 	// Delegate large response detection + normal buffered path to shared utility
-	body, isLarge, respErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
+	body, isLarge, respErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, logger)
 	if respErr != nil {
 		return nil, latency, providerResponseHeaders, respErr
 	}
@@ -361,7 +390,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	}
 
 	// Use struct directly for JSON marshaling (no beta headers for text completion)
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value.GetValue(), schemas.TextCompletionRequest)
+	responseBody, latency, providerResponseHeaders, err := completeRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), jsonData, provider.anthropicRequestHeaders(ctx, key), provider.networkConfig.ExtraHeaders, provider.networkConfig.BetaHeaderOverrides, provider.GetProviderKey(), schemas.TextCompletionRequest, provider.logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -422,26 +451,56 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
-	jsonData, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
-		IsStreaming:               false,
-		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-		ShouldSendBackRawResponse: provider.sendBackRawResponse,
-	})
+	return HandleAnthropicChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest),
+		request,
+		AnthropicRequestBuildConfig{
+			Provider:                  schemas.Anthropic,
+			IsStreaming:               false,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		},
+		provider.anthropicRequestHeaders(ctx, key),
+		provider.networkConfig.ExtraHeaders,
+		provider.logger,
+	)
+}
+
+// HandleAnthropicChatCompletionRequest builds the Anthropic Messages chat request body from
+// config, performs a non-streaming request, and parses the native Anthropic response into a
+// BifrostChatResponse. It is the unary counterpart to HandleAnthropicChatCompletionStreaming,
+// shared by the Anthropic, Azure, Vertex, and Bedrock providers. Callers supply the request,
+// the per-provider build config (Provider, Model, ShouldSendBackRaw*, BetaHeaderOverrides),
+// the request URL, and the auth/version headers (x-api-key, Bearer, SigV4, anthropic-version)
+// via the headers map; beta headers are filtered for config.Provider.
+func HandleAnthropicChatCompletionRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostChatRequest,
+	config AnthropicRequestBuildConfig,
+	headers map[string]string,
+	extraHeaders map[string]string,
+	logger schemas.Logger,
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	jsonBody, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, config)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value.GetValue(), schemas.ChatCompletionRequest)
+	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.ChatCompletionRequest, logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse)
 	}
 
-	// Large response mode: return lightweight response with metadata only
+	// Large response mode: return lightweight response with metadata only.
 	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
 		return &schemas.BifrostChatResponse{
 			Model: request.Model,
@@ -456,9 +515,9 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	response := AcquireAnthropicMessageResponse()
 	defer ReleaseAnthropicMessageResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse)
 	}
 	// Create final response
 	bifrostResponse := response.ToBifrostChatResponse(ctx)
@@ -466,17 +525,14 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-
 	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+	if providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest) {
 		bifrostResponse.ExtraFields.RawRequest = rawRequest
 	}
-
 	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+	if providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse) {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
-
 	return bifrostResponse, nil
 }
 
@@ -955,25 +1011,52 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
-	jsonBody, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
-		IsStreaming:               false,
-		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-		ShouldSendBackRawResponse: provider.sendBackRawResponse,
-	})
-	if err != nil {
-		return nil, err
+	return HandleAnthropicResponsesRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest),
+		request,
+		AnthropicRequestBuildConfig{
+			Provider:                  schemas.Anthropic,
+			IsStreaming:               false,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		},
+		provider.anthropicRequestHeaders(ctx, key),
+		provider.networkConfig.ExtraHeaders,
+		provider.logger,
+	)
+}
+
+// HandleAnthropicResponsesRequest is the Responses-API analogue of
+// HandleAnthropicChatCompletionRequest: it builds the Anthropic Messages request body from
+// config, performs a non-streaming request, and parses the native Anthropic response into a
+// BifrostResponsesResponse. Shared by the Anthropic, Azure, Vertex, and Bedrock providers.
+func HandleAnthropicResponsesRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostResponsesRequest,
+	config AnthropicRequestBuildConfig,
+	headers map[string]string,
+	extraHeaders map[string]string,
+	logger schemas.Logger,
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	jsonBody, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, config)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value.GetValue(), schemas.ResponsesRequest)
+	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.ResponsesRequest, logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse)
 	}
 
-	// Large response mode: return lightweight response with usage from preview for plugin pipeline.
+	// Large response mode: return lightweight response with usage from the prefetch preview.
 	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
 		preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
 		return &schemas.BifrostResponsesResponse{
@@ -993,9 +1076,9 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	response := AcquireAnthropicMessageResponse()
 	defer ReleaseAnthropicMessageResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse)
 	}
 
 	// Create final response
@@ -1004,17 +1087,14 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-
 	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+	if providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest) {
 		bifrostResponse.ExtraFields.RawRequest = rawRequest
 	}
-
 	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+	if providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse) {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
-
 	return bifrostResponse, nil
 }
 
@@ -2483,7 +2563,7 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), key.Value.GetValue(), schemas.CountTokensRequest)
+	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), jsonBody, provider.anthropicRequestHeaders(ctx, key), provider.networkConfig.ExtraHeaders, provider.networkConfig.BetaHeaderOverrides, provider.GetProviderKey(), schemas.CountTokensRequest, provider.logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
