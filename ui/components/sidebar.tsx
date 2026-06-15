@@ -1,5 +1,6 @@
 import {
   ArrowUpRight,
+  BookOpenText,
   BookUser,
   Boxes,
   BoxIcon,
@@ -84,12 +85,16 @@ import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
+import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
 // Cookie name for dismissing production setup card
 const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
+
+const newBadgeClassName =
+  "relative overflow-hidden after:pointer-events-none after:absolute after:inset-y-0 after:-left-full after:w-full after:skew-x-[-18deg] after:bg-gradient-to-r after:from-transparent after:via-primary/25 after:to-transparent after:opacity-0 after:content-[''] after:animate-[sidebar-new-badge-shine_1200ms_cubic-bezier(0.22,1,0.36,1)_260ms_both]";
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
@@ -173,6 +178,7 @@ interface SidebarItem {
   hasAccess: boolean;
   subItems?: SidebarItem[];
   tag?: string;
+  new?: boolean;
   isExternal?: boolean;
   queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
 }
@@ -290,7 +296,7 @@ const SidebarItemView = ({
 
   const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+  const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
     isHighlighted
       ? "bg-sidebar-accent text-accent-foreground border-primary/20"
       : isActive || isAnySubItemActive
@@ -311,6 +317,17 @@ const SidebarItemView = ({
         >
           {item.title}
         </span>
+        {item.new && (
+          <Badge
+            data-new-badge="true"
+            className={cn(
+              "ml-auto group-data-[collapsible=icon]:hidden",
+              newBadgeClassName,
+            )}
+          >
+            New
+          </Badge>
+        )}
         {item.tag && (
           <Badge
             variant="secondary"
@@ -458,6 +475,14 @@ const SidebarItemView = ({
                   >
                     {subItem.title}
                   </span>
+                  {subItem.new && (
+                    <Badge
+                      data-new-badge="true"
+                      className={cn("ml-auto", newBadgeClassName)}
+                    >
+                      New
+                    </Badge>
+                  )}
                   {subItem.tag && (
                     <Badge
                       variant="secondary"
@@ -517,7 +542,7 @@ const SidebarItemView = ({
               ? subItemHref.startsWith(highlightedUrl)
               : false;
             const SubItemIcon = subItem.icon;
-            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+            const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
               isSubItemHighlighted
                 ? "bg-sidebar-accent text-accent-foreground"
                 : isSubItemActive
@@ -538,6 +563,14 @@ const SidebarItemView = ({
                 >
                   {subItem.title}
                 </span>
+                {subItem.new && (
+                  <Badge
+                    data-new-badge="true"
+                    className={cn("ml-auto", newBadgeClassName)}
+                  >
+                    New
+                  </Badge>
+                )}
                 {subItem.tag && (
                   <Badge
                     variant="secondary"
@@ -717,6 +750,10 @@ export default function AppSidebar() {
   const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
   const hasPromptRepositoryAccess = useRbac(
     RbacResource.PromptRepository,
+    RbacOperation.View,
+  );
+  const hasSkillsRepositoryAccess = useRbac(
+    RbacResource.SkillsRepository,
     RbacOperation.View,
   );
   const hasAccessProfilesAccess = useRbac(
@@ -1025,6 +1062,14 @@ export default function AppSidebar() {
               description: "Prompt repository",
               hasAccess: hasPromptRepositoryAccess,
             },
+            {
+              title: "Skills Repository",
+              url: "/workspace/skills-repo",
+              icon: BookOpenText,
+              description: "Skills repository",
+              hasAccess: hasSkillsRepositoryAccess,
+              new: true,
+            },
           ]
         : []),
       {
@@ -1133,6 +1178,7 @@ export default function AppSidebar() {
       isAdaptiveRoutingAllowed,
       hasSettingsAccess,
       hasPromptRepositoryAccess,
+      hasSkillsRepositoryAccess,
       hasAccessProfilesAccess,
       isDbConnected,
     ],

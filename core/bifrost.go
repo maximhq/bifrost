@@ -34,6 +34,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
+	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
@@ -3965,6 +3966,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return ollama.NewOllamaProvider(config, bifrost.logger)
 	case schemas.Groq:
 		return groq.NewGroqProvider(config, bifrost.logger)
+	case schemas.OpencodeGo:
+		return opencode.NewOpencodeGoProvider(config, bifrost.logger)
+	case schemas.OpencodeZen:
+		return opencode.NewOpencodeZenProvider(config, bifrost.logger)
 	case schemas.SGL:
 		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
@@ -6852,7 +6857,6 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 		return
 	}
 	ctx.BlockRestrictedWrites()
-	defer ctx.UnblockRestrictedWrites()
 	for _, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-request hook for plugin %s", pluginName)
@@ -6875,6 +6879,20 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 			continue
 		}
 		p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+	}
+	ctx.UnblockRestrictedWrites()
+
+	// Commit the routing-rule key pin. A matched routing rule writes the pinned key ID to the
+	// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID during the blocked phase above — a
+	// direct write to the reserved BifrostContextKeyAPIKeyID would have been silently dropped.
+	// Core is the sole writer of the reserved key, so normalize the routing pin into it here,
+	// after unblocking, so key selection reads a single canonical pin. A non-empty routing pin
+	// overrides a caller-supplied pin: the routing rule is authoritative server-side policy and
+	// has typically already rewritten provider/model for this request.
+	if pin, ok := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); ok {
+		if pin = strings.TrimSpace(pin); pin != "" {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, pin)
+		}
 	}
 }
 
