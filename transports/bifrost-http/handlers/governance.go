@@ -561,7 +561,6 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 // The rateLimit carries only the limit/duration fields (no ID/usage).
 type vkModelConfigDesired struct {
 	provider          *string
-	providerConfigID  *uint
 	budgetsProvided   bool
 	budgets           []CreateBudgetRequest
 	rateLimitProvided bool
@@ -1266,7 +1265,6 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 					provider:          &providerNameStr,
-					providerConfigID:  &providerConfig.ID,
 					budgetsProvided:   true,
 					budgets:           pc.Budgets,
 					rateLimitProvided: pc.RateLimit != nil,
@@ -1547,7 +1545,6 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:          &pName,
-						providerConfigID:  &providerConfig.ID,
 						budgetsProvided:   true,
 						budgets:           pc.Budgets,
 						rateLimitProvided: pc.RateLimit != nil,
@@ -1607,7 +1604,6 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:          &pName,
-						providerConfigID:  &existing.ID,
 						budgetsProvided:   pc.Budgets != nil,
 						budgets:           pc.Budgets,
 						rateLimitProvided: pc.RateLimit != nil,
