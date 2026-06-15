@@ -298,6 +298,7 @@
           "type": "string",
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
+        },
         "sourceOfTruth": {
           "type": "string",
           "enum": ["split", "config.json"],
