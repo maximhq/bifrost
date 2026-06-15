@@ -1,7 +1,6 @@
 package tables
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -326,103 +325,15 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
+	if schemas.VaultStoreEnabled() {
+		if err := schemas.StoreOwnedVaultEnvVars(tx.Statement.Context,
+			schemas.VaultBasePath(k.TableName(), k.KeyID), k); err != nil {
+			return err
+		}
+	}
+
 	// Encrypt sensitive fields after serialization
-	if VaultIsEnabled() {
-		base := fmt.Sprintf("%s/%s/%s", VaultPrefix(), k.TableName(), k.KeyID)
-		namer := tx.Statement.DB.NamingStrategy
-		col := func(field string) string { return base + "/" + namer.ColumnName("", field) }
-		// For each field: best-effort remove stale vault entry when the field is being cleared
-		// or switched to an env-var, then store the new value (no-op if nil/empty/env-backed).
-		removeVaultEnvVar(tx.Statement.Context, col("Value"), &k.Value)
-		if err := vaultEnvVar(tx.Statement.Context, col("Value"), &k.Value); err != nil {
-			return fmt.Errorf("failed to vault key value: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("AzureEndpoint"), k.AzureEndpoint)
-		if err := vaultEnvVar(tx.Statement.Context, col("AzureEndpoint"), k.AzureEndpoint); err != nil {
-			return fmt.Errorf("failed to vault azure endpoint: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("AzureClientID"), k.AzureClientID)
-		if err := vaultEnvVar(tx.Statement.Context, col("AzureClientID"), k.AzureClientID); err != nil {
-			return fmt.Errorf("failed to vault azure client id: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("AzureClientSecret"), k.AzureClientSecret)
-		if err := vaultEnvVar(tx.Statement.Context, col("AzureClientSecret"), k.AzureClientSecret); err != nil {
-			return fmt.Errorf("failed to vault azure client secret: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("AzureTenantID"), k.AzureTenantID)
-		if err := vaultEnvVar(tx.Statement.Context, col("AzureTenantID"), k.AzureTenantID); err != nil {
-			return fmt.Errorf("failed to vault azure tenant id: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("VertexProjectID"), k.VertexProjectID)
-		if err := vaultEnvVar(tx.Statement.Context, col("VertexProjectID"), k.VertexProjectID); err != nil {
-			return fmt.Errorf("failed to vault vertex project id: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("VertexProjectNumber"), k.VertexProjectNumber)
-		if err := vaultEnvVar(tx.Statement.Context, col("VertexProjectNumber"), k.VertexProjectNumber); err != nil {
-			return fmt.Errorf("failed to vault vertex project number: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("VertexRegion"), k.VertexRegion)
-		if err := vaultEnvVar(tx.Statement.Context, col("VertexRegion"), k.VertexRegion); err != nil {
-			return fmt.Errorf("failed to vault vertex region: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("VertexAuthCredentials"), k.VertexAuthCredentials)
-		if err := vaultEnvVar(tx.Statement.Context, col("VertexAuthCredentials"), k.VertexAuthCredentials); err != nil {
-			return fmt.Errorf("failed to vault vertex auth credentials: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockAccessKey"), k.BedrockAccessKey)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockAccessKey"), k.BedrockAccessKey); err != nil {
-			return fmt.Errorf("failed to vault bedrock access key: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockSecretKey"), k.BedrockSecretKey)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockSecretKey"), k.BedrockSecretKey); err != nil {
-			return fmt.Errorf("failed to vault bedrock secret key: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockSessionToken"), k.BedrockSessionToken)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockSessionToken"), k.BedrockSessionToken); err != nil {
-			return fmt.Errorf("failed to vault bedrock session token: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockRegion"), k.BedrockRegion)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockRegion"), k.BedrockRegion); err != nil {
-			return fmt.Errorf("failed to vault bedrock region: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockARN"), k.BedrockARN)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockARN"), k.BedrockARN); err != nil {
-			return fmt.Errorf("failed to vault bedrock arn: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockRoleARN"), k.BedrockRoleARN)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockRoleARN"), k.BedrockRoleARN); err != nil {
-			return fmt.Errorf("failed to vault bedrock role arn: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockExternalID"), k.BedrockExternalID)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockExternalID"), k.BedrockExternalID); err != nil {
-			return fmt.Errorf("failed to vault bedrock external id: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("BedrockRoleSessionName"), k.BedrockRoleSessionName)
-		if err := vaultEnvVar(tx.Statement.Context, col("BedrockRoleSessionName"), k.BedrockRoleSessionName); err != nil {
-			return fmt.Errorf("failed to vault bedrock role session name: %w", err)
-		}
-		removeVaultString(tx.Statement.Context, col("BedrockBatchS3ConfigJSON"), k.BedrockBatchS3ConfigJSON)
-		if err := vaultString(tx.Statement.Context, col("BedrockBatchS3ConfigJSON"), k.BedrockBatchS3ConfigJSON); err != nil {
-			return fmt.Errorf("failed to vault bedrock batch s3 config: %w", err)
-		}
-		removeVaultString(tx.Statement.Context, col("AliasesJSON"), k.AliasesJSON)
-		if err := vaultString(tx.Statement.Context, col("AliasesJSON"), k.AliasesJSON); err != nil {
-			return fmt.Errorf("failed to vault aliases: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("VLLMUrl"), k.VLLMUrl)
-		if err := vaultEnvVar(tx.Statement.Context, col("VLLMUrl"), k.VLLMUrl); err != nil {
-			return fmt.Errorf("failed to vault vllm url: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("OllamaUrl"), k.OllamaUrl)
-		if err := vaultEnvVar(tx.Statement.Context, col("OllamaUrl"), k.OllamaUrl); err != nil {
-			return fmt.Errorf("failed to vault ollama url: %w", err)
-		}
-		removeVaultEnvVar(tx.Statement.Context, col("SGLUrl"), k.SGLUrl)
-		if err := vaultEnvVar(tx.Statement.Context, col("SGLUrl"), k.SGLUrl); err != nil {
-			return fmt.Errorf("failed to vault sgl url: %w", err)
-		}
-		k.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() {
+	if encrypt.IsEnabled() {
 		if err := encryptEnvVar(&k.Value); err != nil {
 			return fmt.Errorf("failed to encrypt key value: %w", err)
 		}
@@ -505,79 +416,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 // structs after reading from the database. Decryption runs first so that value copies into
 // AzureKeyConfig, VertexKeyConfig, etc. receive plaintext data.
 func (k *TableKey) AfterFind(tx *gorm.DB) error {
-	// Decrypt sensitive fields before deserialization/reconstruction
 	switch k.EncryptionStatus {
-	case EncryptionStatusVault:
-		ctx := context.Background()
-		if tx != nil && tx.Statement != nil && tx.Statement.Context != nil {
-			ctx = tx.Statement.Context
-		}
-		if err := resolveVaultEnvVar(ctx, &k.Value); err != nil {
-			return fmt.Errorf("failed to resolve vault key value: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.AzureEndpoint); err != nil {
-			return fmt.Errorf("failed to resolve vault azure endpoint: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.AzureClientID); err != nil {
-			return fmt.Errorf("failed to resolve vault azure client id: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.AzureClientSecret); err != nil {
-			return fmt.Errorf("failed to resolve vault azure client secret: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.AzureTenantID); err != nil {
-			return fmt.Errorf("failed to resolve vault azure tenant id: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.VertexProjectID); err != nil {
-			return fmt.Errorf("failed to resolve vault vertex project id: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.VertexProjectNumber); err != nil {
-			return fmt.Errorf("failed to resolve vault vertex project number: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.VertexRegion); err != nil {
-			return fmt.Errorf("failed to resolve vault vertex region: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.VertexAuthCredentials); err != nil {
-			return fmt.Errorf("failed to resolve vault vertex auth credentials: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockAccessKey); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock access key: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockSecretKey); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock secret key: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockSessionToken); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock session token: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockRegion); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock region: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockARN); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock arn: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockRoleARN); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock role arn: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockExternalID); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock external id: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.BedrockRoleSessionName); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock role session name: %w", err)
-		}
-		if err := resolveVaultString(ctx, k.BedrockBatchS3ConfigJSON); err != nil {
-			return fmt.Errorf("failed to resolve vault bedrock batch s3 config: %w", err)
-		}
-		if err := resolveVaultString(ctx, k.AliasesJSON); err != nil {
-			return fmt.Errorf("failed to resolve vault aliases: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.VLLMUrl); err != nil {
-			return fmt.Errorf("failed to resolve vault vllm url: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.OllamaUrl); err != nil {
-			return fmt.Errorf("failed to resolve vault ollama url: %w", err)
-		}
-		if err := resolveVaultEnvVar(ctx, k.SGLUrl); err != nil {
-			return fmt.Errorf("failed to resolve vault sgl url: %w", err)
-		}
 	case EncryptionStatusEncrypted:
 		if err := decryptEnvVar(&k.Value); err != nil {
 			return fmt.Errorf("failed to decrypt key value: %w", err)
@@ -795,23 +634,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 
 // AfterDelete hook for best-effort vault cleanup on row deletion.
 func (k *TableKey) AfterDelete(tx *gorm.DB) error {
-	if k.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	colName := func(field string) string {
-		return tx.Statement.DB.NamingStrategy.ColumnName("", field)
-	}
-	base := fmt.Sprintf("%s/%s/%s", VaultPrefix(), k.TableName(), k.KeyID)
-	for _, field := range []string{
-		"Value",
-		"AzureEndpoint", "AzureClientID", "AzureClientSecret", "AzureTenantID",
-		"VertexProjectID", "VertexProjectNumber", "VertexRegion", "VertexAuthCredentials",
-		"BedrockAccessKey", "BedrockSecretKey", "BedrockSessionToken", "BedrockRegion",
-		"BedrockARN", "BedrockRoleARN", "BedrockExternalID", "BedrockRoleSessionName",
-		"BedrockBatchS3ConfigJSON", "AliasesJSON",
-		"VLLMUrl", "OllamaUrl", "SGLUrl",
-	} {
-		_ = VaultHooks.Remove(tx.Statement.Context, fmt.Sprintf("%s/%s", base, colName(field)))
-	}
+	base := schemas.VaultBasePath(k.TableName(), k.KeyID)
+	schemas.RemoveOwnedVaultEnvVars(tx.Statement.Context, base, k)
 	return nil
 }

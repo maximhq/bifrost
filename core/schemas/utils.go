@@ -40,6 +40,9 @@ func EnvVarAsString(e *EnvVar) string {
 	if e.IsFromEnv() {
 		return e.EnvVar
 	}
+	if e.IsFromVault() {
+		return e.VaultRef
+	}
 	return e.GetValue()
 }
 

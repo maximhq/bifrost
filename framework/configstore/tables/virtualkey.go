@@ -267,14 +267,7 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	if vk.Value != "" {
 		vk.ValueHash = encrypt.HashSHA256(vk.Value)
 	}
-	if VaultIsEnabled() && vk.Value != "" {
-		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
-		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
-		if err := vaultString(tx.Statement.Context, path, &vk.Value); err != nil {
-			return fmt.Errorf("failed to vault virtual key value: %w", err)
-		}
-		vk.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() && vk.Value != "" {
+	if encrypt.IsEnabled() && vk.Value != "" {
 		if err := encryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
 		}
@@ -290,10 +283,6 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 // every VK update.
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 	switch vk.EncryptionStatus {
-	case EncryptionStatusVault:
-		if err := resolveVaultString(tx.Statement.Context, &vk.Value); err != nil {
-			return fmt.Errorf("failed to resolve vault virtual key value: %w", err)
-		}
 	case EncryptionStatusEncrypted:
 		if err := decryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
@@ -317,13 +306,3 @@ func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (vk *TableVirtualKey) AfterDelete(tx *gorm.DB) error {
-	if vk.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
-	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
-	return nil
-}
