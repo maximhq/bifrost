@@ -79,6 +79,20 @@ Supported operators are `=` (equals), `!=`, `>`, `<`, `>=`, and `<=`. See [Alert
 
 ---
 
+## Health states
+
+`provider_health` and `key_health` come from adaptive load balancing, not from manual thresholds you configure directly in alerting.
+
+- `provider_health` is binary at the provider level: `0` means healthy and `2` means failed.
+- `key_health` reflects the health of a specific provider/model/API-key combination.
+- `key_health = 1` means the key is degraded. That happens when recent failures push the 10-second error rate above `2%`, or when the latency penalty rises above the configured latency threshold.
+- `key_health = 2` means the key is failed. That happens when the 10-second error rate rises above `5%` or the key hits TPM/backoff failure handling.
+- A degraded key returns to healthy when the 10-second error rate drops below `2%` and the latency penalty is no longer high.
+
+See [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) for the full state machine.
+
+---
+
 ## Scopes
 
 Every rule has a scope that determines which traffic it applies to.

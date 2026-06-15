@@ -1,6 +1,6 @@
 ---
 title: "Alert Rules"
-description: "Define CEL-based alert rules in Bifrost Enterprise — scope them globally or per provider, virtual key, team, or customer, set evaluation windows and cooldowns, and route triggers to channels."
+description: "Define CEL-based alert rules in Bifrost Enterprise — scope them globally or per provider, virtual key, team, or customer, set evaluation windows and cooldowns, and send triggers to channels."
 icon: "gavel"
 keywords: ["alert rules", "cel", "conditions", "thresholds", "scope", "cooldown", "window"]
 ---
@@ -59,6 +59,8 @@ error_rate > 10.0
 key_health >= 1.0
 ```
 
+`key_health` uses the adaptive load balancing health states described in the [Overview](/enterprise/alerting/overview#health-states).
+
 ```python
 # Latency penalty score above 0.2 (not milliseconds)
 latency_ms > 0.2
@@ -73,11 +75,17 @@ budget_usage > 80.0 && cost > 1000.0
 `latency_ms` is a normalized penalty score from `0` to `1`, not a millisecond value. See [Conditions and metrics](/enterprise/alerting/overview#conditions-and-metrics).
 </Note>
 
+<Note>
+`provider_health` is binary, so the only meaningful alert is `= Failed`. For `key_health`, use `>= Degraded` to alert on degraded or failed keys, or `= Failed` to alert only on failed keys.
+</Note>
+
 ---
 
 ## Scopes and restrictions
 
 Rules are scoped `global`, `provider`, `virtual_key`, `team`, or `customer`. For scoped rules, an empty scope ID matches all entities of that type (wildcard), and a specific scope ID matches one entity.
+
+In the UI, that wildcard choice shows up as **All providers**, **All virtual keys**, **All teams**, or **All customers**.
 
 <Warning>
 The `latency`, `provider_degradation`, and `key_health` conditions can only be scoped to `global` or `provider`. Other scopes are rejected at create and update time because these signals come from the load balancer at provider and key granularity.
@@ -188,13 +196,15 @@ Send a test alert to confirm a rule's channels work end to end. The test compile
 | `error_rate` | `12.5` |
 | `request_volume` | `5000` |
 | `cost` | `1000` |
-| `latency_ms` | `500` |
+| `latency_ms` | `0.5` |
 | `provider_health` | `2` |
 | `key_health` | `2` |
 | `key_fail_reason` | `1` |
 
 - **UI** — use **Send Test Alert** in the rule form.
 - **API** — `POST /api/governance/alert-rules/test`. The response reports whether the rule triggered, how many channels were notified, and any channel errors.
+
+The test uses the same normalized latency score that the live rules use, so `latency_ms` values are always between `0` and `1`.
 
 ---
 
