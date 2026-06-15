@@ -6037,7 +6037,6 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB, log
 			}
 			logger.Info("[configstore] %s: processing %d stmts", migrationName, len(stmts))
 			for _, stmt := range stmts {
-				logger.Info("[configstore] %s: %s", migrationName, "executing stmt).Error; err != nil { return fmt.Errorf(\"failed to widen column (%s): %w\", s")
 				if err := tx.Exec(stmt).Error; err != nil {
 					return fmt.Errorf("failed to widen column (%s): %w", stmt, err)
 				}
@@ -9290,7 +9289,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				}
 				logger.Info("[configstore] %s: processing %d dedupeStmts", migrationName, len(dedupeStmts))
 				for _, stmt := range dedupeStmts {
-					logger.Info("[configstore] %s: %s", migrationName, "executing stmt).Error; err != nil { return fmt.Errorf(\"dedupe legacy oauth_user_tokens bin")
 					if err := tx.Exec(stmt).Error; err != nil {
 						return fmt.Errorf("dedupe legacy oauth_user_tokens bindings: %w", err)
 					}
@@ -9323,7 +9321,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				}
 				logger.Info("[configstore] %s: processing %d partialUniques", migrationName, len(partialUniques))
 				for _, stmt := range partialUniques {
-					logger.Info("[configstore] %s: %s", migrationName, "executing stmt).Error; err != nil { return fmt.Errorf(\"create partial unique index on oaut")
 					if err := tx.Exec(stmt).Error; err != nil {
 						return fmt.Errorf("create partial unique index on oauth_user_tokens: %w", err)
 					}
@@ -10222,7 +10219,6 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB, logger s
 			}
 			logger.Info("[configstore] %s: processing %d partialUniques", migrationName, len(partialUniques))
 			for _, stmt := range partialUniques {
-				logger.Info("[configstore] %s: %s", migrationName, "executing stmt).Error; err != nil { return fmt.Errorf(\"create partial unique index on mcp_")
 				if err := tx.Exec(stmt).Error; err != nil {
 					return fmt.Errorf("create partial unique index on mcp_per_user_header_credentials: %w", err)
 				}
@@ -10239,7 +10235,6 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB, logger s
 			}
 			logger.Info("[configstore] %s: processing %d statusIndexes", migrationName, len(statusIndexes))
 			for _, stmt := range statusIndexes {
-				logger.Info("[configstore] %s: %s", migrationName, "executing stmt).Error; err != nil { return fmt.Errorf(\"create status partial index on mcp_")
 				if err := tx.Exec(stmt).Error; err != nil {
 					return fmt.Errorf("create status partial index on mcp_per_user_header_credentials: %w", err)
 				}
@@ -11014,7 +11009,6 @@ func migrationAddCustomerNameUniqueConstraint(ctx context.Context, db *gorm.DB, 
 			} else {
 				stmt = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " + idxName + " ON governance_customers (name)"
 			}
-			logger.Info("[configstore] %s: %s", migrationName, "executing stmt).Error; err != nil { return fmt.Errorf(\"failed to create unique index on go")
 			if err := tx.Exec(stmt).Error; err != nil {
 				return fmt.Errorf("failed to create unique index on governance_customers.name: %w", err)
 			}
