@@ -223,6 +223,7 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 		// Internal attributes consumed by the OpenInference profile.
 		if k == schemas.AttrBifrostAgentMode ||
 			k == schemas.AttrBifrostToolDescription ||
+			k == schemas.AttrBifrostToolDefinitions ||
 			k == schemas.AttrBifrostToolJSONSchema ||
 			k == schemas.AttrBifrostToolParameters {
 			continue
@@ -249,7 +250,8 @@ func isContentAttribute(key string) bool {
 	case schemas.AttrTools, schemas.AttrRespTools,
 		schemas.AttrToolName, schemas.AttrToolCallID,
 		schemas.AttrToolCallArguments, schemas.AttrToolCallResult,
-		schemas.AttrBifrostToolDescription, schemas.AttrBifrostToolJSONSchema,
+		schemas.AttrBifrostToolDescription, schemas.AttrBifrostToolDefinitions,
+		schemas.AttrBifrostToolJSONSchema,
 		schemas.AttrBifrostToolParameters,
 		schemas.AttrToolType,
 		schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,

@@ -123,15 +123,16 @@ func TestConvertTraceToResourceSpan_OpenInference(t *testing.T) {
 	root := makeSpan("aaaa", "", "request", schemas.SpanKindHTTPRequest)
 	llm := makeSpan("bbbb", "aaaa", "chat test-model", schemas.SpanKindLLMCall)
 	llm.Attributes = map[string]any{
-		schemas.AttrBifrostProviderName: "openai",
-		schemas.AttrRequestModel:        "test-model",
-		schemas.AttrInputMessages:       input,
-		schemas.AttrOutputMessages:      output,
-		schemas.AttrInputTokens:         12,
-		schemas.AttrOutputTokens:        4,
-		schemas.AttrTotalTokens:         16,
-		schemas.AttrTemperature:         0.2,
-		schemas.AttrTools:               `[{"name":"weather","description":"Get weather"}]`,
+		schemas.AttrBifrostProviderName:    "openai",
+		schemas.AttrRequestModel:           "test-model",
+		schemas.AttrInputMessages:          input,
+		schemas.AttrOutputMessages:         output,
+		schemas.AttrInputTokens:            12,
+		schemas.AttrOutputTokens:           4,
+		schemas.AttrTotalTokens:            16,
+		schemas.AttrTemperature:            0.2,
+		schemas.AttrTools:                  `[{"name":"weather","description":"compact"}]`,
+		schemas.AttrBifrostToolDefinitions: `[{"type":"function","name":"weather","description":"Get weather","parameters":{"type":"object"}}]`,
 	}
 	trace := &schemas.Trace{
 		TraceID:  "00000000000000000000000000000001",
@@ -156,7 +157,7 @@ func TestConvertTraceToResourceSpan_OpenInference(t *testing.T) {
 	assertOTELStringAttribute(t, llmAttrs, "llm.input_messages.0.message.content", "weather in Paris?")
 	assertOTELStringAttribute(t, llmAttrs, "llm.output_messages.0.message.tool_calls.0.tool_call.id", "call-1")
 	assertOTELStringAttribute(t, llmAttrs, "llm.output_messages.0.message.tool_calls.0.tool_call.function.name", "weather")
-	assertOTELStringAttribute(t, llmAttrs, "llm.tools.0.tool.json_schema", `{"description":"Get weather","name":"weather"}`)
+	assertOTELStringAttribute(t, llmAttrs, "llm.tools.0.tool.json_schema", `{"description":"Get weather","name":"weather","parameters":{"type":"object"},"type":"function"}`)
 	assertOTELStringAttribute(t, llmAttrs, oiInputMIMEType, "application/json")
 	assertOTELStringAttribute(t, llmAttrs, oiOutputMIMEType, "application/json")
 
@@ -523,7 +524,7 @@ func TestConvertTraceToResourceSpan_OpenInferenceTool(t *testing.T) {
 	}
 
 	genAIAttrs := otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeGenAIExtension, false).ScopeSpans[0].Spans[0].Attributes)
-	for _, key := range []string{schemas.AttrBifrostToolDescription, schemas.AttrBifrostToolJSONSchema, schemas.AttrBifrostToolParameters} {
+	for _, key := range []string{schemas.AttrBifrostToolDescription, schemas.AttrBifrostToolDefinitions, schemas.AttrBifrostToolJSONSchema, schemas.AttrBifrostToolParameters} {
 		if _, ok := genAIAttrs[key]; ok {
 			t.Errorf("OpenInference carrier attribute %s should not be exported by the GenAI profile", key)
 		}

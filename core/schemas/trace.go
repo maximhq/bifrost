@@ -483,6 +483,7 @@ const (
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
 	AttrBifrostToolDescription     = "bifrost.tool.description"
+	AttrBifrostToolDefinitions     = "bifrost.tool.definitions"
 	AttrBifrostToolJSONSchema      = "bifrost.tool.json_schema"
 	AttrBifrostToolParameters      = "bifrost.tool.parameters"
 	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"

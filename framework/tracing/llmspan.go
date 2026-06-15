@@ -714,9 +714,28 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 			attrs[schemas.AttrToolChoiceName] = *req.Params.ToolChoice.ResponsesToolChoiceStruct.Name
 		}
 	}
-	if len(req.Params.Tools) > 0 {
-		if data, err := schemas.MarshalString(req.Params.Tools); err == nil {
+	if req.Params.Tools != nil {
+		type toolInfo struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
+		}
+		tools := make([]toolInfo, 0, len(req.Params.Tools))
+		for _, tool := range req.Params.Tools {
+			if tool.Name != nil {
+				info := toolInfo{Name: *tool.Name}
+				if tool.Description != nil {
+					info.Description = *tool.Description
+				}
+				tools = append(tools, info)
+			} else {
+				tools = append(tools, toolInfo{Name: string(tool.Type)})
+			}
+		}
+		if data, err := schemas.MarshalString(tools); err == nil {
 			attrs[schemas.AttrTools] = data
+		}
+		if data, err := schemas.MarshalString(req.Params.Tools); err == nil {
+			attrs[schemas.AttrBifrostToolDefinitions] = data
 		}
 	}
 	if req.Params.Truncation != nil {

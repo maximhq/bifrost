@@ -218,7 +218,7 @@ func appendOpenInferenceContent(result []*KeyValue, attrs map[string]any, kind s
 		}
 	}
 
-	if value, ok := firstAttribute(attrs, schemas.AttrTools); ok {
+	if value, ok := firstAttribute(attrs, schemas.AttrBifrostToolDefinitions, schemas.AttrTools); ok {
 		result = appendOpenInferenceTools(result, value)
 	}
 
