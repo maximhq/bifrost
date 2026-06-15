@@ -1,11 +1,9 @@
-"use client";
-
 import { VariantProps, cva } from "class-variance-authority";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import TextareaAutosize from "react-textarea-autosize";
-import { CustomDropdown, DropdownOption } from "./dropdown";
 import { cn } from "../utils";
+import { CustomDropdown, DropdownOption } from "./dropdown";
 
 const textAreaVariants = cva(
 	"flex w-full h-full text-transparent caret-black rounded-md resize-none bg-transparent px-3 py-2 text-md placeholder:text-content-disabled disabled:cursor-not-allowed disabled:opacity-50 relative font-[inherit] focus-visible:outline-none whitespace-pre-wrap overflow-y-auto",
@@ -71,14 +69,13 @@ const RichTextarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 		selectAllByDefault,
 		inlineSuggestionText,
 		...props
-	}, ref) => {
+	}) => {
 		const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 		const preRef = useRef<HTMLPreElement>(null);
 		const [showDropdown, setShowDropdown] = useState(false);
 		const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
 		const [dropdownDirection, setDropdownDirection] = useState<"top" | "bottom">("bottom");
 		const [cursorPosition, setCursorPosition] = useState<number | null>(null);
-		const [isFullySelected, setIsFullySelected] = useState(false);
 		const [clickedVariable, setClickedVariable] = useState<{ start: number; end: number; text: string } | null>(null);
 		const [searchText, setSearchText] = useState("");
 		const [currentPath, setCurrentPath] = useState<string[]>([]);
@@ -467,20 +464,13 @@ const RichTextarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 				e.preventDefault();
 				setShowDropdown(false);
 			}
-
-			// Check for CMD+A selection
-			if ((e.metaKey || e.ctrlKey) && e.key === "a") {
-				setIsFullySelected(true);
-			}
 		};
 
 		const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
 			const textarea = e.target as HTMLTextAreaElement;
-			setIsFullySelected(textarea.selectionStart === 0 && textarea.selectionEnd === textarea.value.length);
 		};
 
 		const handleBlur = () => {
-			setIsFullySelected(false);
 			setShowDropdown(false);
 			setSearchText("");
 			setCurrentPath([]);

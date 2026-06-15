@@ -1,5 +1,5 @@
 import { PROVIDER_SUPPORTED_REQUESTS } from "../constants/config";
-import { BaseProvider, KnownProvider } from "../types/config";
+import { BaseProvider } from "../types/config";
 
 export interface ValidationRule {
 	isValid: boolean;
@@ -230,37 +230,26 @@ export function isValidVertexAuthCredentials(value: string): boolean {
 }
 
 /**
- * Validates deployments configuration
- * @param value - The deployments value (object or string)
- * @returns true if valid (redacted, or valid JSON object)
+ * Validates the deployments (aliases) map: every entry must have a non-empty
+ * trimmed deployment name and a non-empty trimmed model_id. An empty map is
+ * also considered valid (the field is optional at the form level).
  */
-export function isValidDeployments(value: Record<string, string> | string | undefined): boolean {
-	if (!value) {
+export function isValidAliases(value: Record<string, { model_id?: string }> | undefined | null): boolean {
+	if (value == null || typeof value !== "object") {
 		return false;
 	}
-
-	// If it's already an object, check if it has entries
-	if (typeof value === "object") {
-		return Object.keys(value).length > 0;
-	}
-
-	// If it's a string, check for redaction or valid JSON
-	if (typeof value === "string") {
-		// If redacted, consider it valid (backend has the real value)
-		if (isRedacted(value)) {
-			return true;
+	for (const [name, cfg] of Object.entries(value)) {
+		if (!name || !name.trim()) {
+			return false;
 		}
-
-		// Try to parse as JSON
-		try {
-			const parsed = JSON.parse(value);
-			return typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0;
-		} catch {
+		if (!cfg || typeof cfg !== "object") {
+			return false;
+		}
+		if (!cfg.model_id || !cfg.model_id.trim()) {
 			return false;
 		}
 	}
-
-	return false;
+	return true;
 }
 
 /**

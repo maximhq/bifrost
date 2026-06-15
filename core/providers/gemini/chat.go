@@ -14,6 +14,8 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		return nil, nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
@@ -29,12 +31,19 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		}
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			geminiReq.Tools, err = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			if err != nil {
+				return nil, err
+			}
 
 			// Convert tool choice to tool config
 			if bifrostReq.Params.ToolChoice != nil {
 				geminiReq.ToolConfig = convertToolChoiceToToolConfig(bifrostReq.Params.ToolChoice)
 			}
+		}
+
+		if bifrostReq.Params.ServiceTier != nil {
+			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
 		}
 
 		// Handle extra parameters
@@ -272,6 +281,15 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 
+	if response.UsageMetadata != nil {
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			bifrostResp.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			bifrostResp.ServiceTier = &tier
+		}
+	}
+
 	return bifrostResp
 }
 
@@ -490,6 +508,12 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	// Add usage information if this is the last chunk
 	if isLastChunk && response.UsageMetadata != nil {
 		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			streamResponse.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			streamResponse.ServiceTier = &tier
+		}
 	}
 
 	return streamResponse, nil, isLastChunk
@@ -504,7 +528,13 @@ func isErrorFinishReason(reason FinishReason) bool {
 		reason == FinishReasonProhibitedContent ||
 		reason == FinishReasonSPII ||
 		reason == FinishReasonImageSafety ||
-		reason == FinishReasonUnexpectedToolCall
+		reason == FinishReasonUnexpectedToolCall ||
+		reason == FinishReasonMissingThoughtSignature ||
+		reason == FinishReasonMalformedResponse ||
+		reason == FinishReasonImageProhibitedContent ||
+		reason == FinishReasonImageRecitation ||
+		reason == FinishReasonTooManyToolCalls ||
+		reason == FinishReasonNoImage
 }
 
 // createErrorResponse creates a complete BifrostChatResponse for error cases

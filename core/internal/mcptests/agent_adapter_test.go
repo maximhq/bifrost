@@ -63,9 +63,6 @@ func TestAgent_Adapter_ResponsesFormat_BasicLoop(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(
 		ctx, req, initialResponse, mocker.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -113,9 +110,6 @@ func TestAgent_Adapter_ResponsesFormat_EmptyToolResult(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(
 		ctx, req, initialResponse, mocker.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -185,9 +179,6 @@ func TestAgent_Adapter_ResponsesFormat_MultipleToolCalls(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(
 		ctx, req, initialResponse, mocker.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -237,9 +228,6 @@ func TestAgent_Adapter_ResponsesFormat_MixedPermissions(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(
 		ctx, req, initialResponse, mocker.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -302,9 +290,6 @@ func TestAgent_Adapter_ResponsesFormat_STDIO(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(
 		ctx, req, initialResponse, mocker.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -368,9 +353,6 @@ func TestAgent_Adapter_ResponsesFormat_DeepChain(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(
 		ctx, req, initialResponse, mocker.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -422,9 +404,6 @@ func TestAgent_Adapter_ResponsesFormat_ErrorHandling(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(
 		ctx, req, initialResponse, mocker.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -502,9 +481,6 @@ func TestAgent_Adapter_ChatAndResponsesParity(t *testing.T) {
 
 	chatResult, chatErr := managerChat.CheckAndExecuteAgentForChatRequest(
 		ctxChat, chatReq, chatInitialResponse, mockerChat.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return managerChat.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Execute Responses API
@@ -519,9 +495,6 @@ func TestAgent_Adapter_ChatAndResponsesParity(t *testing.T) {
 
 	responsesResult, responsesErr := managerResponses.CheckAndExecuteAgentForResponsesRequest(
 		ctxResponses, responsesReq, responsesInitialResponse, mockerResponses.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return managerResponses.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions: Both should complete successfully

@@ -1,0 +1,3 @@
+# Optional overlay to verify StatefulSet pod template deltas.
+podLabels:
+  example.bifrost.ai/upgrade-safe: "true"

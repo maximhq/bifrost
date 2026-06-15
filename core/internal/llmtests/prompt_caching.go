@@ -374,8 +374,11 @@ func RunPromptCachingToolBlocksTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			},
 		}
 
-		// Enable raw request capture so we can inspect the outgoing provider request
-		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		// Enable raw request capture so we can inspect the outgoing provider request.
+		// AllowPerRequestRawOverride must be set for SendBackRawRequest to take effect
+		// (per bifrost.go:5541 — opt-in gate added by the per-request-overrides feature).
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawRequest, true)
 
 		retryConfig := ResponsesRetryConfig{
 			MaxAttempts: 5,
@@ -664,7 +667,10 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 			},
 		}
 
-		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		// AllowPerRequestRawOverride must be set for SendBackRawRequest to take effect
+		// (per bifrost.go:5541 — opt-in gate added by the per-request-overrides feature).
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawRequest, true)
 
 		retryConfig := ResponsesRetryConfig{
 			MaxAttempts: 5,

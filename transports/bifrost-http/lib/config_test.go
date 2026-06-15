@@ -2,6 +2,31 @@ package lib
 
 /*
 ===================================================================================
+V1 COMPAT TESTS
+===================================================================================
+Tests for applyV1Compat, which normalizes ConfigData when config.json sets
+version: 1, restoring v1.4.x semantics (empty arrays = allow all).
+
+| Test Name                                        | What It Tests                                |
+|--------------------------------------------------|----------------------------------------------|
+| TestApplyV1Compat_ProviderKey_EmptyModels        | nil/[] models → ["*"]                        |
+| TestApplyV1Compat_ProviderKey_WildcardUnchanged  | ["*"] models unchanged                       |
+| TestApplyV1Compat_ProviderKey_ExplicitUnchanged  | Specific model list unchanged                |
+| TestApplyV1Compat_VK_EmptyProviderConfigs        | empty provider_configs → backfill providers  |
+| TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels | allowed_models: [] → ["*"]            |
+| TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs  | key_ids: [] → AllowAllKeys=true             |
+| TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll | AllowAllKeys=true unchanged              |
+| TestApplyV1Compat_VK_EmptyMCPConfigs             | empty mcp_configs → backfill MCP clients    |
+| TestApplyV1Compat_VK_NonEmptyMCPConfigs          | non-empty mcp_configs unchanged              |
+| TestApplyV1Compat_NoGovernance                   | nil governance section — no panic            |
+| TestApplyV1Compat_NoMCP                          | nil mcp section — no MCP backfill            |
+| TestApplyV1Compat_MultipleProviders              | all providers normalized in one pass         |
+| TestVersionField_ParsedFromJSON                  | version field read from config JSON          |
+| TestVersionField_DefaultBehavior                 | omitted version → v2 semantics (no change)   |
+| TestVersionField_Version1_AppliesCompat          | version: 1 → normalization applied           |
+| TestVersionField_Version2_NoCompat               | version: 2 → normalization skipped          |
+
+===================================================================================
 CONFIG HASH TEST SCENARIOS INDEX
 ===================================================================================
 
@@ -240,8 +265,7 @@ End-to-end tests for virtual key provider configuration operations.
 | TestSQLite_VKProviderConfig_KeyReference         | VK provider config key references work       |
 | TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange | Hash changes when key ID changes          |
 | TestSQLite_VKProviderConfig_WeightAndAllowedModels | Weight and allowed models handled correctly |
-| TestSQLite_VKProviderConfig_BudgetAndRateLimit   | BudgetID/RateLimitID persisted correctly     |
-| TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit | VK hash includes provider config budget/rate limit |
+| TestGenerateVirtualKeyHash_ProviderConfigRateLimit | VK hash includes provider config rate limit  |
 
 ===================================================================================
 SQLITE INTEGRATION TESTS - VK MCP CONFIGS
@@ -313,7 +337,7 @@ EXPECTED BEHAVIORS SUMMARY
    - Both fields are included in key hash for change detection
 
 5. PROVIDER-SPECIFIC CONFIGS:
-   - Azure: Endpoint, APIVersion, Deployments in AzureKeyConfig
+   - Azure: Endpoint, Deployments in AzureKeyConfig
    - Bedrock: Region, AuthCredentials, Deployments in BedrockKeyConfig
    - Vertex: ProjectID, Region, AuthCredentials, Deployments in VertexKeyConfig
    - All fields including Deployments maps affect key hash and must sync correctly
@@ -348,9 +372,10 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -364,6 +389,7 @@ type MockConfigStore struct {
 	governanceConfig *configstore.GovernanceConfig
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
+	configEntries    map[string]string
 	vectorConfig     *vectorstore.Config
 	logsConfig       *logstore.Config
 	plugins          []*tables.TablePlugin
@@ -389,19 +415,33 @@ type MockConfigStore struct {
 // NewMockConfigStore creates a new mock config store
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
-		providers: make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		providers:     make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		configEntries: make(map[string]string),
 	}
 }
 
 // Implement ConfigStore interface methods
+func (m *MockConfigStore) RefreshConnectionPool(ctx context.Context) error {
+	return nil
+}
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
 func (m *MockConfigStore) DB() *gorm.DB                                   { return nil }
+func (m *MockConfigStore) ScopedDB(ctx context.Context) *gorm.DB          { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
-func (m *MockConfigStore) RunMigration(ctx context.Context, migration *migrator.Migration) error {
+
+func (m *MockConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) RunMigration(context.Context, func(context.Context, *gorm.DB) error) error {
 	return nil
 }
 
@@ -418,6 +458,14 @@ func (m *MockConfigStore) UpdateClientConfig(ctx context.Context, config *config
 
 func (m *MockConfigStore) GetClientConfig(ctx context.Context) (*configstore.ClientConfig, error) {
 	return m.clientConfig, nil
+}
+
+func (m *MockConfigStore) GetClientMetadata(ctx context.Context) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (m *MockConfigStore) UpdateClientMetadata(ctx context.Context, patch map[string]any) error {
+	return nil
 }
 
 // Provider config
@@ -449,12 +497,78 @@ func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.M
 	return nil
 }
 
+func (m *MockConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	config, ok := m.providers[provider]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	return append([]schemas.Key(nil), config.Keys...), nil
+}
+
+func (m *MockConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
+	config, ok := m.providers[provider]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	for _, key := range config.Keys {
+		if key.ID == keyID {
+			keyCopy := key
+			return &keyCopy, nil
+		}
+	}
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	config.Keys = append(config.Keys, key)
+	m.providers[provider] = config
+	return nil
+}
+
+func (m *MockConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for i := range config.Keys {
+		if config.Keys[i].ID == keyID {
+			config.Keys[i] = key
+			m.providers[provider] = config
+			return nil
+		}
+	}
+	return configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for i := range config.Keys {
+		if config.Keys[i].ID == keyID {
+			config.Keys = append(config.Keys[:i], config.Keys[i+1:]...)
+			m.providers[provider] = config
+			return nil
+		}
+	}
+	return configstore.ErrNotFound
+}
+
 // MCP config
 func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	return m.mcpConfig, nil
 }
 
 func (m *MockConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
 	return nil, nil
 }
 
@@ -489,30 +603,32 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		if m.mcpConfig.ClientConfigs[i].ID == id {
 			// Found the entry, update it with the new config
 			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
-				ID:                 clientConfig.ClientID,
-				Name:               clientConfig.Name,
-				IsCodeModeClient:   clientConfig.IsCodeModeClient,
-				ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
-				ConnectionString:   clientConfig.ConnectionString,
-				StdioConfig:        clientConfig.StdioConfig,
-				Headers:            clientConfig.Headers,
-				ToolsToExecute:     clientConfig.ToolsToExecute,
-				ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+				ID:                  clientConfig.ClientID,
+				Name:                clientConfig.Name,
+				IsCodeModeClient:    clientConfig.IsCodeModeClient,
+				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
+				ConnectionString:    clientConfig.ConnectionString,
+				StdioConfig:         clientConfig.StdioConfig,
+				Headers:             clientConfig.Headers,
+				ToolsToExecute:      clientConfig.ToolsToExecute,
+				ToolsToAutoExecute:  clientConfig.ToolsToAutoExecute,
+				AllowedExtraHeaders: clientConfig.AllowedExtraHeaders,
 			}
 			return nil
 		}
 	}
 	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
 	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, &schemas.MCPClientConfig{
-		ID:                 clientConfig.ClientID,
-		Name:               clientConfig.Name,
-		IsCodeModeClient:   clientConfig.IsCodeModeClient,
-		ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
-		ConnectionString:   clientConfig.ConnectionString,
-		StdioConfig:        clientConfig.StdioConfig,
-		Headers:            clientConfig.Headers,
-		ToolsToExecute:     clientConfig.ToolsToExecute,
-		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+		ID:                  clientConfig.ClientID,
+		Name:                clientConfig.Name,
+		IsCodeModeClient:    clientConfig.IsCodeModeClient,
+		ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
+		ConnectionString:    clientConfig.ConnectionString,
+		StdioConfig:         clientConfig.StdioConfig,
+		Headers:             clientConfig.Headers,
+		ToolsToExecute:      clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:  clientConfig.ToolsToAutoExecute,
+		AllowedExtraHeaders: clientConfig.AllowedExtraHeaders,
 	})
 
 	return nil
@@ -522,7 +638,46 @@ func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params con
 	return nil, 0, nil
 }
 
+func (m *MockConfigStore) GetMCPLibraryPaginated(ctx context.Context, params configstore.MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*configstore.MCPLibraryFilterData, error) {
+	return &configstore.MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}, nil
+}
+
+func (m *MockConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
+	return nil
+}
+
+func (m *MockConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
+	return []string{}, nil
+}
+
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
+	if m.mcpConfig == nil {
+		return nil
+	}
+	filtered := make([]*schemas.MCPClientConfig, 0, len(m.mcpConfig.ClientConfigs))
+	for _, client := range m.mcpConfig.ClientConfigs {
+		if client == nil || client.ID != id {
+			filtered = append(filtered, client)
+		}
+	}
+	m.mcpConfig.ClientConfigs = filtered
 	return nil
 }
 
@@ -622,7 +777,7 @@ func (m *MockConfigStore) UpdateCustomer(ctx context.Context, customer *tables.T
 	return nil
 }
 
-func (m *MockConfigStore) DeleteCustomer(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -651,11 +806,19 @@ func (m *MockConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam
 	return nil
 }
 
-func (m *MockConfigStore) DeleteTeam(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
 func (m *MockConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error) {
 	return nil, nil
 }
 
@@ -680,7 +843,7 @@ func (m *MockConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *tabl
 	return nil
 }
 
-func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -701,6 +864,22 @@ func (m *MockConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []stri
 }
 
 func (m *MockConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Context, mcpClientID uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx context.Context, clientIDs []string) ([]tables.TableVirtualKeyMCPConfig, error) {
 	return nil, nil
 }
 
@@ -758,6 +937,15 @@ func (m *MockConfigStore) GetFrameworkConfig(ctx context.Context) (*tables.Table
 	return m.frameworkConfig, nil
 }
 
+// Feature flags
+func (m *MockConfigStore) ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error {
+	return nil
+}
+
 // Vector store config
 func (m *MockConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error {
 	m.vectorConfig = config
@@ -780,10 +968,37 @@ func (m *MockConfigStore) GetLogsStoreConfig(ctx context.Context) (*logstore.Con
 
 // Config
 func (m *MockConfigStore) GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error) {
-	return nil, nil
+	if value, ok := m.configEntries[key]; ok {
+		return &tables.TableGovernanceConfig{Key: key, Value: value}, nil
+	}
+	return nil, configstore.ErrNotFound
 }
 
 func (m *MockConfigStore) UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error {
+	if m.configEntries == nil {
+		m.configEntries = make(map[string]string)
+	}
+	m.configEntries[config.Key] = config.Value
+	return nil
+}
+
+func (m *MockConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*configstore.ComplexityAnalyzerConfig, error) {
+	if m.governanceConfig == nil {
+		return nil, nil
+	}
+	return m.governanceConfig.ComplexityAnalyzerConfig, nil
+}
+
+func (m *MockConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *configstore.ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if m.governanceConfig == nil {
+		m.governanceConfig = &configstore.GovernanceConfig{}
+	}
+	if config != nil && config.ConfigHashes.Empty() && m.governanceConfig.ComplexityAnalyzerConfig != nil {
+		copy := *config
+		copy.ConfigHashes = m.governanceConfig.ComplexityAnalyzerConfig.ConfigHashes
+		config = &copy
+	}
+	m.governanceConfig.ComplexityAnalyzerConfig = config
 	return nil
 }
 
@@ -811,6 +1026,13 @@ func (m *MockConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.Table
 }
 
 func (m *MockConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*gorm.DB) error {
+	filtered := make([]*tables.TablePlugin, 0, len(m.plugins))
+	for _, plugin := range m.plugins {
+		if plugin == nil || plugin.Name != name {
+			filtered = append(filtered, plugin)
+		}
+	}
+	m.plugins = filtered
 	return nil
 }
 
@@ -840,6 +1062,23 @@ func (m *MockConfigStore) DeleteSession(ctx context.Context, token string) error
 	return nil
 }
 
+// Temp token
+func (m *MockConfigStore) CreateTempToken(ctx context.Context, token *tables.TempToken, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetTempTokenByHash(ctx context.Context, tokenHash string) (*tables.TempToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope, resourceID string, tx ...*gorm.DB) (int64, error) {
+	return 0, nil
+}
+
+func (m *MockConfigStore) DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error) {
+	return 0, nil
+}
+
 // Model pricing
 func (m *MockConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error) {
 	return nil, nil
@@ -853,8 +1092,41 @@ func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB)
 	return nil
 }
 
+func (m *MockConfigStore) UpsertModelPricingAttributes(ctx context.Context, model, provider string, attrs map[string]string, tx ...*gorm.DB) (int64, error) {
+	return 0, nil
+}
+
+func (m *MockConfigStore) GetPricingOverrides(ctx context.Context, filter configstore.PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
+	return []tables.TablePricingOverride{}, nil
+}
+
+func (m *MockConfigStore) GetPricingOverridesPaginated(ctx context.Context, params configstore.PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error) {
+	return []tables.TablePricingOverride{}, 0, nil
+}
+
+func (m *MockConfigStore) GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Model parameters
-func (m *MockConfigStore) GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error) {
+
+func (m *MockConfigStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetModelParametersByModel(ctx context.Context, model string) (*tables.TableModelParameters, error) {
 	return nil, nil
 }
 
@@ -902,11 +1174,19 @@ func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMo
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetModelConfigsPaginated(ctx context.Context, params configstore.ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
 	return nil, 0, nil
 }
 
-func (m *MockConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+func (m *MockConfigStore) GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	return nil, nil
 }
 
@@ -926,16 +1206,20 @@ func (m *MockConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs [
 	return nil
 }
 
-func (m *MockConfigStore) DeleteModelConfig(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error {
 	return nil
 }
 
 // Budget/Rate limit usage
-func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
+func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
+func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -981,9 +1265,6 @@ func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.Table
 }
 
 // OAuth config
-func (m *MockConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
-	return nil, nil
-}
 
 func (m *MockConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {
 	return nil, nil
@@ -1022,6 +1303,135 @@ func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error
 	return nil
 }
 
+// Per-user OAuth session CRUD
+func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+	return nil
+}
+
+// Per-user OAuth token CRUD
+func (m *MockConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteOauthUserToken(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteOauthUserSession(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListPendingOauthUserSessions(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (m *MockConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+
+// Per-user MCP header credentials
+func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	return nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) ListPendingMCPPerUserHeaderFlows(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+
 // Routing rules
 func (m *MockConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error) {
 	return nil, nil
@@ -1055,16 +1465,343 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 	return nil
 }
 
+func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbGovernance := &configstore.GovernanceConfig{}
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.11,
+			MediumComplex:    0.33,
+			ComplexReasoning: 0.77,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{" Function ", "api", "API", "file-code-seed"},
+			ReasoningKeywords: []string{"tradeoffs", "file-reason-seed"},
+			TechnicalKeywords: []string{"latency", "file-tech-seed"},
+			SimpleKeywords:    []string{"hello", "file-simple-seed"},
+		},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
+	defaults := complexity.DefaultAnalyzerConfig()
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.CodeKeywords, fileConfig.Keywords.CodeKeywords), stored.Keywords.CodeKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ReasoningKeywords, fileConfig.Keywords.ReasoningKeywords), stored.Keywords.ReasoningKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.TechnicalKeywords, fileConfig.Keywords.TechnicalKeywords), stored.Keywords.TechnicalKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.SimpleKeywords, fileConfig.Keywords.SimpleKeywords), stored.Keywords.SimpleKeywords)
+	require.False(t, stored.ConfigHashes.Empty())
+	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
+}
+
+func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.TierBoundaries.SimpleMedium = 0.12
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func expectedMergedComplexityKeywords(base, overlay []string) []string {
+	seen := make(map[string]struct{}, len(base)+len(overlay))
+	out := make([]string, 0, len(base)+len(overlay))
+	for _, value := range append(append([]string{}, base...), overlay...) {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashesMatch(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = fileHashes
+	dbConfig.TierBoundaries.SimpleMedium = 0.21
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "old-tier-hash",
+		CodeKeywords:      "old-code-hash",
+		ReasoningKeywords: "old-reason-hash",
+		TechnicalKeywords: "old-tech-hash",
+		SimpleKeywords:    "old-simple-hash",
+	}
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.ElementsMatch(t, []string{"file-reason", "ui-reason"}, stored.Keywords.ReasoningKeywords)
+	require.ElementsMatch(t, []string{"file-tech", "ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-simple", "ui-simple"}, stored.Keywords.SimpleKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	oldFileConfig := testFileComplexityAnalyzerConfig()
+	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(oldFileConfig)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = oldFileHashes
+	dbConfig.TierBoundaries.SimpleMedium = 0.21
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+
+	newFileConfig := testFileComplexityAnalyzerConfig()
+	newFileConfig.Keywords.CodeKeywords = []string{"file-code", "file-code-new"}
+	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(newFileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: newFileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
+	require.ElementsMatch(t, []string{"file-code", "file-code-new", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"ui-reason"}, stored.Keywords.ReasoningKeywords)
+	require.Equal(t, []string{"ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.Equal(t, []string{"ui-simple"}, stored.Keywords.SimpleKeywords)
+	require.Equal(t, oldFileHashes.TierBoundaries, stored.ConfigHashes.TierBoundaries)
+	require.Equal(t, newFileHashes.CodeKeywords, stored.ConfigHashes.CodeKeywords)
+	require.Equal(t, oldFileHashes.ReasoningKeywords, stored.ConfigHashes.ReasoningKeywords)
+	require.Equal(t, oldFileHashes.TechnicalKeywords, stored.ConfigHashes.TechnicalKeywords)
+	require.Equal(t, oldFileHashes.SimpleKeywords, stored.ConfigHashes.SimpleKeywords)
+}
+
+func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "old-tier-hash",
+		CodeKeywords:      "old-code-hash",
+		ReasoningKeywords: "old-reason-hash",
+		TechnicalKeywords: "old-tech-hash",
+		SimpleKeywords:    "old-simple-hash",
+	}
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.Equal(t, []string{"file-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "old-tier-hash",
+		CodeKeywords:      "old-code-hash",
+		ReasoningKeywords: "old-reason-hash",
+		TechnicalKeywords: "old-tech-hash",
+		SimpleKeywords:    "old-simple-hash",
+	}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	store.configEntries[tables.ConfigComplexityAnalyzerConfigKey] = "stored"
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance:    &configstore.GovernanceConfig{},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	require.Same(t, dbConfig, config.GovernanceConfig.ComplexityAnalyzerConfig)
+	entry, err := store.GetConfig(context.Background(), tables.ConfigComplexityAnalyzerConfigKey)
+	require.NoError(t, err)
+	require.Equal(t, "stored", entry.Value)
+}
+
+func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
+	return &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.10,
+			MediumComplex:    0.30,
+			ComplexReasoning: 0.70,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"runtime-code"},
+			ReasoningKeywords: []string{"runtime-reason"},
+			TechnicalKeywords: []string{"runtime-tech"},
+			SimpleKeywords:    []string{"runtime-simple"},
+		},
+	}
+}
+
+func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
+	return &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.20,
+			MediumComplex:    0.40,
+			ComplexReasoning: 0.80,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"file-code"},
+			ReasoningKeywords: []string{"file-reason"},
+			TechnicalKeywords: []string{"file-tech"},
+			SimpleKeywords:    []string{"file-simple"},
+		},
+	}
+}
+
 // Prompt Repository - Folders
 func (m *MockConfigStore) GetFolders(ctx context.Context) ([]tables.TableFolder, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetFolderByID(ctx context.Context, id string) (*tables.TableFolder, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreateFolder(ctx context.Context, folder *tables.TableFolder) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdateFolder(ctx context.Context, folder *tables.TableFolder) error {
 	return nil
 }
@@ -1074,12 +1811,15 @@ func (m *MockConfigStore) DeleteFolder(ctx context.Context, id string) error { r
 func (m *MockConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error) {
 	return nil, nil
 }
-func (m *MockConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
+
+func (m *MockConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt, tx ...*gorm.DB) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
 	return nil
 }
@@ -1089,12 +1829,19 @@ func (m *MockConfigStore) DeletePrompt(ctx context.Context, id string) error { r
 func (m *MockConfigStore) GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error) {
 	return nil, nil
 }
+
+func (m *MockConfigStore) GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error {
 	return nil
 }
@@ -1104,15 +1851,19 @@ func (m *MockConfigStore) DeletePromptVersion(ctx context.Context, id uint) erro
 func (m *MockConfigStore) GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetPromptSessionByID(ctx context.Context, id uint) (*tables.TablePromptSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePromptSession(ctx context.Context, session *tables.TablePromptSession) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error {
 	return nil
 }
+
 func (m *MockConfigStore) RenamePromptSession(ctx context.Context, id uint, name string) error {
 	return nil
 }
@@ -1144,6 +1895,40 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	if err := os.WriteFile(configPath, jsonData, 0644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}
+}
+
+// TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
+func TestConfigDataSourceOfTruthDefaultsToSplit(t *testing.T) {
+	var configData ConfigData
+	if err := json.Unmarshal([]byte(`{}`), &configData); err != nil {
+		t.Fatalf("failed to unmarshal config data: %v", err)
+	}
+	require.Equal(t, SourceOfTruthSplit, configData.SourceOfTruth)
+	require.False(t, configData.isConfigJSONSourceOfTruth())
+	require.False(t, configData.sectionPresent("providers"))
+}
+
+// TestConfigDataSourceOfTruthTracksSectionPresence verifies present empty sections are distinguishable from missing sections.
+func TestConfigDataSourceOfTruthTracksSectionPresence(t *testing.T) {
+	var configData ConfigData
+	if err := json.Unmarshal([]byte(`{"source_of_truth":"config.json","providers":{},"mcp":{},"governance":{"budgets":[]}}`), &configData); err != nil {
+		t.Fatalf("failed to unmarshal config data: %v", err)
+	}
+	require.True(t, configData.isConfigJSONSourceOfTruth())
+	require.True(t, configData.sectionPresent("providers"))
+	require.True(t, configData.sectionPresent("mcp"))
+	require.True(t, configData.sectionPresent("governance"))
+	require.True(t, configData.governanceSectionPresent("budgets"))
+	require.False(t, configData.governanceSectionPresent("teams"))
+}
+
+// TestConfigSchemaSourceOfTruthValidation verifies source_of_truth is schema validated.
+func TestConfigSchemaSourceOfTruthValidation(t *testing.T) {
+	valid := []byte(`{"source_of_truth":"config.json"}`)
+	require.NoError(t, ValidateConfigSchema(valid))
+
+	invalid := []byte(`{"source_of_truth":"database"}`)
+	require.Error(t, ValidateConfigSchema(invalid))
 }
 
 // Test fixtures
@@ -1344,7 +2129,7 @@ func makeVirtualKey(id, name, value string) tables.TableVirtualKey {
 		Name:        name,
 		Description: "Test virtual key",
 		Value:       value,
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 	}
 }
 
@@ -1355,7 +2140,7 @@ func makeVirtualKeyWithTeam(id, name, value, teamID string) tables.TableVirtualK
 		Name:        name,
 		Description: "Test virtual key with team",
 		Value:       value,
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
 }
@@ -1367,7 +2152,7 @@ func makeVirtualKeyWithCustomer(id, name, value, customerID string) tables.Table
 		Name:        name,
 		Description: "Test virtual key with customer",
 		Value:       value,
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		CustomerID:  &customerID,
 	}
 }
@@ -1379,7 +2164,7 @@ func makeVirtualKeyWithProviderConfigs(id, name, value string, providerConfigs [
 		Name:            name,
 		Description:     "Test virtual key with provider configs",
 		Value:           value,
-		IsActive:        true,
+		IsActive:        schemas.Ptr(true),
 		ProviderConfigs: providerConfigs,
 	}
 }
@@ -1718,6 +2503,105 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 	}
 }
 
+func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	store := NewMockConfigStore()
+
+	existing := &schemas.MCPClientConfig{
+		ID:             "mcp-existing",
+		Name:           "echo_http",
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ToolsToExecute: schemas.WhiteList{"read"},
+	}
+	existingTable, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existingHash, err := configstore.GenerateMCPClientHash(existingTable)
+	require.NoError(t, err)
+	existing.ConfigHash = existingHash
+
+	store.mcpConfig = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{existing},
+	}
+
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:           "echo_http",
+				ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ToolsToExecute: schemas.WhiteList{"*"},
+			},
+			{
+				Name:           "filesystem_tools",
+				ConnectionType: schemas.MCPConnectionTypeSTDIO,
+				StdioConfig: &schemas.MCPStdioConfig{
+					Command: "npx",
+				},
+				ToolsToExecute: schemas.WhiteList{"*"},
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "expected one updated MCP client")
+	require.Equal(t, "mcp-existing", store.mcpClientConfigUpdates[0].ID)
+	require.Equal(t, "echo_http", store.mcpClientConfigUpdates[0].Config.Name)
+	require.Equal(t, schemas.WhiteList{"*"}, store.mcpClientConfigUpdates[0].Config.ToolsToExecute)
+	require.NotEmpty(t, store.mcpClientConfigUpdates[0].Config.ConfigHash)
+
+	require.Len(t, store.mcpConfigsCreated, 1, "expected one created MCP client")
+	require.Equal(t, "filesystem_tools", store.mcpConfigsCreated[0].Name)
+	require.NotEmpty(t, store.mcpConfigsCreated[0].ID)
+	require.NotEmpty(t, store.mcpConfigsCreated[0].ConfigHash)
+
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 2)
+	byName := map[string]*schemas.MCPClientConfig{}
+	for _, client := range cfg.MCPConfig.ClientConfigs {
+		byName[client.Name] = client
+	}
+	require.Equal(t, "mcp-existing", byName["echo_http"].ID, "updated client should preserve DB client_id")
+	require.NotEmpty(t, byName["echo_http"].ConfigHash)
+	require.NotEmpty(t, byName["filesystem_tools"].ConfigHash)
+}
+
+// TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched verifies missing mcp does not prune DB MCP clients.
+func TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
+	}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+
+	loadMCPConfig(context.Background(), cfg, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON})
+
+	require.NotNil(t, cfg.MCPConfig)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	require.Equal(t, "db-client", cfg.MCPConfig.ClientConfigs[0].Name)
+}
+
+// TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB verifies present empty mcp removes DB MCP clients.
+func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
+	}
+	cfg := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP:           &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{}},
+	}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	require.Empty(t, cfg.MCPConfig.ClientConfigs)
+	require.Empty(t, store.mcpConfig.ClientConfigs)
+}
+
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
 func TestLoadConfig_Governance_Merge(t *testing.T) {
 	// Setup DB governance config
@@ -2001,7 +2885,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 		SendBackRawResponse: true,
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: schemas.HTTPProxy,
-			URL:  "http://proxy.example.com:8080",
+			URL:  schemas.NewEnvVar("http://proxy.example.com:8080"),
 		},
 	}
 
@@ -2155,7 +3039,6 @@ func TestGenerateKeyHash(t *testing.T) {
 	}
 
 	// AzureKeyConfig should produce different hash
-	apiVersion := "2024-10-21"
 	key6 := schemas.Key{
 		ID:     "key-1",
 		Name:   "test-key",
@@ -2163,9 +3046,7 @@ func TestGenerateKeyHash(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:    *schemas.NewEnvVar("https://my-azure.openai.azure.com"),
-			Deployments: map[string]string{"gpt-4": "gpt-4-deployment"},
-			APIVersion:  schemas.NewEnvVar(apiVersion),
+			Endpoint: *schemas.NewEnvVar("https://my-azure.openai.azure.com"),
 		},
 	}
 
@@ -2186,10 +3067,27 @@ func TestGenerateKeyHash(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:    *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Different endpoint
-			Deployments: map[string]string{"gpt-4": "gpt-4-deployment"},
-			APIVersion:  schemas.NewEnvVar(apiVersion),
+			Endpoint: *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Different endpoint
 		},
+	}
+
+	// Aliases alone should produce different hash
+	keyWithAliases := schemas.Key{
+		ID:      "key-1",
+		Name:    "test-key",
+		Value:   *schemas.NewEnvVar("sk-123"),
+		Models:  []string{"gpt-4", "gpt-3.5-turbo"},
+		Weight:  1.5,
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
+	}
+
+	hashWithAliases, err := configstore.GenerateKeyHash(keyWithAliases)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash1 == hashWithAliases {
+		t.Error("Expected different hash for keys with Aliases")
 	}
 
 	hash6b, err := configstore.GenerateKeyHash(key6b)
@@ -2673,7 +3571,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewEnvVar("sk-123"), Weight: 1}},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -2751,7 +3649,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType: "openai",
@@ -2834,8 +3732,7 @@ func TestKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Value:  *schemas.NewEnvVar("sk-123"),
 		Weight: 1,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -2994,7 +3891,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3011,7 +3908,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3034,7 +3931,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		// ConcurrencyAndBufferSize: nil (removed)
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3083,7 +3980,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: false, // Changed to false
 	}
@@ -3107,7 +4004,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3141,8 +4038,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3156,8 +4052,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		// Models: nil (removed)
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3191,8 +4086,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.0, // Changed from 1.5
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3210,8 +4104,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4"}, // gpt-3.5-turbo removed
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3229,8 +4122,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://different.openai.azure.com"), // Changed
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://different.openai.azure.com"), // Changed
 		},
 	}
 
@@ -3240,24 +4132,6 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		t.Error("Expected different hash when Azure endpoint is changed")
 	}
 
-	// Azure APIVersion removed
-	keyNoAPIVersion := schemas.Key{
-		ID:     "key-1",
-		Name:   "test-key",
-		Value:  *schemas.NewEnvVar("sk-123"),
-		Models: []string{"gpt-4", "gpt-3.5-turbo"},
-		Weight: 1.5,
-		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			// APIVersion: nil (removed)
-		},
-	}
-
-	hashNoAPIVersion, _ := configstore.GenerateKeyHash(keyNoAPIVersion)
-
-	if originalHash == hashNoAPIVersion {
-		t.Error("Expected different hash when Azure APIVersion is removed")
-	}
 }
 
 // TestProviderHashComparison_PartialFieldChanges tests partial changes within nested structs
@@ -4644,30 +5518,24 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 	// === Scenario 1: Azure config in DB + same in file -> hash matches, no update ===
 	t.Run("SameAzureConfig_NoUpdate", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -4683,30 +5551,24 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 	// === Scenario 2: Azure config in DB + different endpoint in file -> hash differs ===
 	t.Run("DifferentEndpoint_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Changed!
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
+				Endpoint: *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Changed!
 			},
 		}
 
@@ -4719,71 +5581,27 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 		t.Log("✓ Different Azure endpoint produces different hash - update triggered")
 	})
 
-	// === Scenario 3: Azure config in DB + different APIVersion in file -> hash differs ===
-	t.Run("DifferentAPIVersion_UpdateTriggered", func(t *testing.T) {
-		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
-			},
-		}
-
-		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-10-21"), // Changed!
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
-			},
-		}
-
-		dbHash, _ := configstore.GenerateKeyHash(dbKey)
-		fileHash, _ := configstore.GenerateKeyHash(fileKey)
-
-		if dbHash == fileHash {
-			t.Error("Expected different hash when Azure APIVersion changes")
-		}
-		t.Log("✓ Different Azure APIVersion produces different hash - update triggered")
-	})
-
 	// === Scenario 4: Azure config in DB + different Deployments map in file -> hash differs ===
 	t.Run("DifferentDeployments_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-3.5-turbo": {ModelID: "gpt-35-turbo-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4":         "gpt-4-deployment",
-					"gpt-3.5-turbo": "gpt-35-turbo-deployment", // Added!
-				},
 			},
 		}
 
@@ -4814,11 +5632,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -4840,11 +5654,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -4866,44 +5676,6 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 		t.Log("✓ Azure config removed produces different hash - update triggered")
 	})
 
-	// === Scenario 7: APIVersion nil vs set -> hash differs ===
-	t.Run("APIVersionNilVsSet_UpdateTriggered", func(t *testing.T) {
-		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				// APIVersion is nil (will use default)
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
-			},
-		}
-
-		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123"),
-			Weight: 1,
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"), // Explicitly set
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
-			},
-		}
-
-		dbHash, _ := configstore.GenerateKeyHash(dbKey)
-		fileHash, _ := configstore.GenerateKeyHash(fileKey)
-
-		if dbHash == fileHash {
-			t.Error("Expected different hash when APIVersion goes from nil to set")
-		}
-		t.Log("✓ APIVersion nil vs set produces different hash - update triggered")
-	})
 }
 
 // TestKeyHashComparison_BedrockConfigSyncScenarios tests full lifecycle for Bedrock key configs
@@ -4911,32 +5683,28 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	// === Scenario 1: Bedrock config in DB + same in file -> hash matches, no update ===
 	t.Run("SameBedrockConfig_NoUpdate", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -4952,32 +5720,28 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	// === Scenario 2: Bedrock config in DB + different AccessKey/SecretKey -> hash differs ===
 	t.Run("DifferentAccessKey_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"), // Changed!
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -4993,32 +5757,28 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	// === Scenario 3: Bedrock config in DB + different SecretKey -> hash differs ===
 	t.Run("DifferentSecretKey_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("differentSecretKey/NEWKEY/bPxRfiCYEXAMPLEKEY"), // Changed!
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5034,32 +5794,28 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	// === Scenario 4: Bedrock config in DB + different Region -> hash differs ===
 	t.Run("DifferentRegion_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-west-2"), // Changed!
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5075,34 +5831,30 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	// === Scenario 5: Bedrock config in DB + different ARN -> hash differs ===
 	t.Run("DifferentARN_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
 				ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-east-1:123456789012:inference-profile/old-profile"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
 				ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-east-1:123456789012:inference-profile/new-profile"), // Changed!
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5118,33 +5870,28 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	// === Scenario 6: Bedrock config in DB + different Deployments -> hash differs ===
 	t.Run("DifferentDeployments_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}, "claude-3.5": {ModelID: "claude-35-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3":   "claude-3-inference-profile",
-					"claude-3.5": "claude-35-inference-profile", // Added!
-				},
 			},
 		}
 
@@ -5178,9 +5925,6 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5205,9 +5949,6 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5232,34 +5973,30 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	// === Scenario 9: SessionToken nil vs set -> hash differs ===
 	t.Run("SessionTokenNilVsSet_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
 				// SessionToken is nil
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey:    *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey:    *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:       schemas.NewEnvVar("us-east-1"),
 				SessionToken: schemas.NewEnvVar("AQoDYXdzEJr..."), // Explicitly set
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5276,33 +6013,29 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 	t.Run("IAMRoleAuthVsExplicitCredentials_UpdateTriggered", func(t *testing.T) {
 		// IAM role auth: empty AccessKey and SecretKey
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar(""),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
 				SecretKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
 		// Explicit credentials
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar(""),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5320,16 +6053,13 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	// === STEP 1: Initial state - Azure provider exists in DB from previous config.json ===
 	initialAzureKey := schemas.Key{
-		ID:     "azure-key-1",
-		Name:   "azure-openai-key",
-		Value:  *schemas.NewEnvVar("azure-api-key-initial"),
-		Weight: 1,
+		ID:      "azure-key-1",
+		Name:    "azure-openai-key",
+		Value:   *schemas.NewEnvVar("azure-api-key-initial"),
+		Weight:  1,
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
-			Deployments: map[string]string{
-				"gpt-4": "gpt-4-deployment",
-			},
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -5357,16 +6087,13 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	// The key value is edited via dashboard, but the Azure config structure stays the same
 	// Provider config hash should remain unchanged
 	dashboardEditedKey := schemas.Key{
-		ID:     "azure-key-1",
-		Name:   "azure-openai-key",
-		Value:  *schemas.NewEnvVar("azure-api-key-dashboard-edited"), // Changed via dashboard!
-		Weight: 1,
+		ID:      "azure-key-1",
+		Name:    "azure-openai-key",
+		Value:   *schemas.NewEnvVar("azure-api-key-dashboard-edited"), // Changed via dashboard!
+		Weight:  1,
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
-			Deployments: map[string]string{
-				"gpt-4": "gpt-4-deployment",
-			},
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -5392,16 +6119,13 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	sameFileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewEnvVar("azure-api-key-initial"), // Original value from file
-				Weight: 1,
+				ID:      "azure-key-1",
+				Name:    "azure-openai-key",
+				Value:   *schemas.NewEnvVar("azure-api-key-initial"), // Original value from file
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment",
-					},
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
 			},
 		},
@@ -5431,17 +6155,13 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	newFileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewEnvVar("azure-api-key-initial"),
-				Weight: 1,
+				ID:      "azure-key-1",
+				Name:    "azure-openai-key",
+				Value:   *schemas.NewEnvVar("azure-api-key-initial"),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
-					Deployments: map[string]string{
-						"gpt-4":  "gpt-4-deployment",
-						"gpt-4o": "gpt-4o-deployment", // Added!
-					},
+					Endpoint: *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
 				},
 			},
 		},
@@ -5530,11 +6250,8 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	if finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://new-azure.openai.azure.com" {
 		t.Errorf("Expected updated Azure endpoint, got %s", finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue())
 	}
-	if finalConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue() != "2024-10-21" {
-		t.Errorf("Expected updated APIVersion, got %s", finalConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue())
-	}
-	if len(finalConfig.Keys[0].AzureKeyConfig.Deployments) != 2 {
-		t.Errorf("Expected 2 deployments, got %d", len(finalConfig.Keys[0].AzureKeyConfig.Deployments))
+	if len(finalConfig.Keys[0].Aliases) != 2 {
+		t.Errorf("Expected 2 deployments, got %d", len(finalConfig.Keys[0].Aliases))
 	}
 
 	t.Log("Step 5 - Final state verified, Azure provider lifecycle complete ✓")
@@ -5544,17 +6261,15 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	// === STEP 1: Initial state - Bedrock provider exists in DB from previous config.json ===
 	initialBedrockKey := schemas.Key{
-		ID:     "bedrock-key-1",
-		Name:   "aws-bedrock-key",
-		Value:  *schemas.NewEnvVar(""), // Empty for Bedrock with IAM or AccessKey auth
-		Weight: 1,
+		ID:      "bedrock-key-1",
+		Name:    "aws-bedrock-key",
+		Value:   *schemas.NewEnvVar(""), // Empty for Bedrock with IAM or AccessKey auth
+		Weight:  1,
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 			Region:    schemas.NewEnvVar("us-east-1"),
-			Deployments: map[string]string{
-				"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-			},
 		},
 	}
 
@@ -5581,17 +6296,15 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 
 	// === STEP 2: Dashboard adds a second key ===
 	dashboardAddedKey := schemas.Key{
-		ID:     "bedrock-key-2",
-		Name:   "aws-bedrock-key-eu",
-		Value:  *schemas.NewEnvVar(""),
-		Weight: 1,
+		ID:      "bedrock-key-2",
+		Name:    "aws-bedrock-key-eu",
+		Value:   *schemas.NewEnvVar(""),
+		Weight:  1,
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"),
 			Region:    schemas.NewEnvVar("eu-west-1"), // Different region
-			Deployments: map[string]string{
-				"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-			},
 		},
 	}
 
@@ -5610,17 +6323,15 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	sameFileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewEnvVar(""),
-				Weight: 1,
+				ID:      "bedrock-key-1",
+				Name:    "aws-bedrock-key",
+				Value:   *schemas.NewEnvVar(""),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-east-1"),
-					Deployments: map[string]string{
-						"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -5651,19 +6362,16 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	newFileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewEnvVar(""),
-				Weight: 1,
+				ID:      "bedrock-key-1",
+				Name:    "aws-bedrock-key",
+				Value:   *schemas.NewEnvVar(""),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-west-2"),                                                           // Changed!
 					ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"), // Added!
-					Deployments: map[string]string{
-						"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-						"claude-3-opus":   "anthropic.claude-3-opus-20240229-v1:0", // Added!
-					},
 				},
 			},
 		},
@@ -5767,8 +6475,8 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	if fileKey.BedrockKeyConfig.ARN == nil || fileKey.BedrockKeyConfig.ARN.GetValue() != "arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile" {
 		t.Error("Expected ARN to be set")
 	}
-	if len(fileKey.BedrockKeyConfig.Deployments) != 2 {
-		t.Errorf("Expected 2 deployments, got %d", len(fileKey.BedrockKeyConfig.Deployments))
+	if len(fileKey.Aliases) != 2 {
+		t.Errorf("Expected 2 deployments, got %d", len(fileKey.Aliases))
 	}
 
 	// Verify dashboard-added key is preserved
@@ -5782,19 +6490,16 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	sameNewFileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewEnvVar(""),
-				Weight: 1,
+				ID:      "bedrock-key-1",
+				Name:    "aws-bedrock-key",
+				Value:   *schemas.NewEnvVar(""),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-west-2"),
 					ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"),
-					Deployments: map[string]string{
-						"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-						"claude-3-opus":   "anthropic.claude-3-opus-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -5828,16 +6533,13 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewEnvVar("azure-api-key-123"),
-				Weight: 1,
+				ID:      "azure-key-1",
+				Name:    "azure-openai-key",
+				Value:   *schemas.NewEnvVar("azure-api-key-123"),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment",
-					},
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
 			},
 		},
@@ -5897,17 +6599,15 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewEnvVar(""),
-				Weight: 1,
+				ID:      "bedrock-key-1",
+				Name:    "aws-bedrock-key",
+				Value:   *schemas.NewEnvVar(""),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-east-1"),
-					Deployments: map[string]string{
-						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -5968,16 +6668,13 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
-				Weight: 1,
+				ID:      "azure-key-1",
+				Name:    "azure-openai-key",
+				Value:   *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment",
-					},
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
 			},
 		},
@@ -5999,16 +6696,13 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewEnvVar("original-key-from-file"), // Different value than DB!
-				Weight: 1,
+				ID:      "azure-key-1",
+				Name:    "azure-openai-key",
+				Value:   *schemas.NewEnvVar("original-key-from-file"), // Different value than DB!
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
-					APIVersion: schemas.NewEnvVar("2024-02-01"),                        // Same
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment", // Same
-					},
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
 				},
 			},
 		},
@@ -6058,17 +6752,15 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewEnvVar(""),
-				Weight: 1,
+				ID:      "bedrock-key-1",
+				Name:    "aws-bedrock-key",
+				Value:   *schemas.NewEnvVar(""),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
 					SecretKey: *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
 					Region:    schemas.NewEnvVar("us-east-1"),
-					Deployments: map[string]string{
-						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -6090,17 +6782,15 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewEnvVar(""),
-				Weight: 1,
+				ID:      "bedrock-key-1",
+				Name:    "aws-bedrock-key",
+				Value:   *schemas.NewEnvVar(""),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
 					Region:    schemas.NewEnvVar("us-east-1"),                                 // Same
-					Deployments: map[string]string{
-						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0", // Same
-					},
 				},
 			},
 		},
@@ -6159,8 +6849,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Value:  *schemas.NewEnvVar("azure-api-key-123"),
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://old-azure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
+					Endpoint: *schemas.NewEnvVar("https://old-azure.openai.azure.com"),
 				},
 			},
 		},
@@ -6177,20 +6866,17 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 		"azure": dbConfig,
 	}
 
-	// File has CHANGED Azure config (new endpoint, new API version)
+	// File has CHANGED Azure config (new endpoint)
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewEnvVar("azure-api-key-123"),
-				Weight: 1,
+				ID:      "azure-key-1",
+				Name:    "azure-openai-key",
+				Value:   *schemas.NewEnvVar("azure-api-key-123"),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
-					Deployments: map[string]string{
-						"gpt-4o": "gpt-4o-deployment", // Added!
-					},
+					Endpoint: *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
 				},
 			},
 		},
@@ -6222,9 +6908,6 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	}
 	if updatedConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://NEW-azure.openai.azure.com" {
 		t.Errorf("Expected new Azure endpoint, got %v", updatedConfig.Keys[0].AzureKeyConfig.Endpoint)
-	}
-	if updatedConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue() != "2024-10-21" {
-		t.Errorf("Expected new API version, got %v", *updatedConfig.Keys[0].AzureKeyConfig.APIVersion)
 	}
 	if !updatedConfig.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be updated to true")
@@ -6271,18 +6954,16 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewEnvVar(""),
-				Weight: 1,
+				ID:      "bedrock-key-1",
+				Name:    "aws-bedrock-key",
+				Value:   *schemas.NewEnvVar(""),
+				Weight:  1,
+				Aliases: schemas.KeyAliases{"claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-west-2"),                                                            // Changed!
 					ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/new-profile"), // Added!
-					Deployments: map[string]string{
-						"claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0", // Added!
-					},
 				},
 			},
 		},
@@ -6337,15 +7018,13 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 func TestGenerateVirtualKeyHash(t *testing.T) {
 	// Create a virtual key
 	teamID := "team-1"
-	budgetID := "budget-1"
 	vk1 := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	// Generate hash
@@ -6364,9 +7043,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash2, err := configstore.GenerateVirtualKeyHash(vk2)
@@ -6384,9 +7062,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "different-name", // Different name
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash3, err := configstore.GenerateVirtualKeyHash(vk3)
@@ -6404,9 +7081,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_different", // Different value
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash4, err := configstore.GenerateVirtualKeyHash(vk4)
@@ -6424,9 +7100,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    false, // Different IsActive
+		IsActive:    schemas.Ptr(false), // Different IsActive
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash5, err := configstore.GenerateVirtualKeyHash(vk5)
@@ -6445,9 +7120,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &differentTeamID, // Different TeamID
-		BudgetID:    &budgetID,
 	}
 
 	hash6, err := configstore.GenerateVirtualKeyHash(vk6)
@@ -6465,9 +7139,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Different description", // Different description
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash7, err := configstore.GenerateVirtualKeyHash(vk7)
@@ -6486,9 +7159,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		CustomerID:  &customerID, // CustomerID set
 	}
 
@@ -6508,9 +7180,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		CustomerID:  &differentCustomerID, // Different CustomerID
 	}
 
@@ -6523,27 +7194,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		t.Error("Expected different hash for virtual keys with different CustomerID values")
 	}
 
-	// Different BudgetID should produce different hash
-	differentBudgetID := "budget-2"
-	vk9 := tables.TableVirtualKey{
-		ID:          "vk-1",
-		Name:        "test-vk",
-		Description: "Test virtual key",
-		Value:       "vk_abc123",
-		IsActive:    true,
-		TeamID:      &teamID,
-		BudgetID:    &differentBudgetID, // Different BudgetID
-	}
-
-	hash9, err := configstore.GenerateVirtualKeyHash(vk9)
-	if err != nil {
-		t.Fatalf("Failed to generate hash: %v", err)
-	}
-
-	if hash1 == hash9 {
-		t.Error("Expected different hash for virtual keys with different BudgetID")
-	}
-
 	// RateLimitID should produce different hash
 	rateLimitID := "ratelimit-1"
 	vk10 := tables.TableVirtualKey{
@@ -6551,9 +7201,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		RateLimitID: &rateLimitID, // RateLimitID set
 	}
 
@@ -6573,9 +7222,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		RateLimitID: &differentRateLimitID, // Different RateLimitID
 	}
 
@@ -6593,7 +7241,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 
 // TestGenerateVirtualKeyHash_WithProviderConfigs tests hash generation with provider configs
 func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
-	budgetID := "budget-pc-1"
 	rateLimitID := "rl-pc-1"
 
 	// Virtual key with provider configs
@@ -6602,7 +7249,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -6610,7 +7257,6 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
-				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
 				Keys: []tables.TableKey{
 					{KeyID: "key-1", Name: "key-1"},
@@ -6635,7 +7281,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -6643,7 +7289,6 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				Provider:      "anthropic", // Different provider
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
 			},
 		},
@@ -6664,7 +7309,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -6672,7 +7317,6 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(2.0), // Different weight
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
-				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
 				Keys: []tables.TableKey{
 					{KeyID: "key-1", Name: "key-1"},
@@ -6700,7 +7344,7 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             1,
@@ -6726,7 +7370,7 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             1,
@@ -6752,7 +7396,7 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             1,
@@ -6776,7 +7420,6 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 // TestVirtualKeyHashComparison_MatchingHash tests that DB config is kept when hashes match
 func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 
 	// Create a virtual key (simulating what's in config.json)
 	fileVK := tables.TableVirtualKey{
@@ -6784,9 +7427,8 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	// Generate file hash
@@ -6797,15 +7439,13 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 
 	// Create DB virtual key with same content (simulating existing DB record)
 	dbTeamID := "team-1"
-	dbBudgetID := "budget-1"
 	dbVK := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &dbTeamID,
-		BudgetID:    &dbBudgetID,
 		ConfigHash:  fileHash, // Same hash as file
 	}
 
@@ -6830,7 +7470,6 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 // TestVirtualKeyHashComparison_DifferentHash tests that file config is used when hashes differ
 func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 
 	// Create DB virtual key with old config
 	dbVK := tables.TableVirtualKey{
@@ -6838,9 +7477,8 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 		Name:        "old-name", // Old name
 		Description: "Old description",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	dbHash, err := configstore.GenerateVirtualKeyHash(dbVK)
@@ -6851,15 +7489,13 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 
 	// Create file virtual key with updated config
 	fileTeamID := "team-1"
-	fileBudgetID := "budget-1"
 	fileVK := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "new-name", // Updated name
 		Description: "New description",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &fileTeamID,
-		BudgetID:    &fileBudgetID,
 	}
 
 	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
@@ -6889,7 +7525,7 @@ func TestVirtualKeyHashComparison_VirtualKeyOnlyInDB(t *testing.T) {
 		Name:        "dashboard-vk",
 		Description: "Added via dashboard",
 		Value:       "vk_dashboard123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		CustomerID:  &customerID,
 		RateLimitID: &rateLimitID,
 	}
@@ -6907,7 +7543,7 @@ func TestVirtualKeyHashComparison_VirtualKeyOnlyInDB(t *testing.T) {
 			Name:        "file-vk",
 			Description: "From config.json",
 			Value:       "vk_file123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 		},
 	}
 
@@ -6937,7 +7573,7 @@ func TestVirtualKeyHashComparison_NewVirtualKey(t *testing.T) {
 		Name:        "new-vk",
 		Description: "New virtual key from config.json",
 		Value:       "vk_new123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
 
@@ -6979,7 +7615,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Name:        "test-vk",
 		Description: "",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 	}
 
 	hashNoOptional, err := configstore.GenerateVirtualKeyHash(vkNoOptional)
@@ -6994,7 +7630,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Name:        "test-vk",
 		Description: "",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
 
@@ -7014,7 +7650,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Name:        "test-vk",
 		Description: "",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		CustomerID:  &customerID,
 	}
 
@@ -7031,26 +7667,6 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		t.Error("Expected different hash for team_id vs customer_id")
 	}
 
-	// Virtual key with budget_id
-	budgetID := "budget-1"
-	vkWithBudget := tables.TableVirtualKey{
-		ID:          "vk-1",
-		Name:        "test-vk",
-		Description: "",
-		Value:       "vk_abc123",
-		IsActive:    true,
-		BudgetID:    &budgetID,
-	}
-
-	hashWithBudget, err := configstore.GenerateVirtualKeyHash(vkWithBudget)
-	if err != nil {
-		t.Fatalf("Failed to generate hash: %v", err)
-	}
-
-	if hashNoOptional == hashWithBudget {
-		t.Error("Expected different hash when budget_id is added")
-	}
-
 	// Virtual key with rate_limit_id
 	rateLimitID := "rl-1"
 	vkWithRateLimit := tables.TableVirtualKey{
@@ -7058,7 +7674,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Name:        "test-vk",
 		Description: "",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
 
@@ -7077,7 +7693,6 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 // TestVirtualKeyHashComparison_FieldValueChanges tests hash changes when field values change
 func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 
 	// Base virtual key
 	baseVK := tables.TableVirtualKey{
@@ -7085,9 +7700,8 @@ func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Base description",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	baseHash, err := configstore.GenerateVirtualKeyHash(baseVK)
@@ -7110,7 +7724,7 @@ func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 
 	// Change IsActive
 	vkChangedActive := baseVK
-	vkChangedActive.IsActive = false
+	vkChangedActive.IsActive = schemas.Ptr(false)
 
 	hashChangedActive, err := configstore.GenerateVirtualKeyHash(vkChangedActive)
 	if err != nil {
@@ -7135,27 +7749,12 @@ func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 		t.Error("Expected different hash when TeamID value changes")
 	}
 
-	// Change BudgetID value
-	newBudgetID := "budget-2"
-	vkChangedBudget := baseVK
-	vkChangedBudget.BudgetID = &newBudgetID
-
-	hashChangedBudget, err := configstore.GenerateVirtualKeyHash(vkChangedBudget)
-	if err != nil {
-		t.Fatalf("Failed to generate hash: %v", err)
-	}
-
-	if baseHash == hashChangedBudget {
-		t.Error("Expected different hash when BudgetID value changes")
-	}
-
 	t.Log("✓ Field value changes correctly detected in hash")
 }
 
 // TestVirtualKeyHashComparison_RoundTrip tests JSON → DB → same JSON produces no changes
 func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 	rateLimitID := "rl-1"
 
 	// Original config.json virtual key
@@ -7164,9 +7763,8 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		RateLimitID: &rateLimitID,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -7189,16 +7787,14 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 
 	// Same config.json on reload (simulating app restart)
 	reloadTeamID := "team-1"
-	reloadBudgetID := "budget-1"
 	reloadRateLimitID := "rl-1"
 	reloadVK := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		TeamID:      &reloadTeamID,
-		BudgetID:    &reloadBudgetID,
 		RateLimitID: &reloadRateLimitID,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -7423,6 +8019,59 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	// Verify both in DB
 	verifyProviderInDB(t, config2.ConfigStore, schemas.OpenAI, 1)
 	verifyProviderInDB(t, config2.ConfigStore, schemas.Anthropic, 1)
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned verifies config.json SOT removes DB-only providers and keys.
+func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	existingProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	openaiConfig := existingProviders[schemas.OpenAI]
+	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+		ID:     uuid.NewString(),
+		Name:   "dashboard-openai-key",
+		Value:  *schemas.NewEnvVar("sk-dashboard-openai"),
+		Weight: 1,
+	})
+	existingProviders[schemas.OpenAI] = openaiConfig
+	existingProviders[schemas.Anthropic] = configstore.ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:     uuid.NewString(),
+			Name:   "anthropic-key-1",
+			Value:  *schemas.NewEnvVar("sk-anthropic-123"),
+			Weight: 1,
+		}},
+		NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+	}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders))
+	config1.Close(ctx)
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	dbProviders, err := config2.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 1)
+	require.Contains(t, dbProviders, schemas.OpenAI)
+	require.NotContains(t, dbProviders, schemas.Anthropic)
+	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
+	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
 }
 
 // TestSQLite_Provider_RoundTrip tests load -> modify via DB -> reload same file -> no changes
@@ -7884,7 +8533,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 			Name:        "modified-name",
 			Description: "Modified description",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 		},
 	}
 	configData2 := makeConfigDataWithVirtualKeysAndDir(providers, vks2, tempDir)
@@ -7937,7 +8586,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 		Name:        "dashboard-vk",
 		Description: "Added via dashboard",
 		Value:       "vk_dashboard456",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 	}
 	dashboardHash, _ := configstore.GenerateVirtualKeyHash(dashboardVK)
 	dashboardVK.ConfigHash = dashboardHash
@@ -7986,7 +8635,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 			Name:        "test-vk",
 			Description: "VK with provider configs",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -8024,7 +8673,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "VK with provider configs",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
@@ -8079,7 +8728,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 			Name:        "vk-with-providers",
 			Description: "VK with provider configs added via merge",
 			Value:       "vk_providers456",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -8192,7 +8841,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 			Name:        "vk-with-provider-keys",
 			Description: "VK with provider configs referencing keys",
 			Value:       "vk_keys456",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -8250,7 +8899,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
@@ -8267,7 +8916,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
@@ -8299,7 +8948,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
@@ -8340,7 +8989,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 			Name:        "vk-with-provider-config",
 			Description: "VK with provider configs",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -8411,7 +9060,7 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 			Name:        "vk-with-provider-ref",
 			Description: "VK with provider config",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -8463,7 +9112,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
@@ -8481,7 +9130,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
@@ -8513,7 +9162,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
@@ -8546,7 +9195,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
@@ -8562,7 +9211,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
@@ -8578,7 +9227,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
@@ -8621,7 +9270,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
@@ -8709,8 +9358,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				Name:        "test-vk-1",
 				Description: "Test virtual key 1",
 				Value:       "vk_test123",
-				IsActive:    true,
-				BudgetID:    &budgetID,
+				IsActive:    schemas.Ptr(true),
 				RateLimitID: &rateLimitID,
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
@@ -8725,7 +9373,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				Name:        "test-vk-2",
 				Description: "Test virtual key 2",
 				Value:       "vk_test456",
-				IsActive:    true,
+				IsActive:    schemas.Ptr(true),
 			},
 		},
 	}
@@ -8965,7 +9613,7 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 		Name:        "dashboard-vk",
 		Description: "Added via dashboard",
 		Value:       "vk_dashboard456",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 	}
 	dashboardHash, _ := configstore.GenerateVirtualKeyHash(dashboardVK)
 	dashboardVK.ConfigHash = dashboardHash
@@ -9028,7 +9676,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 	}
 
 	// VK with one MCP config
@@ -9037,7 +9685,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				MCPClientID:    1,
@@ -9052,7 +9700,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				MCPClientID:    2, // Different client
@@ -9067,7 +9715,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				MCPClientID:    1,
@@ -9082,7 +9730,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				MCPClientID:    1,
@@ -9146,7 +9794,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				MCPClientID:    1,
@@ -9187,7 +9835,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 			Name:        "test-vk",
 			Description: "VK with MCP config",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 		},
 	}
 
@@ -9276,7 +9924,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 			Name:        "test-vk",
 			Description: "VK for MCP reconciliation test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 		},
 	}
 
@@ -9347,7 +9995,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 			Name:        "test-vk",
 			Description: "VK for MCP reconciliation test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{
 					MCPClientID:    mcpClient2.ID, // Different MCP client - will be created
@@ -9443,7 +10091,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 			Name:        "test-vk",
 			Description: "VK for dashboard provider config preservation test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -9507,7 +10155,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 			Name:        "test-vk",
 			Description: "VK for dashboard provider config preservation test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -9598,7 +10246,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 			Name:        "test-vk",
 			Description: "VK for dashboard MCP config preservation test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 		},
 	}
 
@@ -9683,7 +10331,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 			Name:        "test-vk",
 			Description: "VK for dashboard MCP config preservation test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{
 					MCPClientID:    mcpClient1.ID,
@@ -9768,7 +10416,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 			Name:        "test-vk",
 			Description: "VK for add/remove test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 		},
 	}
 
@@ -9804,7 +10452,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 			Name:        "test-vk",
 			Description: "VK for add/remove test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{MCPClientID: mcpClient1.ID, ToolsToExecute: []string{"tool1"}},
 				{MCPClientID: mcpClient2.ID, ToolsToExecute: []string{"tool2"}},
@@ -9836,7 +10484,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 			Name:        "test-vk",
 			Description: "VK for add/remove test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{MCPClientID: mcpClient1.ID, ToolsToExecute: []string{"tool1"}},
 				// mcpClient2 removed from file
@@ -9913,7 +10561,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test",
 		Value:       "vk_test123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{MCPClientID: mcpClient.ID, ToolsToExecute: []string{"tool1", "tool2"}},
 		},
@@ -9938,7 +10586,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 			Name:        "test-vk",
 			Description: "Test",
 			Value:       "vk_test123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{MCPClientID: mcpClient.ID, ToolsToExecute: []string{"tool3", "tool4", "tool5"}}, // Different tools
 			},
@@ -10010,7 +10658,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 			Name:        "combined-vk",
 			Description: "VK with both provider and MCP configs",
 			Value:       "vk_combined123",
-			IsActive:    true,
+			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -10425,16 +11073,13 @@ func TestGenerateKeyHash_StableOrdering(t *testing.T) {
 
 // TestGenerateVirtualKeyHash_StableProviderConfigOrdering verifies hash stability with different provider config orderings
 func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
-	budgetID1 := "budget-1"
-	budgetID2 := "budget-2"
-
 	// VK with provider configs in order A
 	vkOrderA := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10442,7 +11087,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
-				BudgetID:      &budgetID1,
 			},
 			{
 				ID:            2,
@@ -10450,7 +11094,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "anthropic",
 				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID2,
 			},
 			{
 				ID:            3,
@@ -10468,7 +11111,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            3,
@@ -10483,7 +11126,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "anthropic",
 				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID2,
 			},
 			{
 				ID:            1,
@@ -10491,7 +11133,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
-				BudgetID:      &budgetID1,
 			},
 		},
 	}
@@ -10502,7 +11143,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            2,
@@ -10510,7 +11151,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "anthropic",
 				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID2,
 			},
 			{
 				ID:            1,
@@ -10518,7 +11158,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
-				BudgetID:      &budgetID1,
 			},
 			{
 				ID:            3,
@@ -10564,7 +11203,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10582,7 +11221,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10600,7 +11239,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10646,7 +11285,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10669,7 +11308,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10692,7 +11331,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10743,7 +11382,7 @@ func TestGenerateVirtualKeyHash_StableMCPConfigOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             1,
@@ -10772,7 +11411,7 @@ func TestGenerateVirtualKeyHash_StableMCPConfigOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             3,
@@ -10801,7 +11440,7 @@ func TestGenerateVirtualKeyHash_StableMCPConfigOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             2,
@@ -10858,7 +11497,7 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             1,
@@ -10875,7 +11514,7 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             1,
@@ -10892,7 +11531,7 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
 				ID:             1,
@@ -10931,16 +11570,13 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 
 // TestGenerateVirtualKeyHash_StableCombinedOrdering verifies hash stability with all nested orderings randomized
 func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
-	budgetID := "budget-1"
-
 	// VK with all elements in order A
 	vkOrderA := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
-		BudgetID:    &budgetID,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -10982,8 +11618,7 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 		Name:        "test-vk",
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
-		IsActive:    true,
-		BudgetID:    &budgetID,
+		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            2,
@@ -11451,11 +12086,12 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 func TestGenerateCustomerHash(t *testing.T) {
 	initTestLogger()
 
-	budgetID := "budget-1"
 	customer1 := tables.TableCustomer{
-		ID:       "customer-1",
-		Name:     "Test Customer",
-		BudgetID: &budgetID,
+		ID:   "customer-1",
+		Name: "Test Customer",
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 100, ResetDuration: "1M"},
+		},
 	}
 
 	hash1, err := configstore.GenerateCustomerHash(customer1)
@@ -11488,21 +12124,55 @@ func TestGenerateCustomerHash(t *testing.T) {
 		t.Error("Different Name should produce different hash")
 	}
 
-	// Different BudgetID should produce different hash
-	newBudgetID := "budget-2"
+	// Different budget ID should produce different hash
 	customer4 := customer1
-	customer4.BudgetID = &newBudgetID
-	hash4, _ := configstore.GenerateCustomerHash(customer4)
+	customer4.Budgets = []tables.TableBudget{{ID: "budget-2", MaxLimit: 100, ResetDuration: "1M"}}
+	hash4, err := configstore.GenerateCustomerHash(customer4)
+	if err != nil {
+		t.Fatalf("failed to generate customer4 hash: %v", err)
+	}
 	if hash1 == hash4 {
-		t.Error("Different BudgetID should produce different hash")
+		t.Error("Different budget ID should produce different hash")
 	}
 
-	// Nil BudgetID should produce different hash
+	// No budgets should produce different hash
 	customer5 := customer1
-	customer5.BudgetID = nil
-	hash5, _ := configstore.GenerateCustomerHash(customer5)
+	customer5.Budgets = nil
+	hash5, err := configstore.GenerateCustomerHash(customer5)
+	if err != nil {
+		t.Fatalf("failed to generate customer5 hash: %v", err)
+	}
 	if hash1 == hash5 {
-		t.Error("Nil BudgetID should produce different hash")
+		t.Error("No budgets should produce different hash")
+	}
+
+	// Multi-budget hash must be order-independent
+	customerA := tables.TableCustomer{
+		ID:   "customer-order",
+		Name: "Order Test",
+		Budgets: []tables.TableBudget{
+			{ID: "budget-x", MaxLimit: 100, ResetDuration: "1M"},
+			{ID: "budget-y", MaxLimit: 200, ResetDuration: "1Y"},
+		},
+	}
+	customerB := tables.TableCustomer{
+		ID:   "customer-order",
+		Name: "Order Test",
+		Budgets: []tables.TableBudget{
+			{ID: "budget-y", MaxLimit: 200, ResetDuration: "1Y"},
+			{ID: "budget-x", MaxLimit: 100, ResetDuration: "1M"},
+		},
+	}
+	hashA, err := configstore.GenerateCustomerHash(customerA)
+	if err != nil {
+		t.Fatalf("failed to generate hashA: %v", err)
+	}
+	hashB, err := configstore.GenerateCustomerHash(customerB)
+	if err != nil {
+		t.Fatalf("failed to generate hashB: %v", err)
+	}
+	if hashA != hashB {
+		t.Error("multi-budget hash should be order-independent")
 	}
 
 	t.Log("✓ Customer hash generation works correctly for all fields")
@@ -11595,7 +12265,7 @@ func TestGenerateTeamHash(t *testing.T) {
 		ID:            "team-1",
 		Name:          "Test Team",
 		CustomerID:    &customerID,
-		BudgetID:      &budgetID,
+		Budgets:       []tables.TableBudget{{ID: budgetID}},
 		ParsedProfile: map[string]interface{}{"key": "value"},
 		ParsedConfig:  map[string]interface{}{"setting": true},
 		ParsedClaims:  map[string]interface{}{"role": "admin"},
@@ -11643,7 +12313,7 @@ func TestGenerateTeamHash(t *testing.T) {
 	// Different BudgetID should produce different hash
 	newBudgetID := "budget-2"
 	team5 := team1
-	team5.BudgetID = &newBudgetID
+	team5.Budgets = []tables.TableBudget{{ID: newBudgetID}}
 	hash5, _ := configstore.GenerateTeamHash(team5)
 	if hash1 == hash5 {
 		t.Error("Different BudgetID should produce different hash")
@@ -11788,12 +12458,12 @@ func TestGenerateMCPClientHash(t *testing.T) {
 		t.Error("Same MCP should produce same hash")
 	}
 
-	// Different ClientID should produce different hash
+	// Different ClientID should produce the same hash (ClientID is system-assigned)
 	mcp2 := mcp1
 	mcp2.ClientID = "mcp-2"
 	hash2, _ := configstore.GenerateMCPClientHash(mcp2)
-	if hash1 == hash2 {
-		t.Error("Different ClientID should produce different hash")
+	if hash1 != hash2 {
+		t.Error("Different ClientID should not affect hash")
 	}
 
 	// Different Name should produce different hash
@@ -11956,9 +12626,14 @@ type mockLLMPlugin struct {
 	mockPlugin
 }
 
+func (p *mockLLMPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *mockLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
+
 func (p *mockLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -12283,6 +12958,37 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when version and placement are unchanged")
 }
 
+// TestSourceOfTruthConfigJSON_PluginsMissingLeavesDBUntouched verifies missing plugins does not prune DB plugins.
+func TestSourceOfTruthConfigJSON_PluginsMissingLeavesDBUntouched(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.plugins = []*tables.TablePlugin{{Name: "db-plugin", Enabled: true, Config: map[string]any{"setting": "db"}}}
+	config := &Config{ConfigStore: store}
+
+	loadPlugins(context.Background(), config, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON})
+
+	require.Len(t, config.PluginConfigs, 1)
+	require.Equal(t, "db-plugin", config.PluginConfigs[0].Name)
+	require.Len(t, store.plugins, 1)
+}
+
+// TestSourceOfTruthConfigJSON_PluginsPresentEmptyPrunesDB verifies present empty plugins removes DB plugins.
+func TestSourceOfTruthConfigJSON_PluginsPresentEmptyPrunesDB(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.plugins = []*tables.TablePlugin{{Name: "db-plugin", Enabled: true, Config: map[string]any{"setting": "db"}}}
+	config := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Plugins:       []*schemas.PluginConfig{},
+	}
+
+	loadPlugins(context.Background(), config, configData)
+
+	require.Empty(t, config.PluginConfigs)
+	require.Empty(t, store.plugins)
+}
+
 // ===================================================================================
 // CLIENT CONFIG HASH TESTS
 // ===================================================================================
@@ -12299,10 +13005,8 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		DisableContentLogging:  false,
 		LogRetentionDays:       30,
 		EnforceAuthOnInference: false,
-		AllowDirectKeys:        true,
 		AllowedOrigins:         []string{"http://localhost:3000"},
 		MaxRequestBodySizeMB:   100,
-		EnableLiteLLMFallbacks: false,
 	}
 
 	hash1, err := cc1.GenerateClientConfigHash()
@@ -12375,14 +13079,6 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		t.Error("Different EnforceAuthOnInference should produce different hash")
 	}
 
-	// Different AllowDirectKeys should produce different hash
-	cc10 := cc1
-	cc10.AllowDirectKeys = false
-	hash10, _ := cc10.GenerateClientConfigHash()
-	if hash1 == hash10 {
-		t.Error("Different AllowDirectKeys should produce different hash")
-	}
-
 	// Different AllowedOrigins should produce different hash
 	cc11 := cc1
 	cc11.AllowedOrigins = []string{"http://example.com"}
@@ -12399,12 +13095,12 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		t.Error("Different MaxRequestBodySizeMB should produce different hash")
 	}
 
-	// Different EnableLiteLLMFallbacks should produce different hash
+	// Different Compat should produce different hash
 	cc13 := cc1
-	cc13.EnableLiteLLMFallbacks = true
+	cc13.Compat.ConvertTextToChat = true
 	hash13, _ := cc13.GenerateClientConfigHash()
 	if hash1 == hash13 {
-		t.Error("Different EnableLiteLLMFallbacks should produce different hash")
+		t.Error("Different Compat.ConvertTextToChat should produce different hash")
 	}
 
 	// PrometheusLabels order should not matter (sorted)
@@ -12579,6 +13275,464 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	}
 
 	t.Log("✓ All dashboard-added entities preserved on reload")
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning verifies config.json SOT prunes DB-only rows across sections.
+func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	tokenMax := int64(1000)
+	tokenDur := "1h"
+	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}, tempDir)
+	configData.MCP = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{{ID: "mcp-file", Name: "file_mcp", ConnectionType: schemas.MCPConnectionTypeHTTP}},
+	}
+	configData.Plugins = []*schemas.PluginConfig{{Name: "file-plugin", Enabled: true, Config: map[string]any{"setting": "file"}}}
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets:    []tables.TableBudget{{ID: "budget-file", MaxLimit: 100.0, ResetDuration: "1d"}},
+		RateLimits: []tables.TableRateLimit{{ID: "rl-file", TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}},
+		Customers:  []tables.TableCustomer{{ID: "customer-file", Name: "File Customer"}},
+		Teams:      []tables.TableTeam{{ID: "team-file", Name: "File Team"}},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	dbProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	openaiConfig := dbProviders[schemas.OpenAI]
+	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+		ID:     uuid.NewString(),
+		Name:   "dashboard-openai-key",
+		Value:  *schemas.NewEnvVar("sk-dashboard-openai"),
+		Weight: 1,
+	})
+	dbProviders[schemas.OpenAI] = openaiConfig
+	dbProviders[schemas.Anthropic] = configstore.ProviderConfig{
+		Keys: []schemas.Key{{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewEnvVar("sk-anthropic"), Weight: 1}},
+	}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders))
+
+	require.NoError(t, config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:             "mcp-dashboard",
+		Name:           "dashboard_mcp",
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	require.NoError(t, config1.ConfigStore.UpsertPlugin(ctx, &tables.TablePlugin{
+		Name:    "dashboard-plugin",
+		Enabled: true,
+		Config:  map[string]any{"setting": "dashboard"},
+		Version: 1,
+	}))
+	require.NoError(t, config1.ConfigStore.CreateBudget(ctx, &tables.TableBudget{ID: "budget-dashboard", MaxLimit: 500.0, ResetDuration: "1w"}))
+	dashboardTokenMax := int64(2000)
+	require.NoError(t, config1.ConfigStore.CreateRateLimit(ctx, &tables.TableRateLimit{ID: "rl-dashboard", TokenMaxLimit: &dashboardTokenMax, TokenResetDuration: &tokenDur}))
+	require.NoError(t, config1.ConfigStore.CreateCustomer(ctx, &tables.TableCustomer{ID: "customer-dashboard", Name: "Dashboard Customer"}))
+	require.NoError(t, config1.ConfigStore.CreateTeam(ctx, &tables.TableTeam{ID: "team-dashboard", Name: "Dashboard Team"}))
+	config1.Close(ctx)
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	dbProviders, err = config2.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 1)
+	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
+	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
+
+	mcpConfig, err := config2.ConfigStore.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, mcpConfig.ClientConfigs, 1)
+	require.Equal(t, "file_mcp", mcpConfig.ClientConfigs[0].Name)
+
+	pluginRows, err := config2.ConfigStore.GetPlugins(ctx)
+	require.NoError(t, err)
+	require.Len(t, pluginRows, 1)
+	require.Equal(t, "file-plugin", pluginRows[0].Name)
+
+	gov, err := config2.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, gov.Budgets, 1)
+	require.Equal(t, "budget-file", gov.Budgets[0].ID)
+	require.Len(t, gov.RateLimits, 1)
+	require.Equal(t, "rl-file", gov.RateLimits[0].ID)
+	require.Len(t, gov.Customers, 1)
+	require.Equal(t, "customer-file", gov.Customers[0].ID)
+	require.Len(t, gov.Teams, 1)
+	require.Equal(t, "team-file", gov.Teams[0].ID)
+}
+
+func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	callUpdate := func(
+		cfg *Config,
+		modelAdds []tables.TableModelConfig,
+		modelUpdates []tables.TableModelConfig,
+		providerAdds []tables.TableProvider,
+		providerUpdates []tables.TableProvider,
+	) error {
+		return updateGovernanceConfigInStore(
+			ctx,
+			cfg,
+			nil, nil, // budgets
+			nil, nil, // rate limits
+			nil, nil, // customers
+			nil, nil, // teams
+			nil, nil, // virtual keys
+			nil, nil, // routing rules
+			nil, nil, // pricing overrides
+			modelAdds, modelUpdates,
+			providerAdds, providerUpdates,
+			nil,
+		)
+	}
+
+	setupConfig := func(t *testing.T) (*Config, string, string) {
+		t.Helper()
+		tempDir := createTempDir(t)
+		store := createTestSQLiteConfigStore(t, tempDir)
+
+		budgetID := "shared-budget"
+		rateLimitID := "shared-rate-limit"
+
+		require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{
+			ID:            budgetID,
+			MaxLimit:      100,
+			ResetDuration: "1d",
+		}))
+		tokenMax := int64(1000)
+		tokenDur := "1h"
+		require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+			ID:                 rateLimitID,
+			TokenMaxLimit:      &tokenMax,
+			TokenResetDuration: &tokenDur,
+		}))
+		require.NoError(t, store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := tx.Create(&tables.TableProvider{Name: "provider-a"}).Error; err != nil {
+				return err
+			}
+			if err := tx.Create(&tables.TableProvider{Name: "provider-b"}).Error; err != nil {
+				return err
+			}
+			return nil
+		}))
+
+		return &Config{ConfigStore: store}, budgetID, rateLimitID
+	}
+
+	t.Run("model add rejects budget linked to another model", func(t *testing.T) {
+		cfg, budgetID, _ := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-existing",
+			ModelName: "gpt-existing",
+			BudgetID:  &budgetID,
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:        "model-new",
+			ModelName: "gpt-new",
+			BudgetID:  &budgetID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("model update rejects rate limit linked to another model", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:          "model-existing",
+			ModelName:   "gpt-existing",
+			RateLimitID: &rateLimitID,
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-update",
+			ModelName: "gpt-update",
+		}))
+
+		err := callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-update",
+			ModelName:   "gpt-update",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("provider add rejects budget linked to another provider", func(t *testing.T) {
+		cfg, budgetID, _ := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{"budget_id": budgetID}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:     "provider-b",
+			BudgetID: &budgetID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("provider update rejects rate limit linked to another provider", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{"rate_limit_id": rateLimitID}).Error; err != nil {
+				return err
+			}
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-b").
+				Updates(map[string]interface{}{"rate_limit_id": nil}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model add and update reject budget or rate limit linked to provider", func(t *testing.T) {
+		cfg, budgetID, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-update-target",
+			ModelName: "gpt-update-target",
+		}))
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{
+					"budget_id":     budgetID,
+					"rate_limit_id": rateLimitID,
+				}).Error
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:          "model-new",
+			ModelName:   "gpt-new",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-update-target",
+			ModelName:   "gpt-update-target",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("provider add and update reject budget or rate limit linked to model", func(t *testing.T) {
+		cfg, budgetID, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:          "model-existing",
+			ModelName:   "gpt-existing",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}))
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-b").
+				Updates(map[string]interface{}{
+					"budget_id":     nil,
+					"rate_limit_id": nil,
+				}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:        "provider-new",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+
+		err = callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model add and provider update reject rate limit linked to team", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateTeam(ctx, &tables.TableTeam{
+			ID:          "team-rl-owner",
+			Name:        "Team RL Owner",
+			RateLimitID: &rateLimitID,
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:          "model-new-team-collision",
+			ModelName:   "gpt-team-collision",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "team")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "team")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model update and provider add reject rate limit linked to virtual-key provider config", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-vk-update-target",
+			ModelName: "gpt-vk-update-target",
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID:       "vk-rl-owner",
+			Name:     "vk-rl-owner",
+			Value:    "vk-rl-owner-value",
+			IsActive: schemas.Ptr(true),
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateVirtualKeyProviderConfig(ctx, &tables.TableVirtualKeyProviderConfig{
+			VirtualKeyID:  "vk-rl-owner",
+			Provider:      "openai",
+			RateLimitID:   &rateLimitID,
+			AllowedModels: []string{"*"},
+		}))
+
+		err := callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-vk-update-target",
+			ModelName:   "gpt-vk-update-target",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "virtual-key provider config")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:        "provider-new-vk-collision",
+			RateLimitID: &rateLimitID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "virtual-key provider config")
+		require.Contains(t, err.Error(), "provider")
+	})
+}
+
+// TestSQLite_Governance_PricingOverrides_Reconciliation tests that pricing overrides
+// defined in config.json are properly reconciled on reload (create, update, preserve).
+func TestSQLite_Governance_PricingOverrides_Reconciliation(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		PricingOverrides: []tables.TablePricingOverride{
+			{
+				ID:        "po-1",
+				Name:      "Override One",
+				ScopeKind: "global",
+				MatchType: "exact",
+				Pattern:   "gpt-4",
+				RequestTypes: []schemas.RequestType{
+					schemas.ChatCompletionRequest,
+				},
+			},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+
+	// First load: pricing override should be created in the DB
+	config1, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+
+	gov1, err := config1.ConfigStore.GetGovernanceConfig(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get governance config after first load: %v", err)
+	}
+	if len(gov1.PricingOverrides) != 1 {
+		t.Fatalf("Expected 1 pricing override after first load, got %d", len(gov1.PricingOverrides))
+	}
+	if gov1.PricingOverrides[0].ID != "po-1" {
+		t.Errorf("Expected pricing override ID 'po-1', got '%s'", gov1.PricingOverrides[0].ID)
+	}
+	if gov1.PricingOverrides[0].ConfigHash == "" {
+		t.Error("Pricing override hash not set after first load")
+	}
+	config1.Close(ctx)
+
+	// Second load (unchanged config): should NOT fail with duplicate key error
+	config2, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("Second LoadConfig failed (duplicate key bug): %v", err)
+	}
+
+	gov2, err := config2.ConfigStore.GetGovernanceConfig(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get governance config after second load: %v", err)
+	}
+	if len(gov2.PricingOverrides) != 1 {
+		t.Fatalf("Expected 1 pricing override after second load, got %d", len(gov2.PricingOverrides))
+	}
+	config2.Close(ctx)
+
+	// Third load (updated config): should update the existing override, not create a duplicate
+	configData.Governance.PricingOverrides[0].Pattern = "gpt-4o"
+	createConfigFile(t, tempDir, configData)
+
+	config3, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("Third LoadConfig failed: %v", err)
+	}
+	defer config3.Close(ctx)
+
+	gov3, err := config3.ConfigStore.GetGovernanceConfig(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get governance config after third load: %v", err)
+	}
+	if len(gov3.PricingOverrides) != 1 {
+		t.Fatalf("Expected 1 pricing override after update, got %d", len(gov3.PricingOverrides))
+	}
+	if gov3.PricingOverrides[0].Pattern != "gpt-4o" {
+		t.Errorf("Pricing override pattern not updated: got '%s', want 'gpt-4o'", gov3.PricingOverrides[0].Pattern)
+	}
+
+	t.Log("✓ Pricing overrides reconciliation works correctly (create, idempotent reload, update)")
 }
 
 // ===================================================================================
@@ -12906,7 +14060,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 	initTestLogger()
 
 	db := setupTestDB(t)
-	if err := db.AutoMigrate(&tables.TableTeam{}); err != nil {
+	if err := db.AutoMigrate(&tables.TableBudget{}, &tables.TableTeam{}); err != nil {
 		t.Fatalf("Failed to migrate: %v", err)
 	}
 
@@ -12998,13 +14152,17 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 	// Test case 4: All fields
 	t.Run("AllFields_GORMRoundTrip", func(t *testing.T) {
 		customerID := "customer-1"
-		budgetID := "budget-1"
+		budgetID := uuid.New().String()
 
 		teamToSave := tables.TableTeam{
-			ID:            uuid.New().String(),
-			Name:          "Test Team All",
-			CustomerID:    &customerID,
-			BudgetID:      &budgetID,
+			ID:         uuid.New().String(),
+			Name:       "Test Team All",
+			CustomerID: &customerID,
+			Budgets: []tables.TableBudget{{
+				ID:            budgetID,
+				ResetDuration: "1h",
+				MaxLimit:      100.0,
+			}},
 			ParsedProfile: map[string]interface{}{"key": "value"},
 			ParsedConfig:  map[string]interface{}{"setting": true},
 			ParsedClaims:  map[string]interface{}{"role": "user"},
@@ -13014,7 +14172,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 		db.Create(&teamToSave)
 
 		var teamFromDB tables.TableTeam
-		db.Where("id = ?", teamToSave.ID).First(&teamFromDB)
+		db.Preload("Budgets").Where("id = ?", teamToSave.ID).First(&teamFromDB)
 
 		hashAfterLoad, _ := configstore.GenerateTeamHash(teamFromDB)
 
@@ -13120,7 +14278,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("ProxyConfig_GORMRoundTrip", func(t *testing.T) {
 		proxyConfig := &schemas.ProxyConfig{
 			Type: schemas.HTTPProxy,
-			URL:  "http://proxy.example.com:8080",
+			URL:  schemas.NewEnvVar("http://proxy.example.com:8080"),
 		}
 
 		providerToSave := tables.TableProvider{
@@ -13251,11 +14409,8 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 
 	// Test case 2: AzureKeyConfig
 	t.Run("AzureKeyConfig_GORMRoundTrip", func(t *testing.T) {
-		apiVersion := "2024-02-01"
 		azureConfig := &schemas.AzureKeyConfig{
-			Endpoint:    *schemas.NewEnvVar("https://myresource.openai.azure.com"),
-			APIVersion:  schemas.NewEnvVar(apiVersion),
-			Deployments: map[string]string{"gpt-4": "gpt-4-deployment"},
+			Endpoint: *schemas.NewEnvVar("https://myresource.openai.azure.com"),
 		}
 
 		keyToSave := tables.TableKey{
@@ -13266,6 +14421,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          *schemas.NewEnvVar("azure-key-value"),
 			Weight:         ptrFloat64(1.0),
 			AzureKeyConfig: azureConfig,
+			Aliases:        schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		}
 
 		schemaKey := schemas.Key{
@@ -13273,6 +14429,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          keyToSave.Value,
 			Weight:         getWeight(keyToSave.Weight),
 			AzureKeyConfig: keyToSave.AzureKeyConfig,
+			Aliases:        keyToSave.Aliases,
 		}
 		hashBeforeSave, _ := configstore.GenerateKeyHash(schemaKey)
 
@@ -13286,6 +14443,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          keyFromDB.Value,
 			Weight:         getWeight(keyFromDB.Weight),
 			AzureKeyConfig: keyFromDB.AzureKeyConfig,
+			Aliases:        keyFromDB.Aliases,
 		}
 		hashAfterLoad, _ := configstore.GenerateKeyHash(schemaKeyFromDB)
 
@@ -13348,9 +14506,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DisableContentLogging:  false,
 			LogRetentionDays:       30,
 			EnforceAuthOnInference: false,
-			AllowDirectKeys:        true,
 			MaxRequestBodySizeMB:   100,
-			EnableLiteLLMFallbacks: false,
 		}
 
 		// Generate hash from config
@@ -13362,9 +14518,13 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DisableContentLogging:  ccToSave.DisableContentLogging,
 			LogRetentionDays:       ccToSave.LogRetentionDays,
 			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
-			AllowDirectKeys:        ccToSave.AllowDirectKeys,
 			MaxRequestBodySizeMB:   ccToSave.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks: ccToSave.EnableLiteLLMFallbacks,
+			Compat: configstore.CompatConfig{
+				ConvertTextToChat:      ccToSave.CompatConvertTextToChat,
+				ConvertChatToResponses: ccToSave.CompatConvertChatToResponses,
+				ShouldDropParams:       ccToSave.CompatShouldDropParams,
+				ShouldConvertParams:    ccToSave.CompatShouldConvertParams,
+			},
 		}
 		hashBeforeSave, _ := clientConfig.GenerateClientConfigHash()
 
@@ -13381,9 +14541,13 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DisableContentLogging:  ccFromDB.DisableContentLogging,
 			LogRetentionDays:       ccFromDB.LogRetentionDays,
 			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
-			AllowDirectKeys:        ccFromDB.AllowDirectKeys,
 			MaxRequestBodySizeMB:   ccFromDB.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks: ccFromDB.EnableLiteLLMFallbacks,
+			Compat: configstore.CompatConfig{
+				ConvertTextToChat:      ccFromDB.CompatConvertTextToChat,
+				ConvertChatToResponses: ccFromDB.CompatConvertChatToResponses,
+				ShouldDropParams:       ccFromDB.CompatShouldDropParams,
+				ShouldConvertParams:    ccFromDB.CompatShouldConvertParams,
+			},
 		}
 		hashAfterLoad, _ := clientConfigFromDB.GenerateClientConfigHash()
 
@@ -13586,7 +14750,7 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 		ID:       "vk-zero-weight",
 		Name:     "test-vk",
 		Value:    "vk_test123",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
@@ -13644,7 +14808,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 			ID:       "vk-zero-weight",
 			Name:     "test-vk",
 			Value:    "vk_abc123",
-			IsActive: true,
+			IsActive: schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
@@ -14069,11 +15233,9 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	}
 }
 
-// TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit verifies that BudgetID and RateLimitID
-// in VK provider configs affect hash generation.
-func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
-	budgetID1 := "budget-1"
-	budgetID2 := "budget-2"
+// TestGenerateVirtualKeyHash_ProviderConfigRateLimit verifies that RateLimitID
+// in VK provider configs affects hash generation.
+func TestGenerateVirtualKeyHash_ProviderConfigRateLimit(t *testing.T) {
 	rateLimitID1 := "rate-limit-1"
 	rateLimitID2 := "rate-limit-2"
 	weight := 1.0
@@ -14085,39 +15247,11 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 		expectEqual bool
 	}{
 		{
-			name: "different_budget_id_different_hash",
-			vk1: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: &budgetID1,
-					},
-				},
-			},
-			vk2: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: &budgetID2,
-					},
-				},
-			},
-			expectEqual: false,
-		},
-		{
 			name: "different_rate_limit_id_different_hash",
 			vk1: tables.TableVirtualKey{
 				ID:       "vk-1",
 				Name:     "test-vk",
-				IsActive: true,
+				IsActive: schemas.Ptr(true),
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
 						Provider:    "openai",
@@ -14129,7 +15263,7 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 			vk2: tables.TableVirtualKey{
 				ID:       "vk-1",
 				Name:     "test-vk",
-				IsActive: true,
+				IsActive: schemas.Ptr(true),
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
 						Provider:    "openai",
@@ -14141,39 +15275,11 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 			expectEqual: false,
 		},
 		{
-			name: "nil_vs_set_budget_id_different_hash",
-			vk1: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: nil,
-					},
-				},
-			},
-			vk2: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: &budgetID1,
-					},
-				},
-			},
-			expectEqual: false,
-		},
-		{
 			name: "nil_vs_set_rate_limit_id_different_hash",
 			vk1: tables.TableVirtualKey{
 				ID:       "vk-1",
 				Name:     "test-vk",
-				IsActive: true,
+				IsActive: schemas.Ptr(true),
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
 						Provider:    "openai",
@@ -14185,7 +15291,7 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 			vk2: tables.TableVirtualKey{
 				ID:       "vk-1",
 				Name:     "test-vk",
-				IsActive: true,
+				IsActive: schemas.Ptr(true),
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
 						Provider:    "openai",
@@ -14197,16 +15303,15 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 			expectEqual: false,
 		},
 		{
-			name: "same_budget_and_rate_limit_same_hash",
+			name: "same_rate_limit_same_hash",
 			vk1: tables.TableVirtualKey{
 				ID:       "vk-1",
 				Name:     "test-vk",
-				IsActive: true,
+				IsActive: schemas.Ptr(true),
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
 						Provider:    "openai",
 						Weight:      &weight,
-						BudgetID:    &budgetID1,
 						RateLimitID: &rateLimitID1,
 					},
 				},
@@ -14214,12 +15319,11 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 			vk2: tables.TableVirtualKey{
 				ID:       "vk-1",
 				Name:     "test-vk",
-				IsActive: true,
+				IsActive: schemas.Ptr(true),
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
 						Provider:    "openai",
 						Weight:      &weight,
-						BudgetID:    &budgetID1,
 						RateLimitID: &rateLimitID1,
 					},
 				},
@@ -14250,107 +15354,6 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 	}
 }
 
-// TestSQLite_VKProviderConfig_BudgetAndRateLimit verifies that BudgetID and RateLimitID
-// in VK provider configs are properly persisted and retrieved from SQLite.
-func TestSQLite_VKProviderConfig_BudgetAndRateLimit(t *testing.T) {
-	initTestLogger()
-	tempDir := createTempDir(t)
-
-	budgetID := "budget-123"
-	rateLimitID := "rate-limit-456"
-	vkID := uuid.NewString()
-	weight := 1.0
-
-	// Create config with VK that has provider config with BudgetID and RateLimitID
-	configData := makeConfigDataFullWithDir(
-		nil,
-		map[string]configstore.ProviderConfig{
-			"openai": {
-				Keys: []schemas.Key{
-					{
-						ID:     uuid.NewString(),
-						Name:   "openai-key",
-						Value:  *schemas.NewEnvVar("sk-test"),
-						Weight: 1,
-					},
-				},
-			},
-		},
-		&configstore.GovernanceConfig{
-			Budgets: []tables.TableBudget{
-				{
-					ID:       budgetID,
-					MaxLimit: 100.0,
-				},
-			},
-			RateLimits: []tables.TableRateLimit{
-				{
-					ID:              rateLimitID,
-					RequestMaxLimit: int64Ptr(60),
-					TokenMaxLimit:   int64Ptr(10000),
-				},
-			},
-			VirtualKeys: []tables.TableVirtualKey{
-				{
-					ID:       vkID,
-					Name:     "test-vk",
-					Value:    "vk-test-value",
-					IsActive: true,
-					ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-						{
-							Provider:    "openai",
-							Weight:      &weight,
-							BudgetID:    &budgetID,
-							RateLimitID: &rateLimitID,
-						},
-					},
-				},
-			},
-		},
-		tempDir,
-	)
-
-	// Load config
-	createConfigFile(t, tempDir, configData)
-	config, err := LoadConfig(context.Background(), tempDir)
-	if err != nil {
-		t.Fatalf("LoadConfig failed: %v", err)
-	}
-	defer config.Close(context.Background())
-
-	// Verify the governance config has the VK with provider configs
-	if config.GovernanceConfig == nil {
-		t.Fatal("Expected GovernanceConfig to exist")
-	}
-	if len(config.GovernanceConfig.VirtualKeys) == 0 {
-		t.Fatal("Expected VirtualKeys in GovernanceConfig")
-	}
-
-	// Find the VK and verify provider config
-	var foundVK *tables.TableVirtualKey
-	for i := range config.GovernanceConfig.VirtualKeys {
-		if config.GovernanceConfig.VirtualKeys[i].ID == vkID {
-			foundVK = &config.GovernanceConfig.VirtualKeys[i]
-			break
-		}
-	}
-	if foundVK == nil {
-		t.Fatalf("Virtual key %s not found in config", vkID)
-	}
-
-	if len(foundVK.ProviderConfigs) == 0 {
-		t.Fatal("Expected VK to have provider configs")
-	}
-
-	pc := foundVK.ProviderConfigs[0]
-	if pc.BudgetID == nil || *pc.BudgetID != budgetID {
-		t.Errorf("Expected BudgetID=%s, got %v", budgetID, pc.BudgetID)
-	}
-	if pc.RateLimitID == nil || *pc.RateLimitID != rateLimitID {
-		t.Errorf("Expected RateLimitID=%s, got %v", rateLimitID, pc.RateLimitID)
-	}
-}
-
 // intPtr is a helper to create a pointer to an int
 func intPtr(i int) *int {
 	return &i
@@ -14366,34 +15369,30 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 	// === Scenario 1: Vertex config in DB + same in file -> hash matches, no update ===
 	t.Run("SameVertexConfig_NoUpdate", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
 				Region:          *schemas.NewEnvVar("us-central1"),
 				AuthCredentials: *schemas.NewEnvVar(`{"type":"service_account"}`),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
 				Region:          *schemas.NewEnvVar("us-central1"),
 				AuthCredentials: *schemas.NewEnvVar(`{"type":"service_account"}`),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
@@ -14514,31 +15513,26 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 	// === Scenario 5: Vertex config in DB + different Deployments map in file -> hash differs ===
 	t.Run("DifferentDeployments_UpdateTriggered", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro":     "gemini-pro-endpoint",
-					"gemini-1.5-pro": "gemini-15-pro-endpoint", // Added!
-				},
 			},
 		}
 
@@ -14918,29 +15912,24 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 	t.Run("AddDeployment", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4":  "gpt-4-deployment",
-					"gpt-4o": "gpt-4o-deployment", // Added
-				},
 			},
 		}
 
@@ -14954,29 +15943,24 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 
 	t.Run("RemoveDeployment", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4":  "gpt-4-deployment",
-					"gpt-4o": "gpt-4o-deployment",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment", // gpt-4o removed
-				},
 			},
 		}
 
@@ -14990,28 +15974,24 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 
 	t.Run("ModifyDeploymentValue", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment-v1"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment-v1",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment-v2"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment-v2", // Value changed
-				},
 			},
 		}
 
@@ -15030,21 +16010,18 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:    *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: nil, // No deployments
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "azure-key",
+			Value:   *schemas.NewEnvVar("azure-api-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -15061,33 +16038,28 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 	t.Run("AddDeployment", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}, "claude-3.5": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3":   "arn:aws:bedrock:us-east-1::inference-profile/claude-3",
-					"claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5", // Added
-				},
 			},
 		}
 
@@ -15101,33 +16073,28 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 
 	t.Run("RemoveDeployment", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}, "claude-3.5": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3":   "arn:aws:bedrock:us-east-1::inference-profile/claude-3",
-					"claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3", // claude-3.5 removed
-				},
 			},
 		}
 
@@ -15141,32 +16108,28 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 
 	t.Run("ModifyDeploymentValue", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "bedrock-key",
-			Value:  *schemas.NewEnvVar("bedrock-key"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "bedrock-key",
+			Value:   *schemas.NewEnvVar("bedrock-key"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new", // Value changed
-				},
 			},
 		}
 
@@ -15183,31 +16146,26 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 	t.Run("AddDeployment", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-creds"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-creds"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-creds"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-creds"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro":     "gemini-pro-endpoint",
-					"gemini-1.5-pro": "gemini-15-pro-endpoint", // Added
-				},
 			},
 		}
 
@@ -15221,31 +16179,26 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 
 	t.Run("RemoveDeployment", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-creds"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-creds"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro":     "gemini-pro-endpoint",
-					"gemini-1.5-pro": "gemini-15-pro-endpoint",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-creds"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-creds"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint", // gemini-1.5-pro removed
-				},
 			},
 		}
 
@@ -15259,30 +16212,26 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 
 	t.Run("ModifyDeploymentValue", func(t *testing.T) {
 		dbKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-creds"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-creds"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint-v1"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint-v1",
-				},
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-creds"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-creds"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint-v2"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint-v2", // Value changed
-				},
 			},
 		}
 
@@ -15301,23 +16250,20 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
 			VertexKeyConfig: &schemas.VertexKeyConfig{
-				ProjectID:   *schemas.NewEnvVar("my-project"),
-				Region:      *schemas.NewEnvVar("us-central1"),
-				Deployments: nil, // No deployments
+				ProjectID: *schemas.NewEnvVar("my-project"),
+				Region:    *schemas.NewEnvVar("us-central1"),
 			},
 		}
 
 		fileKey := schemas.Key{
-			ID:     "key-1",
-			Name:   "vertex-key",
-			Value:  *schemas.NewEnvVar("vertex-creds"),
-			Weight: 1,
+			ID:      "key-1",
+			Name:    "vertex-key",
+			Value:   *schemas.NewEnvVar("vertex-creds"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
@@ -15382,6 +16328,9 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"governance.virtual_keys.provider_configs", reflect.TypeOf(tables.TableVirtualKeyProviderConfig{}), true},
 		{"governance.virtual_keys.mcp_configs", reflect.TypeOf(tables.TableVirtualKeyMCPConfig{}), true},
 		{"governance.auth_config", reflect.TypeOf(configstore.AuthConfig{}), false},
+		{"governance.complexity_analyzer_config", reflect.TypeOf(configstore.ComplexityAnalyzerConfig{}), false},
+		{"governance.complexity_analyzer_config.tier_boundaries", reflect.TypeOf(configstore.ComplexityTierBoundaries{}), false},
+		{"governance.complexity_analyzer_config.keywords", reflect.TypeOf(configstore.ComplexityEditableKeywordConfig{}), false},
 
 		// Plugins
 		{"plugins", reflect.TypeOf(schemas.PluginConfig{}), true},
@@ -15391,9 +16340,10 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 // enterpriseSchemaPaths are schema paths that exist only in enterprise version
 var enterpriseSchemaPaths = map[string]bool{
 	"$schema":                    true,
+	"access_profiles":            true,
 	"audit_logs":                 true,
 	"cluster_config":             true,
-	"saml_config":                true,
+	"scim_config":                true,
 	"load_balancer_config":       true,
 	"guardrails_config":          true,
 	"large_payload_optimization": true,
@@ -15407,12 +16357,13 @@ var enterpriseSchemaPaths = map[string]bool{
 var excludedGoFields = map[string]map[string]bool{
 	// ClientConfig - MCP fields are managed at MCP level, not client level
 	"configstore.ClientConfig": {
-		"ConfigHash":                  true,
-		"allowed_headers":             true, // Internal use
-		"mcp_agent_depth":             true, // Managed via MCP config
-		"mcp_code_mode_binding_level": true,
-		"mcp_tool_execution_timeout":  true,
-		"mcp_tool_sync_interval":      true,
+		"ConfigHash":                   true,
+		"allowed_headers":              true, // Internal use
+		"mcp_agent_depth":              true, // Managed via MCP config
+		"mcp_code_mode_binding_level":  true,
+		"mcp_tool_execution_timeout":   true,
+		"mcp_tool_sync_interval":       true,
+		"mcp_disable_auto_tool_inject": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// GovernanceConfig - some fields are internal/enterprise
@@ -15423,9 +16374,11 @@ var excludedGoFields = map[string]map[string]bool{
 	},
 	// Table types have DB-specific fields
 	"tables.TableBudget": {
-		"config_hash": true,
-		"created_at":  true,
-		"updated_at":  true,
+		"config_hash":        true,
+		"created_at":         true,
+		"updated_at":         true,
+		"virtual_key_id":     true, // Internal DB FK for multi-budget ownership
+		"provider_config_id": true, // Internal DB FK for multi-budget ownership
 	},
 	"tables.TableRateLimit": {
 		"config_hash": true,
@@ -15445,23 +16398,26 @@ var excludedGoFields = map[string]map[string]bool{
 		"config_hash":  true,
 		"created_at":   true,
 		"updated_at":   true,
-		"budget":       true, // GORM relation
+		"budgets":      true, // GORM relation (multiple budgets with different reset intervals)
 		"rate_limit":   true, // GORM relation
 		"customer":     true, // GORM relation
 		"virtual_keys": true, // GORM relation
 	},
 	"tables.TableVirtualKey": {
-		"config_hash": true,
-		"created_at":  true,
-		"updated_at":  true,
-		"budget":      true, // GORM relation
-		"rate_limit":  true, // GORM relation
-		"team":        true, // GORM relation
-		"customer":    true, // GORM relation
+		"config_hash":        true,
+		"created_at":         true,
+		"updated_at":         true,
+		"created_by_user_id": true, // DB ownership metadata; set by API/session layer
+		"budgets":            true, // GORM relation (budgets have virtual_key_id FK)
+		"rate_limit":         true, // GORM relation
+		"team":               true, // GORM relation
+		"customer":           true, // GORM relation
 	},
 	"tables.TableVirtualKeyProviderConfig": {
-		"budget":     true, // GORM relation
-		"rate_limit": true, // GORM relation
+		"rate_limit":     true, // GORM relation
+		"allow_all_keys": true, // Internal DB field; users configure via key_ids
+		"keys":           true, // GORM many2many relation; users configure via key_ids
+		"budgets":        true, // GORM relation (budgets have provider_config_id FK)
 	},
 	"tables.TableVirtualKeyMCPConfig": {
 		"mcp_client": true, // GORM relation
@@ -15476,6 +16432,8 @@ var excludedGoFields = map[string]map[string]bool{
 		"is_code_mode_client":   true, // Internal
 		"auth_type":             true, // Internal
 		"oauth_config_id":       true, // Internal
+		"oauth_client_id":       true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_client_secret":   true, // Response-only: populated on GET from oauth config, not stored
 		"is_ping_available":     true, // Runtime state
 		"tool_sync_interval":    true, // Internal
 		"tool_pricing":          true, // Internal
@@ -15504,8 +16462,31 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"client": {
 		"allowed_headers": true, // Not in ClientConfig
 	},
+	"governance": {
+		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
+	},
+	"auth_config": {
+		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
+	},
+	"governance.auth_config": {
+		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
+	},
+	"governance.teams": {
+		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
+		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
+	},
+	"governance.virtual_keys": {
+		"access_profile_id": true, // Enterprise access-profile assignment; not on OSS TableVirtualKey
+	},
 	"governance.virtual_keys.provider_configs": {
-		"keys": true, // Complex nested type, validated separately
+		"keys":    true, // Complex nested type, validated separately
+		"key_ids": true, // Config-file format; handled via custom UnmarshalJSON into allow_all_keys/keys
+	},
+	"governance.virtual_keys.mcp_configs": {
+		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
+	},
+	"mcp": {
+		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
 	},
 	"mcp.client_configs": {
 		"websocket_config": true, // Schema documents all connection types
@@ -15752,13 +16733,14 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	// Enterprise-only features: These fields exist in the JSON schema for documentation
 	// and validation purposes, but are only available in the enterprise version.
 	enterpriseSchemaFields := map[string]bool{
-		"$schema":                      true,
-		"audit_logs":                   true,
-		"cluster_config":               true,
-		"saml_config":                  true,
-		"load_balancer_config":         true,
-		"guardrails_config":            true,
-		"large_payload_optimization":   true,
+		"$schema":                    true,
+		"access_profiles":            true,
+		"audit_logs":                 true,
+		"cluster_config":             true,
+		"scim_config":                true,
+		"load_balancer_config":       true,
+		"guardrails_config":          true,
+		"large_payload_optimization": true,
 	}
 
 	schema := loadJSONSchema(t)
@@ -15812,17 +16794,22 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 func TestResolveFrameworkPricingConfig(t *testing.T) {
 	initTestLogger()
 	defaultURL := modelcatalog.DefaultPricingURL
-	defaultSyncSeconds := int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
+	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
+	defaultModelParamsURL := modelcatalog.DefaultModelParametersURL
+	defaultMCPLibraryURL := modelcatalog.DefaultMCPLibraryURL
 	fileURL := "https://example.com/pricing.json"
 	fileSyncSeconds := int64((12 * time.Hour).Seconds())
 	dbURL := "https://db.example.com/pricing.json"
 	dbSyncSeconds := int64((6 * time.Hour).Seconds())
 
-	t.Run("db values take precedence", func(t *testing.T) {
+	t.Run("file values override db when no stored hash exists", func(t *testing.T) {
+		// DB has values but no ConfigHash — first time file is applied; file wins.
 		dbConfig := &tables.TableFrameworkConfig{
 			ID:                  7,
 			PricingURL:          &dbURL,
 			PricingSyncInterval: &dbSyncSeconds,
+			ModelParametersURL:  &defaultModelParamsURL,
+			ConfigHash:          "",
 		}
 		fileConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
@@ -15832,12 +16819,83 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		}
 
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
-		require.False(t, needsDBUpdate)
+		require.True(t, needsDBUpdate)
 		require.Equal(t, uint(7), normalizedTable.ID)
-		require.Equal(t, dbURL, *normalizedTable.PricingURL)
-		require.Equal(t, dbSyncSeconds, *normalizedTable.PricingSyncInterval)
-		require.Equal(t, dbURL, *normalizedModelCatalog.PricingURL)
-		require.Equal(t, dbSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		require.Equal(t, fileURL, *normalizedTable.PricingURL)
+		require.Equal(t, fileSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, fileURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, fileSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		// Returned row must carry the new file hash so future restarts can compare.
+		require.NotEmpty(t, normalizedTable.ConfigHash)
+	})
+
+	t.Run("db wins when file hash matches stored hash (user edited via UI)", func(t *testing.T) {
+		// File is unchanged since last write. User may have edited DB via UI.
+		// DB should take precedence so UI edits are respected.
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&fileURL, &defaultModelParamsURL, &fileSyncSeconds)
+		require.NoError(t, err)
+		uiEditedURL := "https://ui-edited.example.com/pricing.json"
+		uiEditedSync := int64((24 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     8,
+			PricingURL:             &uiEditedURL,
+			PricingSyncInterval:    &uiEditedSync,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &defaultSyncSeconds,
+			ConfigHash:             storedHash, // hash of last file-applied values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &fileURL,
+				ModelParametersURL:  &defaultModelParamsURL,
+				PricingSyncInterval: &fileSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.False(t, needsDBUpdate) // file unchanged; DB wins
+		require.Equal(t, uint(8), normalizedTable.ID)
+		require.Equal(t, uiEditedURL, *normalizedTable.PricingURL)
+		require.Equal(t, uiEditedSync, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, defaultModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, uiEditedURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, uiEditedSync, *normalizedModelCatalog.PricingSyncInterval)
+		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+	})
+
+	t.Run("file values override db when file changes after ui edit", func(t *testing.T) {
+		// DB has UI-edited values. File has changed. File wins and DB is updated.
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&fileURL, &defaultModelParamsURL, &fileSyncSeconds)
+		require.NoError(t, err)
+		uiEditedURL := "https://ui-edited.example.com/pricing.json"
+		uiEditedSync := int64((24 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  9,
+			PricingURL:          &uiEditedURL,
+			ModelParametersURL:  &defaultModelParamsURL,
+			PricingSyncInterval: &uiEditedSync,
+			ConfigHash:          storedHash, // hash of OLD file values
+		}
+		newFileURL := "https://new-file.example.com/pricing.json"
+		newFileSyncSeconds := int64((48 * time.Hour).Seconds())
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &newFileURL,
+				ModelParametersURL:  &defaultModelParamsURL,
+				PricingSyncInterval: &newFileSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uint(9), normalizedTable.ID)
+		require.Equal(t, newFileURL, *normalizedTable.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, newFileSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, newFileURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+		require.Equal(t, newFileSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
 	})
 
 	t.Run("fallback to file when db fields are missing", func(t *testing.T) {
@@ -15867,8 +16925,118 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.False(t, needsDBUpdate)
 		require.Equal(t, defaultURL, *normalizedTable.PricingURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, defaultMCPLibraryURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
 		require.Equal(t, defaultURL, *normalizedModelCatalog.PricingURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		require.Equal(t, defaultMCPLibraryURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file values override defaults", func(t *testing.T) {
+		mcpURL := "https://example.com/mcp-library.json"
+		mcpSyncSeconds := int64((2 * time.Hour).Seconds())
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &mcpURL,
+				MCPLibrarySyncInterval: &mcpSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file values override db when file hash changed", func(t *testing.T) {
+		mcpURL := "https://file.example.com/mcp-library.json"
+		mcpSyncSeconds := int64((2 * time.Hour).Seconds())
+		dbMCPURL := modelcatalog.DefaultMCPLibraryURL
+		dbMCPSyncSeconds := int64((24 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     11,
+			MCPLibraryURL:          &dbMCPURL,
+			MCPLibrarySyncInterval: &dbMCPSyncSeconds,
+			ConfigHash:             "old-hash",
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &mcpURL,
+				MCPLibrarySyncInterval: &mcpSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library db wins when file hash matches stored hash", func(t *testing.T) {
+		fileMCPURL := "https://file.example.com/mcp-library.json"
+		fileMCPSyncSeconds := int64((2 * time.Hour).Seconds())
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{
+			MCPLibraryURL:          &fileMCPURL,
+			MCPLibrarySyncInterval: &fileMCPSyncSeconds,
+		})
+		require.NoError(t, err)
+		uiEditedMCPURL := "https://ui.example.com/mcp-library.json"
+		uiEditedMCPSyncSeconds := int64((3 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     12,
+			PricingURL:             &defaultURL,
+			PricingSyncInterval:    &defaultSyncSeconds,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &uiEditedMCPURL,
+			MCPLibrarySyncInterval: &uiEditedMCPSyncSeconds,
+			ConfigHash:             storedHash,
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &fileMCPURL,
+				MCPLibrarySyncInterval: &fileMCPSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, uiEditedMCPURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, uiEditedMCPSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, uiEditedMCPURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, uiEditedMCPSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file interval below minimum is clamped", func(t *testing.T) {
+		tooLow := int64(1800)
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibrarySyncInterval: &tooLow,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library invalid db interval falls back and requests db update", func(t *testing.T) {
+		invalidDBSync := int64(0)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     10,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &invalidDBSync,
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
 	t.Run("invalid db interval (zero) falls back and requests db update", func(t *testing.T) {
@@ -16012,9 +17180,15 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			require.NotNil(t, tableOut, "TableFrameworkConfig must never be nil")
 			require.NotNil(t, tableOut.PricingURL, "PricingURL must never be nil")
 			require.NotNil(t, tableOut.PricingSyncInterval, "PricingSyncInterval must never be nil")
+			require.NotNil(t, tableOut.ModelParametersURL, "ModelParametersURL must never be nil")
+			require.NotNil(t, tableOut.MCPLibraryURL, "MCPLibraryURL must never be nil")
+			require.NotNil(t, tableOut.MCPLibrarySyncInterval, "MCPLibrarySyncInterval must never be nil")
 			require.NotNil(t, catalogOut, "modelcatalog.Config must never be nil")
 			require.NotNil(t, catalogOut.PricingURL, "Config.PricingURL must never be nil")
 			require.NotNil(t, catalogOut.PricingSyncInterval, "Config.PricingSyncInterval must never be nil")
+			require.NotNil(t, catalogOut.ModelParametersURL, "Config.ModelParametersURL must never be nil")
+			require.NotNil(t, catalogOut.MCPLibraryURL, "Config.MCPLibraryURL must never be nil")
+			require.NotNil(t, catalogOut.MCPLibrarySyncInterval, "Config.MCPLibrarySyncInterval must never be nil")
 		}
 	})
 
@@ -16214,21 +17388,17 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 
 		mockStore.authConfig = &configstore.AuthConfig{
-			AdminUserName:          schemas.NewEnvVar("sameadmin"),
-			AdminPassword:          schemas.NewEnvVar(hashedPassword),
-			IsEnabled:              true,
-			DisableAuthOnInference: false,
-		}
+			AdminUserName: schemas.NewEnvVar("sameadmin"),
+			AdminPassword: schemas.NewEnvVar(hashedPassword),
+			IsEnabled:     true}
 		config := &Config{
 			ConfigStore: mockStore,
 		}
 		configData := &ConfigData{
 			AuthConfig: &configstore.AuthConfig{
-				AdminUserName:          schemas.NewEnvVar("sameadmin"),
-				AdminPassword:          schemas.NewEnvVar(plainPassword),
-				IsEnabled:              true,
-				DisableAuthOnInference: false,
-			},
+				AdminUserName: schemas.NewEnvVar("sameadmin"),
+				AdminPassword: schemas.NewEnvVar(plainPassword),
+				IsEnabled:     true},
 		}
 
 		loadAuthConfig(ctx, config, configData)
@@ -16430,21 +17600,17 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 
 		mockStore.authConfig = &configstore.AuthConfig{
-			AdminUserName:          schemas.NewEnvVar("admin"),
-			AdminPassword:          schemas.NewEnvVar(hashedPassword),
-			IsEnabled:              true,
-			DisableAuthOnInference: false,
-		}
+			AdminUserName: schemas.NewEnvVar("admin"),
+			AdminPassword: schemas.NewEnvVar(hashedPassword),
+			IsEnabled:     true}
 		config := &Config{
 			ConfigStore: mockStore,
 		}
 		configData := &ConfigData{
 			AuthConfig: &configstore.AuthConfig{
-				AdminUserName:          schemas.NewEnvVar("admin"),
-				AdminPassword:          schemas.NewEnvVar(plainPassword),
-				IsEnabled:              true,
-				DisableAuthOnInference: false,
-			},
+				AdminUserName: schemas.NewEnvVar("admin"),
+				AdminPassword: schemas.NewEnvVar(plainPassword),
+				IsEnabled:     true},
 		}
 
 		loadAuthConfig(ctx, config, configData)
@@ -16729,11 +17895,11 @@ func TestSQLite_GetVirtualKeysPaginated(t *testing.T) {
 	}
 
 	vks := []tables.TableVirtualKey{
-		{ID: "vk-1", Name: "alpha-key", Value: "val-1", IsActive: true, TeamID: &team1},
-		{ID: "vk-2", Name: "beta-key", Value: "val-2", IsActive: true, TeamID: &team2},
-		{ID: "vk-3", Name: "alpha-test", Value: "val-3", IsActive: true, CustomerID: &cust1},
-		{ID: "vk-4", Name: "gamma-key", Value: "val-4", IsActive: true, CustomerID: &cust2},
-		{ID: "vk-5", Name: "delta-key", Value: "val-5", IsActive: true, TeamID: &team1},
+		{ID: "vk-1", Name: "alpha-key", Value: "val-1", IsActive: schemas.Ptr(true), TeamID: &team1},
+		{ID: "vk-2", Name: "beta-key", Value: "val-2", IsActive: schemas.Ptr(true), TeamID: &team2},
+		{ID: "vk-3", Name: "alpha-test", Value: "val-3", IsActive: schemas.Ptr(true), CustomerID: &cust1},
+		{ID: "vk-4", Name: "gamma-key", Value: "val-4", IsActive: schemas.Ptr(true), CustomerID: &cust2},
+		{ID: "vk-5", Name: "delta-key", Value: "val-5", IsActive: schemas.Ptr(true), TeamID: &team1},
 	}
 	for i := range vks {
 		err := store.CreateVirtualKey(ctx, &vks[i])
@@ -16866,12 +18032,15 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, true, *cc.EnableLogging, "EnableLogging should default to true")
 	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
 	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
-	require.Equal(t, false, cc.AllowDirectKeys, "AllowDirectKeys should default to false")
 	require.Equal(t, []string{"*"}, cc.AllowedOrigins, "AllowedOrigins should default to [*]")
 	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
 	require.Equal(t, 30, cc.MCPToolExecutionTimeout, "MCPToolExecutionTimeout should default to 30")
-	require.Equal(t, false, cc.EnableLiteLLMFallbacks, "EnableLiteLLMFallbacks should default to false")
+	require.Equal(t, false, cc.MCPEnableTempTokenAuth, "MCPEnableTempTokenAuth should default to false")
+	require.Equal(t, false, cc.Compat.ConvertTextToChat, "Compat.ConvertTextToChat should default to false")
+	require.Equal(t, false, cc.Compat.ConvertChatToResponses, "Compat.ConvertChatToResponses should default to false")
+	require.Equal(t, false, cc.Compat.ShouldDropParams, "Compat.ShouldDropParams should default to false")
+	require.Equal(t, false, cc.Compat.ShouldConvertParams, "Compat.ShouldConvertParams should default to false")
 	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
 }
 
@@ -17432,4 +18601,466 @@ func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
 	// Verify zero-value fields get defaults
 	require.Equal(t, DefaultClientConfig.MaxRequestBodySizeMB, config.ClientConfig.MaxRequestBodySizeMB,
 		"MaxRequestBodySizeMB should get default when zero in file")
+}
+
+// =============================================================================
+// applyV1Compat unit tests
+// =============================================================================
+
+// makeV1ProviderKey is a helper that builds a schemas.Key for compat tests.
+func makeV1ProviderKey(name string, models schemas.WhiteList) schemas.Key {
+	return schemas.Key{
+		Name:   name,
+		Value:  *schemas.NewEnvVar("env.SOME_API_KEY"),
+		Models: models,
+		Weight: 1.0,
+	}
+}
+
+// makeV1ProviderConfig builds a minimal configstore.ProviderConfig with the given keys.
+func makeV1ProviderConfig(keys ...schemas.Key) configstore.ProviderConfig {
+	return configstore.ProviderConfig{Keys: keys}
+}
+
+// makeV1ConfigData is a convenience constructor for compat tests.
+func makeV1ConfigData(
+	providers map[string]configstore.ProviderConfig,
+	mcp *schemas.MCPConfig,
+	vks []tables.TableVirtualKey,
+) *ConfigData {
+	cd := &ConfigData{
+		Version:   1,
+		Providers: providers,
+		MCP:       mcp,
+	}
+	if len(vks) > 0 {
+		cd.Governance = &configstore.GovernanceConfig{VirtualKeys: vks}
+	}
+	return cd
+}
+
+// TestApplyV1Compat_ProviderKey_EmptyModels verifies that nil and [] models are
+// both normalised to ["*"].
+func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(
+				makeV1ProviderKey("nil-models", nil),
+				makeV1ProviderKey("empty-models", schemas.WhiteList{}),
+			),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	for _, key := range cd.Providers["openai"].Keys {
+		require.Equal(t, schemas.WhiteList{"*"}, key.Models,
+			"key %q: expected models to be normalized to [\"*\"]", key.Name)
+	}
+}
+
+// TestApplyV1Compat_ProviderKey_WildcardUnchanged checks that a key already using
+// ["*"] is left untouched.
+func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("wildcard", schemas.WhiteList{"*"})),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+}
+
+// TestApplyV1Compat_ProviderKey_ExplicitUnchanged ensures that a specific model
+// list is not altered.
+func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
+	models := schemas.WhiteList{"gpt-4o", "gpt-4o-mini"}
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("specific", models)),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	require.Equal(t, models, cd.Providers["openai"].Keys[0].Models)
+}
+
+// TestApplyV1Compat_VK_EmptyProviderConfigs verifies that a VK with no
+// provider_configs gets one entry per configured provider, each with
+// AllowedModels: ["*"] and AllowAllKeys: true.
+func TestApplyV1Compat_VK_EmptyProviderConfigs(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai":    makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
+			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k2", nil)),
+		},
+		nil,
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "All Access", ProviderConfigs: []tables.TableVirtualKeyProviderConfig{}},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	vk := cd.Governance.VirtualKeys[0]
+	require.Len(t, vk.ProviderConfigs, 2, "expected one entry per configured provider")
+
+	for _, pc := range vk.ProviderConfigs {
+		require.Equal(t, schemas.WhiteList{"*"}, pc.AllowedModels,
+			"provider %q: AllowedModels should be [\"*\"]", pc.Provider)
+		require.True(t, pc.AllowAllKeys,
+			"provider %q: AllowAllKeys should be true", pc.Provider)
+	}
+
+	// Providers present in the backfill must match the configured providers.
+	backfilledProviders := make(map[string]bool)
+	for _, pc := range vk.ProviderConfigs {
+		backfilledProviders[pc.Provider] = true
+	}
+	require.True(t, backfilledProviders["openai"])
+	require.True(t, backfilledProviders["anthropic"])
+}
+
+// TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels checks that an existing
+// provider config entry with allowed_models: [] gets normalised to ["*"].
+func TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil,
+		[]tables.TableVirtualKey{
+			{
+				ID:   "vk-1",
+				Name: "Restricted",
+				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+					{Provider: "openai", AllowedModels: schemas.WhiteList{}, AllowAllKeys: true},
+				},
+			},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	pc := cd.Governance.VirtualKeys[0].ProviderConfigs[0]
+	require.Equal(t, schemas.WhiteList{"*"}, pc.AllowedModels)
+}
+
+// TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs verifies that a provider config
+// with no keys and AllowAllKeys=false gets AllowAllKeys set to true.
+func TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil,
+		[]tables.TableVirtualKey{
+			{
+				ID:   "vk-1",
+				Name: "No Keys",
+				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+					{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: false, Keys: nil},
+				},
+			},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	pc := cd.Governance.VirtualKeys[0].ProviderConfigs[0]
+	require.True(t, pc.AllowAllKeys, "AllowAllKeys should be set to true when Keys is empty")
+}
+
+// TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll ensures a provider config
+// that already has AllowAllKeys=true is left unchanged.
+func TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil,
+		[]tables.TableVirtualKey{
+			{
+				ID:   "vk-1",
+				Name: "Already OK",
+				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+					{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+				},
+			},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	pc := cd.Governance.VirtualKeys[0].ProviderConfigs[0]
+	require.True(t, pc.AllowAllKeys)
+	require.Equal(t, schemas.WhiteList{"*"}, pc.AllowedModels)
+}
+
+// TestApplyV1Compat_VK_EmptyMCPConfigs verifies that a VK with no mcp_configs
+// gets one entry per configured MCP client, each with ToolsToExecute: ["*"].
+func TestApplyV1Compat_VK_EmptyMCPConfigs(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		&schemas.MCPConfig{
+			ClientConfigs: []*schemas.MCPClientConfig{
+				{Name: "tools-a"},
+				{Name: "tools-b"},
+			},
+		},
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "No MCP", MCPConfigs: []tables.TableVirtualKeyMCPConfig{}},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	vk := cd.Governance.VirtualKeys[0]
+	require.Len(t, vk.MCPConfigs, 2, "expected one entry per configured MCP client")
+
+	for _, mc := range vk.MCPConfigs {
+		require.Equal(t, schemas.WhiteList{"*"}, mc.ToolsToExecute,
+			"MCP client %q: ToolsToExecute should be [\"*\"]", mc.MCPClientName)
+	}
+
+	names := make(map[string]bool)
+	for _, mc := range vk.MCPConfigs {
+		names[mc.MCPClientName] = true
+	}
+	require.True(t, names["tools-a"])
+	require.True(t, names["tools-b"])
+}
+
+// TestApplyV1Compat_VK_NonEmptyMCPConfigs confirms that a VK with an existing
+// mcp_configs list is not modified.
+func TestApplyV1Compat_VK_NonEmptyMCPConfigs(t *testing.T) {
+	existing := []tables.TableVirtualKeyMCPConfig{
+		{MCPClientName: "tools-a", ToolsToExecute: schemas.WhiteList{"tool1"}},
+	}
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		&schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "tools-a"}, {Name: "tools-b"}}},
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "Has MCP", MCPConfigs: existing},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	// Non-empty mcp_configs must be left alone — no backfill.
+	require.Len(t, cd.Governance.VirtualKeys[0].MCPConfigs, 1)
+	require.Equal(t, schemas.WhiteList{"tool1"}, cd.Governance.VirtualKeys[0].MCPConfigs[0].ToolsToExecute)
+}
+
+// TestApplyV1Compat_NoGovernance verifies the function does not panic when the
+// governance section is absent.
+func TestApplyV1Compat_NoGovernance(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
+		},
+		nil, nil,
+	)
+
+	require.NotPanics(t, func() { applyV1Compat(cd) })
+	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+}
+
+// TestApplyV1Compat_NoMCP verifies that an empty mcp_configs on a VK is NOT
+// backfilled when the top-level mcp section is absent.
+func TestApplyV1Compat_NoMCP(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil, // no MCP config
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "No MCP Section", MCPConfigs: []tables.TableVirtualKeyMCPConfig{}},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	require.Empty(t, cd.Governance.VirtualKeys[0].MCPConfigs,
+		"MCPConfigs should remain empty when no MCP clients are configured")
+}
+
+// TestApplyV1Compat_MultipleProviders ensures all providers are normalised in a
+// single pass, even when some already have wildcard models.
+func TestApplyV1Compat_MultipleProviders(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(
+				makeV1ProviderKey("empty", schemas.WhiteList{}),
+				makeV1ProviderKey("nil", nil),
+			),
+			"anthropic": makeV1ProviderConfig(
+				makeV1ProviderKey("wildcard", schemas.WhiteList{"*"}),
+				makeV1ProviderKey("specific", schemas.WhiteList{"claude-3-5-sonnet-20241022"}),
+			),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	for _, k := range cd.Providers["openai"].Keys {
+		require.Equal(t, schemas.WhiteList{"*"}, k.Models, "openai key %q should be [*]", k.Name)
+	}
+	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["anthropic"].Keys[0].Models, "wildcard unchanged")
+	require.Equal(t, schemas.WhiteList{"claude-3-5-sonnet-20241022"}, cd.Providers["anthropic"].Keys[1].Models, "specific unchanged")
+}
+
+// =============================================================================
+// Version field JSON parsing + integration with LoadConfig
+// =============================================================================
+
+// TestVersionField_ParsedFromJSON verifies that the version field is correctly
+// read from a config.json file.
+func TestVersionField_ParsedFromJSON(t *testing.T) {
+	for _, tc := range []struct {
+		json    string
+		wantVer int
+	}{
+		{`{"version": 1, "providers": {}}`, 1},
+		{`{"version": 2, "providers": {}}`, 2},
+		{`{"providers": {}}`, 0}, // omitted → zero value
+	} {
+		var cd ConfigData
+		require.NoError(t, json.Unmarshal([]byte(tc.json), &cd))
+		require.Equal(t, tc.wantVer, cd.Version, "input: %s", tc.json)
+	}
+}
+
+// TestVersionField_DefaultBehavior verifies that when version is omitted (or 2),
+// provider key models are NOT normalised — empty stays empty.
+func TestVersionField_DefaultBehavior(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	cd := &ConfigData{
+		// Version intentionally omitted — defaults to 0, treated as v2
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+		},
+	}
+	createConfigFile(t, tempDir, cd)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// v2 semantics: empty models stays empty (deny all) — must NOT be promoted to ["*"]
+	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	require.True(t, ok, "openai provider should be present")
+	require.Len(t, openaiCfg.Keys, 1)
+	require.Empty(t, openaiCfg.Keys[0].Models,
+		"v2 semantics: empty models must NOT be normalised to [\"*\"]")
+}
+
+// TestVersionField_Version1_AppliesCompat verifies that version: 1 in config.json
+// causes empty provider key models to be promoted to ["*"] before the config is
+// ingested into the store.
+func TestVersionField_Version1_AppliesCompat(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	cd := &ConfigData{
+		Version: 1,
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+		},
+	}
+	createConfigFile(t, tempDir, cd)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	require.True(t, ok, "openai provider should be present")
+	require.Len(t, openaiCfg.Keys, 1)
+	require.Equal(t, schemas.WhiteList{"*"}, openaiCfg.Keys[0].Models,
+		"v1 semantics: empty models must be normalised to [\"*\"]")
+}
+
+// TestVersionField_Version2_NoCompat verifies that an explicit version: 2 also
+// skips normalisation (same as omitting the field).
+func TestVersionField_Version2_NoCompat(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	cd := &ConfigData{
+		Version: 2,
+		Providers: map[string]configstore.ProviderConfig{
+			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+		},
+	}
+	createConfigFile(t, tempDir, cd)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	anthropicCfg, ok := config.Providers[schemas.Anthropic]
+	require.True(t, ok, "anthropic provider should be present")
+	require.Len(t, anthropicCfg.Keys, 1)
+	require.Empty(t, anthropicCfg.Keys[0].Models,
+		"v2 semantics: empty models must NOT be normalised")
+}
+
+// =============================================================================
+// OtelPluginSpanFilter seeding tests
+// =============================================================================
+
+// TestLoadPlugins_OtelPluginSpanFilterPassthrough verifies that plugin_span_filter
+// set directly inside the OTEL plugin config (the standard config.json location)
+// is preserved unchanged through loadPlugins — no special handling needed.
+func TestLoadPlugins_OtelPluginSpanFilterPassthrough(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	otelCfg := map[string]any{
+		"collector_url": "localhost:4317",
+		"trace_type":    "genai_extension",
+		"protocol":      "grpc",
+		"plugin_span_filter": map[string]any{
+			"mode":    "exclude",
+			"plugins": []any{"logging", "compat"},
+		},
+	}
+	configData := &ConfigData{
+		Plugins: []*schemas.PluginConfig{
+			{Name: otelPlugin.PluginName, Enabled: true, Config: otelCfg},
+		},
+	}
+
+	cfg := &Config{}
+	loadPlugins(ctx, cfg, configData)
+
+	var found *schemas.PluginConfig
+	for _, pc := range cfg.PluginConfigs {
+		if pc.Name == otelPlugin.PluginName {
+			found = pc
+			break
+		}
+	}
+	require.NotNil(t, found, "OTEL plugin should be present in PluginConfigs after loadPlugins")
+
+	pluginCfg, ok := found.Config.(map[string]any)
+	require.True(t, ok, "OTEL plugin Config should be map[string]any")
+
+	raw, ok := pluginCfg["plugin_span_filter"]
+	require.True(t, ok, "plugin_span_filter should be preserved in OTEL plugin config")
+
+	filterMap, ok := raw.(map[string]any)
+	require.True(t, ok, "plugin_span_filter should be a map")
+	require.Equal(t, "exclude", filterMap["mode"])
+	plugins, ok := filterMap["plugins"].([]any)
+	require.True(t, ok, "plugin_span_filter.plugins should be an array")
+	require.ElementsMatch(t, []any{"logging", "compat"}, plugins)
 }

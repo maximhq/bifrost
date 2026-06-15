@@ -1,5 +1,3 @@
-"use client";
-
 import FullPageLoader from "@/components/fullPageLoader";
 import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
@@ -20,7 +18,12 @@ export default function MCPServersPage() {
 		setOffset(0);
 	}, [debouncedSearch]);
 
-	const { data: mcpClientsData, error, isLoading, refetch } = useGetMCPClientsQuery(
+	const {
+		data: mcpClientsData,
+		error,
+		isLoading,
+		refetch,
+	} = useGetMCPClientsQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,
@@ -59,7 +62,7 @@ export default function MCPServersPage() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto w-full max-w-7xl h-[calc(100dvh-50px)] flex flex-col">
 			<MCPClientsTable
 				mcpClients={mcpClients}
 				totalCount={totalCount}

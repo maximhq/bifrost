@@ -1,0 +1,100 @@
+---
+title: "v1.5.2"
+description: "v1.5.2 changelog - 2026-05-12"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.2
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.2
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.2
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.2">
+## ✨ Features
+
+- **Push/Pull Telemetry Toggling** - Push-based and pull-based telemetry can now be toggled separately, and plugin hot-reload is fixed (#3433)
+- **MCP Tool Manager Config Hash** - `mcp.tool_manager_config` is now included in the client config hash and synced on reload (#3432)
+
+## 🐞 Fixed
+
+- **OTEL Metric Fixes** - Resolved issues in the OTEL plugin metrics path (#3439)
+- **Gemini Raw Request Scoping** - Raw-request handling is now applied only for the Gemini provider (#3437)
+- **Gemini Fallback Propagation** - Fixed Gemini fallback propagation in the GenAI integration (#3338) (thanks [@Javtor](https://github.com/Javtor)!)
+- **Anthropic Advisor Model Passthrough** - Fixed model passthrough prefix stripping in the advisor tool for Anthropic (#3420)
+- **Empty Text/Signature Messages on Bedrock** - Drop messages with empty text or signature and convert thinking blocks for OpenAI Bedrock models (#3221)
+- **Anthropic Trailing Assistant Messages** - Drop the last assistant message for Anthropic models and convert unsupported reasoning effort values for Mistral (#3203)
+- **Compat Defaults Enabled** - All compat plugin settings are now enabled by default (#3202)
+- **System-Only Message Role Conversion** - Convert role `system` to role `user` when only a system message is present for non-OpenAI models (#3200)
+- **Compat CachePoint Drop** - Compat plugin now drops `cachePoint` for unsupported Bedrock models and non-Bedrock models (#3154)
+
+</Update>
+<Update label="Core" description="1.5.10">
+- fix: include mcp.tool_manager_config in client config hash (#3432)
+- fix: gemini fallback propagation in GenAI integration (#3338) (thanks [@Javtor](https://github.com/Javtor)!)
+- fix: drops messages with empty text or signature and adds conversion of thinking block for openai bedrock models (#3221)
+- fix: drops last assistant messages for anthropic models and converts unsupported reasoning effort values for mistral (#3203)
+- fix: converts role system to role user if only system message is present for non-openai models (#3200)
+- fix: fixes model passthrough prefix stripping in advisor tool for anthropic (#3420)
+
+</Update>
+<Update label="Framework" description="1.3.10">
+- fix: sync mcp.tool_manager_config on client config reload (#3432)
+- fix: enables all compat plugin settings by default (#3202)
+- feat: mistral reasoning effort entries in modelcatalog (#3203)
+- chore: compat plugin cachePoint drop catalog entries (#3154)
+
+</Update>
+<Update label="compat" description="0.1.9">
+- fix: drops messages with empty text or signature and adds conversion of thinking block for openai bedrock models (#3221)
+- fix: drops last assistant messages for anthropic models and converts unsupported reasoning effort values for mistral (#3203)
+- fix: enables all compat plugin settings by default (#3202)
+- fix: converts role system to role user if only system message is present for non-openai models (#3200)
+- fix: drops cachePoint for unsupported bedrock models and non-bedrock models (#3154)
+
+</Update>
+<Update label="governance" description="1.5.10">
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="jsonparser" description="1.5.10">
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="logging" description="1.5.10">
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="maxim" description="1.6.10">
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="mocker" description="1.5.10">
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="otel" description="1.2.10">
+- fix: otel metric fixes (#3439)
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="prompts" description="1.0.10">
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="semanticcache" description="1.5.10">
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>
+<Update label="telemetry" description="1.5.10">
+- feat: supports toggling push-based and pull-based separately and fixes hot-reload of plugin (#3433)
+- fix: otel metric fixes (#3439)
+- chore: upgraded core to v1.5.10 and framework to v1.3.10
+
+</Update>

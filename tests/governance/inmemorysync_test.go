@@ -143,10 +143,10 @@ func TestInMemorySyncTeamUpdate(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -184,9 +184,10 @@ func TestInMemorySyncTeamUpdate(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/teams/" + teamID,
 		Body: UpdateTeamRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit: &newTeamBudget,
-			},
+			Budgets: &[]BudgetRequest{{
+				MaxLimit:      newTeamBudget,
+				ResetDuration: "1h",
+			}},
 		},
 	})
 
@@ -223,7 +224,13 @@ func TestInMemorySyncTeamUpdate(t *testing.T) {
 	}
 
 	teamDataMap := teamData2.(map[string]interface{})
-	budgetID, _ := teamDataMap["budget_id"].(string)
+	// Teams now expose a `budgets` array instead of a single `budget_id` — read the first.
+	var budgetID string
+	if budgetsList, ok := teamDataMap["budgets"].([]interface{}); ok && len(budgetsList) > 0 {
+		if b, ok := budgetsList[0].(map[string]interface{}); ok {
+			budgetID, _ = b["id"].(string)
+		}
+	}
 
 	if budgetID != "" {
 		budgetData, budgetExists := budgetsMap2[budgetID]
@@ -477,10 +484,10 @@ func TestDataEndpointConsistency(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      30.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 

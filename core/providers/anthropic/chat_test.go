@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -49,7 +50,7 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -85,7 +86,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 			Model:    "claude-sonnet-4-20250514",
 			Input: []schemas.ChatMessage{{
 				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+				Content: &schemas.ChatMessageContent{ContentStr: new("test")},
 			}},
 			Params: &schemas.ChatParameters{
 				Tools: []schemas.ChatTool{{
@@ -126,7 +127,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 		)),
 	)
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	resultA, err := ToAnthropicChatRequest(ctx, makeReq(propsA))
 	if err != nil {
@@ -185,7 +186,7 @@ func TestToAnthropicChatRequest_NestedProperties_Preserved(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -278,7 +279,7 @@ func TestToAnthropicChatRequest_ToolInputKeyOrderPreservation(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -337,6 +338,85 @@ func TestToAnthropicChatRequest_ToolInputKeyOrderPreservation(t *testing.T) {
 	}
 }
 
+func TestToBifrostChatResponse_MultipleTextBlocksWithThinking(t *testing.T) {
+	thinkingText := "Let me reason step by step about this problem."
+	textBlock1 := "The answer is 42."
+	textBlock2 := "Here is why that is the case."
+	signature := "sig_abc123"
+
+	response := &AnthropicMessageResponse{
+		ID:    "msg_test123",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-6-20250514",
+		Content: []AnthropicContentBlock{
+			{
+				Type:      AnthropicContentBlockTypeThinking,
+				Thinking:  &thinkingText,
+				Signature: &signature,
+			},
+			{
+				Type: AnthropicContentBlockTypeText,
+				Text: &textBlock1,
+			},
+			{
+				Type: AnthropicContentBlockTypeText,
+				Text: &textBlock2,
+			},
+		},
+		StopReason: "end_turn",
+		Usage: &AnthropicUsage{
+			InputTokens:  100,
+			OutputTokens: 50,
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result := response.ToBifrostChatResponse(ctx)
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// With multiple text blocks, ToBifrostChatResponse preserves them as ContentBlocks
+	// (only a single text block collapses to ContentStr — see chat.go:812-815).
+	// Thinking flows through ReasoningDetails below, not ContentStr.
+	choice := result.Choices[0]
+	msg := choice.ChatNonStreamResponseChoice.Message
+	if msg.Content.ContentStr != nil {
+		t.Errorf("expected ContentStr to be nil with multiple text blocks, got %q", *msg.Content.ContentStr)
+	}
+	if len(msg.Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks (one per text block), got %d", len(msg.Content.ContentBlocks))
+	}
+	if msg.Content.ContentBlocks[0].Text == nil || *msg.Content.ContentBlocks[0].Text != textBlock1 {
+		t.Errorf("block 0 text mismatch: got %v, want %q", msg.Content.ContentBlocks[0].Text, textBlock1)
+	}
+	if msg.Content.ContentBlocks[1].Text == nil || *msg.Content.ContentBlocks[1].Text != textBlock2 {
+		t.Errorf("block 1 text mismatch: got %v, want %q", msg.Content.ContentBlocks[1].Text, textBlock2)
+	}
+
+	// Thinking is surfaced via ReasoningDetails with the signature preserved
+	// (see chat.go:798-807).
+	if msg.ChatAssistantMessage == nil {
+		t.Fatal("expected ChatAssistantMessage to be non-nil")
+	}
+	rd := msg.ChatAssistantMessage.ReasoningDetails
+	if len(rd) != 1 {
+		t.Fatalf("expected 1 reasoning details entry (the thinking block), got %d", len(rd))
+	}
+	if rd[0].Type != schemas.BifrostReasoningDetailsTypeText {
+		t.Errorf("expected reasoning detail type %s, got %s", schemas.BifrostReasoningDetailsTypeText, rd[0].Type)
+	}
+	if rd[0].Signature == nil || *rd[0].Signature != signature {
+		t.Error("expected thinking signature to be preserved on reasoning detail")
+	}
+	if rd[0].Text == nil || *rd[0].Text != thinkingText {
+		t.Errorf("expected reasoning text to match thinking text")
+	}
+}
+
 func TestToBifrostChatResponse_SingleTextBlockNoThinking(t *testing.T) {
 	// Verify existing behavior: single text block without thinking collapses to string
 	text := "Simple response"
@@ -352,7 +432,7 @@ func TestToBifrostChatResponse_SingleTextBlockNoThinking(t *testing.T) {
 		Usage:      &AnthropicUsage{InputTokens: 10, OutputTokens: 5},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result := response.ToBifrostChatResponse(ctx)
 
@@ -398,7 +478,7 @@ func TestToAnthropicChatRequest_BoundaryMismatchFallback(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -469,7 +549,7 @@ func TestToAnthropicChatRequest_NormalFlowUnchanged(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -509,5 +589,718 @@ func TestToAnthropicChatRequest_NormalFlowUnchanged(t *testing.T) {
 	}
 	if blocks[1].Text == nil || *blocks[1].Text != responseText {
 		t.Errorf("block 1: expected text %q, got %v", responseText, blocks[1].Text)
+	}
+}
+
+func TestToAnthropicChatRequest_Opus47_StripsTemperatureTopPTopK(t *testing.T) {
+	temp := 0.7
+	topP := 0.9
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+			TopP:        &topP,
+			ExtraParams: map[string]interface{}{"top_k": 40},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature != nil {
+		t.Errorf("expected Temperature to be nil for Opus 4.7, got %v", result.Temperature)
+	}
+	if result.TopP != nil {
+		t.Errorf("expected TopP to be nil for Opus 4.7, got %v", result.TopP)
+	}
+	if result.TopK != nil {
+		t.Errorf("expected TopK to be nil for Opus 4.7, got %v", result.TopK)
+	}
+}
+
+func TestToAnthropicChatRequest_NonOpus47_PreservesTemperature(t *testing.T) {
+	temp := 0.7
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-6-20250514",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature == nil || *result.Temperature != temp {
+		t.Errorf("expected Temperature %v, got %v", temp, result.Temperature)
+	}
+}
+
+func TestToAnthropicChatRequest_Opus47_ReasoningMaxTokens_AdaptiveOnly(t *testing.T) {
+	maxTok := 2048
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(8192),
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Type != "adaptive" {
+		t.Errorf("expected thinking type 'adaptive' for Opus 4.7, got %q", result.Thinking.Type)
+	}
+	if result.Thinking.BudgetTokens != nil {
+		t.Errorf("expected BudgetTokens to be nil for Opus 4.7, got %v", result.Thinking.BudgetTokens)
+	}
+	if result.Thinking.Display == nil || *result.Thinking.Display != "summarized" {
+		t.Errorf("expected Display to default to 'summarized' for Opus 4.7, got %v", result.Thinking.Display)
+	}
+}
+
+func TestToAnthropicChatRequest_NonOpus47_ReasoningMaxTokens_EnabledWithBudget(t *testing.T) {
+	maxTok := 2048
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-6-20250514",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(8192),
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Type != "enabled" {
+		t.Errorf("expected thinking type 'enabled' for Opus 4.6, got %q", result.Thinking.Type)
+	}
+	if result.Thinking.BudgetTokens == nil || *result.Thinking.BudgetTokens != maxTok {
+		t.Errorf("expected BudgetTokens %d, got %v", maxTok, result.Thinking.BudgetTokens)
+	}
+}
+
+func TestToAnthropicChatRequest_Opus47_ReasoningEffort_AdaptiveWithEffort(t *testing.T) {
+	effort := "high"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(8192),
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Type != "adaptive" {
+		t.Errorf("expected thinking type 'adaptive' for Opus 4.7 effort-based, got %q", result.Thinking.Type)
+	}
+	if result.OutputConfig == nil || result.OutputConfig.Effort == nil {
+		t.Error("expected OutputConfig.Effort to be set for Opus 4.7 effort-based reasoning")
+	}
+}
+
+func TestToAnthropicChatRequest_Opus47_DefaultsDisplayToSummarized(t *testing.T) {
+	effort := "high"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(8192),
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Display == nil || *result.Thinking.Display != "summarized" {
+		t.Errorf("expected Display to default to 'summarized' for Opus 4.7, got %v", result.Thinking.Display)
+	}
+}
+
+func TestToAnthropicChatRequest_Opus47_RespectsExplicitDisplayOmitted(t *testing.T) {
+	effort := "high"
+	display := "omitted"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(8192),
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort, Display: &display},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Display == nil || *result.Thinking.Display != "omitted" {
+		t.Errorf("expected Display to be 'omitted' when explicitly set, got %v", result.Thinking.Display)
+	}
+}
+
+func TestToAnthropicChatRequest_NonOpus47_NoDefaultDisplay(t *testing.T) {
+	maxTok := 2048
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-6-20250514",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(8192),
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Display != nil {
+		t.Errorf("expected Display to be nil for non-Opus 4.7, got %q", *result.Thinking.Display)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Structured output (response_format: json_schema) round-trip tests
+// ---------------------------------------------------------------------------
+
+// makeSOResponseFormat returns a response_format interface value in the
+// OpenAI wire format expected by convertChatResponseFormatToTool.
+func makeSOResponseFormat(schemaName string) interface{} {
+	return map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name": schemaName,
+			"schema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"color":  map[string]interface{}{"type": "string"},
+					"animal": map[string]interface{}{"type": "string"},
+				},
+				"required": []interface{}{"color", "animal"},
+			},
+		},
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking verifies that when
+// response_format=json_schema is passed to a Vertex-targeted request without thinking,
+// Bifrost adds a synthetic bf_so_* tool AND forces tool_choice to that tool.
+func TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking(t *testing.T) {
+	rf := makeSOResponseFormat("my_schema")
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-opus-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &rf,
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A synthetic tool with the bf_so_ prefix must be present.
+	var soTool *AnthropicTool
+	for i := range result.Tools {
+		if len(result.Tools[i].Name) > 6 && result.Tools[i].Name[:6] == "bf_so_" {
+			soTool = &result.Tools[i]
+			break
+		}
+	}
+	if soTool == nil {
+		t.Fatal("expected a synthetic bf_so_* tool to be added for Vertex structured output")
+	}
+
+	// ToolChoice must be set and must point at the SO tool.
+	if result.ToolChoice == nil {
+		t.Fatal("expected ToolChoice to be set when thinking is disabled")
+	}
+	if result.ToolChoice.Type != "tool" {
+		t.Errorf("expected ToolChoice.Type=tool, got %q", result.ToolChoice.Type)
+	}
+	if result.ToolChoice.Name != soTool.Name {
+		t.Errorf("expected ToolChoice.Name=%q, got %q", soTool.Name, result.ToolChoice.Name)
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort verifies that when
+// response_format=json_schema + reasoning_effort='medium' is sent to Vertex, Bifrost
+// still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
+// "Thinking may not be enabled when tool_choice forces tool use" 400 error).
+func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort(t *testing.T) {
+	rf := makeSOResponseFormat("my_schema")
+	effort := "medium"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-opus-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(16000),
+			ResponseFormat:      &rf,
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Synthetic tool must still be present so the model knows the schema.
+	found := false
+	for _, tool := range result.Tools {
+		if len(tool.Name) > 6 && tool.Name[:6] == "bf_so_" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected synthetic bf_so_* tool to be present even with thinking enabled")
+	}
+
+	// ToolChoice must NOT be set — forcing it would trigger a 400 from Anthropic.
+	if result.ToolChoice != nil {
+		t.Errorf("expected ToolChoice to be nil when thinking is enabled (effort=%q), got %+v", effort, result.ToolChoice)
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens is the same as
+// the effort variant but uses explicit budget_tokens reasoning instead.
+func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens(t *testing.T) {
+	rf := makeSOResponseFormat("my_schema")
+	maxTok := 4000
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-opus-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(16000),
+			ResponseFormat:      &rf,
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.ToolChoice != nil {
+		t.Errorf("expected ToolChoice to be nil when thinking (MaxTokens) is enabled, got %+v", result.ToolChoice)
+	}
+}
+
+// TestToBifrostChatResponse_StructuredOutput_FinishReasonStop verifies that when
+// the model responds with only the synthetic SO tool (no real tool calls), the
+// finish_reason is mapped to "stop", not "tool_calls".
+func TestToBifrostChatResponse_StructuredOutput_FinishReasonStop(t *testing.T) {
+	soToolName := "bf_so_my_schema"
+	jsonInput, err := json.Marshal(map[string]interface{}{"color": "blue", "animal": "fox"})
+	if err != nil {
+		t.Fatalf("failed to marshal structured output input: %v", err)
+	}
+
+	response := &AnthropicMessageResponse{
+		ID:    "msg_so_test",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-6",
+		Content: []AnthropicContentBlock{
+			{
+				Type:  AnthropicContentBlockTypeToolUse,
+				ID:    schemas.Ptr("toolu_001"),
+				Name:  schemas.Ptr(soToolName),
+				Input: json.RawMessage(jsonInput),
+			},
+		},
+		StopReason: AnthropicStopReasonToolUse,
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	choice := result.Choices[0]
+
+	// Content must be the JSON from the SO tool, not nil.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	if msg.Content.ContentStr == nil {
+		t.Fatal("expected ContentStr to be set from the structured output tool input")
+	}
+
+	// No real tool calls should be surfaced.
+	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
+		t.Errorf("expected no tool calls in output, got %d", len(msg.ChatAssistantMessage.ToolCalls))
+	}
+
+	// Finish reason must be "stop", not "tool_calls".
+	if choice.FinishReason == nil {
+		t.Fatal("expected FinishReason to be set")
+	}
+	if *choice.FinishReason != string(schemas.BifrostFinishReasonStop) {
+		t.Errorf("expected FinishReason=%q, got %q", schemas.BifrostFinishReasonStop, *choice.FinishReason)
+	}
+}
+
+// TestToBifrostChatResponse_StructuredOutput_MixedWithRealTools verifies that when
+// both the SO tool and a real tool call appear in the response, finish_reason remains
+// "tool_calls" so the caller knows to handle the real tool.
+func TestToBifrostChatResponse_StructuredOutput_MixedWithRealTools(t *testing.T) {
+	soToolName := "bf_so_my_schema"
+	soInput, err := json.Marshal(map[string]interface{}{"color": "blue", "animal": "fox"})
+	if err != nil {
+		t.Fatalf("failed to marshal SO input: %v", err)
+	}
+	realInput, err := json.Marshal(map[string]interface{}{"location": "NYC"})
+	if err != nil {
+		t.Fatalf("failed to marshal real tool input: %v", err)
+	}
+
+	response := &AnthropicMessageResponse{
+		ID:    "msg_so_mixed",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-6",
+		Content: []AnthropicContentBlock{
+			{
+				Type:  AnthropicContentBlockTypeToolUse,
+				ID:    schemas.Ptr("toolu_001"),
+				Name:  schemas.Ptr(soToolName),
+				Input: json.RawMessage(soInput),
+			},
+			{
+				Type:  AnthropicContentBlockTypeToolUse,
+				ID:    schemas.Ptr("toolu_real_001"),
+				Name:  schemas.Ptr("get_weather"),
+				Input: json.RawMessage(realInput),
+			},
+		},
+		StopReason: AnthropicStopReasonToolUse,
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	choice := result.Choices[0]
+
+	// The real tool call must be surfaced.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	if msg.ChatAssistantMessage == nil || len(msg.ChatAssistantMessage.ToolCalls) == 0 {
+		t.Fatal("expected real tool calls to be present")
+	}
+
+	// Finish reason must remain "tool_calls".
+	if choice.FinishReason == nil {
+		t.Fatal("expected FinishReason to be set")
+	}
+	if *choice.FinishReason != string(schemas.BifrostFinishReasonToolCalls) {
+		t.Errorf("expected FinishReason=%q, got %q", schemas.BifrostFinishReasonToolCalls, *choice.FinishReason)
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_Opus48 verifies that a
+// role:"system" message in a valid placement (followed by an assistant turn)
+// is emitted as role:"system" in the Anthropic messages array when the
+// provider is Anthropic and the model is Opus 4.8+.
+// Valid placement per Anthropic: system must immediately follow a user turn
+// and must precede an assistant turn or end the array.
+func TestToAnthropicChatRequest_MidConversationSystem_Opus48(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are a helpful assistant.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("From now on, respond only in French.")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi there!")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("How are you?")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Top-level system field must hold only the initial system message.
+	if result.System == nil {
+		t.Fatal("expected top-level System to be set")
+	}
+	if result.System.ContentStr == nil || *result.System.ContentStr != "You are a helpful assistant." {
+		t.Errorf("unexpected top-level System content: %v", result.System)
+	}
+
+	// Messages array: user, system(mid), assistant, user — 4 entries.
+	if len(result.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Role != AnthropicMessageRoleUser {
+		t.Errorf("msg[0] role = %q, want user", result.Messages[0].Role)
+	}
+	if result.Messages[1].Role != AnthropicMessageRoleSystem {
+		t.Errorf("msg[1] role = %q, want system (mid-conversation)", result.Messages[1].Role)
+	}
+	if result.Messages[2].Role != AnthropicMessageRoleAssistant {
+		t.Errorf("msg[2] role = %q, want assistant", result.Messages[2].Role)
+	}
+	if result.Messages[3].Role != AnthropicMessageRoleUser {
+		t.Errorf("msg[3] role = %q, want user", result.Messages[3].Role)
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement verifies
+// that a mid-conv system message with invalid placement (followed by user, not
+// assistant) falls back to top-level system accumulation rather than emitting
+// a role:"system" that would 400 on the Anthropic API.
+func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			// system followed by user — invalid placement, Anthropic returns 400
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Bad placement.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Invalid placement: falls back to top-level system accumulation.
+	if result.System == nil {
+		t.Fatal("expected top-level System to contain both initial and fallback content")
+	}
+	blocks := result.System.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 system blocks (initial + fallback), got %d", len(blocks))
+	}
+	if blocks[0].Text == nil || *blocks[0].Text != "Initial." {
+		t.Errorf("block[0] = %v, want \"Initial.\"", blocks[0].Text)
+	}
+	if blocks[1].Text == nil || *blocks[1].Text != "Bad placement." {
+		t.Errorf("block[1] = %v, want \"Bad placement.\"", blocks[1].Text)
+	}
+	// No role:"system" in messages array.
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role:system — invalid placement should have been caught", i)
+		}
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends verifies that
+// for a non-supporting model/provider the mid-conversation system content is
+// appended to (not overwrites) the top-level system field.
+func TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-opus-4-8",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial system.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Mid-conv instruction.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Top-level system field must exist and contain BOTH the initial and mid-conv content.
+	if result.System == nil {
+		t.Fatal("expected top-level System to be set")
+	}
+	if len(result.System.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 system content blocks (initial + mid-conv appended), got %d", len(result.System.ContentBlocks))
+	}
+	if result.System.ContentBlocks[0].Text == nil || *result.System.ContentBlocks[0].Text != "Initial system." {
+		t.Errorf("block[0] = %v, want 'Initial system.'", result.System.ContentBlocks[0].Text)
+	}
+	if result.System.ContentBlocks[1].Text == nil || *result.System.ContentBlocks[1].Text != "Mid-conv instruction." {
+		t.Errorf("block[1] = %v, want 'Mid-conv instruction.'", result.System.ContentBlocks[1].Text)
+	}
+
+	// No role:"system" entry should appear in the messages array.
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role system — should not appear for Bedrock", i)
+		}
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47 verifies that
+// mid-conversation system messages are NOT emitted for Opus 4.7 (feature is
+// Opus 4.8+ only).
+func TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("New instruction.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Mid-conv instruction must be preserved in the top-level System field.
+	if result.System == nil {
+		t.Fatal("expected top-level System to contain fallback mid-conversation instruction")
+	}
+	foundFallback := false
+	if result.System.ContentStr != nil && *result.System.ContentStr == "New instruction." {
+		foundFallback = true
+	}
+	for _, block := range result.System.ContentBlocks {
+		if block.Text != nil && *block.Text == "New instruction." {
+			foundFallback = true
+			break
+		}
+	}
+	if !foundFallback {
+		t.Fatal("expected mid-conversation system content to be preserved in top-level System")
+	}
+
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role system — should not appear for Opus 4.7", i)
+		}
 	}
 }

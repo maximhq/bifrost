@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"bytes"
+	"mime/multipart"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -57,3 +59,63 @@ func TestPayloadOrdering_OpenAIChatRequest(t *testing.T) {
 		assert.Equal(t, string(result), string(iter), "non-deterministic marshal output on iteration %d", i)
 	}
 }
+
+func TestParseImageEditFormDataBodyFromRequest_OrdersMetadataBeforeFiles(t *testing.T) {
+	req := &OpenAIImageEditRequest{
+		Model: "gpt-image-1",
+		Input: &schemas.ImageEditInput{
+			Prompt: "edit this",
+			Images: []schemas.ImageInput{{Image: []byte("image-one")}, {Image: []byte("image-two")}},
+		},
+		ImageEditParameters: schemas.ImageEditParameters{
+			N:                 schemas.Ptr(2),
+			Size:              schemas.Ptr("1024x1024"),
+			ResponseFormat:    schemas.Ptr("b64_json"),
+			Quality:           schemas.Ptr("high"),
+			Background:        schemas.Ptr("transparent"),
+			InputFidelity:     schemas.Ptr("high"),
+			PartialImages:     schemas.Ptr(1),
+			OutputFormat:      schemas.Ptr("png"),
+			OutputCompression: schemas.Ptr(80),
+			User:              schemas.Ptr("user-123"),
+			Mask:              []byte("mask-image"),
+		},
+		Stream: schemas.Ptr(true),
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.Nil(t, parseImageEditFormDataBodyFromRequest(writer, req, schemas.OpenAI))
+
+	order := multipartPartOrder(t, writer.FormDataContentType(), body.Bytes())
+	assert.Equal(t,
+		[]string{"model", "prompt", "stream", "n", "size", "response_format", "quality", "background", "input_fidelity", "partial_images", "output_format", "output_compression", "user", "image[]", "image[]", "mask"},
+		order,
+	)
+}
+
+func TestParseImageVariationFormDataBodyFromRequest_OrdersMetadataBeforeFile(t *testing.T) {
+	req := &OpenAIImageVariationRequest{
+		Model: "gpt-image-1",
+		Input: &schemas.ImageVariationInput{
+			Image: schemas.ImageInput{Image: []byte("image-variation")},
+		},
+		ImageVariationParameters: schemas.ImageVariationParameters{
+			N:              schemas.Ptr(3),
+			ResponseFormat: schemas.Ptr("url"),
+			Size:           schemas.Ptr("512x512"),
+			User:           schemas.Ptr("user-456"),
+		},
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.Nil(t, parseImageVariationFormDataBodyFromRequest(writer, req, schemas.OpenAI))
+
+	order := multipartPartOrder(t, writer.FormDataContentType(), body.Bytes())
+	assert.Equal(t,
+		[]string{"model", "n", "response_format", "size", "user", "image"},
+		order,
+	)
+}
+

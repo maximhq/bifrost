@@ -24,8 +24,52 @@ export function parseResetPeriod(duration: string): string {
 	return `${timeValue} ${unitName}`;
 }
 
+import { formatCompactNumber } from "./numbers";
+
 export function formatCurrency(dollars: number) {
 	return `$${dollars.toFixed(2)}`;
+}
+
+const shortDurationLabels: Record<string, string> = {
+	"1m": "/min",
+	"5m": "/5min",
+	"15m": "/15min",
+	"30m": "/30min",
+	"1h": "/hr",
+	"6h": "/6hr",
+	"1d": "/day",
+	"1w": "/wk",
+	"1M": "/mo",
+};
+
+/**
+ * Formats rate limit into compact display lines.
+ * e.g. ["10K tokens/hr", "100 req/hr"]
+ */
+export function formatRateLimitLines(
+	rateLimits:
+		| {
+				token_max_limit?: number | null;
+				token_reset_duration?: string | null;
+				request_max_limit?: number | null;
+				request_reset_duration?: string | null;
+		  }
+		| null
+		| undefined,
+): string[] {
+	if (!rateLimits) return [];
+	const lines: string[] = [];
+	if (rateLimits.token_max_limit != null) {
+		const duration = rateLimits.token_reset_duration ?? "";
+		const suffix = shortDurationLabels[duration] ?? (duration ? `/${duration}` : "");
+		lines.push(`${formatCompactNumber(rateLimits.token_max_limit)} tokens${suffix}`);
+	}
+	if (rateLimits.request_max_limit != null) {
+		const duration = rateLimits.request_reset_duration ?? "";
+		const suffix = shortDurationLabels[duration] ?? (duration ? `/${duration}` : "");
+		lines.push(`${formatCompactNumber(rateLimits.request_max_limit)} req${suffix}`);
+	}
+	return lines;
 }
 
 /**

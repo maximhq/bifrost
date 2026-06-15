@@ -14,12 +14,12 @@ import (
 type DeferredSpanInfo struct {
 	SpanID              string
 	StartTime           time.Time
-	Tracer              schemas.Tracer          // Reference to tracer for completing the span
-	RequestID           string                  // Request ID for accumulator lookup
-	FirstChunkTime      time.Time               // Timestamp of first chunk (for TTFT calculation)
-	ChunkCount          int                     // Count of received streaming chunks (for AttrTotalChunks)
+	Tracer              schemas.Tracer           // Reference to tracer for completing the span
+	RequestID           string                   // Request ID for accumulator lookup
+	FirstChunkTime      time.Time                // Timestamp of first chunk (for TTFT calculation)
+	ChunkCount          int                      // Count of received streaming chunks (for AttrTotalChunks)
 	AccumulatedResponse *schemas.BifrostResponse // Full accumulated response from streaming chunks
-	mu                  sync.Mutex              // Mutex for thread-safe chunk accumulation
+	mu                  sync.Mutex               // Mutex for thread-safe chunk accumulation
 }
 
 // TraceStore manages traces with thread-safe access and object pooling
@@ -73,7 +73,7 @@ func NewTraceStore(ttl time.Duration, logger schemas.Logger) *TraceStore {
 // If empty, a new trace ID will be generated.
 // Note: The parent span ID (for linking to upstream spans) is handled separately
 // via context in StartSpan, not stored on the trace itself.
-func (s *TraceStore) CreateTrace(inheritedTraceID string) string {
+func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) string {
 	trace := s.tracePool.Get().(*schemas.Trace)
 	// Reset and initialize the trace
 	if inheritedTraceID != "" {
@@ -85,6 +85,9 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string) string {
 	// Parent-child relationships are between spans, not traces.
 	// The root span's ParentID is set in StartSpan from context.
 	trace.ParentID = ""
+	if len(requestID) > 0 {
+		trace.RequestID = requestID[0]
+	}
 	trace.StartTime = time.Now()
 	trace.EndTime = time.Time{}
 	trace.RootSpan = nil
@@ -103,6 +106,9 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string) string {
 		clear(trace.Attributes)
 	}
 
+	// Reset request headers
+	trace.RequestHeaders = nil
+
 	s.traces.Store(trace.TraceID, trace)
 	return trace.TraceID
 }
@@ -113,6 +119,33 @@ func (s *TraceStore) GetTrace(traceID string) *schemas.Trace {
 		return val.(*schemas.Trace)
 	}
 	return nil
+}
+
+// SetRequestID sets the request ID for the trace
+func (s *TraceStore) SetRequestID(traceID string, requestID string) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetRequestID(requestID)
+}
+
+// SetRequestHeaders sets the captured request headers for the trace
+func (s *TraceStore) SetRequestHeaders(traceID string, headers map[string]string) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetRequestHeaders(headers)
+}
+
+// SetTraceAttribute sets a trace-level attribute on the trace
+func (s *TraceStore) SetTraceAttribute(traceID string, key string, value any) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetAttribute(key, value)
 }
 
 // CompleteTrace marks the trace as complete, removes it from store, and returns it for flushing

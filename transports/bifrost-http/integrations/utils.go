@@ -30,6 +30,13 @@ var availableIntegrations = []string{
 	"cohere",
 }
 
+// newBifrostErrorWithCode is like newBifrostError but sets an explicit HTTP status code.
+func newBifrostErrorWithCode(err error, message string, statusCode int) *schemas.BifrostError {
+	e := newBifrostError(err, message)
+	e.StatusCode = &statusCode
+	return e
+}
+
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error, message string) *schemas.BifrostError {
@@ -215,6 +222,60 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	ctx.SetBody(errorBody)
 }
 
+// HTTP response header names for the routed identity. Set on every successful
+// response from any integration so callers can recover the actual provider /
+// model that handled the request — even when the integration converts the
+// body to a provider-native shape (Anthropic, OpenAI, Bedrock) that has no
+// place to surface Bifrost's `extra_fields`.
+//
+// Header values are derived from BifrostResponseExtraFields (populated by
+// PopulateExtraFields at the end of every request path, including after
+// fallback / routing-rule resolution). FallbackIndex is read from the
+// BifrostContext because it isn't a field on the response struct.
+//
+// Naming follows the existing `x-bf-*` request-side convention (see
+// `x-bf-vk`, `x-bf-key-id`, etc.).
+const (
+	HeaderBifrostProvider      = "x-bifrost-provider"
+	HeaderBifrostOriginalModel = "x-bifrost-original-model"
+	HeaderBifrostResolvedModel = "x-bifrost-resolved-model"
+	HeaderBifrostFallbackIndex = "x-bifrost-fallback-index"
+	HeaderBifrostRequestType   = "x-bifrost-request-type"
+)
+
+// applyBifrostResponseHeaders writes both the upstream provider response
+// headers (forwarded verbatim) and the bifrost-level `x-bifrost-*` routing
+// identity headers onto the fasthttp response. Empty fields are skipped so
+// the headers never appear with a blank value. Safe to call when the case
+// didn't populate `extra` — the zero value for ExtraFields produces no
+// headers.
+func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
+	for key, value := range extra.ProviderResponseHeaders {
+		ctx.Response.Header.Set(key, value)
+	}
+	if extra.Provider != "" {
+		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
+	}
+	if extra.OriginalModelRequested != "" {
+		ctx.Response.Header.Set(HeaderBifrostOriginalModel, extra.OriginalModelRequested)
+	}
+	if extra.ResolvedModelUsed != "" {
+		ctx.Response.Header.Set(HeaderBifrostResolvedModel, extra.ResolvedModelUsed)
+	}
+	if extra.RequestType != "" {
+		ctx.Response.Header.Set(HeaderBifrostRequestType, string(extra.RequestType))
+	}
+	// Fallback index lives on the request context, not the response struct.
+	// 0 = primary provider succeeded; non-zero = which fallback fired
+	// (1-indexed). Only emit when non-zero so the absence of the header is
+	// the unambiguous "no fallback fired" signal.
+	if bifrostCtx != nil {
+		if idx, ok := bifrostCtx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok && idx > 0 {
+			ctx.Response.Header.Set(HeaderBifrostFallbackIndex, strconv.Itoa(idx))
+		}
+	}
+}
+
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
 func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}, extraHeaders map[string]string) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
@@ -274,8 +335,8 @@ func (g *GenericRouter) streamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx
 	return true
 }
 
-// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
-func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
+// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest.
+func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, req interface{}, bifrostReq *schemas.BifrostRequest) error {
 	// Check if the request has a fallbacks field ([]string)
 	fallbacks, err := g.extractFallbacksFromRequest(req)
 	if err != nil {
@@ -357,7 +418,7 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 		return nil, nil
 	}
 
-	// Try to use reflection to find a "fallbacks" field
+	// Try to use reflection to find a fallbacks field.
 	reqValue := reflect.ValueOf(req)
 	if reqValue.Kind() == reflect.Ptr {
 		reqValue = reqValue.Elem()
@@ -367,10 +428,22 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 		return nil, nil // Not a struct, no fallbacks
 	}
 
-	// Look for the "fallbacks" field
-	fallbacksField := reqValue.FieldByName("fallbacks")
+	fallbacksField := reqValue.FieldByName("Fallbacks")
 	if !fallbacksField.IsValid() {
-		return nil, nil // No fallbacks field found
+		// Some integrations may expose the field under a different Go name, so
+		// fall back to the JSON wire name used in request payloads.
+		reqType := reqValue.Type()
+		for i := 0; i < reqValue.NumField(); i++ {
+			field := reqType.Field(i)
+			jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+			if jsonName == "fallbacks" {
+				fallbacksField = reqValue.Field(i)
+				break
+			}
+		}
+	}
+	if !fallbacksField.IsValid() {
+		return nil, nil
 	}
 
 	// Handle different types of fallbacks field

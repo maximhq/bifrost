@@ -3,19 +3,35 @@ import { baseApi } from "./baseApi";
 
 export const pluginsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
+		// Get builtin plugin names
+		getBuiltinPlugins: builder.query<string[], void>({
+			query: () => "/plugins/builtins",
+			providesTags: ["Plugins"],
+			transformResponse: (response: { plugins: string[] }) => response.plugins || [],
+		}),
+
+		// Get the names of all currently loaded plugins (sanitized to match the names
+		// embedded in their trace span names). Used by the plugin tracing sheet so it
+		// lists every plugin that actually emits spans, including enterprise plugins.
+		getLoadedPlugins: builder.query<string[], void>({
+			query: () => "/plugins/loaded",
+			providesTags: ["Plugins"],
+			transformResponse: (response: { plugins: string[] }) => response.plugins || [],
+		}),
+
 		// Get all plugins
 		getPlugins: builder.query<Plugin[], void>({
 			query: () => "/plugins",
 			providesTags: ["Plugins"],
 			transformResponse: (response: PluginsResponse) => response.plugins || [],
 		}),
-		
+
 		// Get a single plugin
 		getPlugin: builder.query<Plugin, string>({
 			query: (name) => `/plugins/${name}`,
 			providesTags: (result, error, name) => [{ type: "Plugins", id: name }],
 		}),
-		
+
 		// Create new plugin
 		createPlugin: builder.mutation<Plugin, CreatePluginRequest>({
 			query: (data) => ({
@@ -30,12 +46,10 @@ export const pluginsApi = baseApi.injectEndpoints({
 					dispatch(
 						pluginsApi.util.updateQueryData("getPlugins", undefined, (draft) => {
 							draft.push(newPlugin);
-						})
+						}),
 					);
 					// Also update the individual plugin cache
-					dispatch(
-						pluginsApi.util.updateQueryData("getPlugin", newPlugin.name, () => newPlugin)
-					);
+					dispatch(pluginsApi.util.updateQueryData("getPlugin", newPlugin.name, () => newPlugin));
 				} catch {}
 			},
 		}),
@@ -56,13 +70,13 @@ export const pluginsApi = baseApi.injectEndpoints({
 							const index = draft.findIndex((p) => p.name === arg.name);
 							if (index !== -1) {
 								draft[index] = updatedPlugin;
+							} else {
+								draft.push(updatedPlugin);
 							}
-						})
+						}),
 					);
 					// Also update the individual plugin cache
-					dispatch(
-						pluginsApi.util.updateQueryData("getPlugin", arg.name, () => updatedPlugin)
-					);
+					dispatch(pluginsApi.util.updateQueryData("getPlugin", arg.name, () => updatedPlugin));
 				} catch {}
 			},
 		}),
@@ -82,7 +96,7 @@ export const pluginsApi = baseApi.injectEndpoints({
 							if (index !== -1) {
 								draft.splice(index, 1);
 							}
-						})
+						}),
 					);
 				} catch {}
 			},
@@ -91,6 +105,8 @@ export const pluginsApi = baseApi.injectEndpoints({
 });
 
 export const {
+	useGetBuiltinPluginsQuery,
+	useGetLoadedPluginsQuery,
 	useGetPluginsQuery,
 	useGetPluginQuery,
 	useCreatePluginMutation,

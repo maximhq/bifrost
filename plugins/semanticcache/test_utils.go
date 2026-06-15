@@ -4,14 +4,98 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	mocker "github.com/maximhq/bifrost/plugins/mocker"
 )
+
+// embeddingThrottle bounds the number of concurrent live embedding calls
+// across every parallel test in the process. The semantic cache plugin embeds
+// each request against real OpenAI for similarity search; with no cap, the
+// burst from many t.Parallel() tests trips OpenAI's embeddings rate limit
+// (429), and each affected test then self-skips via the "upstream request
+// error" guard - silently hiding dozens of tests. A small cap smooths the
+// burst so the test account's retry/backoff (MaxRetries in GetConfigForProvider)
+// can absorb any residual throttling. Override with
+// SEMCACHE_TEST_EMBED_CONCURRENCY; defaults to 2.
+var embeddingThrottle = make(chan struct{}, embeddingConcurrency())
+
+func embeddingConcurrency() int {
+	if v := os.Getenv("SEMCACHE_TEST_EMBED_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2
+}
+
+// throttledEmbeddingExecutor wraps an EmbeddingRequestExecutor with the
+// package-level concurrency cap above so embedding bursts stay under the
+// provider's rate limit regardless of the test runner or -parallel setting.
+func throttledEmbeddingExecutor(inner EmbeddingRequestExecutor) EmbeddingRequestExecutor {
+	return func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		select {
+		case embeddingThrottle <- struct{}{}:
+		case <-ctx.Done():
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "embedding throttle wait cancelled: " + ctx.Err().Error()}}
+		}
+		defer func() { <-embeddingThrottle }()
+		return inner(ctx, req)
+	}
+}
+
+// isTransientUpstreamError reports whether a BifrostError reflects a
+// transient upstream condition (timeout, rate-limit, 5xx) where skipping
+// the test is reasonable. All other errors — including missing API keys,
+// client-side issues, or non-HTTP failures — should fail the test rather
+// than mask regressions behind a green skip.
+func isTransientUpstreamError(err *schemas.BifrostError) bool {
+	if err == nil || err.StatusCode == nil {
+		return false
+	}
+	code := *err.StatusCode
+	return code == 408 || code == 425 || code == 429 || code >= 500
+}
+
+// withTestRequestID stamps a fresh BifrostContextKeyRequestID on the context.
+// Unit tests that call PreLLMHook/PostLLMHook directly need this so the plugin
+// can anchor per-request state. In integration tests the framework overwrites
+// it, so setting it here is safe in either path.
+func withTestRequestID(ctx *schemas.BifrostContext) *schemas.BifrostContext {
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.NewString())
+	return ctx
+}
+
+// keyForTest returns a cache key namespaced by t.Name(). All tests should
+// derive their cache keys via this helper so two tests running in parallel
+// (t.Parallel) cannot see each other's entries through the shared Weaviate
+// namespace — direct lookups encode cache_key into the storage ID and
+// semantic search filters by it.
+//
+// Pass suffix="" for the most common single-key-per-test case. For tests
+// that exercise multiple distinct cache keys (e.g. cross-key isolation
+// tests), pass suffixes to disambiguate within the test.
+func keyForTest(t testing.TB, suffix string) string {
+	t.Helper()
+	if suffix == "" {
+		return t.Name()
+	}
+	return t.Name() + "/" + suffix
+}
+
+// newBaseTestContext returns a BifrostContext with a fresh request ID stamped.
+// Replaces bare schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+// in tests that call plugin.PreLLMHook / PostLLMHook directly — the plugin
+// requires a request ID to anchor per-request state.
+func newBaseTestContext() *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+}
 
 // getWeaviateConfigFromEnv retrieves Weaviate configuration from environment variables
 func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
@@ -38,7 +122,7 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 		Scheme:  scheme,
 		Host:    host,
 		APIKey:  apiKey,
-		Timeout: time.Duration(timeout) * time.Second,
+		Timeout: schemas.Duration(time.Duration(timeout) * time.Second),
 	}
 }
 
@@ -66,7 +150,7 @@ func getRedisConfigFromEnv() vectorstore.RedisConfig {
 		Username:       username,
 		Password:       password,
 		DB:             db,
-		ContextTimeout: timeout,
+		ContextTimeout: schemas.Duration(timeout),
 	}
 }
 
@@ -111,6 +195,25 @@ func getPineconeConfigFromEnv() vectorstore.PineconeConfig {
 	}
 }
 
+// storeConfigForType returns the env-derived connection config for a vector
+// store type. The bool is false for an unrecognized type. Shared by test setup
+// and the TestMain namespace sweep so both stay in lockstep when a new backend
+// is added.
+func storeConfigForType(storeType vectorstore.VectorStoreType) (interface{}, bool) {
+	switch storeType {
+	case vectorstore.VectorStoreTypeWeaviate:
+		return getWeaviateConfigFromEnv(), true
+	case vectorstore.VectorStoreTypeRedis:
+		return getRedisConfigFromEnv(), true
+	case vectorstore.VectorStoreTypeQdrant:
+		return getQdrantConfigFromEnv(), true
+	case vectorstore.VectorStoreTypePinecone:
+		return getPineconeConfigFromEnv(), true
+	default:
+		return nil, false
+	}
+}
+
 // BaseAccount implements the schemas.Account interface for testing purposes.
 type BaseAccount struct{}
 
@@ -122,7 +225,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-			Models: []string{}, // Empty models array means it supports ALL models
+			Models: schemas.WhiteList{"*"}, // "*" means allow all models
 			Weight: 1.0,
 		},
 	}, nil
@@ -366,18 +469,10 @@ type TestSetup struct {
 // NewTestSetup creates a new test setup with default configuration
 func NewTestSetup(t *testing.T) *TestSetup {
 	return NewTestSetupWithConfig(t, &Config{
-		Provider:          schemas.OpenAI,
-		EmbeddingModel:    "text-embedding-3-small",
-		Dimension:         1536,
-		Threshold:         0.8,
-		CleanUpOnShutdown: true,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
+		Provider:       schemas.OpenAI,
+		EmbeddingModel: "text-embedding-3-small",
+		Dimension:      1536,
+		Threshold:      0.8,
 	})
 }
 
@@ -386,23 +481,44 @@ func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 	return NewTestSetupWithVectorStore(t, config, vectorstore.VectorStoreTypeWeaviate)
 }
 
+// SharedTestNamespace is the single Weaviate class all parallel tests share.
+// Mirrors production: many concurrent requests hit one namespace, isolated
+// by per-test cache_keys (see keyForTest). Distinct from the plugin's
+// production default so test runs can't collide with a real cache.
+const SharedTestNamespace = "BifrostSemanticCachePluginTest"
+
+var (
+	sharedTestNamespaceOnce sync.Once
+	sharedTestNamespaceErr  error
+)
+
+// ensureSharedTestNamespace creates the shared test class exactly once per
+// test process — sync.Once gates the TOCTOU race between concurrent
+// Plugin.Init calls (each of which would otherwise check-then-create against
+// the shared store and one would lose the race).
+//
+// Subsequent Plugin.Init calls in tests still invoke CreateNamespace, but the
+// vectorstore implementations short-circuit when the class already exists.
+func ensureSharedTestNamespace(ctx context.Context, store vectorstore.VectorStore, dim int) error {
+	sharedTestNamespaceOnce.Do(func() {
+		sharedTestNamespaceErr = store.CreateNamespace(ctx, SharedTestNamespace, dim, VectorStoreProperties)
+	})
+	return sharedTestNamespaceErr
+}
+
 // NewTestSetupWithVectorStore creates a new test setup with custom configuration and vector store type
 func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectorstore.VectorStoreType) *TestSetup {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
+	// All tests share one namespace; isolation comes from per-test cache_keys.
+	if config.VectorStoreNamespace == "" {
+		config.VectorStoreNamespace = SharedTestNamespace
+	}
+
 	// Get the appropriate config for the vector store type
-	var storeConfig interface{}
-	switch storeType {
-	case vectorstore.VectorStoreTypeWeaviate:
-		storeConfig = getWeaviateConfigFromEnv()
-	case vectorstore.VectorStoreTypeRedis:
-		storeConfig = getRedisConfigFromEnv()
-	case vectorstore.VectorStoreTypeQdrant:
-		storeConfig = getQdrantConfigFromEnv()
-	case vectorstore.VectorStoreTypePinecone:
-		storeConfig = getPineconeConfigFromEnv()
-	default:
+	storeConfig, ok := storeConfigForType(storeType)
+	if !ok {
 		t.Fatalf("Unsupported vector store type: %s", storeType)
 	}
 
@@ -413,6 +529,15 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 	}, logger)
 	if err != nil {
 		t.Skipf("Vector store %s not available or failed to connect: %v", storeType, err)
+	}
+
+	// Pre-create the shared namespace exactly once across the test process so
+	// concurrent Plugin.Init calls don't lose the TOCTOU race inside the
+	// vector store driver (check-then-create).
+	preCreateCtx, preCreateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer preCreateCancel()
+	if err := ensureSharedTestNamespace(preCreateCtx, store, config.Dimension); err != nil {
+		t.Fatalf("Failed to create shared test namespace: %v", err)
 	}
 
 	plugin, err := Init(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config, logger, store)
@@ -426,6 +551,9 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 
 	// Get a mocked Bifrost client
 	client := getMockedBifrostClient(t, ctx, logger, plugin)
+
+	// Wire the global client as the embedding executor so semantic search works.
+	pluginImpl.SetEmbeddingRequestExecutor(throttledEmbeddingExecutor(client.EmbeddingRequest))
 
 	return &TestSetup{
 		Logger: logger,
@@ -538,13 +666,29 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 	t.Log("✅ Response correctly not served from cache (cache_debug present but CacheHit=false)")
 }
 
-// WaitForCache waits for async cache operations to complete
+// WaitForCache waits for async cache operations to complete.
+//
+// WaitForPendingOperations now drains the writersWg accurately (every
+// PostLLMHook goroutine + the expired-entry async delete is tracked), so the
+// stored entries are guaranteed durable when this returns. The small sleep
+// below is a buffer for vector store index visibility on stores with eventual
+// consistency (Weaviate is usually immediate on single-node, but cloud or
+// multi-shard setups may need a tick to make the entry queryable).
+//
+// Override via SEMCACHE_TEST_INDEX_DELAY_MS for slower stores / CI.
 func WaitForCache(plugin schemas.LLMPlugin) {
 	if p, ok := plugin.(*Plugin); ok {
 		p.WaitForPendingOperations()
 	}
-	// Small buffer for Weaviate index consistency
-	time.Sleep(500 * time.Millisecond)
+	delayMs := 100
+	if v := os.Getenv("SEMCACHE_TEST_INDEX_DELAY_MS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			delayMs = parsed
+		}
+	}
+	if delayMs > 0 {
+		time.Sleep(time.Duration(delayMs) * time.Millisecond)
+	}
 }
 
 // CreateEmbeddingRequest creates an embedding request for testing
@@ -615,28 +759,30 @@ func CreateImageGenerationRequest(prompt string, size string, quality string) *s
 }
 
 // CreateContextWithCacheKey creates a context with the test cache key
-func CreateContextWithCacheKey(value string) *schemas.BifrostContext {
-	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value)
+// CreateContextWithCacheKey creates a context with a per-test cache key.
+// suffix may be "" for tests using only one cache key.
+func CreateContextWithCacheKey(t testing.TB, suffix string) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, keyForTest(t, suffix)))
 }
 
 // CreateContextWithCacheKeyAndType creates a context with cache key and cache type
-func CreateContextWithCacheKeyAndType(value string, cacheType CacheType) *schemas.BifrostContext {
-	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value).WithValue(CacheTypeKey, cacheType)
+func CreateContextWithCacheKeyAndType(t testing.TB, suffix string, cacheType CacheType) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, keyForTest(t, suffix)).WithValue(CacheTypeKey, cacheType))
 }
 
 // CreateContextWithCacheKeyAndTTL creates a context with cache key and custom TTL
-func CreateContextWithCacheKeyAndTTL(value string, ttl time.Duration) *schemas.BifrostContext {
-	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value).WithValue(CacheTTLKey, ttl)
+func CreateContextWithCacheKeyAndTTL(t testing.TB, suffix string, ttl time.Duration) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, keyForTest(t, suffix)).WithValue(CacheTTLKey, ttl))
 }
 
 // CreateContextWithCacheKeyAndThreshold creates a context with cache key and custom threshold
-func CreateContextWithCacheKeyAndThreshold(value string, threshold float64) *schemas.BifrostContext {
-	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, value).WithValue(CacheThresholdKey, threshold)
+func CreateContextWithCacheKeyAndThreshold(t testing.TB, suffix string, threshold float64) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, keyForTest(t, suffix)).WithValue(CacheThresholdKey, threshold))
 }
 
 // CreateContextWithCacheKeyAndNoStore creates a context with cache key and no-store flag
-func CreateContextWithCacheKeyAndNoStore(value string, noStore bool) *schemas.BifrostContext {
-	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, value).WithValue(CacheNoStoreKey, noStore)
+func CreateContextWithCacheKeyAndNoStore(t testing.TB, suffix string, noStore bool) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, keyForTest(t, suffix)).WithValue(CacheNoStoreKey, noStore))
 }
 
 // CreateTestSetupWithConversationThreshold creates a test setup with custom conversation history threshold
@@ -645,16 +791,8 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		Dimension:                    1536,
-		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -666,16 +804,8 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		Provider:            schemas.OpenAI,
 		EmbeddingModel:      "text-embedding-3-small",
 		Dimension:           1536,
-		CleanUpOnShutdown:   true,
 		Threshold:           0.8,
 		ExcludeSystemPrompt: &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -687,17 +817,9 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		Dimension:                    1536,
-		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 		ExcludeSystemPrompt:          &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)

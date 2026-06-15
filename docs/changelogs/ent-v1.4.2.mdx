@@ -1,0 +1,127 @@
+---
+title: "v1.4.2"
+description: "Enterprise v1.4.2 changelog - 2026-05-13"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.2">
+
+<Warning>
+  **Breaking changes in v1.4.0.** See the [v1.4.0 Migration Guide](/enterprise/migration-guides/v1.4.0) for full before/after examples, automatic migration details, and a step-by-step checklist before upgrading.
+</Warning>
+
+## Changelog
+
+A focused patch on top of v1.4.1. Headline items: **Entra app-role propagation in SCIM provisioning** (App Registration roles are now fetched via Microsoft Graph and attached to each provisioned user, so role-based RBAC mappings finally work end-to-end), **`RequiredHeaders` and `RoutingChainMaxDepth` plumbed into the governance plugin loader**, and **security dependency bumps** for four open Dependabot alerts. Picks up an OSS base sitting just past `transports/v1.5.2` (commit `bef816a`), which adds Chat ↔ Responses `response_format` round-trip conversion, separate push/pull telemetry toggles with a plugin hot-reload fix, MCP tool-manager config-hash sync, plus a batch of Gemini, Bedrock, Anthropic, and compat-plugin fixes.
+
+## ✨ Features
+
+### RBAC & Identity
+
+- **Entra App-Role Propagation in SCIM Sync** - App Registration roles configured on the Entra app are now fetched via Microsoft Graph and attached to each provisioned user (both direct user assignments and group-member assignments). Role values populate the user's `Roles` set so Entra `roles`-claim based role mappings can be matched against actual app-role assignments instead of being unverified.
+- **Entra Role Filter Options in Sync UI** - `FetchFilterOptions` now returns the enabled App Registration roles (display name, value, description) as selectable role filters, removing the previous placeholder where Entra role options were always empty.
+- **`Application.Read.All` Probed at Setup** - `CheckGraphPermissions` now probes the App Registration `appRoles` endpoint and surfaces a warning if the configured client lacks `Application.Read.All`, so admins find out at config time rather than during a silent role-sync failure.
+- **Group-Member Fetch Memoization** - `fetchUsersFromAppAssignments` caches group-member lookups per group ID within a single sync pass, avoiding repeated Graph round-trips when multiple app-role assignments target the same group.
+
+### Governance
+
+- **`RequiredHeaders` and `RoutingChainMaxDepth` Wired to Governance Plugin** - Both fields existed on the enterprise client config but were not reaching the governance plugin loader; they are now forwarded so header-based identity requirements and routing-chain depth limits take effect in governance evaluation.
+
+### OSS Base (post-`transports/v1.5.2`)
+
+- **Chat ↔ Responses `response_format` Round-Trip** - `response_format` (`json_object`, `text`, `json_schema` with full `name` / `description` / `strict` / `schema`) is now bidirectionally mapped to `text.format` between the Chat and Responses request schemas; previously it was silently dropped on conversion. A new `SupportsResponseSchema` capability flag in the model catalog registers both `response_format` and `text` as supported parameters when set.
+- **Separate Push/Pull Telemetry Toggles + Plugin Hot-Reload Fix** - Push-based and pull-based telemetry can now be toggled independently, and the plugin hot-reload path is fixed.
+- **MCP Tool Manager Config in Client Hash** - `mcp.tool_manager_config` is now included in the client config hash and synced on reload, so changes to tool-manager config are picked up by reload-driven flows.
+- **Mistral Reasoning Effort in Model Catalog** - Mistral reasoning effort entries added to the model catalog.
+
+## 🐞 Fixed
+
+### Security & Dependencies
+
+- **CVE Bumps for Dependabot Alerts** - Bumped `aws-sdk-go-v2/service/bedrockruntime` v1.50.1 to v1.50.6 (eventstream DoS panic), `ulikunitz/xz` v0.5.12 to v0.5.15 (memory leak on corrupted LZMA), `nwaples/rardecode/v2` v2.1.0 to v2.2.2 (RAR dictionary DoS), and `jackc/pgx/v5` v5.9.1 to v5.9.2 (SQL injection via placeholder confusion).
+
+### OSS Base (post-`transports/v1.5.2`)
+
+- **Gemini `fallbacks` Key Removed from Requests** - The `fallbacks` key is no longer included in outgoing Gemini requests (it is not a Gemini-native field and was causing schema rejections).
+- **Gemini Fallback Propagation in GenAI** - Fixed fallback propagation in the GenAI integration so configured fallbacks are honored.
+- **Gemini Raw Request Scoping** - Raw-request handling is now applied only for the Gemini provider, not leaked across providers.
+- **Anthropic Advisor Model Passthrough** - Fixed prefix stripping in the advisor tool for Anthropic so model passthrough resolves correctly.
+- **Empty Text / Signature Messages on Bedrock OpenAI** - Drops messages with empty text or signature and converts thinking blocks for OpenAI Bedrock models.
+- **Anthropic Trailing Assistant Message Drop + Mistral Reasoning Effort Conversion** - Drops the last assistant message for Anthropic models and converts unsupported reasoning effort values for Mistral.
+- **Compat Plugin Defaults Enabled** - All compat plugin settings are now enabled by default.
+- **System-Only Message Role Conversion** - Converts role `system` to role `user` when only a system message is present for non-OpenAI models.
+- **Compat `cachePoint` Drop** - Compat plugin now drops `cachePoint` for unsupported Bedrock models and non-Bedrock models.
+- **OTEL Plugin Metrics** - Resolved issues in the OTEL plugin metrics path.
+- **AWS SDK Patch Bumps (OSS)** - `aws-sdk-go-v2` v1.41.5 to v1.41.7 and related internal modules.
+
+## 📀 Base OSS version
+
+This release pins an OSS commit, not a tagged release. All five OSS modules (`transports`, `core`, `framework`, `plugins/governance`, `plugins/logging`) are pinned to commit **`bef816abe9c2`** (2026-05-13), which is `transports/v1.5.2` + 3 additional fixes:
+
+- `14df900a` Chat ↔ Responses `response_format` conversion + `supports_response_schema` capability flag (#3454)
+- `725f2cb7` AWS SDK patch bumps (#3461)
+- `bef816ab` Remove `fallbacks` key from Gemini requests (#3464)
+
+Effective pseudo-versions in `go.mod`:
+
+```
+github.com/maximhq/bifrost/core                 v1.5.11-0.20260513124702-bef816abe9c2
+github.com/maximhq/bifrost/framework            v1.3.11-0.20260513124702-bef816abe9c2
+github.com/maximhq/bifrost/plugins/governance   v1.5.11-0.20260513124702-bef816abe9c2
+github.com/maximhq/bifrost/plugins/logging      v1.5.11-0.20260513124702-bef816abe9c2
+github.com/maximhq/bifrost/transports           v1.5.3-0.20260513124702-bef816abe9c2
+```
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2 v1.41.7
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.28.2
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.11-0.20260513124702-bef816abe9c2
+	github.com/maximhq/bifrost/framework v1.3.11-0.20260513124702-bef816abe9c2
+	github.com/maximhq/bifrost/plugins/governance v1.5.11-0.20260513124702-bef816abe9c2
+	github.com/maximhq/bifrost/plugins/prompts v1.0.11-0.20260513124702-bef816abe9c2
+	github.com/maximhq/bifrost/transports v1.5.3-0.20260513124702-bef816abe9c2
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	github.com/zricethezav/gitleaks/v8 v8.30.1
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/grpc v1.80.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

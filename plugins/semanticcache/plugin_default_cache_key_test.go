@@ -1,7 +1,6 @@
 package semanticcache
 
 import (
-	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -10,21 +9,22 @@ import (
 // TestDefaultCacheKey_CachesWithoutPerRequestKey verifies that when DefaultCacheKey
 // is configured, requests without an explicit cache key are cached automatically.
 func TestDefaultCacheKey_CachesWithoutPerRequestKey(t *testing.T) {
+	t.Parallel()
 	config := getDefaultTestConfig()
-	config.DefaultCacheKey = "test-default-key"
+	config.DefaultCacheKey = keyForTest(t, "test-default-key")
 
 	setup := NewTestSetupWithConfig(t, config)
 	defer setup.Cleanup()
 
 	// Context with NO per-request cache key
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx := newBaseTestContext()
 
 	testRequest := CreateBasicChatRequest("What is Bifrost? Answer in one short sentence.", 0.7, 50)
 
 	t.Log("Making first request without per-request cache key (should use default and be cached)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
@@ -37,7 +37,7 @@ func TestDefaultCacheKey_CachesWithoutPerRequestKey(t *testing.T) {
 	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical request without per-request cache key (should hit cache)...")
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx2 := newBaseTestContext()
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {
 		if err2.Error != nil {
@@ -53,8 +53,9 @@ func TestDefaultCacheKey_CachesWithoutPerRequestKey(t *testing.T) {
 // TestDefaultCacheKey_PerRequestKeyOverridesDefault verifies that an explicit
 // per-request cache key takes precedence over the configured default.
 func TestDefaultCacheKey_PerRequestKeyOverridesDefault(t *testing.T) {
+	t.Parallel()
 	config := getDefaultTestConfig()
-	config.DefaultCacheKey = "test-default-key"
+	config.DefaultCacheKey = keyForTest(t, "test-default-key")
 
 	setup := NewTestSetupWithConfig(t, config)
 	defer setup.Cleanup()
@@ -62,16 +63,16 @@ func TestDefaultCacheKey_PerRequestKeyOverridesDefault(t *testing.T) {
 	testRequest := CreateBasicChatRequest("What is the capital of France?", 0.5, 50)
 
 	// Cache with the default key (no per-request key)
-	ctx1 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx1 := newBaseTestContext()
 	_, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	WaitForCache(setup.Plugin)
 
 	// Verify the cache was actually populated with the default key
-	ctxDefault2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctxDefault2 := newBaseTestContext()
 	responseDefault2, errDefault2 := setup.Client.ChatCompletionRequest(ctxDefault2, testRequest)
 	if errDefault2 != nil {
 		if errDefault2.Error != nil {
@@ -82,7 +83,7 @@ func TestDefaultCacheKey_PerRequestKeyOverridesDefault(t *testing.T) {
 	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: responseDefault2}, string(CacheTypeDirect))
 
 	// Same request but with a DIFFERENT per-request key — should miss
-	ctx2 := CreateContextWithCacheKey("override-key")
+	ctx2 := CreateContextWithCacheKey(t, "override-key")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {
 		if err2.Error != nil {
@@ -98,20 +99,21 @@ func TestDefaultCacheKey_PerRequestKeyOverridesDefault(t *testing.T) {
 // TestDefaultCacheKey_EmptyDefault_NoCaching verifies that when DefaultCacheKey
 // is empty (default zero value), requests without a per-request key bypass caching.
 func TestDefaultCacheKey_EmptyDefault_NoCaching(t *testing.T) {
+	t.Parallel()
 	config := getDefaultTestConfig()
 	// DefaultCacheKey is intentionally left empty (zero value)
 
 	setup := NewTestSetupWithConfig(t, config)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx := newBaseTestContext()
 
 	testRequest := CreateBasicChatRequest("What is deep learning", 0.7, 50)
 
 	t.Log("Making first request without any cache key and no default (should not cache)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
@@ -119,7 +121,7 @@ func TestDefaultCacheKey_EmptyDefault_NoCaching(t *testing.T) {
 	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical request (should still not cache)...")
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx2 := newBaseTestContext()
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {
 		if err2.Error != nil {

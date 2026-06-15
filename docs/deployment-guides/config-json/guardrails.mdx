@@ -1,0 +1,583 @@
+---
+title: "Guardrails"
+description: "Configure content moderation and policy enforcement in config.json using guardrails_config"
+icon: "shield-halved"
+---
+
+<Note>
+Guardrails are an **enterprise-only** feature and require the enterprise Bifrost image.
+</Note>
+
+<Note>
+Credential and endpoint fields in guardrail provider `config` blocks support `"env.VAR_NAME"` strings (e.g. `"env.AWS_SECRET_KEY"`). Bifrost resolves the value from the process environment at startup. See the [Environment Variable Support](#environment-variable-support) section for the complete per-provider field list.
+</Note>
+
+Guardrails are configured under `guardrails_config` in `config.json`. The configuration has two parts:
+
+- **`guardrail_providers`** - the backend that performs the check. Rules link to providers by `id`.
+- **`guardrail_rules`** - CEL expressions that control when and where providers are invoked.
+
+---
+
+## Providers
+
+<Tabs>
+<Tab title="Regex">
+
+Runs entirely in-process with no external dependency. Patterns use RE2 syntax. Supports optional per-pattern flags: `i` (case-insensitive), `m` (multiline), `s` (dot-all).
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 1,
+        "provider_name": "regex",
+        "policy_name": "block-secrets",
+        "enabled": true,
+        "timeout": 5,
+        "config": {
+          "patterns": [
+            { "pattern": "sk-[A-Za-z0-9]{20,}", "description": "OpenAI API key" },
+            { "pattern": "AKIA[0-9A-Z]{16}", "description": "AWS access key" },
+            { "pattern": "gh[ps]_[A-Za-z0-9]{36}", "description": "GitHub token", "flags": "i" }
+          ],
+          "sampling_rate": 100
+        }
+      }
+    ]
+  }
+}
+```
+
+The Web UI's PII Detection template is also a `regex` provider configuration. See [Custom Regex](/enterprise/guardrails/custom-regex) for the full `config.json` and Helm examples.
+
+</Tab>
+<Tab title="Secrets">
+
+Runs entirely in-process with no external dependency. Uses the embedded default Gitleaks rules to detect leaked credentials, API keys, tokens, private keys, and similar secret-shaped values.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 2,
+        "provider_name": "secrets",
+        "policy_name": "block-leaked-credentials",
+        "enabled": true,
+        "timeout": 5,
+        "config": {
+          "ignored_secret_keywords": ["example", "dummy", "sample-token"]
+        }
+      }
+    ]
+  }
+}
+```
+
+`ignored_secret_keywords` is optional. It suppresses a detection when the matched secret value contains one of the listed substrings. Keep these values narrow so real leaked credentials are not hidden.
+
+</Tab>
+<Tab title="AWS Bedrock">
+
+Supports three auth modes: `keys` (static credentials), `api_key` (Bedrock API key), and `iam_role` (ambient IAM/IRSA - no explicit credentials required).
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 2,
+        "provider_name": "bedrock",
+        "policy_name": "content-filter",
+        "enabled": true,
+        "timeout": 15,
+        "config": {
+          "guardrail_arn": "env.BEDROCK_GUARDRAIL_ARN",
+          "guardrail_version": "DRAFT",
+          "region": "env.AWS_REGION",
+
+          "auth_type": "keys",
+          "access_key": "env.AWS_ACCESS_KEY_ID",
+          "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+          "session_token": "env.AWS_SESSION_TOKEN",
+
+          "sampling_rate": 100
+        }
+      }
+    ]
+  }
+}
+```
+
+For `auth_type: "api_key"`:
+```json
+{
+  "auth_type": "api_key",
+  "bedrock_api_key": "env.BEDROCK_API_KEY"
+}
+```
+
+For `auth_type: "iam_role"` (no credentials - uses ambient IAM):
+```json
+{
+  "auth_type": "iam_role",
+  "role_arn": "env.AWS_ROLE_ARN",
+  "external_id": "env.AWS_EXTERNAL_ID",
+  "session_name": "env.AWS_SESSION_NAME"
+}
+```
+
+</Tab>
+<Tab title="Azure Content Safety">
+
+Supports three auth modes: `api_key`, `default_credential` (managed identity / Azure CLI), and `entra_id` (service principal).
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 3,
+        "provider_name": "azure",
+        "policy_name": "azure-content-safety",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "endpoint": "env.AZURE_CONTENT_SAFETY_ENDPOINT",
+
+          "auth_type": "api_key",
+          "api_key": "env.AZURE_CONTENT_SAFETY_KEY",
+
+          "analyze_enabled": true,
+          "analyze_severity_threshold": "medium",
+          "jailbreak_shield_enabled": true,
+          "indirect_attack_shield_enabled": true,
+          "copyright_enabled": false,
+          "text_blocklist_enabled": false,
+          "blocklist_names": [],
+          "sampling_rate": 100
+        }
+      }
+    ]
+  }
+}
+```
+
+For `auth_type: "entra_id"` (service principal):
+```json
+{
+  "auth_type": "entra_id",
+  "client_id": "env.AZURE_CLIENT_ID",
+  "client_secret": "env.AZURE_CLIENT_SECRET",
+  "tenant_id": "env.AZURE_TENANT_ID"
+}
+```
+
+For `auth_type: "default_credential"` (managed identity / Azure CLI - no credentials needed):
+```json
+{
+  "auth_type": "default_credential"
+}
+```
+
+`analyze_severity_threshold` accepts `"low"`, `"medium"`, or `"high"`.
+
+</Tab>
+<Tab title="Google Model Armor">
+
+Calls Google Cloud Model Armor's template sanitize endpoints for prompt and response safety checks. Supports `default_credential` (Google ADC) and `service_account_json` authentication.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 4,
+        "provider_name": "model-armor",
+        "policy_name": "model-armor-prod",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "project_id": "env.GCP_PROJECT_ID",
+          "location": "env.GCP_LOCATION",
+          "template_id": "env.GMA_TEMPLATE_ID",
+
+          "auth_type": "default_credential"
+        }
+      }
+    ]
+  }
+}
+```
+
+For `auth_type: "service_account_json"`:
+```json
+{
+  "auth_type": "service_account_json",
+  "service_account_json": "env.GOOGLE_MODEL_ARMOR_SERVICE_ACCOUNT_JSON"
+}
+```
+
+`base_url` is optional. Leave it unset to use the regional Model Armor endpoint derived from `location`; set it only for a proxy or custom endpoint.
+
+</Tab>
+<Tab title="CrowdStrike AIDR">
+
+Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI threat detection, blocking, and redaction.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 4,
+        "provider_name": "crowdstrike-aidr",
+        "policy_name": "crowdstrike-aidr-prod",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.CS_AIDR_TOKEN",
+          "base_url": "env.CS_AIDR_BASE_URL",
+          "app_id": "bifrost-production",
+          "collector_instance_id": "prod-us-east-1"
+        }
+      }
+    ]
+  }
+}
+```
+
+`base_url` is optional and defaults to `https://api.crowdstrike.com/aidr/aiguard`. Bifrost appends `/v1/guard_chat_completions`, so the base URL can be the collector base URL rather than the full endpoint URL.
+
+</Tab>
+<Tab title="Patronus AI">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 5,
+        "provider_name": "patronus-ai",
+        "policy_name": "patronus-eval",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.PATRONUS_API_KEY",
+          "base_url": "https://api.patronus.ai",
+          "evaluators": [
+            {
+              "evaluator": "pii",
+              "explain_strategy": "on-fail"
+            },
+            {
+              "evaluator": "judge",
+              "criteria": "patronus:is-concise",
+              "explain_strategy": "on-fail"
+            }
+          ],
+          "capture": "none"
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Gray Swan">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 6,
+        "provider_name": "grayswan",
+        "policy_name": "grayswan-jailbreak",
+        "enabled": true,
+        "timeout": 15,
+        "config": {
+          "api_key": "env.GRAYSWAN_API_KEY",
+          "base_url": "env.GRAYSWAN_BASE_URL",
+          "reasoning_mode": "standard",
+          "violation_threshold": 0.7,
+          "policy_id": "",
+          "policy_ids": [],
+          "rules": {},
+          "sampling_rate": 100
+        }
+      }
+    ]
+  }
+}
+```
+
+GraySwan requests automatically include sanitized incoming request headers in GraySwan `metadata.headers`; no extra `config` field is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+
+</Tab>
+</Tabs>
+
+### Provider Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"` |
+| `policy_name` | Yes | Human-readable policy label |
+| `enabled` | Yes | `true` to activate |
+| `timeout` | No | Execution timeout in seconds |
+| `config` | No | Provider-specific configuration object |
+
+---
+
+## Environment Variable Support
+
+Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in addition to a literal value. Bifrost resolves the variable from the process environment at startup. Fields marked **plain only** must be a literal value (boolean, number, array, or string).
+
+### AWS Bedrock
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `guardrail_arn` | Yes | Yes | ARN of the Bedrock guardrail |
+| `guardrail_version` | Yes | Yes | `"DRAFT"` or a published version number |
+| `region` | Yes | Yes | AWS region (e.g. `"us-east-1"`) |
+| `auth_type` | No | Yes | `"keys"` (default) \| `"api_key"` \| `"iam_role"` |
+| `access_key` | Conditional | Yes | Required when `auth_type="keys"` |
+| `secret_key` | Conditional | Yes | Required when `auth_type="keys"` |
+| `session_token` | No | Yes | Optional temporary session token |
+| `bedrock_api_key` | Conditional | Yes | Required when `auth_type="api_key"` |
+| `role_arn` | No | Yes | IAM role ARN to assume (optional, `auth_type="iam_role"`) |
+| `external_id` | No | Yes | External ID for role assumption |
+| `session_name` | No | Yes | Session name for role assumption |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Azure Content Safety
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `endpoint` | Yes | Yes | Azure Content Safety resource URL |
+| `auth_type` | No | Yes | `"api_key"` (default) \| `"default_credential"` \| `"entra_id"` |
+| `api_key` | Conditional | Yes | Required when `auth_type="api_key"` |
+| `client_id` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `client_secret` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `tenant_id` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `analyze_severity_threshold` | No | Yes | `"low"` \| `"medium"` \| `"high"` (default: `"medium"`) |
+| `analyze_enabled` | No | **Plain only** | Enable text analysis (default: `true`) |
+| `jailbreak_shield_enabled` | No | **Plain only** | Enable jailbreak detection (default: `false`) |
+| `indirect_attack_shield_enabled` | No | **Plain only** | Enable indirect attack detection (default: `false`) |
+| `copyright_enabled` | No | **Plain only** | Enable copyright detection (default: `false`) |
+| `text_blocklist_enabled` | No | **Plain only** | Enable custom blocklists (default: `false`) |
+| `scopes` | No | **Plain only** | OAuth scopes (string array) |
+| `blocklist_names` | No | **Plain only** | Blocklist names to apply (string array) |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Google Model Armor
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `project_id` | Yes | Yes | Google Cloud project ID that owns the Model Armor template |
+| `location` | Yes | Yes | Model Armor template location |
+| `template_id` | Yes | Yes | Model Armor template ID |
+| `auth_type` | No | Yes | `"default_credential"` (default) \| `"service_account_json"` |
+| `service_account_json` | Conditional | Yes | Required when `auth_type="service_account_json"`; full service account key JSON or env reference |
+| `base_url` | No | Yes | Custom endpoint or proxy. Defaults to the regional Model Armor endpoint for `location` |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### CrowdStrike AIDR
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | AIDR collector token |
+| `base_url` | No | Yes | AIDR base URL. Defaults to `https://api.crowdstrike.com/aidr/aiguard` |
+| `app_id` | No | **Plain only** | Application or service identifier shown in AIDR logs |
+| `collector_instance_id` | No | **Plain only** | Deployment or collector instance label shown in AIDR logs |
+| `timeout` | No | **Plain only** | Provider execution timeout in seconds |
+
+### Patronus AI
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Patronus AI API key |
+| `base_url` | No | Yes | Custom Patronus API base URL. Defaults to `https://api.patronus.ai` |
+| `evaluators` | Yes | **Plain only** | Array of Patronus evaluator objects |
+| `evaluators[].evaluator` | Yes | **Plain only** | Patronus evaluator name, such as `pii`, `toxicity-perspective-api`, `judge`, or a custom evaluator ID |
+| `evaluators[].criteria` | No | **Plain only** | Criteria/profile name for evaluators that require one, such as `patronus:is-concise` |
+| `evaluators[].explain_strategy` | No | **Plain only** | `never` \| `on-fail` \| `on-success` \| `always` |
+| `capture` | No | **Plain only** | `none` \| `fails-only` \| `all`; defaults to `none` |
+| `timeout` | No | **Plain only** | Provider execution timeout in seconds |
+
+### Gray Swan
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Gray Swan API key |
+| `base_url` | No | Yes | Custom API base URL (uses Gray Swan default if unset) |
+| `reasoning_mode` | No | Yes | `"standard"` \| `"fast"` \| `"off"` (default: `"standard"`) |
+| `violation_threshold` | No | **Plain only** | `0.0`–`1.0`; higher = more permissive (default: `0.5`) |
+| `policy_id` | No | **Plain only** | Single policy ID string |
+| `policy_ids` | No | **Plain only** | Multiple policy IDs (string array) |
+| `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Regex
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, flags? }` objects |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+
+### Secrets
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `ignored_secret_keywords` | No | **Plain only** | String array of substrings used to suppress known false-positive secret matches |
+
+---
+
+## Rules
+
+Rules are CEL expressions that fire when their condition matches. Available CEL variables:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `model` | `string` | Model name from the request |
+| `provider` | `string` | Provider name (e.g. `"openai"`) |
+| `headers` | `map<string,string>` | HTTP request headers |
+| `params` | `map<string,string>` | Query parameters |
+| `customer` | `string` | Customer ID |
+| `team` | `string` | Team ID |
+| `user` | `string` | User ID |
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_rules": [
+      {
+        "id": 101,
+        "name": "block-secrets-input",
+        "description": "Block prompts containing credentials",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 10,
+        "provider_config_ids": [1]
+      },
+      {
+        "id": 102,
+        "name": "content-safety-gpt4o-output",
+        "enabled": true,
+        "cel_expression": "model == 'gpt-4o'",
+        "apply_to": "output",
+        "sampling_rate": 100,
+        "timeout": 15,
+        "provider_config_ids": [3]
+      },
+      {
+        "id": 103,
+        "name": "grayswan-openai-partial",
+        "enabled": true,
+        "cel_expression": "provider == 'openai'",
+        "apply_to": "input",
+        "sampling_rate": 50,
+        "timeout": 20,
+        "provider_config_ids": [5]
+      }
+    ]
+  }
+}
+```
+
+### Rule Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique integer ID |
+| `name` | Yes | Human-readable name |
+| `description` | No | Optional description |
+| `enabled` | Yes | `true` to activate |
+| `cel_expression` | Yes | CEL boolean expression. `"true"` matches every request |
+| `apply_to` | Yes | `"input"`, `"output"`, or `"both"` |
+| `sampling_rate` | No | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | Rule timeout in seconds |
+| `provider_config_ids` | No | `id` values of providers to invoke when this rule matches. Multiple providers run in parallel |
+
+---
+
+## Full Example
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "providers": {
+    "openai": {
+      "keys": [{ "name": "primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1.0 }]
+    }
+  },
+
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 1,
+        "provider_name": "regex",
+        "policy_name": "block-secrets",
+        "enabled": true,
+        "timeout": 5,
+        "config": {
+          "patterns": [
+            { "pattern": "sk-[A-Za-z0-9]{20,}", "description": "OpenAI API key" },
+            { "pattern": "AKIA[0-9A-Z]{16}", "description": "AWS access key" }
+          ]
+        }
+      },
+      {
+        "id": 2,
+        "provider_name": "azure",
+        "policy_name": "content-safety",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "endpoint": "env.AZURE_CONTENT_SAFETY_ENDPOINT",
+          "api_key": "env.AZURE_CONTENT_SAFETY_KEY",
+          "analyze_enabled": true,
+          "analyze_severity_threshold": "medium",
+          "jailbreak_shield_enabled": true,
+          "indirect_attack_shield_enabled": false
+        }
+      }
+    ],
+    "guardrail_rules": [
+      {
+        "id": 101,
+        "name": "block-secrets-input",
+        "description": "Block prompts leaking credentials",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 10,
+        "provider_config_ids": [1]
+      },
+      {
+        "id": 102,
+        "name": "content-safety-both",
+        "description": "Azure content safety on all traffic",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "both",
+        "sampling_rate": 100,
+        "timeout": 15,
+        "provider_config_ids": [2]
+      }
+    ]
+  }
+}
+```

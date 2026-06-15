@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -726,20 +729,17 @@ func TestCheckAndDecodeBody_Concurrent(t *testing.T) {
 	}
 }
 
-func TestDrainNonSSEStreamResponse_SSEDoesNotDrain(t *testing.T) {
+func TestDrainNonSSEStreamReader_SSEWithoutContentTypeStillReadable(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
-	body := []byte("data: hello\n\n")
-	resp.Header.SetContentType("text/event-stream")
-	resp.SetBodyStream(bytes.NewReader(body), len(body))
-
-	drained := DrainNonSSEStreamResponse(resp)
+	body := []byte("event: response.created\n\ndata: {\"type\":\"response.completed\"}\n\n")
+	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
 	if drained {
-		t.Fatal("expected SSE response to remain readable")
+		t.Fatal("expected SSE-looking response without content type to remain readable")
 	}
 
-	remaining, err := io.ReadAll(resp.BodyStream())
+	remaining, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("failed to read SSE body after guard: %v", err)
 	}
@@ -748,52 +748,300 @@ func TestDrainNonSSEStreamResponse_SSEDoesNotDrain(t *testing.T) {
 	}
 }
 
-func TestDrainNonSSEStreamResponse_NonSSEDrains(t *testing.T) {
+func TestDrainNonSSEStreamReader_GzipSSEWithoutContentTypeStillReadable(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	body := []byte("data: {\"type\":\"response.completed\"}\n\n")
+	compressed := gzipCompress(body)
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.SetBodyStream(bytes.NewReader(compressed), len(compressed))
+
+	decompressed, releaseGzip := DecompressStreamBody(resp)
+	defer releaseGzip()
+
+	reader, drained := DrainNonSSEStreamReader(resp, decompressed)
+	if drained {
+		t.Fatal("expected decompressed SSE-looking response without content type to remain readable")
+	}
+
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read decompressed SSE body after guard: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected decompressed SSE body %q, got %q", string(body), string(remaining))
+	}
+}
+
+func TestDrainNonSSEStreamReader_JSONWithoutContentTypeDrains(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte(`{"error":"not stream"}`)
-	resp.Header.SetContentType("application/json")
-	resp.SetBodyStream(bytes.NewReader(body), len(body))
-
-	drained := DrainNonSSEStreamResponse(resp)
+	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
 	if !drained {
-		t.Fatal("expected non-SSE response to be drained")
+		t.Fatal("expected JSON response without content type to be drained")
 	}
-
-	remaining, err := io.ReadAll(resp.BodyStream())
-	if err != nil {
-		t.Fatalf("failed to read body after drain: %v", err)
-	}
-	if len(remaining) != 0 {
-		t.Fatalf("expected drained body to be empty, got %q", string(remaining))
+	if reader != nil {
+		t.Fatal("expected drained response to return nil reader")
 	}
 }
 
-func TestDrainNonSSEStreamResponse_GzipSSEStillReadable(t *testing.T) {
+func TestDrainNonSSEStreamReader_UppercaseSSEPrefixDrains(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
-	body := []byte("data: hello\n\ndata: [DONE]\n\n")
-	compressed := gzipCompress(body)
-	resp.Header.SetContentType("text/event-stream")
-	resp.Header.Set("Content-Encoding", "gzip")
-	resp.SetBodyStream(bytes.NewReader(compressed), len(compressed))
-
-	drained := DrainNonSSEStreamResponse(resp)
-	if drained {
-		t.Fatal("expected gzip SSE response to remain readable")
+	body := []byte("DATA: {\"type\":\"response.completed\"}\n\n")
+	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if !drained {
+		t.Fatal("expected uppercase SSE-like prefix to be treated as non-SSE")
 	}
+	if reader != nil {
+		t.Fatal("expected drained response to return nil reader")
+	}
+}
 
-	reader, releaseGzip := DecompressStreamBody(resp)
-	defer releaseGzip()
+func TestDrainNonSSEStreamReader_ShortReadSSEPrefix(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	body := []byte("event: response.created\n\ndata: {}\n\n")
+	reader, drained := DrainNonSSEStreamReader(resp, &shortReadReader{data: body, chunkSize: 3})
+	if drained {
+		t.Fatal("expected SSE stream with short-read prefix to remain readable")
+	}
 
 	remaining, err := io.ReadAll(reader)
 	if err != nil {
-		t.Fatalf("failed to read decompressed SSE body: %v", err)
+		t.Fatalf("failed to read after short-read guard: %v", err)
 	}
 	if string(remaining) != string(body) {
-		t.Fatalf("expected decompressed SSE body %q, got %q", string(body), string(remaining))
+		t.Fatalf("expected body %q, got %q", body, remaining)
+	}
+}
+
+func TestDrainNonSSEStreamReader_TinyOpenSSEPrefixReturnsPromptly(t *testing.T) {
+	tests := []struct {
+		name     string
+		fragment string
+	}{
+		{name: "comment", fragment: ":\n\n"},
+		{name: "id field", fragment: "id:"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+
+			pr, pw := io.Pipe()
+			defer pr.Close()
+
+			writeErr := make(chan error, 1)
+			go func() {
+				_, err := pw.Write([]byte(tt.fragment))
+				writeErr <- err
+			}()
+
+			result := make(chan struct {
+				reader  io.Reader
+				drained bool
+			}, 1)
+			go func() {
+				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				result <- struct {
+					reader  io.Reader
+					drained bool
+				}{reader: reader, drained: drained}
+			}()
+
+			var got struct {
+				reader  io.Reader
+				drained bool
+			}
+			select {
+			case got = <-result:
+			case <-time.After(200 * time.Millisecond):
+				_ = pw.Close()
+				t.Fatal("DrainNonSSEStreamReader blocked waiting for a larger prefix")
+			}
+
+			if got.drained {
+				_ = pw.Close()
+				t.Fatal("expected tiny SSE prefix to remain readable")
+			}
+
+			preserved := make([]byte, len(tt.fragment))
+			if _, err := io.ReadFull(got.reader, preserved); err != nil {
+				_ = pw.Close()
+				t.Fatalf("failed to read preserved SSE prefix: %v", err)
+			}
+			if string(preserved) != tt.fragment {
+				_ = pw.Close()
+				t.Fatalf("expected preserved prefix %q, got %q", tt.fragment, string(preserved))
+			}
+
+			if err := pw.Close(); err != nil {
+				t.Fatalf("failed to close pipe writer: %v", err)
+			}
+			if err := <-writeErr; err != nil {
+				t.Fatalf("failed to write prefix: %v", err)
+			}
+		})
+	}
+}
+
+func TestDrainNonSSEStreamReader_FragmentedFieldPrefixReturnsPromptly(t *testing.T) {
+	tests := []struct {
+		name   string
+		first  string
+		suffix string
+	}{
+		{name: "data field", first: "d", suffix: "ata: {}\n\n"},
+		{name: "event field", first: "e", suffix: "vent: response.completed\n\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+
+			pr, pw := io.Pipe()
+			defer pr.Close()
+
+			firstWriteErr := make(chan error, 1)
+			go func() {
+				_, err := pw.Write([]byte(tt.first))
+				firstWriteErr <- err
+			}()
+
+			result := make(chan struct {
+				reader  io.Reader
+				drained bool
+			}, 1)
+			go func() {
+				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				result <- struct {
+					reader  io.Reader
+					drained bool
+				}{reader: reader, drained: drained}
+			}()
+
+			var got struct {
+				reader  io.Reader
+				drained bool
+			}
+			select {
+			case got = <-result:
+			case <-time.After(200 * time.Millisecond):
+				_ = pw.Close()
+				t.Fatal("DrainNonSSEStreamReader blocked waiting for a full SSE field name")
+			}
+			if got.drained {
+				_ = pw.Close()
+				t.Fatal("expected fragmented SSE field prefix to remain readable")
+			}
+			if err := <-firstWriteErr; err != nil {
+				_ = pw.Close()
+				t.Fatalf("failed to write first byte: %v", err)
+			}
+
+			suffixWriteErr := make(chan error, 1)
+			go func() {
+				_, err := pw.Write([]byte(tt.suffix))
+				if err == nil {
+					err = pw.Close()
+				}
+				suffixWriteErr <- err
+			}()
+
+			remaining, err := io.ReadAll(got.reader)
+			if err != nil {
+				t.Fatalf("failed to read preserved fragmented SSE stream: %v", err)
+			}
+			if string(remaining) != tt.first+tt.suffix {
+				t.Fatalf("expected preserved stream %q, got %q", tt.first+tt.suffix, string(remaining))
+			}
+			if err := <-suffixWriteErr; err != nil {
+				t.Fatalf("failed to write suffix: %v", err)
+			}
+		})
+	}
+}
+
+// shortReadReader returns at most chunkSize bytes per Read call, simulating
+// a network reader that delivers data in small segments (short reads).
+type shortReadReader struct {
+	data      []byte
+	chunkSize int
+	pos       int
+}
+
+func (r *shortReadReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	end := r.pos + r.chunkSize
+	if end > len(r.data) {
+		end = len(r.data)
+	}
+	n := copy(p, r.data[r.pos:end])
+	r.pos += n
+	return n, nil
+}
+
+// TestDrainNonSSEStreamReader_CodexNoContentType reproduces the original Codex hang:
+// a real HTTP server streams valid SSE events but omits Content-Type: text/event-stream.
+// Before the fix, DrainNonSSEStreamResponse would drain the body to /dev/null and the
+// client would hang waiting for events that never arrived.
+func TestDrainNonSSEStreamReader_CodexNoContentType(t *testing.T) {
+	const sseBody = "event: response.created\n\ndata: {\"type\":\"response.created\"}\n\nevent: response.completed\n\ndata: {\"type\":\"response.completed\"}\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Codex backend: valid SSE, but Content-Type is application/json — not text/event-stream.
+		// Setting it explicitly prevents Go's httptest from auto-detecting text/plain.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		fmt.Fprint(w, sseBody)
+		if ok {
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI(srv.URL)
+	req.Header.SetMethod(http.MethodGet)
+	resp.StreamBody = true
+
+	if err := (&fasthttp.Client{}).Do(req, resp); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		t.Fatalf("unexpected status: %d", resp.StatusCode())
+	}
+
+	// Mirror the streaming goroutine path in openai.go
+	reader, releaseGzip := DecompressStreamBody(resp)
+	defer releaseGzip()
+
+	reader, drained := DrainNonSSEStreamReader(resp, reader)
+	if drained {
+		t.Fatal("SSE body without Content-Type was drained — reproduces the original Codex hang")
+	}
+
+	all, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("reading SSE body failed: %v", err)
+	}
+	if string(all) != sseBody {
+		t.Fatalf("SSE body corrupted\nwant: %q\n got: %q", sseBody, string(all))
 	}
 }
 
@@ -1107,7 +1355,8 @@ func TestBuildClientStreamChunk_ImageGenerationStripping(t *testing.T) {
 
 	t.Run("logging-only: raw fields stripped from image gen chunk, original preserved", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+		ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, true)
+		ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, true)
 
 		chunk := BuildClientStreamChunk(ctx, response, nil)
 		if chunk.BifrostImageGenerationStreamResponse == nil {
@@ -1148,9 +1397,9 @@ func TestBuildClientStreamChunk_ImageGenerationStripping(t *testing.T) {
 }
 
 // TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChunk verifies
-// that when BifrostContextKeyRawRequestResponseForLogging is set, ProcessAndSendResponse
-// strips RawRequest and RawResponse from the outgoing stream chunk, while leaving other
-// ExtraFields intact. It also verifies that the original BifrostResponse is not mutated
+// that when drop-raw context flags are set, ProcessAndSendResponse strips RawRequest and
+// RawResponse from the outgoing stream chunk, while leaving other ExtraFields intact.
+// It also verifies that the original BifrostResponse is not mutated
 // (shared object safety for PostLLMHook goroutines).
 func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChunk(t *testing.T) {
 	rawReq := json.RawMessage(`{"model":"gpt-4","messages":[]}`)
@@ -1177,7 +1426,8 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChu
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			if tt.loggingOnly {
-				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+				ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, true)
+				ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, true)
 			}
 
 			response := &schemas.BifrostResponse{
@@ -1196,7 +1446,7 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChu
 			}
 
 			responseChan := make(chan *schemas.BifrostStreamChunk, 1)
-			ProcessAndSendResponse(ctx, passThrough, response, responseChan)
+			ProcessAndSendResponse(ctx, passThrough, response, responseChan, nil)
 
 			chunk := <-responseChan
 			if chunk.BifrostChatResponse == nil {
@@ -1237,9 +1487,9 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChu
 }
 
 // TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk verifies
-// that when BifrostContextKeyRawRequestResponseForLogging is set, raw data is stripped
-// from BifrostError payloads embedded in stream chunks, without mutating the shared
-// BifrostError object (shared object safety for PostLLMHook goroutines).
+// that when drop-raw context flags are set, raw data is stripped from BifrostError
+// payloads embedded in stream chunks, without mutating the shared BifrostError object
+// (shared object safety for PostLLMHook goroutines).
 func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(t *testing.T) {
 	rawReq := json.RawMessage(`{"model":"gpt-4"}`)
 	rawResp := json.RawMessage(`{"error":"rate limit exceeded"}`)
@@ -1265,7 +1515,8 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			if tt.loggingOnly {
-				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+				ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, true)
+				ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, true)
 			}
 
 			// Use a postHookRunner that converts the response to a BifrostError with raw data
@@ -1286,7 +1537,7 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(
 			responseChan := make(chan *schemas.BifrostStreamChunk, 1)
 			ProcessAndSendResponse(ctx, errorRunner, &schemas.BifrostResponse{
 				ChatResponse: &schemas.BifrostChatResponse{ID: "chatcmpl-001"},
-			}, responseChan)
+			}, responseChan, nil)
 
 			chunk := <-responseChan
 			if chunk.BifrostError == nil {
@@ -1329,8 +1580,8 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(
 // TestShouldSendBackRawRequest verifies that ShouldSendBackRawRequest correctly resolves
 // whether providers should capture the raw request body. It covers:
 //   - Default (no context flags): returns the provider default
-//   - BifrostContextKeySendBackRawRequest=true in context: always returns true
-//   - Logging-only mode: requestWorker sets BifrostContextKeySendBackRawRequest=true,
+//   - BifrostContextKeyCaptureRawRequest=true in context: always returns true
+//   - Logging-only mode: requestWorker sets BifrostContextKeyCaptureRawRequest=true,
 //     so the function sees a single flag (no second check needed).
 func TestShouldSendBackRawRequest(t *testing.T) {
 	tests := []struct {
@@ -1360,7 +1611,7 @@ func TestShouldSendBackRawRequest(t *testing.T) {
 			want:            true,
 		},
 		{
-			// requestWorker sets BifrostContextKeySendBackRawRequest=true in logging-only
+			// requestWorker sets BifrostContextKeyCaptureRawRequest=true in logging-only
 			// mode so a single flag covers both full send-back and logging-only cases.
 			name:            "logging-only: context SendBack=true set by requestWorker",
 			contextSendBack: true,
@@ -1373,7 +1624,7 @@ func TestShouldSendBackRawRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			if tt.contextSendBack {
-				ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+				ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, true)
 			}
 
 			got := ShouldSendBackRawRequest(ctx, tt.providerDefault)
@@ -1413,7 +1664,7 @@ func TestShouldSendBackRawResponse(t *testing.T) {
 			want:            true,
 		},
 		{
-			// requestWorker sets BifrostContextKeySendBackRawResponse=true in logging-only
+			// requestWorker sets BifrostContextKeyCaptureRawResponse=true in logging-only
 			// mode so a single flag covers both full send-back and logging-only cases.
 			name:            "logging-only: context SendBack=true set by requestWorker",
 			contextSendBack: true,
@@ -1426,7 +1677,7 @@ func TestShouldSendBackRawResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			if tt.contextSendBack {
-				ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+				ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
 			}
 
 			got := ShouldSendBackRawResponse(ctx, tt.providerDefault)
@@ -1434,5 +1685,196 @@ func TestShouldSendBackRawResponse(t *testing.T) {
 				t.Errorf("ShouldSendBackRawResponse() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGetBudgetTokensFromReasoningEffort(t *testing.T) {
+	const min = 1024
+	const max = 16000
+
+	tests := []struct {
+		effort  string
+		wantErr bool
+		check   func(t *testing.T, budget int)
+	}{
+		{
+			effort: "none",
+			check:  func(t *testing.T, budget int) { assertEqual(t, 0, budget, "none effort") },
+		},
+		{
+			effort: "minimal",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "minimal")
+			},
+		},
+		{
+			effort: "low",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "low")
+			},
+		},
+		{
+			effort: "medium",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "medium")
+			},
+		},
+		{
+			effort: "high",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "high")
+			},
+		},
+		{
+			effort: "xhigh",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "xhigh")
+			},
+		},
+		{
+			// "max" with ratio=1.0 would produce budget==maxTokens without the cap.
+			// Bedrock and Anthropic both require budget_tokens < max_tokens (strict).
+			effort: "max",
+			check: func(t *testing.T, budget int) {
+				if budget >= max {
+					t.Errorf("max effort: budget %d must be < maxTokens %d", budget, max)
+				}
+				assertEqual(t, max-1, budget, "max effort caps at maxTokens-1")
+			},
+		},
+		{
+			effort: "unknown",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "unknown effort uses safe default")
+			},
+		},
+		{
+			// minBudgetTokens > maxTokens — always an error
+			effort:  "high",
+			wantErr: true,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(fmt.Sprintf("%d_%s", i, tt.effort), func(t *testing.T) {
+			maxTokens := max
+			minTokens := min
+			if tt.wantErr {
+				minTokens = max + 1
+			}
+			budget, err := GetBudgetTokensFromReasoningEffort(tt.effort, minTokens, maxTokens)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error when minBudgetTokens > maxTokens, got none")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tt.check(t, budget)
+		})
+	}
+}
+
+func assertEqual(t *testing.T, want, got int, label string) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s: got %d, want %d", label, got, want)
+	}
+}
+
+func assertRange(t *testing.T, low, high, got int, label string) {
+	t.Helper()
+	if got < low || got > high {
+		t.Errorf("%s: got %d, want in [%d, %d]", label, got, low, high)
+	}
+}
+
+// TestExtractProviderResponseHeaders_StripsProviderSecrets verifies that provider auth headers
+// Bifrost injects upstream (and some upstreams echo back, e.g. Google's file-download 302) are
+// never forwarded to clients via the response header map, while normal headers pass through.
+// Regression test for the /genai_passthrough x-goog-api-key leak.
+func TestExtractProviderResponseHeaders_StripsProviderSecrets(t *testing.T) {
+	resp := &fasthttp.Response{}
+	// Provider secrets that must be stripped (case-insensitive).
+	resp.Header.Set("x-goog-api-key", "AIzaSyEXAMPLE_SECRET")
+	resp.Header.Set("X-Api-Key", "sk-ant-secret")
+	resp.Header.Set("Api-Key", "azure-secret")
+	resp.Header.Set("Authorization", "Bearer secret-token")
+	// Benign headers that must be preserved.
+	resp.Header.Set("x-request-id", "req-123")
+
+	headers := ExtractProviderResponseHeaders(resp)
+
+	// fasthttp canonicalizes header keys, so look these up case-insensitively.
+	lookup := func(name string) (string, bool) {
+		for k, v := range headers {
+			if strings.EqualFold(k, name) {
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	for _, secret := range []string{"x-goog-api-key", "x-api-key", "api-key", "authorization"} {
+		if _, ok := lookup(secret); ok {
+			t.Fatalf("provider secret header %q leaked in response headers: %v", secret, headers)
+		}
+	}
+	if v, ok := lookup("x-request-id"); !ok || v != "req-123" {
+		t.Fatalf("benign header x-request-id was dropped: %v", headers)
+	}
+}
+
+// TestExtractPassthroughProviderResponseHeaders verifies that the passthrough
+// variant preserves content-type while still blocking transport headers and
+// provider secrets. Regression guard for the providerResponseFilterHeaders[kLower] &&
+// kLower != "content-type" carve-out.
+func TestExtractPassthroughProviderResponseHeaders(t *testing.T) {
+	resp := &fasthttp.Response{}
+	// content-type must be forwarded.
+	resp.Header.Set("Content-Type", "application/json")
+	// transport headers that must still be stripped.
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.Header.Set("Transfer-Encoding", "chunked")
+	resp.Header.Set("Content-Length", "42")
+	// provider secrets that must still be stripped.
+	resp.Header.Set("x-goog-api-key", "AIzaSyEXAMPLE_SECRET")
+	resp.Header.Set("X-Api-Key", "sk-secret")
+	resp.Header.Set("Authorization", "Bearer token")
+	// benign headers that must be preserved.
+	resp.Header.Set("x-request-id", "req-456")
+
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+
+	lookup := func(name string) (string, bool) {
+		for k, v := range headers {
+			if strings.EqualFold(k, name) {
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	// content-type must pass through.
+	if v, ok := lookup("content-type"); !ok || v != "application/json" {
+		t.Fatalf("content-type should be forwarded by passthrough extractor, got %q ok=%v", v, ok)
+	}
+	// transport headers must still be stripped.
+	for _, stripped := range []string{"content-encoding", "transfer-encoding", "content-length"} {
+		if _, ok := lookup(stripped); ok {
+			t.Fatalf("transport header %q should be stripped by passthrough extractor", stripped)
+		}
+	}
+	// provider secrets must still be stripped.
+	for _, secret := range []string{"x-goog-api-key", "x-api-key", "authorization"} {
+		if _, ok := lookup(secret); ok {
+			t.Fatalf("provider secret %q should be stripped by passthrough extractor", secret)
+		}
+	}
+	// benign header must pass through.
+	if v, ok := lookup("x-request-id"); !ok || v != "req-456" {
+		t.Fatalf("benign header x-request-id was dropped: %v", headers)
 	}
 }

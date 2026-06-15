@@ -17,7 +17,10 @@ Both options work perfectly - choose what fits your workflow:
 #### NPX Binary
 
 <video width="100%" controls>
-  <source src="https://github.com/maximhq/bifrost/raw/refs/heads/main/docs/media/run-npx.mp4" type="video/mp4" />
+  <source
+    src="https://github.com/maximhq/bifrost/raw/refs/heads/main/docs/media/run-npx.mp4"
+    type="video/mp4"
+  />
   Your browser does not support the video tag.
 </video>
 
@@ -48,15 +51,15 @@ docker pull maximhq/bifrost:v1.3.9-arm64
 # For configuration persistence across restarts
 docker run -p 8080:8080 -v $(pwd)/data:/app/data maximhq/bifrost
 ```
+
 ### 2. Configuration Flags
 
-| Flag | Default | NPX | Docker | Description |
-|------|---------|-----|--------|-------------|
-| port | 8080 | `-port 8080` | `-e APP_PORT=8080 -p 8080:8080` | HTTP server port |
-| host | localhost | `-host 0.0.0.0` | `-e APP_HOST=0.0.0.0` | Host to bind server to |
-| log-level | info | `-log-level info` | `-e LOG_LEVEL=info` | Log level (debug, info, warn, error) |
-| log-style | json | `-log-style json` | `-e LOG_STYLE=json` | Log style (pretty, json) |
-
+| Flag      | Default   | NPX               | Docker                          | Description                          |
+| --------- | --------- | ----------------- | ------------------------------- | ------------------------------------ |
+| port      | 8080      | `-port 8080`      | `-e APP_PORT=8080 -p 8080:8080` | HTTP server port                     |
+| host      | localhost | `-host 0.0.0.0`   | `-e APP_HOST=0.0.0.0`           | Host to bind server to               |
+| log-level | info      | `-log-level info` | `-e LOG_LEVEL=info`             | Log level (debug, info, warn, error) |
+| log-style | json      | `-log-style json` | `-e LOG_STYLE=json`             | Log style (pretty, json)             |
 
 **Understanding App Directory**
 
@@ -72,8 +75,9 @@ npx -y @maximhq/bifrost -app-dir ./my-bifrost-data
 ```
 
 **What's stored in app-dir:**
+
 - `config.json` - Configuration file (optional)
-- `config.db` - SQLite database for UI configuration  
+- `config.db` - SQLite database for UI configuration
 - `logs.db` - Request logs database
 
 **Note:** When using Bifrost via Docker, the volume you mount will be used as the app-dir.
@@ -86,7 +90,7 @@ Navigate to **http://localhost:8080** in your browser:
 # macOS
 open http://localhost:8080
 
-# Linux  
+# Linux
 xdg-open http://localhost:8080
 
 # Windows
@@ -94,6 +98,7 @@ start http://localhost:8080
 ```
 
 🖥️ **The Web UI provides:**
+
 - **Visual provider setup** - Add API keys with clicks, not code
 - **Real-time configuration** - Changes apply immediately
 - **Live monitoring** - Request logs, metrics, and analytics
@@ -117,24 +122,38 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 1. **Zero Configuration Start**: Bifrost launched without any config files - everything can be configured through the Web UI or API
 2. **OpenAI-Compatible API**: All Bifrost APIs follow OpenAI request/response format for seamless integration
 3. **Unified API Endpoint**: `/v1/chat/completions` works with any provider (OpenAI, Anthropic, Bedrock, etc.)
-4. **Provider Resolution**: `openai/gpt-4o-mini` tells Bifrost to use OpenAI's GPT-4o Mini model
+4. **Provider Resolution**: `openai/gpt-4o-mini` tells Bifrost to use OpenAI's GPT-4o Mini model. You can also use bare model names like `gpt-4o-mini`, Bifrost will automatically resolve the provider via the [Model Catalog](/providers/provider-routing#default-provider-resolution)
 5. **Automatic Routing**: Bifrost handles authentication, rate limiting, and request routing automatically
 
 ---
 
 ## Two Configuration Modes
 
-Bifrost supports **two configuration approaches** - you cannot use both simultaneously:
+Bifrost supports **two configuration approaches**:
+
+**How config and database state interact:**
+
+- Entities defined in `config.json` are stored with a
+  content-based hash on first load.
+- Changes made later through the UI or API are persisted to the
+  database and survive pod restarts, scale-ups, and redeployments.
+- Re-applying the same
+  `config.json` does not overwrite those database changes, because the content hash is unchanged. If
+  you edit an entity directly in `config.json`, its hash changes and the file-based definition
+  overwrites the database copy.
 
 ### Mode 1: Web UI Configuration
 
 ![Configuration via UI](../../media/ui-config.png)
 
 **When the UI is available:**
+
 - No `config.json` file exists (Bifrost auto-creates SQLite database)
 - `config.json` exists with `config_store` configured
 
 ### Mode 2: File-based Configuration
+
+<Note>You can view entire config schema [here](https://www.getbifrost.ai/schema)</Note>
 
 **When to use:** Advanced setups, GitOps workflows, or when UI is not needed
 
@@ -142,6 +161,7 @@ Create `config.json` in your app directory:
 
 ```json
 {
+  "$schema": "https://www.getbifrost.ai/schema",
   "client": {
     "drop_excess_requests": false
   },
@@ -168,27 +188,35 @@ Create `config.json` in your app directory:
 ```
 
 **Without `config_store` in `config.json`:**
+
 - **UI is disabled** - no real-time configuration possible
 - **Read-only mode** - `config.json` is never modified
 - **Memory-only** - all configurations loaded into memory at startup
 - **Restart required** - changes to `config.json` only apply after restart
 
 **With `config_store` in `config.json`:**
+
 - **UI is enabled** - full real-time configuration via web interface
-- **Database check** - Bifrost checks if config store database exists and has data
-  - **Empty DB**: Bootstraps database with `config.json` settings, then uses DB exclusively
-  - **Existing DB**: Uses database directly, **ignores** `config.json` configurations
+- **Database check** - Bifrost reconciles `config.json` against the config store using a content-based hash per entity
+  - **Empty DB**: Bootstraps database with `config.json` settings, then uses DB for runtime reads
+  - **Existing DB**: Compares each entity's file hash to the stored `ConfigHash`. If the hash is unchanged, the DB copy is kept (UI/API edits are preserved). If you edit an entity in `config.json` so its hash changes, the file definition overwrites the DB copy for that entity. Entries added only via the UI/API (not present in `config.json`) are always preserved.
 - **Persistent storage** - all changes saved to database immediately
 
-**Important for Advanced Users:**
-If you want database persistence but prefer not to use the UI, note that modifying `config.json` after initial bootstrap has no effect when `config_store` is enabled. Use the public HTTP APIs to make configuration changes instead.
-
 **The Three Stores Explained:**
+
 - **Config Store**: Stores provider configs, API keys, MCP settings - Required for UI functionality
-- **Logs Store**: Stores request logs shown in UI - Optional, can be disabled  
+- **Logs Store**: Stores request logs shown in UI - Optional, can be disabled
 - **Vector Store**: Used for semantic caching - Optional, can be disabled
 
 ## PostgreSQL UTF8 Requirement
+
+<Note>The minimum PostgreSQL version required is 16 or above.</Note>
+
+<Note>
+  For the log store, Bifrost creates materialized views to improve analytics performance. Ensure
+  that the PostgreSQL user has the necessary permissions to perform these operations on the target
+  schema.
+</Note>
 
 If you use PostgreSQL for `config_store` or `logs_store`, the target database must use `UTF8` encoding.
 

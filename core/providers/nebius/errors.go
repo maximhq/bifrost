@@ -9,7 +9,7 @@ import (
 )
 
 // parseNebiusImageError parses Nebius error responses
-func parseNebiusImageError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+func parseNebiusImageError(resp *fasthttp.Response) *schemas.BifrostError {
 	var nebiusErr NebiusError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &nebiusErr)
 
@@ -58,14 +58,6 @@ func parseNebiusImageError(resp *fasthttp.Response, meta *providerUtils.RequestM
 	// Use the extracted message if available
 	if message != "" {
 		bifrostErr.Error.Message = message
-	}
-
-	if meta != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       meta.Provider,
-			ModelRequested: meta.Model,
-			RequestType:    meta.RequestType,
-		}
 	}
 
 	return bifrostErr

@@ -41,7 +41,7 @@ func NewEnvVar(value string) *EnvVar {
 					FromEnv: envVar.FromEnv,
 					EnvVar:  envVar.EnvVar,
 				}
-				// Here we will check if the Val starts with env and is same as the EnvVar
+				// Old format: value == env_var == "env.XXX"
 				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
 					e.Val = ""
 					// Load the environment variable value
@@ -50,6 +50,13 @@ func NewEnvVar(value string) *EnvVar {
 						e.Val = envValue
 					}
 					e.FromEnv = true
+				}
+				// New format: value is empty, from_env=true, env_var holds the reference
+				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
+					e.FromEnv = true
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+						e.Val = envValue
+					}
 				}
 				return e
 			}
@@ -95,8 +102,12 @@ func (e *EnvVar) IsRedacted() bool {
 			return true
 		}
 	}
-	// Check if its string <redacted>
-	if e.Val == "<redacted>" {
+	// Check for <redacted> sentinel (case-insensitive for compatibility)
+	if strings.EqualFold(e.Val, "<redacted>") {
+		return true
+	}
+	// Check for [REDACTED] sentinel produced by MarshalJSON in scim config serialization
+	if strings.EqualFold(e.Val, "[REDACTED]") {
 		return true
 	}
 	return false
@@ -117,6 +128,9 @@ func (e *EnvVar) Equals(other *EnvVar) bool {
 
 // Redacted returns a new SecretKey with the value redacted.
 func (e *EnvVar) Redacted() *EnvVar {
+	if e == nil {
+		return nil
+	}
 	if e.Val == "" {
 		return &EnvVar{
 			Val:     "",
@@ -139,6 +153,28 @@ func (e *EnvVar) Redacted() *EnvVar {
 
 	return &EnvVar{
 		Val:     prefix + middle + suffix,
+		FromEnv: e.FromEnv,
+		EnvVar:  e.EnvVar,
+	}
+}
+
+// FullyRedacted returns a copy of the EnvVar with Val replaced by a fixed placeholder
+// so no substring of the original value is exposed. Use for API responses where
+// Redacted is unsafe (e.g. literal proxy passwords). FromEnv and EnvVar are preserved
+// so env references remain visible and round-trip update merges still match via Equals.
+func (e *EnvVar) FullyRedacted() *EnvVar {
+	if e == nil {
+		return nil
+	}
+	if e.Val == "" {
+		return &EnvVar{
+			Val:     "",
+			FromEnv: e.FromEnv,
+			EnvVar:  e.EnvVar,
+		}
+	}
+	return &EnvVar{
+		Val:     "<REDACTED>",
 		FromEnv: e.FromEnv,
 		EnvVar:  e.EnvVar,
 	}
@@ -171,7 +207,7 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 				e.Val = envVar.Val
 				e.FromEnv = envVar.FromEnv
 				e.EnvVar = envVar.EnvVar
-				// Here we will check if the Val starts with env and is same as the EnvVar
+				// Old format: value == env_var == "env.XXX"
 				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
 					e.Val = ""
 					// Load the environment variable value
@@ -180,6 +216,12 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 						e.Val = envValue
 					}
 					e.FromEnv = true
+				}
+				// New format: value is empty, from_env=true, env_var holds the reference
+				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+						e.Val = envValue
+					}
 				}
 				return nil
 			}
@@ -257,6 +299,34 @@ func (e EnvVar) Value() (driver.Value, error) {
 // IsFromEnv returns true if the value is sourced from an environment variable.
 func (e *EnvVar) IsFromEnv() bool {
 	return e.FromEnv
+}
+
+// ShouldPreserveStored returns true when the EnvVar is a client-side placeholder
+// that should not overwrite the stored encrypted credential. Returns true for a
+// nil receiver, an empty non-env value, or a redacted non-env value. Returns false
+// for env var references (always intentional) and plain non-empty values.
+func (e *EnvVar) ShouldPreserveStored() bool {
+	if e == nil {
+		return true
+	}
+	if e.IsFromEnv() {
+		return false
+	}
+	return e.GetValue() == "" || e.IsRedacted()
+}
+
+// IsSet returns true if the EnvVar has a resolved value or an environment variable reference.
+// This should be used instead of GetValue() != "" when checking whether a field was configured,
+// because env var references may have an empty Val before resolution (e.g., when the env var
+// is not available in the current environment).
+func (e *EnvVar) IsSet() bool {
+	if e == nil {
+		return false
+	}
+	if e.IsFromEnv() {
+		return e.EnvVar != ""
+	}
+	return e.Val != ""
 }
 
 // GetValue returns the value.

@@ -1,0 +1,43 @@
+---
+title: "v2.0.0"
+description: "Helm v2.0.0 changelog - 2026-01-31"
+---
+
+<Update label="Bifrost Helm" description="v2.0.0 (Breaking Change)">
+
+## Changelog
+
+#### StatefulSet for SQLite with Persistence
+
+This release fixes the multi-attach volume error when running multiple replicas with SQLite storage mode.
+
+#### What Changed
+
+- When using `storage.mode: sqlite` with `storage.persistence.enabled: true`, Bifrost now deploys as a **StatefulSet** instead of a Deployment
+- Each pod gets its own dedicated PersistentVolumeClaim (e.g., `data-bifrost-0`, `data-bifrost-1`, `data-bifrost-2`)
+- A headless service is created for StatefulSet DNS resolution
+- HorizontalPodAutoscaler now correctly references StatefulSet or Deployment based on storage configuration
+
+#### Who Is Affected
+
+- Users running SQLite mode with persistence enabled and multiple replicas
+- Users upgrading existing SQLite deployments need to migrate (see below)
+
+#### Who Is NOT Affected
+
+- Users running PostgreSQL mode (`storage.mode: postgres`) - no changes, still uses Deployment
+- Users running SQLite without persistence (`storage.persistence.enabled: false`)
+- Users running SQLite with an existing PVC claim (`storage.persistence.existingClaim`)
+
+#### Migration Guide for Existing SQLite Deployments
+
+Since Kubernetes doesn't allow in-place conversion from Deployment to StatefulSet, you need to:
+
+1. Back up your data (if needed)
+2. Uninstall the existing release: `helm uninstall bifrost`
+3. Delete the old PVC: `kubectl delete pvc bifrost-data`
+4. Install with the new chart version: `helm install bifrost bifrost/bifrost --set image.tag=<latest-image>`
+
+**Note:** For production high-availability setups, we recommend using PostgreSQL mode which scales horizontally without these concerns.
+
+</Update>

@@ -13,7 +13,8 @@ const DefaultModelParamsCacheSize = 2048
 // ModelParams holds cached parameters for a model.
 // Add new fields here as more model-level parameters need caching.
 type ModelParams struct {
-	MaxOutputTokens *int
+	MaxOutputTokens    *int
+	IsVertexMultiRegionOnly *bool // true when model is only available on Vertex multi-region pool endpoints (rep.googleapis.com)
 }
 
 type modelParamsCacheEntry struct {
@@ -175,6 +176,16 @@ func (c *modelParamsCache) evict() {
 	delete(c.items, tail.Value.(*modelParamsCacheEntry).model)
 }
 
+func (c *modelParamsCache) Delete(model string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, ok := c.items[model]; ok {
+		c.order.Remove(elem)
+		delete(c.items, model)
+	}
+}
+
 // GetModelParams returns the cached parameters for a model.
 // On cache miss, calls the registered miss handler (if any) to load from DB.
 func GetModelParams(model string) (ModelParams, bool) {
@@ -189,6 +200,11 @@ func SetModelParams(model string, params ModelParams) {
 // BulkSetModelParams sets parameters for multiple models at once.
 func BulkSetModelParams(entries map[string]ModelParams) {
 	getModelParamsCache().BulkSet(entries)
+}
+
+// DeleteModelParams removes a model from the cache.
+func DeleteModelParams(model string) {
+	getModelParamsCache().Delete(model)
 }
 
 // SetCacheMissHandler registers a callback invoked on cache miss.
@@ -230,6 +246,19 @@ func GetMaxOutputTokensOrDefault(model string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+// IsVertexMultiRegionOnlyModel reports whether the given model is flagged in the
+// datasheet as only available on Google Vertex multi-region pool endpoints
+// (aiplatform.{region}.rep.googleapis.com). Returns false on cache miss or if
+// the flag is not set. Looks up using "vertex_ai/" prefix since model-parameters
+// are stored with provider-prefixed keys.
+func IsVertexMultiRegionOnlyModel(model string) bool {
+	params, ok := GetModelParams("vertex_ai/" + model)
+	if !ok || params.IsVertexMultiRegionOnly == nil {
+		return false
+	}
+	return *params.IsVertexMultiRegionOnly
 }
 
 // normalizeClaudeModelName extracts the base Claude model name from

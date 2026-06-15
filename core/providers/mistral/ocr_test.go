@@ -436,9 +436,6 @@ func TestOCRWithMockServer(t *testing.T) {
 				assert.Equal(t, 1, resp.Pages[1].Index)
 				require.NotNil(t, resp.UsageInfo)
 				assert.Equal(t, 2, resp.UsageInfo.PagesProcessed)
-				assert.Equal(t, schemas.OCRRequest, resp.ExtraFields.RequestType)
-				assert.Equal(t, schemas.Mistral, resp.ExtraFields.Provider)
-				assert.Equal(t, "mistral-ocr-latest", resp.ExtraFields.ModelRequested)
 			},
 		},
 		{
@@ -503,9 +500,6 @@ func TestOCRWithMockServer(t *testing.T) {
 				assert.Equal(t, "server_error", *err.Error.Type)
 				require.NotNil(t, err.Error.Code)
 				assert.Equal(t, "internal_error", *err.Error.Code)
-				assert.Equal(t, schemas.Mistral, err.ExtraFields.Provider)
-				assert.Equal(t, schemas.OCRRequest, err.ExtraFields.RequestType)
-				assert.Equal(t, "mistral-ocr-latest", err.ExtraFields.ModelRequested)
 			},
 		},
 		{
@@ -757,7 +751,5 @@ func TestMistralOCRIntegration(t *testing.T) {
 	require.NotEmpty(t, resp.Pages, "Expected at least one page")
 	assert.Equal(t, 0, resp.Pages[0].Index)
 	assert.NotEmpty(t, resp.Pages[0].Markdown, "Expected non-empty markdown for page 0")
-	assert.Equal(t, schemas.OCRRequest, resp.ExtraFields.RequestType)
-	assert.Equal(t, schemas.Mistral, resp.ExtraFields.Provider)
 	assert.Greater(t, resp.ExtraFields.Latency, int64(0))
 }

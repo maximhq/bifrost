@@ -1,5 +1,5 @@
 /**
- * Bifrost docs — Base URL persistence
+ * Bifrost docs - Base URL persistence
  *
  * The OpenAPI spec exposes the gateway base URL as a server variable
  * (`{baseUrl}`), so Mintlify's API Reference playground renders an
@@ -72,7 +72,7 @@
 
   /**
    * Rewrite every `<code>` block that mentions the default localhost
-   * URL. We only touch text nodes (`nodeValue`) — never `innerHTML` —
+   * URL. We only touch text nodes (`nodeValue`) - never `innerHTML` -
    * so there is no path where a string is reinterpreted as HTML.
    */
   function rewriteCodeBlocks(currentUrl) {
@@ -144,7 +144,7 @@
       });
 
       // Preload from storage exactly once. After this, the input is
-      // user-owned — we never write to it again, otherwise typing would
+      // user-owned - we never write to it again, otherwise typing would
       // get clobbered by the next MutationObserver tick.
       if (state.currentUrl !== DEFAULT_URL && el.value !== state.currentUrl) {
         setNativeValue(el, state.currentUrl);
@@ -159,7 +159,7 @@
     rewriteCodeBlocks(state.currentUrl);
     syncPlaygroundInputs(state);
 
-    // Mintlify is an SPA — re-run on any DOM mutation (debounced).
+    // Mintlify is an SPA - re-run on any DOM mutation (debounced).
     var pending = false;
     var observer = new MutationObserver(function () {
       if (pending) return;

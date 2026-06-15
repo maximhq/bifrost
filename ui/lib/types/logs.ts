@@ -85,7 +85,8 @@ export interface Model {
 	id: string;
 	canonical_slug?: string;
 	name?: string;
-	deployment?: string;
+	normalized_name?: string;
+	alias?: string;
 	created?: number;
 	context_length?: number;
 	max_input_tokens?: number;
@@ -141,6 +142,7 @@ export interface DefaultParameters {
 // Message content types
 export type MessageContentType =
 	| "text"
+	| "file"
 	| "image_url"
 	| "input_audio"
 	| "input_text"
@@ -155,6 +157,13 @@ export interface ContentBlock {
 	image_url?: {
 		url: string;
 		detail?: string;
+	};
+	file?: {
+		file_data?: string;
+		file_url?: string;
+		file_id?: string;
+		filename?: string;
+		file_type?: string;
 	};
 	input_audio?: {
 		data: string;
@@ -224,6 +233,46 @@ export interface ImageMessageData {
 	revised_prompt?: string;
 	index?: number;
 	output_format?: string;
+}
+
+export interface OCRDocument {
+	type: "document_url" | "image_url";
+	document_url?: string;
+	image_url?: string;
+}
+
+export interface OCRPageImage {
+	id: string;
+	top_left_x: number;
+	top_left_y: number;
+	bottom_right_x: number;
+	bottom_right_y: number;
+	image_base64?: string;
+}
+
+export interface OCRPageDimensions {
+	dpi: number;
+	height: number;
+	width: number;
+}
+
+export interface OCRPage {
+	index: number;
+	markdown: string;
+	images?: OCRPageImage[];
+	dimensions?: OCRPageDimensions;
+}
+
+export interface OCRUsageInfo {
+	pages_processed: number;
+	doc_size_bytes: number;
+}
+
+export interface BifrostOCRResponse {
+	model: string;
+	pages: OCRPage[];
+	usage_info?: OCRUsageInfo;
+	document_annotation?: string;
 }
 
 export interface BifrostImageGenerationOutput {
@@ -424,29 +473,78 @@ export interface Annotation {
 	url_citation: Citation;
 }
 
+export interface PluginLogEntry {
+	plugin_name: string;
+	level: "debug" | "info" | "warn" | "error";
+	message: string;
+	timestamp: number;
+}
+
+export interface ImageEditInput {
+	images?: Array<{ image: string | null }> | null; // null when stripped by large-payload threshold
+	prompt: string;
+}
+
+export interface ImageVariationInput {
+	image: { image: string | null }; // image bytes null when stripped by large-payload threshold
+}
+
 // Main LogEntry interface matching backend
+export interface KeyAttemptRecord {
+	attempt: number;
+	key_id: string;
+	key_name: string;
+	fail_reason?: string | null; // null/undefined on the final (successful or last) attempt
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
+	parent_request_id?: string;
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
 	model: string;
+	alias?: string; // Set when model was resolved via alias mapping; the original name the caller used
+	canonical_model_name?: string; // Canonical model name configured on the resolved alias, when set
+	alias_model_family?: string; // Model family configured on the resolved alias, when set
 	number_of_retries: number;
 	fallback_index: number;
-	selected_key_id: string;
+	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
+	selected_key_id?: string | null;
+	selected_prompt_id?: string; // Selected prompt ID (prompts plugin)
+	selected_prompt_name?: string; // Resolved prompt display name (prompts plugin)
+	selected_prompt_version?: string; // Resolved prompt version number as string (prompts plugin)
+	team_name?: string;
+	team_id?: string;
+	customer_name?: string;
+	customer_id?: string;
+	business_unit_id?: string;
+	business_unit_name?: string;
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
+	user_id?: string;
+	user_name?: string;
 	virtual_key_id?: string;
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_engine_logs?: string; // Human-readable routing decision logs
+	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;
 	routing_rule?: RoutingRule;
 	input_history: ChatMessage[];
 	responses_input_history: ResponsesMessage[];
+	content_summary?: string;
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];
 	rerank_output?: RerankResult[];
+	ocr_input?: OCRDocument;
+	ocr_output?: BifrostOCRResponse;
 	image_generation_output?: BifrostImageGenerationOutput;
 	video_generation_output?: BifrostVideoGenerationOutput;
 	video_retrieve_output?: BifrostVideoGenerationOutput;
@@ -457,6 +555,8 @@ export interface LogEntry {
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
 	image_generation_input?: { prompt: string };
+	image_edit_input?: ImageEditInput;
+	image_variation_input?: ImageVariationInput;
 	video_generation_input?: { prompt: string };
 	speech_output?: BifrostSpeech;
 	transcription_output?: BifrostTranscribe;
@@ -468,6 +568,7 @@ export interface LogEntry {
 	cache_debug?: CacheDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)
 	status: string; // "success" or "error"
+	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
@@ -483,21 +584,30 @@ export interface LogEntry {
 export interface LogFilters {
 	providers?: string[];
 	models?: string[];
+	aliases?: string[];
+	parent_request_id?: string;
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
+	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
+	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	min_tokens?: number;
 	max_tokens?: number;
 	missing_cost_only?: boolean;
+	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
 	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
+	user_ids?: string[];
+	team_ids?: string[];
+	customer_ids?: string[];
+	business_unit_ids?: string[];
 }
 
 export interface Pagination {
@@ -510,9 +620,33 @@ export interface Pagination {
 export interface LogStats {
 	total_requests: number;
 	success_rate: number;
+	user_facing_success_rate: number;
+	user_facing_total_requests: number;
 	average_latency: number;
 	total_tokens: number;
 	total_cost: number;
+	cache_hit_rate_total_requests?: number | null;
+	direct_cache_hits?: number | null;
+	semantic_cache_hits?: number | null;
+}
+
+export interface LogSessionDetailResponse {
+	session_id: string;
+	logs: LogEntry[];
+	pagination: Pagination & { total_count?: number };
+	count: number;
+	returned_count: number;
+	has_more: boolean;
+}
+
+export interface LogSessionSummaryResponse {
+	session_id: string;
+	count: number;
+	total_cost: number;
+	total_tokens: number;
+	started_at?: string;
+	latest_at?: string;
+	duration_ms: number;
 }
 
 export interface HistogramBucket {
@@ -942,6 +1076,7 @@ export interface MCPToolLogFilters {
 	llm_request_ids?: string[];
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
+	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	content_search?: string;
@@ -958,8 +1093,7 @@ export interface MCPToolLogStats {
 // MCP Tool Log Search Response
 export interface MCPToolLogsResponse {
 	logs: MCPToolLogEntry[];
-	pagination: Pagination;
-	stats: MCPToolLogStats;
+	pagination: Pagination & { total_count: number };
 	has_logs: boolean;
 }
 
@@ -1036,6 +1170,50 @@ export interface ModelRankingsResponse {
 	rankings: ModelRankingEntry[];
 }
 
+export interface UserRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface UserRankingEntry {
+	user_id: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: UserRankingTrend;
+}
+
+export interface UserRankingsResponse {
+	rankings: UserRankingEntry[];
+}
+
+export type RankingDimension = "team" | "customer" | "business_unit" | "user";
+
+export interface DimensionRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface DimensionRankingEntry {
+	id: string;
+	name?: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: DimensionRankingTrend;
+}
+
+export interface DimensionRankingsResponse {
+	rankings: DimensionRankingEntry[];
+	dimension: RankingDimension;
+	total_actual_requests?: number; // shows the actual request count for units that can have multiple child entities
+	total_attributed_requests?: number; // shows the request count attributed to all entities for units that can have multiple child entities
+}
+
 // Date utility functions for URL state management
 export const dateUtils = {
 	/**
@@ -1079,13 +1257,13 @@ export const dateUtils = {
 	},
 
 	/**
-	 * Gets default time range (last 24 hours to now) as Unix timestamps
+	 * Gets default time range (last 1 hours to now) as Unix timestamps
 	 * Returns fresh timestamps on each call to avoid stale defaults
 	 */
 	getDefaultTimeRange: (): { startTime: number; endTime: number } => {
 		const endTime = Math.floor(Date.now() / 1000);
 		const date = new Date();
-		date.setHours(date.getHours() - 24);
+		date.setHours(date.getHours() - 1);
 		const startTime = Math.floor(date.getTime() / 1000);
 		return { startTime, endTime };
 	},

@@ -45,11 +45,13 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
-	// Drop existing tables and migration tracking in the correct order
-	// Note: The migrator uses "migrations" table by default, not "gomigrate"
+	// Drop existing tables and migration tracking in the correct order.
+	// Preserve the shared migrations table — only clear its rows.
+	dropAllManagedMatViews(db)
 	db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 	db.Exec("DROP TABLE IF EXISTS logs")
-	db.Exec("DROP TABLE IF EXISTS migrations")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations")
 
 	// Create a minimal logs table with only the columns needed for the test
 	err := db.Exec(`
@@ -70,10 +72,20 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Clean up tables after the test
 	t.Cleanup(func() {
+		dropAllManagedMatViews(db)
 		db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 		db.Exec("DROP TABLE IF EXISTS logs")
-		db.Exec("DROP TABLE IF EXISTS migrations")
+		db.Exec("DELETE FROM migrations")
 	})
+}
+
+func dropAllManagedMatViews(db *gorm.DB) {
+	for _, view := range allMatViewNames() {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
+	for _, view := range legacyMatViewNames {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
 }
 
 // insertTestLog inserts a test log entry with the given metadata value.
@@ -306,7 +318,6 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "First migration should succeed")
-
 
 	sqlDB, err := db.DB()
 	if err != nil {

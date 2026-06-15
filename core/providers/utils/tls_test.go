@@ -90,7 +90,7 @@ func TestConfigureTLS_AppliesCACertPEM(t *testing.T) {
 	logger := testLogger{}
 	caPEM := validTestCertPEM(t)
 
-	result := ConfigureTLS(client, schemas.NetworkConfig{CACertPEM: caPEM}, logger)
+	result := ConfigureTLS(client, schemas.NetworkConfig{CACertPEM: schemas.NewEnvVar(caPEM)}, logger)
 
 	if result != client {
 		t.Error("ConfigureTLS should return the same client")
@@ -107,7 +107,7 @@ func TestConfigureTLS_HandlesInvalidCACertPEM(t *testing.T) {
 	client := &fasthttp.Client{}
 	logger := testLogger{}
 
-	result := ConfigureTLS(client, schemas.NetworkConfig{CACertPEM: "not-valid-pem"}, logger)
+	result := ConfigureTLS(client, schemas.NetworkConfig{CACertPEM: schemas.NewEnvVar("not-valid-pem")}, logger)
 
 	if result != client {
 		t.Error("ConfigureTLS should return the same client even when CACertPEM is invalid")
@@ -133,7 +133,7 @@ func TestConfigureTLS_MergesWithExistingTLSConfig(t *testing.T) {
 	logger := testLogger{}
 	caPEM := validTestCertPEM(t)
 
-	result := ConfigureTLS(client, schemas.NetworkConfig{CACertPEM: caPEM}, logger)
+	result := ConfigureTLS(client, schemas.NetworkConfig{CACertPEM: schemas.NewEnvVar(caPEM)}, logger)
 
 	if result != client {
 		t.Error("ConfigureTLS should return the same client")
@@ -153,7 +153,7 @@ func TestConfigureTLS_InsecureSkipVerifyAndCACertPEM(t *testing.T) {
 
 	result := ConfigureTLS(client, schemas.NetworkConfig{
 		InsecureSkipVerify: true,
-		CACertPEM:          caPEM,
+		CACertPEM:          schemas.NewEnvVar(caPEM),
 	}, logger)
 
 	if result != client {

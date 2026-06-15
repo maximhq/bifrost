@@ -1,10 +1,8 @@
-"use client";
-
+import { cn } from "@/lib/utils";
 import React, { useEffect, useMemo, useRef } from "react";
 import { DropdownGroup } from "./dropdownGroup";
 import { DropdownItem } from "./dropdownItem";
 import { DropdownOption, FlattenedDropdownOption } from "./types";
-import { cn } from "@/lib/utils";
 
 interface CustomDropdownProps<T = {}> {
 	options: DropdownOption<T>[];
@@ -23,7 +21,6 @@ interface CustomDropdownProps<T = {}> {
 export function CustomDropdown<T = {}>({
 	options,
 	onChange,
-	defaultValue,
 	style,
 	className,
 	selectFirstOptionByDefault,

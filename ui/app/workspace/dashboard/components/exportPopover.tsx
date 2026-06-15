@@ -1,12 +1,5 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { buildCSV, downloadCSV } from "@/lib/utils/csv";
 import { Download, FileSpreadsheet, FileText, Loader2 } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -62,7 +55,7 @@ export function ExportPopover({ getData, onPreloadData, onPdfExport, onPdfExport
 
 			await generatePdf(sections, "dashboard-export", {
 				branding: {
-					logoSrc: "/bifrost-logo.png",
+					logoSrc: "/bifrost-logo.webp",
 					text: "Powered by",
 				},
 			});
@@ -75,17 +68,8 @@ export function ExportPopover({ getData, onPreloadData, onPdfExport, onPdfExport
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
-				<Button
-					variant="outline"
-					size="default"
-					disabled={exporting}
-					data-testid="dashboard-export-trigger"
-				>
-					{exporting ? (
-						<Loader2 className="h-4 w-4 animate-spin" />
-					) : (
-						<Download className="h-4 w-4" />
-					)}
+				<Button variant="outline" size="default" disabled={exporting} data-testid="dashboard-export-trigger">
+					{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
 					{exporting ? "Exporting..." : "Export"}
 				</Button>
 			</DropdownMenuTrigger>

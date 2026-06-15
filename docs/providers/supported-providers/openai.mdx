@@ -24,7 +24,70 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/batches` |
 | Video Generation | ✅ | - | `/v1/videos` |
+| Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
+
+## Setup & Configuration
+
+Configure OpenAI as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![OpenAI provider dashboard](../../media/provider-dashboard-openai.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **OpenAI** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **OpenAI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.OPENAI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "openai_config": {
+        "disable_store": false
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.OpenAI:
+    return []schemas.Key{{
+        Name:   "openai-key-1",
+        Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Optional provider settings include `network_config` for timeouts, retries, proxy/TLS settings, and `openai_config.disable_store` to force `store=false` on outgoing OpenAI requests.
 
 ---
 
@@ -477,7 +540,7 @@ GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost re
 | `seconds` | string | ❌ | Duration in seconds |
 | `size` | string | ❌ | Resolution: `720x1280` (default), `1280x720`, `1024x1792`, `1792x1024` |
 
-**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) — `id`, `status`, `model`, `prompt`, `created_at`
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) - `id`, `status`, `model`, `prompt`, `created_at`
 
 **Job Statuses**: `queued` → `in_progress` → `completed` / `failed`
 
@@ -490,6 +553,27 @@ GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost re
 | Delete | `DELETE /v1/videos/{id}` | Removes video job |
 | List jobs | `GET /v1/videos` | Query params: `after`, `limit`, `order` |
 | Remix | `POST /v1/videos/{id}/remix` | Body: `{"prompt": "..."}` |
+
+---
+
+# 14. Context Compaction
+
+Compresses a conversation into an opaque encrypted item that can be reused in future Responses API calls, reducing token costs for long-running conversations.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `input` | string/array | ✅* | Conversation to compact. Required unless `previous_response_id` is set. Accepts the same format as the Responses API `input` field, including prior compaction items (`type: "response.compaction"`). |
+| `previous_response_id` | string | ✅* | ID of a previously stored response to compact instead of sending full input. |
+| `instructions` | string | ❌ | System instructions preserved across the compacted context. |
+| `prompt_cache_key` | string | ❌ | Prompt caching key. |
+| `prompt_cache_retention` | string | ❌ | Cache retention duration. |
+| `service_tier` | string | ❌ | Service tier preference. |
+| `fallbacks` | array | ❌ | Bifrost fallback model list. |
+
+**Endpoint**: `POST /v1/responses/compact`
 
 ---
 

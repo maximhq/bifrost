@@ -29,7 +29,14 @@ export default function ParameterFieldView(props: Props) {
 		switch (field.type) {
 			case ParameterType.TEXT:
 				return (
-					<TextFieldView field={field} disabled={props.disabled} config={config} onChange={props.onChange} onClear={onClear} className={props.className} />
+					<TextFieldView
+						field={field}
+						disabled={props.disabled}
+						config={config}
+						onChange={props.onChange}
+						onClear={onClear}
+						className={props.className}
+					/>
 				);
 			case ParameterType.ARRAY:
 				return (
@@ -58,7 +65,15 @@ export default function ParameterFieldView(props: Props) {
 				);
 			case ParameterType.BOOLEAN:
 				return (
-					<BooleanFieldView field={field} disabled={props.disabled} config={config} onChange={props.onChange} onClear={onClear} className={props.className} forceHideFields={props.forceHideFields} />
+					<BooleanFieldView
+						field={field}
+						disabled={props.disabled}
+						config={config}
+						onChange={props.onChange}
+						onClear={onClear}
+						className={props.className}
+						forceHideFields={props.forceHideFields}
+					/>
 				);
 			case ParameterType.SELECT:
 				return (
@@ -74,7 +89,14 @@ export default function ParameterFieldView(props: Props) {
 				);
 			case ParameterType.JSON:
 				return (
-					<JSONFieldView field={field} parentField={parentField} config={config} onChange={props.onChange} onClear={onClear} disabled={props.disabled} />
+					<JSONFieldView
+						field={field}
+						parentField={parentField}
+						config={config}
+						onChange={props.onChange}
+						onClear={onClear}
+						disabled={props.disabled}
+					/>
 				);
 		}
 	};

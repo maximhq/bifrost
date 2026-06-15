@@ -84,6 +84,8 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 		return nil, fmt.Errorf("bifrost request or input is nil")
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the instance with prompt
 	instance := &GeminiVideoGenerationInstance{
 		Prompt: bifrostReq.Input.Prompt,
@@ -216,8 +218,10 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 
 // ToBifrostVideoGenerationResponse converts Gemini operation response to Bifrost format
 func ToBifrostVideoGenerationResponse(operation *GenerateVideosOperation, model string) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	model = NormalizeModelName(model)
+
 	if operation == nil {
-		return nil, providerUtils.NewBifrostOperationError("operation is nil", nil, schemas.Gemini)
+		return nil, providerUtils.NewBifrostOperationError("operation is nil", nil)
 	}
 
 	response := &schemas.BifrostVideoGenerationResponse{
@@ -391,7 +395,7 @@ func (request *GeminiVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 	// Use the first instance for the main input
 	instance := request.Instances[0]
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	bifrostReq := &schemas.BifrostVideoGenerationRequest{
 		Provider: provider,

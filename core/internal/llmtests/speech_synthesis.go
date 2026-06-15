@@ -239,8 +239,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				t.Fatalf("HD audio data too small: got %d bytes, expected at least 5000", audioSize)
 			}
 
-			if speechResponse.ExtraFields.ModelRequested != testConfig.SpeechSynthesisModel {
-				t.Logf("⚠️ Expected HD model, got: %s", speechResponse.ExtraFields.ModelRequested)
+			if speechResponse.ExtraFields.OriginalModelRequested != testConfig.SpeechSynthesisModel {
+				t.Logf("⚠️ Expected HD model, got: %s", speechResponse.ExtraFields.OriginalModelRequested)
 			}
 
 			t.Logf("✅ HD speech synthesis successful: %d bytes generated", len(speechResponse.Audio))
@@ -344,8 +344,8 @@ func validateSpeechSynthesisSpecific(t *testing.T, response *schemas.BifrostSpee
 		t.Fatalf("Audio data too small: got %d bytes, expected at least %d", audioSize, expectMinBytes)
 	}
 
-	if expectedModel != "" && response.ExtraFields.ModelRequested != expectedModel {
-		t.Logf("⚠️ Expected model, got: %s", response.ExtraFields.ModelRequested)
+	if expectedModel != "" && response.ExtraFields.OriginalModelRequested != expectedModel {
+		t.Logf("⚠️ Expected model, got: %s", response.ExtraFields.OriginalModelRequested)
 	}
 
 	t.Logf("✅ Audio validation passed: %d bytes generated", audioSize)

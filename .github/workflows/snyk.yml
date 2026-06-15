@@ -3,8 +3,6 @@ name: Snyk checks
 on:
   push:
     branches: [main, master, "**/*"]
-  pull_request:
-    branches: ["**/*"]
   workflow_dispatch:
 
 permissions:
@@ -16,10 +14,29 @@ jobs:
     name: Snyk Open Source (deps)
     runs-on: ubuntu-latest
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            api.snyk.io:443
+            downloads.snyk.io:443
+            files.pythonhosted.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            proxy.golang.org:443
+            raw.githubusercontent.com:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            static.snyk.io:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -30,7 +47,7 @@ jobs:
           node-version: "25"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.11"
@@ -42,7 +59,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Setup Go workspace
         run: make setup-workspace
@@ -70,10 +87,29 @@ jobs:
     name: Snyk Code (SAST)
     runs-on: ubuntu-latest
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            api.snyk.io:443
+            deeproxy.snyk.io:443
+            downloads.snyk.io:443
+            files.pythonhosted.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            proxy.golang.org:443
+            raw.githubusercontent.com:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -84,7 +120,7 @@ jobs:
           node-version: "25"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.11"
@@ -96,7 +132,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Setup Go workspace
         run: make setup-workspace

@@ -87,10 +87,13 @@ Enable AI models to discover and execute external tools dynamically via the **Mo
     Autonomous tool execution with configurable auto-approval for trusted operations.
   </Card>
   <Card title="Code Mode" icon="code" href="/mcp/code-mode">
-    Let AI write Python to orchestrate multiple tools — 50% less tokens, 40% lower latency.
+    Let AI write Python to orchestrate multiple tools - 50% less tokens, 40% lower latency.
   </Card>
-  <Card title="OAuth Authentication" icon="shield" href="/mcp/oauth">
-    OAuth 2.0 authentication with automatic token refresh, PKCE, and dynamic client registration.
+  <Card title="MCP Authentication" icon="shield" href="/mcp/auth/overview">
+    Five auth types — None, Headers, OAuth 2.0, Per-User OAuth, Per-User Headers. Lazy auth for per-user.
+  </Card>
+  <Card title="Bifrost as an MCP Gateway" icon="server" href="/mcp/gateway">
+    Expose Bifrost itself as an MCP server so Claude Desktop, Cursor, and other MCP clients can use your configured tools.
   </Card>
   <Card title="Tool Hosting" icon="toolbox" href="/mcp/tool-hosting">
     Register custom tools directly in your application and expose them via MCP.
@@ -105,7 +108,7 @@ Advanced capabilities for teams running production AI systems at scale. Enterpri
 
 <CardGroup cols={2}>
   <Card title="Guardrails" icon="road-barrier" href="/enterprise/guardrails">
-    Content safety with AWS Bedrock Guardrails, Azure Content Safety, and Patronus AI for real-time protection.
+    Content safety with AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, and Patronus AI for real-time protection.
   </Card>
   <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
     Predictive scaling with real-time health monitoring, automatically optimizing traffic across providers.
@@ -119,12 +122,6 @@ Advanced capabilities for teams running production AI systems at scale. Enterpri
   <Card title="Role-Based Access Control" icon="user-shield" href="/enterprise/rbac">
     Fine-grained permissions with custom roles controlling access across all Bifrost resources.
   </Card>
-  <Card title="MCP with Federated Auth" icon="screwdriver-wrench" href="/enterprise/mcp-with-fa">
-    Transform existing enterprise APIs into MCP tools using federated authentication — no code required.
-  </Card>
-  <Card title="Vault Support" icon="vault" href="/enterprise/vault-support">
-    Secure key management with HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, and Azure Key Vault.
-  </Card>
   <Card title="In-VPC Deployments" icon="cloud" href="/enterprise/invpc-deployments">
     Deploy within your private cloud infrastructure with VPC isolation and enhanced security controls.
   </Card>
@@ -137,16 +134,13 @@ Advanced capabilities for teams running production AI systems at scale. Enterpri
   <Card title="Log Exports" icon="download" href="/enterprise/log-exports">
     Automated export of request logs and telemetry to storage systems and data lakes.
   </Card>
-  <Card title="Custom Plugin Development" icon="plug" href="/enterprise/custom-plugins">
-    Tailored plugin development for organization-specific AI workflows and business logic.
-  </Card>
 </CardGroup>
 
 ---
 
 ## SDK integrations
 
-Use Bifrost as a drop-in replacement for popular AI SDKs with zero code changes — just update the base URL.
+Use Bifrost as a drop-in replacement for popular AI SDKs with zero code changes - just update the base URL.
 
 <CardGroup cols={2}>
   <Card title="OpenAI SDK" icon="openai" href="/integrations/openai-sdk/overview">

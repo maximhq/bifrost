@@ -73,7 +73,13 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="p-8" onOpenAutoFocus={(e) => { e.preventDefault(); document.getElementById("name")?.focus(); }}>
+			<SheetContent
+				className="p-8"
+				onOpenAutoFocus={(e) => {
+					e.preventDefault();
+					document.getElementById("name")?.focus();
+				}}
+			>
 				<form onSubmit={handleSubmit(onSubmit)}>
 					<SheetHeader className="flex flex-col items-start">
 						<SheetTitle>{isEditing ? "Edit Folder" : "Create Folder"}</SheetTitle>

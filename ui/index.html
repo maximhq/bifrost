@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en" suppressHydrationWarning>
+	<head>
+		<meta charset="UTF-8" />
+		<link rel="icon" type="image/x-icon" href="/favicon.ico" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Bifrost</title>
+		<link rel="dns-prefetch" href="https://getbifrost.ai" />
+		<link rel="preconnect" href="https://getbifrost.ai" />
+	</head>
+
+	<body class="font-sans antialiased">
+		<div id=root><script>!function(){try{var e=localStorage.getItem("theme"),e="dark"===e||"light"!==e&&matchMedia("(prefers-color-scheme:dark)").matches;document.getElementById("root").classList.toggle("shell-dark",e)}catch(t){try{document.getElementById("root").classList.toggle("shell-dark",matchMedia("(prefers-color-scheme:dark)").matches)}catch(t){}}}()</script><style>*{box-sizing:border-box;margin:0;padding:0;border:0 solid}#bifrost-shell{display:flex;height:100vh;background:#f4f4f5;color:#71717a;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif}.shell-dark #bifrost-shell{background:#1a1a1e;color:#a1a1aa}#bifrost-shell .sidebar{width:240px;border-right:1px solid rgba(0,0,0,.08);padding:16px;display:flex;flex-direction:column;gap:24px}.shell-dark #bifrost-shell .sidebar{border-color:rgba(255,255,255,.1)}#bifrost-shell .logo{height:24px;opacity:.8;width:max-content}#bifrost-shell .logo-dark{display:none}.shell-dark #bifrost-shell .logo-light{display:none}.shell-dark #bifrost-shell .logo-dark{display:inline}#bifrost-shell .nav-item{height:12px;border-radius:6px;background:currentColor;opacity:.08}#bifrost-shell .main{flex:1;padding:32px;display:flex;flex-direction:column;gap:20px}#bifrost-shell .bar{border-radius:6px;background:currentColor;opacity:.06}@keyframes shell-fade{from{opacity:0}to{opacity:1}}#bifrost-shell{animation:shell-fade .2s ease-out}</style><div id=bifrost-shell aria-hidden=true><div class=sidebar><img alt="" class="logo logo-light" src=/bifrost-logo.webp> <img alt="" class="logo logo-dark" src=/bifrost-logo-dark.webp><div style=display:flex;flex-direction:column;gap:10px><div class=nav-item style=width:70%></div><div class=nav-item style=width:55%></div><div class=nav-item style=width:80%></div><div class=nav-item style=width:45%></div><div class=nav-item style=width:65%></div></div></div><div class=main><div class=bar style=height:32px;width:240px></div><div class=bar style=height:1px;width:100%></div><div style=display:flex;gap:16px><div class=bar style=height:80px;flex:1></div><div class=bar style=height:80px;flex:1></div><div class=bar style=height:80px;flex:1></div></div><div class=bar style=height:200px;width:100%></div></div></div></div>
+		<script type="module" src="/app/main.tsx"></script>
+	</body>
+</html>

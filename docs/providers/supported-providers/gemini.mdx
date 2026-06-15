@@ -33,6 +33,67 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 
 ---
 
+## Setup & Configuration
+
+Configure Gemini as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Gemini provider dashboard](../../media/provider-dashboard-gemini.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Google Gemini** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Google Gemini**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.GEMINI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "gemini": {
+      "keys": [
+        {
+          "name": "gemini-key-1",
+          "value": "env.GEMINI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Gemini:
+    return []schemas.Key{{
+        Name:   "gemini-key-1",
+        Value:  *schemas.NewEnvVar("env.GEMINI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Gemini uses the `x-goog-api-key` header for standard endpoints. Bifrost automatically selects query-parameter authentication where Gemini requires it, such as Imagen and custom endpoint flows.
+
+---
+
 ## Authentication
 
 Gemini supports API key authentication in addition to OAuth2 Bearer token authentication. The implementation conditionally uses the appropriate method based on the endpoint type.
@@ -781,7 +842,7 @@ Requests use **JSON body (`application/json`)**.
 | `reference_images` | Style/asset reference image objects |
 | `lastFrame` | Last frame image object for interpolation |
 
-**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) — `id`, `status`, `videos[]`
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) - `id`, `status`, `videos[]`
 
 If Gemini filters content for safety, `status` is `failed` and `content_filter` describes the reason.
 
@@ -865,4 +926,3 @@ Bifrost supports the following content modalities through Gemini:
 **Impact**: Structure differs from OpenAI's system message approach
 **Code**: `responses.go:34-46`
 </Accordion>
-

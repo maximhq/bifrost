@@ -125,12 +125,14 @@ All 18 top-level properties from the [Bifrost config schema](../../../transports
 | `config_store`       | `config_store`       | Config storage (SQLite/Postgres)               |
 | `logs_store`         | `logs_store`         | Logging storage (SQLite/Postgres)              |
 | `cluster_config`     | `cluster_config`     | Cluster mode (peers, gossip, discovery)        |
-| `saml_config`        | `saml_config`        | SAML/SSO (Okta, Entra)                         |
+| `scim_config`        | `scim_config`        | SCIM/SSO (Okta, Entra)                         |
 | `load_balancer_config` | `load_balancer_config` | Intelligent load balancer               |
 | `guardrails_config`  | `guardrails_config`  | Guardrails (rules, providers)                  |
 | `plugins`            | `plugins`            | Plugin configuration array                     |
 | `audit_logs`         | `audit_logs`         | Audit logging (disabled, hmac_key)             |
 | `websocket`          | `websocket`          | WebSocket gateway tuning                       |
+
+For `scim_config` with `provider = "okta"`, set `config.issuerUrl`, `config.clientId`, `config.clientSecret`, and `config.apiToken`.
 
 ## Outputs
 

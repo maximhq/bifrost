@@ -1,0 +1,194 @@
+---
+title: "MCP Sessions"
+sidebarTitle: "Sessions"
+description: "Inspect, re-authenticate, edit, and revoke per-user MCP credentials — both OAuth tokens and submitted header values."
+icon: "table"
+---
+
+## Overview
+
+<Info>The MCP Sessions UI is available in **Bifrost v1.5.0-prerelease2 and above** (initial release), with per-user-headers support added in **v1.5.4**.</Info>
+
+The **MCP Sessions** page is scoped to **per-user MCP authentications** — both **per-user OAuth tokens** and **per-user submitted headers**. Server-level [`headers`](./auth/headers) and [`oauth`](./auth/oauth) clients don't surface here; their credentials live on the MCP client config itself, not as per-caller rows.
+
+Each row represents one of:
+
+- A **completed credential** — OAuth token or stored header values, keyed to a specific identity (VK, signed-in user, or session ID)
+- A **pending submission flow** — a consent / submission link the user hasn't yet completed
+
+The table is **scoped to the caller's identity**: a signed-in admin sees rows visible under their VK / user ID; a caller authenticating only via `x-bf-vk` sees rows for that VK; etc.
+
+<Frame>
+  <img src="/media/ui-mcp-sessions-table.png" alt="MCP Sessions table with one row of each type and status" />
+</Frame>
+
+---
+
+## Columns
+
+| Column           | Notes                                                                                                |
+| ---------------- | ---------------------------------------------------------------------------------------------------- |
+| **MCP Client**   | Server name; falls back to client ID if the server was renamed and not yet refreshed                |
+| **Type**         | `OAuth` (token row), `Headers` (header credential row), or `Pending` (in-flight flow row)            |
+| **Bound to**    | Identity column: user (with name when available), VK, or session ID                                  |
+| **Status**       | One of the per-surface statuses below                                                                |
+| **Access token expiry** | When the OAuth access token expires. `—` for header rows (no concept of access-token expiry) |
+| **Created**     | When the credential or flow was first opened                                                         |
+| Action menu      | Re-authenticate, Edit values, Complete authentication, Revoke — see [Actions](#actions)             |
+
+---
+
+## Statuses
+
+### Per-user OAuth (Type = `OAuth`)
+
+| State          | Badge          | Meaning                                                                                                                  | What unblocks it |
+| -------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------- |
+| `active`       | Active         | Token is valid. Bifrost auto-refreshes via the refresh token at use time.                                                | — |
+| `needs_reauth` | Needs re-auth  | Upstream credential is dead — refresh failed, or the user revoked the app at the provider.                              | Click **Re-authenticate** and complete the upstream flow. |
+| `orphaned`     | Orphaned       | The identity lost access to this MCP (VK was removed from the MCP's allowlist, MCP turned off `AllowOnAllVirtualKeys`, etc.). Upstream token is still alive. | **Nothing** — automatic. If access is restored, the row flips back to `active` on the next reconcile. Re-auth would not help. |
+
+### Per-user Headers (Type = `Headers`)
+
+| State          | Badge        | Meaning                                                                                                                  | What unblocks it |
+| -------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ | ---------------- |
+| `active`       | Active       | Header values present. Bifrost attaches them on every call.                                                              | — |
+| `needs_update` | Needs update | The admin changed `per_user_header_keys` on the MCP client; the credential is missing one or more newly-required keys.  | Click **Edit values** and resubmit on the form. |
+| `orphaned`     | Orphaned     | Same as the OAuth equivalent — identity lost access to the MCP.                                                          | Automatic. Restore access (re-add VK assignment, toggle AllowOnAllVirtualKeys back on, etc.) and the row reactivates on next reconcile. |
+
+### Pending flow rows (Type = `Pending`)
+
+| State     | Badge   | Meaning |
+| --------- | ------- | ------- |
+| `pending` | Pending | An auth or submission URL was handed out but the user hasn't completed it yet. |
+
+Pending rows expire on their own after a short window (15 minutes); expired flow rows are deleted by Bifrost's sweep worker — they don't linger as failed rows.
+
+### Why `orphaned` and `needs_*` are different
+
+Both look like "broken — make the user re-auth", but the remediation is different:
+
+- **`needs_reauth` / `needs_update`** are caller-side problems. A fresh credential fixes them: re-authenticate for OAuth, resubmit for headers.
+- **`orphaned`** is an access-control problem. The credential itself is fine; what's missing is the identity's *right to use this MCP through Bifrost*. Running a fresh OAuth flow or resubmitting headers would either produce a duplicate credential or land back in the same orphan state on the next reconcile. The actual fix is admin-side: re-add the VK to the MCP's allowlist, turn `AllowOnAllVirtualKeys` back on, or restore the user's access profile.
+
+The UI hides the **Re-authenticate** / **Edit values** action on orphaned rows for exactly this reason.
+
+---
+
+## Actions
+
+The action menu adapts to the row's `kind` and `status`. Orphaned and needs_reauth rows are mutually exclusive with the action that wouldn't help — Bifrost doesn't surface no-op options.
+
+### Re-authenticate (OAuth)
+
+Available on `needs_reauth` OAuth token rows. Clicking it:
+
+1. Mints a fresh consent flow against the same MCP client and identity
+2. Redirects the browser to the upstream provider
+3. On callback, replaces the dead credential in place — same row ID, status flips to `active`
+
+The original identity (VK ID, user ID, or session ID) is preserved — re-auth doesn't let you re-bind to a different identity.
+
+### Edit values (Headers)
+
+Available on `active` and `needs_update` header credential rows. Clicking it:
+
+1. Mints a fresh submission flow against the same MCP client and identity
+2. Redirects the browser to the values form pre-populated with the names of currently-stored keys (values are never shown)
+3. On submit, Bifrost runs a one-time upstream verify, replaces the credential in place, and flips status to `active`
+
+### Complete authentication (Pending)
+
+Available on pending flow rows. Just sends the user back to the auth URL (OAuth consent or headers submission depending on the flow's kind) so they can finish what they started.
+
+### Revoke
+
+Available on credential rows and on stale pending flows. Hard-deletes the row.
+
+For pending OAuth flows, the corresponding flow row is removed first to close the race where an upstream callback could mint a brand-new token after revoke.
+
+<Note>
+Bifrost does **not** call the upstream provider's `/revoke` endpoint when you click Revoke. Per-user OAuth doesn't store a per-server revocation endpoint, so revocation is local to Bifrost only. If you want the upstream provider to invalidate the token too, revoke it from the provider's dashboard (GitHub Settings → Authorized OAuth Apps, etc.). Per-user-headers credentials never call an upstream revoke — the headers are just stored values.
+</Note>
+
+---
+
+## Automatic reconciliation when VK / MCP access changes
+
+Bifrost keeps per-user credentials in sync with the VK ↔ MCP allowlist automatically. When the effective allowlist for a credential's identity changes, every affected row flips status without anyone having to click anything:
+
+| Admin action                                                  | Effect on existing credentials                                                                    |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Toggle MCP `AllowOnAllVirtualKeys` **off**                    | Credentials for VKs without an explicit row flip to `orphaned`                                    |
+| Toggle MCP `AllowOnAllVirtualKeys` **on**                     | Orphaned rows whose only access path was this implicit grant flip back to `active`               |
+| Remove a VK from the MCP's `vk_configs`                       | (VK, MCP) credentials flip to `orphaned` (unless the VK also has implicit access)                |
+| Add a VK to the MCP's `vk_configs`                            | Orphaned (VK, MCP) credentials flip back to `active`                                              |
+| Remove an MCP from a VK's `mcp_configs`                       | (VK, MCP) credentials flip to `orphaned` (same join-table edit as the row above, viewed from the VK side) |
+| Delete a VK                                                   | All vk-keyed credentials for that VK are hard-deleted; the (former) owner's user-keyed credentials reconcile against their remaining VKs |
+| Delete a user                                                 | All user-keyed credentials for that user are hard-deleted (along with the user's VKs)            |
+| Delete an MCP client                                          | All credentials (and pending flows) for that MCP are hard-deleted across every identity         |
+
+The "effective allowlist" Bifrost uses is `explicit per-VK MCP configs ∪ MCPs with AllowOnAllVirtualKeys=true` — same predicate as the runtime tool-allowance check.
+
+Session-keyed credentials (rows where the identity is `x-bf-mcp-session-id`) are not subject to reconcile — they don't have an AP-model identity to evaluate. They are only deleted when their MCP client is deleted.
+
+---
+
+## What appears in the table
+
+The table is **scoped to the caller's identity**:
+
+- A signed-in admin sees rows visible under their VK / user ID — not every row in the system.
+- A user authenticated only via a `vk` header sees rows for that VK.
+- A caller asserting only `x-bf-mcp-session-id` sees rows for that session ID.
+
+This is the same identity scoping that gates which auth URL a caller can complete: for **user-mode** flows, only the bound SSO user can finish the flow (anyone else gets a `403`). VK-mode and session-mode flows treat the URL itself as the capability — see [Flow mode and access rules](./auth/overview#flow-mode-and-access-rules) for the per-mode behavior.
+
+When a credential and a pending flow exist for the same `(identity, MCP)` binding, only the credential row is shown. The flow row is suppressed to avoid duplicate-looking entries — it stays in the database until the user completes (and the row is consumed) or it expires.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="A tool call fails with `mcp_auth_required` even though the user just authenticated">
+
+Check the row status on the Sessions page:
+
+- **Active** but tool still failing → look at the access-token expiry. If it's past, Bifrost will refresh on the next call automatically; if the refresh itself is failing, the row flips to `needs_reauth` after a couple of retries.
+- **Orphaned** → the caller's identity has lost access to this MCP client. Restore the VK assignment / toggle `AllowOnAllVirtualKeys` back on / fix the access profile; the row reactivates on next reconcile.
+- **Needs re-auth** → click **Re-authenticate** and complete the upstream flow.
+- **Needs update** (header rows) → click **Edit values** and resubmit on the form.
+</Accordion>
+
+<Accordion title="`This authentication link is bound to a different user.`">
+
+You're trying to complete a **user-mode** flow that was minted for another signed-in user. The SSO identity that triggered the original `mcp_auth_required` is the only one Bifrost will accept on the auth page — forwarding the URL to a colleague doesn't work. Ask that user to open the link in their own browser, or trigger a fresh request yourself so a new flow is minted under your identity.
+
+VK-mode and session-mode flows don't surface this error — they treat the URL itself as the capability. See [Flow mode and access rules](./auth/overview#flow-mode-and-access-rules).
+</Accordion>
+
+<Accordion title="`This authentication flow has expired or been completed`">
+
+Pending flows have a 15-minute TTL. If the user took too long, the row is gone — trigger the action again to mint a fresh flow.
+</Accordion>
+
+<Accordion title="A re-auth attempt on an orphaned row does nothing useful">
+
+That's by design. The Re-authenticate / Edit values action is hidden on orphaned rows. If you got there via a stale URL, the new credential would still be orphaned because the access constraint is admin-side. Restore access (re-assign the VK, toggle `AllowOnAllVirtualKeys` back on, fix the access profile) and the row reactivates automatically.
+</Accordion>
+
+<Accordion title="A credential I revoked came back on the next call">
+
+You probably revoked the credential row while a pending flow was still in flight. The flow completed against the same `(identity, MCP)` binding and minted a fresh credential. Revoke now drops pending flows first to close this race; if you're still seeing it, also delete any **Pending** rows for the same MCP / identity from the table.
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Related
+
+- [Per-User OAuth](./auth/per-user-oauth) — how OAuth tokens get into this table
+- [Per-User Headers](./auth/per-user-headers) — how header credentials get into this table
+- [Server-level OAuth](./auth/oauth) — admin-side, not surfaced here
+- [Tool Filtering](./filtering) — control which per-user tools a VK can call

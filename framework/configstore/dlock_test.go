@@ -90,10 +90,13 @@ func setupLockTestStore(t *testing.T) *RDBConfigStore {
 	err = db.AutoMigrate(&tables.TableDistributedLock{})
 	require.NoError(t, err, "Failed to migrate test database")
 
-	return &RDBConfigStore{
-		db:     db,
-		logger: newMockLogger(),
+	s := &RDBConfigStore{logger: newMockLogger()}
+	s.db.Store(db)
+	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, s.DB())
 	}
+	s.refreshPoolFn = func(ctx context.Context) error { return nil }
+	return s
 }
 
 // =============================================================================
@@ -241,7 +244,7 @@ func TestUpdateLockExpiry_ExpiredLock(t *testing.T) {
 		ExpiresAt: time.Now().UTC().Add(-1 * time.Second),
 	}
 	// Directly insert the expired lock
-	err := store.db.Create(lock).Error
+	err := store.DB().Create(lock).Error
 	require.NoError(t, err)
 
 	// Try to extend expired lock
@@ -327,11 +330,11 @@ func TestCleanupExpiredLocks_Success(t *testing.T) {
 	}
 
 	for _, l := range expiredLocks {
-		err := store.db.Create(&l).Error
+		err := store.DB().Create(&l).Error
 		require.NoError(t, err)
 	}
 	for _, l := range validLocks {
-		err := store.db.Create(&l).Error
+		err := store.DB().Create(&l).Error
 		require.NoError(t, err)
 	}
 
@@ -383,7 +386,7 @@ func TestCleanupExpiredLockByKey_Success(t *testing.T) {
 		HolderID:  "holder-1",
 		ExpiresAt: time.Now().UTC().Add(-1 * time.Minute),
 	}
-	err := store.db.Create(&lock).Error
+	err := store.DB().Create(&lock).Error
 	require.NoError(t, err)
 
 	// Cleanup specific expired lock
@@ -505,7 +508,7 @@ func TestDistributedLockManager_CleanupExpiredLocks(t *testing.T) {
 		HolderID:  "holder-1",
 		ExpiresAt: time.Now().UTC().Add(-1 * time.Minute),
 	}
-	err := store.db.Create(&lock).Error
+	err := store.DB().Create(&lock).Error
 	require.NoError(t, err)
 
 	count, err := manager.CleanupExpiredLocks(ctx)
@@ -565,7 +568,7 @@ func TestDistributedLock_TryLock_CleansUpExpired(t *testing.T) {
 		HolderID:  "old-holder",
 		ExpiresAt: time.Now().UTC().Add(-1 * time.Minute),
 	}
-	err := store.db.Create(&expiredLock).Error
+	err := store.DB().Create(&expiredLock).Error
 	require.NoError(t, err)
 
 	// New lock should be able to acquire after cleanup
@@ -772,7 +775,7 @@ func TestDistributedLock_Extend_StolenLock(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate lock being stolen by another process
-	err = store.db.Model(&tables.TableDistributedLock{}).
+	err = store.DB().Model(&tables.TableDistributedLock{}).
 		Where("lock_key = ?", "test-lock").
 		Update("holder_id", "another-holder").Error
 	require.NoError(t, err)
@@ -844,7 +847,7 @@ func TestDistributedLock_IsHeld_StolenByAnotherHolder(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate lock being stolen by another process
-	err = store.db.Model(&tables.TableDistributedLock{}).
+	err = store.DB().Model(&tables.TableDistributedLock{}).
 		Where("lock_key = ?", "test-lock").
 		Update("holder_id", "another-holder").Error
 	require.NoError(t, err)
@@ -866,7 +869,7 @@ func TestDistributedLock_IsHeld_DeletedFromDB(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete lock directly from database
-	err = store.db.Where("lock_key = ?", "test-lock").Delete(&tables.TableDistributedLock{}).Error
+	err = store.DB().Where("lock_key = ?", "test-lock").Delete(&tables.TableDistributedLock{}).Error
 	require.NoError(t, err)
 
 	held, err := lock.IsHeld(ctx)

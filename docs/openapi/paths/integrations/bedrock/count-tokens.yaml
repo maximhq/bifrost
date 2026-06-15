@@ -1,0 +1,65 @@
+# AWS Bedrock - Count Tokens Endpoint
+
+count-tokens:
+  post:
+    operationId: bedrockCountTokens
+    summary: Count tokens (Bedrock format)
+    description: |
+      Counts tokens for a Converse-style request using AWS Bedrock format.
+      The request body must include `input.converse` with a complete Converse
+      payload; only Converse-shaped input is supported.
+    tags:
+    - Bedrock Integration
+    parameters:
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Bedrock model identifier (e.g. `anthropic.claude-3-5-sonnet-20240620-v1:0`).
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - input
+            properties:
+              input:
+                type: object
+                required:
+                - converse
+                properties:
+                  converse:
+                    description: Converse-shaped request used to compute the token count.
+                    type: object
+                    additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inputTokens:
+                  type: integer
+                  description: Number of input tokens that would be billed for this request.
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

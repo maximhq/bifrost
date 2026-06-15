@@ -81,8 +81,10 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 1. Update rate limit usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
-	if update.Provider != "" && update.Model != "" {
+	// Guard: only update when Model is set (MCP paths may not have it); provider is optional —
+	// the underlying function handles empty provider by skipping provider-level and still
+	// updating any matching global model-only configs.
+	if update.Model != "" {
 		if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
 		}
@@ -90,8 +92,10 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 2. Update budget usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
-	if update.Provider != "" && update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
+	// Guard: only update when Model is set (MCP paths may not have it); provider is optional —
+	// the underlying function handles empty provider by skipping provider-level and still
+	// updating any matching global model-only configs.
+	if update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
 		if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
 			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
 		}
@@ -109,6 +113,19 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 				t.logger.Error("failed to update user budget usage for user %s: %v", update.UserID, err)
 			}
 		}
+		// Update per-user-scoped model config rate limits and budgets. Mirrors the
+		// VK-scoped model block below. Gated on model being present — MCP tool
+		// execution paths (no model) are excluded naturally by this guard.
+		if update.Model != "" {
+			if err := t.store.UpdateScopedModelRateLimitUsageInMemory(ctx, configstoreTables.ModelConfigScopeUser, update.UserID, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+				t.logger.Error("failed to update scoped model rate limit usage for user %s: %v", update.UserID, err)
+			}
+			if shouldUpdateBudget && update.Cost > 0 {
+				if err := t.store.UpdateScopedModelBudgetUsageInMemory(ctx, configstoreTables.ModelConfigScopeUser, update.UserID, update.Model, update.Provider, update.Cost); err != nil {
+					t.logger.Error("failed to update scoped model budget usage for user %s: %v", update.UserID, err)
+				}
+			}
+		}
 	}
 
 	// 4. Now handle virtual key-level updates (if virtual key exists)
@@ -118,10 +135,23 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	}
 
 	// Get virtual key
-	vk, exists := t.store.GetVirtualKey(update.VirtualKey)
+	vk, exists := t.store.GetVirtualKey(ctx, update.VirtualKey)
 	if !exists {
 		t.logger.Debug(fmt.Sprintf("Virtual key not found: %s", update.VirtualKey))
 		return
+	}
+
+	// Update per-VK-scoped model config usage (counterpart to the global model updates above).
+	// Without this, per-VK model limits never increment and so never trip.
+	if update.Model != "" {
+		if err := t.store.UpdateScopedModelRateLimitUsageInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			t.logger.Error("failed to update scoped model rate limit usage for VK %s: %v", vk.ID, err)
+		}
+		if shouldUpdateBudget && update.Cost > 0 {
+			if err := t.store.UpdateScopedModelBudgetUsageInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, update.Model, update.Provider, update.Cost); err != nil {
+				t.logger.Error("failed to update scoped model budget usage for VK %s: %v", vk.ID, err)
+			}
+		}
 	}
 
 	// Update rate limit usage (VK-level, provider-config-level, team-level, customer-level) if applicable
@@ -206,14 +236,26 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 	var vksWithoutRateLimits int
 
 	// ==== RESET EXPIRED RATE LIMITS ====
-	// Check ALL virtual keys (both active and inactive) for expired rate limits
-	allVKs, err := t.configStore.GetVirtualKeys(ctx)
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("failed to load virtual keys for reset: %s", err.Error()))
-	} else {
-		t.logger.Debug(fmt.Sprintf("startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
+	// Check ALL virtual keys (both active and inactive) for expired rate limits.
+	// Reuse the already-loaded in-memory governance data instead of issuing a
+	// second full database load of every virtual key. The store is populated at
+	// startup (loadFromDatabase) before this runs, so re-querying all VKs from
+	// the DB here was redundant and, at large key counts, added seconds of
+	// startup latency for no additional information.
+	vkLoadStart := time.Now()
+	var allVKs []configstoreTables.TableVirtualKey
+	if govData := t.store.GetGovernanceData(ctx); govData != nil {
+		allVKs = make([]configstoreTables.TableVirtualKey, 0, len(govData.VirtualKeys))
+		for _, vk := range govData.VirtualKeys {
+			if vk != nil {
+				allVKs = append(allVKs, *vk)
+			}
+		}
 	}
+	t.logger.Debug(fmt.Sprintf("startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
+	t.logger.Info("[startup-timing] PerformStartupResets read %d keys from in-memory store in %v", len(allVKs), time.Since(vkLoadStart))
 
+	scanStart := time.Now()
 	for i := range allVKs {
 		vk := &allVKs[i] // Get pointer to VK for modifications
 		if vk.RateLimit == nil {
@@ -223,7 +265,10 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 		vksWithRateLimits++
 
-		rateLimit := vk.RateLimit
+		// Operate on a detached copy so the persisted reset never mutates the
+		// live in-memory rate limit (which background workers may read).
+		rlCopy := *vk.RateLimit
+		rateLimit := &rlCopy
 		rateLimitUpdated := false
 
 		// Check token limits
@@ -258,6 +303,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 			resetRateLimits = append(resetRateLimits, rateLimit)
 		}
 	}
+	t.logger.Info("[startup-timing] PerformStartupResets VK scan loop took %v (%d with rate limits, %d without, %d to reset)", time.Since(scanStart), vksWithRateLimits, vksWithoutRateLimits, len(resetRateLimits))
 
 	// DB reset is also handled by this function
 	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
@@ -267,6 +313,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 	// ==== PERSIST RESETS TO DATABASE ====
 	// Use selective updates to avoid overwriting config fields (max_limit, reset_duration)
+	dbWriteStart := time.Now()
 	if t.configStore != nil && len(resetRateLimits) > 0 {
 		if err := t.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 			for _, rateLimit := range resetRateLimits {
@@ -294,6 +341,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 			errs = append(errs, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
 		}
 	}
+	t.logger.Info("[startup-timing] PerformStartupResets DB persist of %d rate-limit resets took %v", len(resetRateLimits), time.Since(dbWriteStart))
 	if len(errs) > 0 {
 		t.logger.Error("startup reset encountered %d errors: %v", len(errs), errs)
 		return fmt.Errorf("startup reset completed with %d errors", len(errs))
@@ -304,6 +352,15 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 // Cleanup stops all background workers and flushes pending operations
 func (t *UsageTracker) Cleanup() error {
+	// Final flush of in-memory deltas to DB before shutdown. Without this,
+	// any deltas accumulated since the last `workerInterval` tick are lost.
+	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
+		t.logger.Error("final budget dump on shutdown failed: %v", err)
+	}
+	if err := t.store.DumpRateLimits(context.Background(), nil, nil); err != nil {
+		t.logger.Error("final rate-limit dump on shutdown failed: %v", err)
+	}
+
 	// Stop background workers
 	if t.trackerCancel != nil {
 		t.trackerCancel()

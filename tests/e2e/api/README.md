@@ -26,6 +26,14 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 | `run-newman-composite-integration.sh` | Script to run composite integration tests |
 | `run-all-integration-tests.sh` | Master script to run all integration test suites |
 
+### Model Catalog Wiring Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-model-catalog-wiring.postman_collection.json` | Generated collection asserting that management-API mutations (add/update/delete provider and key, toggle key, alias) propagate into the model catalog read endpoints. **Generated — do not hand-edit.** |
+| `runners/build-model-catalog-wiring-collection.py` | Generator for the collection above. Holds the scenario spec (the source of truth) and emits the JSON. |
+| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection. |
+
 ### Shared Resources
 
 | Path | Description |
@@ -80,6 +88,35 @@ From this directory (`tests/e2e/api`):
 ./runners/run-newman-inference-tests.sh --html --verbose
 ```
 
+### Routing Harness Ledger
+
+Harness days are journaled in `routing/ledger-YYYY-MM-DD.md` (gitignored, one
+file per day the routing/catalog suites run). Each ledger holds: an
+open-divergences snapshot, per-suite scenario tables (setup / expected /
+actual, with ✅ / ⚠️ recalibrated / 🐞 bug-found markers), the day's run
+results, and day notes. Append to the current day's file during a session;
+never rewrite past days.
+
+### API Management Extensions
+
+The API management runner can merge additional Postman folders maintained
+outside this repo:
+
+```bash
+./runners/run-newman-api-tests.sh --extra-collection /path/to/extra.postman_collection.json
+```
+
+You can also pass extensions via environment variable:
+
+```bash
+BIFROST_API_EXTRA_COLLECTION=/path/to/extra.postman_collection.json \
+  ./runners/run-newman-api-tests.sh
+```
+
+The default run loads no extra collections. Downstream repos pass their own
+collections at run time, so the shared management requests live here while
+assertions specific to those repos stay with them.
+
 **Retry logic (CI)**
 When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
 
@@ -102,6 +139,61 @@ When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the 
 ./run-newman-openai-integration.sh --html --verbose
 ./run-newman-openai-integration.sh --env azure   # Test Azure-specific paths
 ```
+
+### Model Catalog Wiring Tests
+
+These tests cover the path **HTTP mutation → config write → server-side catalog
+hook → read endpoint**: the wiring that keeps the model catalog (`/api/models`,
+`/api/models/details`) in sync with provider and key changes made through the
+management API. Each scenario stands up an isolated custom provider backed by a
+real upstream (OpenAI), drives a sequence of mutations, and asserts the catalog
+reflects each one.
+
+What it covers (one scenario per contract):
+
+- **Add provider + key** — a gated key surfaces its allowed model.
+- **Update key model set** — changing a key's allow-list re-gates the catalog.
+- **Disable / re-enable key** — a disabled key drops its models; re-enabling restores them.
+- **Delete one of two keys** — only the deleted key's models drop; the sibling's survive.
+- **Delete provider** — the provider and its models disappear from the catalog.
+- **Alias resolution** — an inference call via a key alias routes to the underlying model.
+
+Run locally (from this directory):
+
+```bash
+./runners/individual/run-newman-model-catalog-wiring-tests.sh
+```
+
+Requirements:
+
+- Bifrost running at `{{base_url}}` (default `http://localhost:8080`), ideally
+  against a clean config store so no pre-existing `catwiring-*` providers linger.
+- `openai_api_key` available — either in the seed env file (`generated/seed.env`
+  or `$BIFROST_E2E_SEED_ENV`) or exported in the shell. Scenarios whose required
+  credentials are missing skip themselves rather than fail.
+
+Notes:
+
+- Every resource is named `catwiring-openai-<scenario>-<run-id>`, where the
+  run-id is built once per run from `e2e_seed_prefix` plus a timestamp nonce, so
+  parallel runs never collide and a failed run leaves no blocking state.
+- The catalog's live-model cache is populated asynchronously by the key hooks, so
+  every post-mutation read polls with exponential backoff (up to 8 attempts)
+  instead of asserting immediately.
+- Each scenario has a cleanup folder that deletes its provider (cascading to its
+  keys); it runs even when a mid-scenario step fails, and accepts 200/204/404.
+- To change or extend the scenarios, edit
+  `runners/build-model-catalog-wiring-collection.py` and re-run it, then commit
+  both the script and the regenerated collection:
+
+  ```bash
+  python3 runners/build-model-catalog-wiring-collection.py
+  ```
+
+Required seed-env vars: `openai_api_key`, plus `e2e_seed_prefix` for
+run-id namespacing. The runner also forwards the full per-provider credential set
+(`anthropic_api_key`, `azure_*`, `bedrock_*`, `vertex_*`, etc.) so per-provider
+expansion needs no runner change.
 
 ### Test Success Criteria
 

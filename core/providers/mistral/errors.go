@@ -19,7 +19,7 @@ type MistralErrorResponse struct {
 }
 
 // ParseMistralError parses Mistral-specific error responses.
-func ParseMistralError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
+func ParseMistralError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp MistralErrorResponse
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if bifrostErr == nil {
@@ -66,10 +66,6 @@ func ParseMistralError(resp *fasthttp.Response, requestType schemas.RequestType,
 			bifrostErr.Error.Message = "provider API error"
 		}
 	}
-
-	bifrostErr.ExtraFields.Provider = providerName
-	bifrostErr.ExtraFields.ModelRequested = model
-	bifrostErr.ExtraFields.RequestType = requestType
 
 	return bifrostErr
 }

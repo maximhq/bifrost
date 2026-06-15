@@ -1,0 +1,14 @@
+---
+title: "v2.1.16"
+description: "Helm v2.1.16 changelog - 2026-05-12"
+---
+
+<Update label="Bifrost Helm" description="v2.1.16">
+
+## Changelog
+
+- Widened `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` in `values.schema.json` from `integer` to `["integer", "string"]` so a Go duration string like `"30s"` or `"2m"` is accepted alongside the legacy bare integer. Updated the description to clarify "integer = seconds, string = Go duration" and recommend the string form, and changed the default from `30` to `"30s"`.
+- Updated the `values.yaml` example to use `toolExecutionTimeout: "30s"` instead of `toolExecutionTimeout: 30`, matching the new recommended form.
+- Paired with the upstream runtime fix (PR #3432) that reinterprets bare integers on this field as seconds rather than nanoseconds, and includes `mcp.tool_manager_config` in the client config hash so file-level changes survive the hash-based reconciliation pipeline on restart.
+
+</Update>

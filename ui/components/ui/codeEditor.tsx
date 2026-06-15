@@ -1,17 +1,17 @@
-"use client";
-
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 import { editor } from "monaco-editor";
 import { useTheme } from "next-themes";
-import dynamic from "next/dynamic";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
-// Dynamically import Monaco Editor with SSR disabled
-const MonacoEditor = dynamic(() => import("@monaco-editor/react").then((mod) => mod.default), {
-	ssr: false,
-	loading: () => <Loader2 className="h-4 w-4 animate-spin p-4" />,
-});
+// Lazy-loaded Monaco Editor (SSR isn't a concern in SPA mode).
+const MonacoEditorLazy = lazy(() => import("@monaco-editor/react").then((mod) => ({ default: mod.default })));
+
+const MonacoEditor = (props: React.ComponentProps<typeof MonacoEditorLazy>) => (
+	<Suspense fallback={<Loader2 className="h-4 w-4 animate-spin p-4" />}>
+		<MonacoEditorLazy {...props} />
+	</Suspense>
+);
 
 export type CompletionItem = {
 	label: string;
@@ -81,7 +81,7 @@ export interface CustomLanguage {
 }
 
 export function CodeEditor(props: CodeEditorProps) {
-	const { className, lang, code, onChange, height, minHeight } = props;
+	const { className, lang, code, onChange } = props;
 	const editorContainer = useRef<HTMLDivElement>(null);
 	const [isClient, setIsClient] = useState(false);
 	const [editorHeight, setEditorHeight] = useState<number | string>(props.height || props.minHeight || 200);
@@ -101,7 +101,7 @@ export function CodeEditor(props: CodeEditorProps) {
 	};
 
 	// Handle editor mount
-	const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor, monaco: any) => {
+	const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor) => {
 		if (props.autoFocus) {
 			editor.focus();
 		}
@@ -150,9 +150,9 @@ export function CodeEditor(props: CodeEditorProps) {
 		padding: { top: 2, bottom: 2 },
 		wordWrap: props.wrap ? ("on" as const) : ("off" as const),
 		folding: isFoldingEnabled,
-		glyphMargin: false,
+		glyphMargin: isFoldingEnabled,
 		lineNumbersMinChars: props.options?.lineNumbersMinChars ?? 4,
-		lineDecorationsWidth: 8,
+		lineDecorationsWidth: isFoldingEnabled ? 18 : 8,
 		showFoldingControls: isFoldingEnabled ? ("always" as const) : ("mouseover" as const),
 		overviewRulerLanes: props.options?.overviewRulerLanes ?? 0,
 		renderLineHighlight: "none" as const,

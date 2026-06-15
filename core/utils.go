@@ -11,20 +11,39 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// Define a set of retryable status codes
-var retryableStatusCodes = map[int]bool{
+// transientServerStatusCodes are upstream-side failures unrelated to the credential —
+// retried with the *same* key (a different credential gains nothing against a flaky
+// server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
+var transientServerStatusCodes = map[int]bool{
 	500: true, // Internal Server Error
 	502: true, // Bad Gateway
 	503: true, // Service Unavailable
 	504: true, // Gateway Timeout
-	429: true, // Too Many Requests
+}
+
+// perKeyFailureStatusCodes are failures bound to the specific key/account rather than
+// the request. On these, executeRequestWithRetries rotates to the next available key
+// (if any) instead of retrying the same key. Request-bound 4xx (400/404/422/...) are
+// intentionally excluded — rotating would just burn every key on the same bad request.
+//
+// Split further inside the retry loop:
+//   - 429 → transient per-key (rate limit) → tracked in usedKeyIDs, may be retried later
+//   - 401/402/403 → permanent per-key (auth/billing/permission) → tracked in deadKeyIDs,
+//     never retried within the same request.
+var perKeyFailureStatusCodes = map[int]bool{
+	401: true, // Unauthorized — bad / revoked API key
+	402: true, // Payment Required — billing issue on this key's account
+	403: true, // Forbidden — key lacks permission or is org-level blocked
+	429: true, // Too Many Requests — this key is rate-limited, another may have capacity
 }
 
 // Define rate limit error message patterns (case-insensitive)
@@ -86,19 +105,19 @@ func Ptr[T any](v T) *T {
 }
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
-// Some providers like Ollama, SGL, and vLLM are keyless and don't require API keys.
-func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) bool {
+func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 	// Keyless custom providers are not allowed for Bedrock.
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
-	return !IsKeylessProvider(providerKey)
+	return true
 }
 
-// canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
-// Some providers like Vertex and Bedrock have their credentials in additional key configs..
+// CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
+// Some providers like Vertex and Bedrock have their credentials in additional key configs.
+// Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
@@ -116,17 +135,62 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
-// validateRequest validates the given request.
-func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
+// validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
+func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
-		return newBifrostErrorFromMsg("provider is required")
+		return newBifrostErrorFromMsg("could not auto resolve a provider for the request, please specify a provider explicitly")
 	}
 	if isModelRequired(req.RequestType) && model == "" {
-		return newBifrostErrorFromMsg("model is required")
+		return newBifrostErrorFromMsg("could not auto resolve a model for the request, please specify a model explicitly")
+	}
+	return nil
+}
+
+// validateKey validates the given key.
+func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
+	// Validate the key for the provider
+	switch providerKey {
+	case schemas.Azure:
+		if key.AzureKeyConfig == nil {
+			return fmt.Errorf("azure_key_config is required")
+		}
+		if key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			return fmt.Errorf("azure_key_config.endpoint is required")
+		}
+	case schemas.Bedrock:
+		// BedrockKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.BedrockKeyConfig == nil {
+			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		}
+	case schemas.Vertex:
+		if key.VertexKeyConfig == nil {
+			return fmt.Errorf("vertex_key_config is required")
+		}
+	case schemas.VLLM:
+		if key.VLLMKeyConfig == nil {
+			return fmt.Errorf("vllm_key_config is required")
+		}
+		if key.VLLMKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("vllm_key_config.url is required")
+		}
+	case schemas.Ollama:
+		if key.OllamaKeyConfig == nil {
+			return fmt.Errorf("ollama_key_config is required")
+		}
+		if key.OllamaKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("ollama_key_config.url is required")
+		}
+	case schemas.SGL:
+		if key.SGLKeyConfig == nil {
+			return fmt.Errorf("sgl_key_config is required")
+		}
+		if key.SGLKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("sgl_key_config.url is required")
+		}
 	}
 	return nil
 }
@@ -148,6 +212,32 @@ func IsRateLimitErrorMessage(errorMessage string) bool {
 	}
 
 	return false
+}
+
+// routingErrorSummary produces a sanitized, audit-safe one-line summary of a
+// BifrostError for emission to the per-request routing engine log trail.
+// It deliberately omits the upstream provider message — which can echo back
+// API keys, tokens, or user input — and surfaces only the error type and HTTP
+// status code. Used by the core fallback orchestrator so the routing log
+// records *why* a fallback was triggered without leaking secrets into log
+// storage or the UI.
+func routingErrorSummary(e *schemas.BifrostError) string {
+	if e == nil {
+		return "unknown error"
+	}
+	parts := make([]string, 0, 2)
+	if e.Error != nil && e.Error.Type != nil && *e.Error.Type != "" {
+		parts = append(parts, *e.Error.Type)
+	} else if e.Type != nil && *e.Type != "" {
+		parts = append(parts, *e.Type)
+	}
+	if e.StatusCode != nil {
+		parts = append(parts, fmt.Sprintf("HTTP %d", *e.StatusCode))
+	}
+	if len(parts) == 0 {
+		return "request failed"
+	}
+	return strings.Join(parts, " ")
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -175,7 +265,7 @@ func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 
 // newBifrostCtxDoneError creates a BifrostError from a cancelled/expired context.
 // It distinguishes DeadlineExceeded (504 RequestTimedOut) from Canceled (499 RequestCancelled).
-func newBifrostCtxDoneError(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestType schemas.RequestType, stage string) *schemas.BifrostError {
+func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.BifrostError {
 	var statusCode int
 	var errorType string
 	var message string
@@ -198,11 +288,6 @@ func newBifrostCtxDoneError(ctx *schemas.BifrostContext, provider schemas.ModelP
 			Type:    &errorType,
 			Message: message,
 			Error:   ctx.Err(),
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType:    requestType,
-			Provider:       provider,
-			ModelRequested: model,
 		},
 	}
 }
@@ -230,6 +315,11 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
+	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -261,11 +351,6 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	return ok
 }
 
-// IsKeylessProvider reports whether providerKey is a keyless provider.
-func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Ollama || providerKey == schemas.SGL
-}
-
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.RealtimeRequest
@@ -291,6 +376,13 @@ func isBatchRequestType(reqType schemas.RequestType) bool {
 // isFileRequestType returns true if the given request type is a file API operation.
 func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
+}
+
+// isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.
+func isCachedContentRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.CachedContentCreateRequest || reqType == schemas.CachedContentListRequest ||
+		reqType == schemas.CachedContentRetrieveRequest || reqType == schemas.CachedContentUpdateRequest ||
+		reqType == schemas.CachedContentDeleteRequest
 }
 
 // isContainerRequestType returns true if the given request type is a container API operation.
@@ -336,16 +428,28 @@ func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
-// GetResponseFields extracts the request type, provider, and model from the result or error
-func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, model string) {
+// GetResponseFields extracts the request type, provider, original model, and resolved model from the result or error.
+func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, originalModel string, resolvedModel string) {
 	if result != nil {
 		extraFields := result.GetExtraFields()
-		return extraFields.RequestType, extraFields.Provider, extraFields.ModelRequested
+		return extraFields.RequestType, extraFields.Provider, extraFields.OriginalModelRequested, extraFields.ResolvedModelUsed
 	}
 	if err != nil {
-		return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+		return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.OriginalModelRequested, err.ExtraFields.ResolvedModelUsed
 	}
 	return
+}
+
+// GetResponseRoutingInfo extracts the RoutingInfo recorded on a completed
+// attempt — from the accumulated response, or the error when the attempt failed.
+func GetResponseRoutingInfo(result *schemas.BifrostResponse, err *schemas.BifrostError) schemas.RoutingInfo {
+	if result != nil {
+		return result.GetExtraFields().RoutingInfo
+	}
+	if err != nil {
+		return err.ExtraFields.RoutingInfo
+	}
+	return schemas.RoutingInfo{}
 }
 
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
@@ -362,43 +466,9 @@ func MarshalUnsafe(v any) string {
 	return strings.TrimSpace(buf.String())
 }
 
+// // [Deprecated] use err.GetErrorString() instead. Will be removed in a future release.
 func GetErrorMessage(err *schemas.BifrostError) string {
-	if err == nil {
-		return ""
-	}
-	if err.StatusCode != nil {
-		switch *err.StatusCode {
-		case 401:
-			return "unauthorized"
-		case 403:
-			return "forbidden"
-		case 404:
-			return "endpoint not found"
-		case 405:
-			return "method not allowed"
-		case 429:
-			return "rate limit exceeded"
-		case 500:
-			return "internal server error"
-		case 502:
-			return "bad gateway"
-		case 503:
-			return "service unavailable"
-		case 504:
-			return "gateway timeout"
-		default:
-			if err.Error != nil && err.Error.Message != "" {
-				return err.Error.Message
-			}
-			return fmt.Sprintf("HTTP %d error", *err.StatusCode)
-		}
-	} else if err.Error != nil && err.Error.Message != "" {
-		return err.Error.Message
-	} else if err.Type != nil {
-		return *err.Type
-	} else {
-		return "unknown error"
-	}
+	return err.GetErrorString()
 }
 
 // GetStringFromContext safely extracts a string value from context
@@ -443,8 +513,10 @@ func RedactSensitiveString(s string) string {
 	return s[:4] + "[REDACTED]" + s[len(s)-4:]
 }
 
-// ValidateExternalURL validates a URL for security concerns (SSRF protection)
-func ValidateExternalURL(urlStr string) error {
+// ValidateExternalURL validates a URL for security concerns (SSRF protection).
+// When allowPrivateNetwork is true, RFC 1918 private IPs are permitted (for k8s/LAN deployments).
+// Link-local addresses (169.254.x.x, fe80::) are always blocked regardless of allowPrivateNetwork.
+func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	if urlStr == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
@@ -462,66 +534,32 @@ func ValidateExternalURL(urlStr string) error {
 	if hostname == "" {
 		return fmt.Errorf("URL must have a hostname")
 	}
-	// Block localhost and loopback addresses
-	if isLocalhost(hostname) {
-		return fmt.Errorf("localhost and loopback addresses are not allowed")
-	}
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname: %w", err)
 	}
-	// Check if any resolved IP is private
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
+		if ip.IsLoopback() {
+			continue
+		}
+		// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified IP addresses are not allowed")
+		}
+		if network.IsLinkLocal(ip) {
+			return fmt.Errorf("link-local IP addresses are not allowed")
+		}
+		if !allowPrivateNetwork && network.IsPrivateIP(ip) {
 			return fmt.Errorf("private IP addresses are not allowed")
 		}
 	}
 	return nil
 }
 
-// isLocalhost checks if a hostname is localhost or a loopback address
-func isLocalhost(hostname string) bool {
-	return hostname == "localhost" ||
-		hostname == "127.0.0.1" ||
-		hostname == "::1" ||
-		hostname == "0.0.0.0" ||
-		hostname == "::"
-}
-
-// isPrivateIP checks if an IP address is in a private range
-func isPrivateIP(ip net.IP) bool {
-	// Private IPv4 ranges
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16", // Link-local
-		"127.0.0.0/8",    // Loopback
-	}
-	for _, cidr := range privateRanges {
-		_, subnet, _ := net.ParseCIDR(cidr)
-		if subnet.Contains(ip) {
-			return true
-		}
-	}
-	// Check for private IPv6
-	if ip.To4() == nil {
-		// Check for IPv6 loopback and link-local
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			return true
-		}
-		// Check for IPv6 unique local addresses (fc00::/7)
-		if len(ip) == 16 && (ip[0]&0xfe) == 0xfc {
-			return true
-		}
-	}
-	return false
-}
-
-// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
+// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name.
 func sanitizeSpanName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return schemas.SanitizePluginSpanName(name)
 }
 
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
@@ -543,4 +581,45 @@ func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model 
 		discriminator = "__modelless__"
 	}
 	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
+}
+
+// isPromptOptionalImageEditType returns true for edit task types that do not require a text prompt.
+// It normalises hyphenated variants (e.g. "erase-object") to underscore form before matching.
+func isPromptOptionalImageEditType(t *string) bool {
+	if t == nil {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(*t))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	return slices.Contains(
+		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale_fast"},
+		normalized,
+	)
+}
+
+// wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming
+// responses produced by a type-converted request are converted back to the
+// caller's original type before the post-hook runs.
+func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result != nil {
+			switch targetType {
+			case schemas.ChatCompletionRequest:
+				// text→chat: convert chat stream chunk back to text completion
+				if result.ChatResponse != nil {
+					if converted := result.ChatResponse.ToBifrostTextCompletionResponse(); converted != nil {
+						result = &schemas.BifrostResponse{TextCompletionResponse: converted}
+					}
+				}
+			case schemas.ResponsesRequest:
+				// chat→responses: convert responses stream chunk back to chat
+				if result.ResponsesStreamResponse != nil {
+					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+						result = &schemas.BifrostResponse{ChatResponse: converted}
+					}
+				}
+			}
+		}
+		return postHookRunner(ctx, result, bifrostErr)
+	}
 }

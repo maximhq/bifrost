@@ -15,11 +15,11 @@
         "description": "Route all GPT-4 model requests to Azure provider",
         "enabled": true,
         "cel_expression": "model.startsWith('gpt-4')",
-        "provider": "azure",
-        "model": "",
+        "targets": [
+          { "provider": "azure", "weight": 1.0 }
+        ],
         "fallbacks": ["openai"],
         "scope": "global",
-        "scope_id": null,
         "priority": 0
       },
       {
@@ -28,11 +28,12 @@
         "description": "Route to fallback providers when budget usage exceeds 80%",
         "enabled": true,
         "cel_expression": "budget_used >= 80.0",
-        "provider": "",
-        "model": "",
+        "targets": [
+          { "provider": "anthropic", "weight": 0.5 },
+          { "provider": "openai", "weight": 0.5 }
+        ],
         "fallbacks": ["anthropic", "openai"],
         "scope": "global",
-        "scope_id": null,
         "priority": 10
       },
       {
@@ -41,11 +42,11 @@
         "description": "Route embedding requests to cost-effective provider",
         "enabled": true,
         "cel_expression": "request_type == 'embedding'",
-        "provider": "openai",
-        "model": "text-embedding-3-small",
+        "targets": [
+          { "provider": "openai", "model": "text-embedding-3-small", "weight": 1.0 }
+        ],
         "fallbacks": [],
         "scope": "global",
-        "scope_id": null,
         "priority": 5
       },
       {
@@ -54,8 +55,9 @@
         "description": "Premium virtual keys always use Azure",
         "enabled": true,
         "cel_expression": "virtual_key_name == 'premium-tier'",
-        "provider": "azure",
-        "model": "",
+        "targets": [
+          { "provider": "azure", "weight": 1.0 }
+        ],
         "fallbacks": ["openai", "anthropic"],
         "scope": "virtual_key",
         "scope_id": "premium-tier",
