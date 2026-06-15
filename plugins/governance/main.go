@@ -806,9 +806,13 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		req.SetFallbacks(resolvedFallbacks)
 	}
 
-	// Pin specific API key by ID if the routing rule specifies one
+	// Pin specific API key by ID if the routing rule specifies one. This uses a dedicated,
+	// non-reserved context key (not BifrostContextKeyAPIKeyID): routing runs inside
+	// PreRequestHook, where core blocks writes to reserved key-selection keys, so a write to
+	// the caller-pin key would be silently dropped. Key selection reads this routing pin first
+	// and resolves it against the configured key pool.
 	if decision.KeyID != "" {
-		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, decision.KeyID)
 	}
 
 	p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)

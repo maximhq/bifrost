@@ -208,6 +208,9 @@ false
 {{- if .Values.bifrost.encryptionKey }}
 {{- $_ := set $config "encryption_key" .Values.bifrost.encryptionKey }}
 {{- end }}
+{{- if .Values.bifrost.envLabel }}
+{{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -1207,8 +1210,20 @@ false
 {{- if $inputConfig.agent_addr }}
 {{- $_ := set $datadogConfig "agent_addr" $inputConfig.agent_addr }}
 {{- end }}
+{{- if $inputConfig.agent_host }}
+{{- $_ := set $datadogConfig "agent_host" $inputConfig.agent_host }}
+{{- end }}
+{{- if $inputConfig.agent_port }}
+{{- $_ := set $datadogConfig "agent_port" $inputConfig.agent_port }}
+{{- end }}
 {{- if $inputConfig.dogstatsd_addr }}
 {{- $_ := set $datadogConfig "dogstatsd_addr" $inputConfig.dogstatsd_addr }}
+{{- end }}
+{{- if $inputConfig.dogstatsd_host }}
+{{- $_ := set $datadogConfig "dogstatsd_host" $inputConfig.dogstatsd_host }}
+{{- end }}
+{{- if $inputConfig.dogstatsd_port }}
+{{- $_ := set $datadogConfig "dogstatsd_port" $inputConfig.dogstatsd_port }}
 {{- end }}
 {{- if $inputConfig.env }}
 {{- $_ := set $datadogConfig "env" $inputConfig.env }}

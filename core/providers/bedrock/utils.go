@@ -786,6 +786,16 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 	return messages, systemMessages, nil
 }
 
+// newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
+// Bedrock accepts ("5m" | "1h"); anything else (e.g. Anthropic's "1m") is dropped to the default.
+func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
+	cp := &BedrockCachePoint{Type: BedrockCachePointTypeDefault}
+	if ttl != nil && (*ttl == "5m" || *ttl == "1h") {
+		cp.TTL = ttl
+	}
+	return cp
+}
+
 // convertSystemMessages converts a Bifrost system message to Bedrock format
 func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, error) {
 	systemMsgs := []BedrockSystemMessage{}
@@ -809,17 +819,13 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 				})
 				if block.CacheControl != nil {
 					systemMsgs = append(systemMsgs, BedrockSystemMessage{
-						CachePoint: &BedrockCachePoint{
-							Type: BedrockCachePointTypeDefault,
-						},
+						CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 					})
 				}
 			} else if block.CachePoint != nil {
 				// Handle standalone cache point blocks
 				systemMsgs = append(systemMsgs, BedrockSystemMessage{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(block.CachePoint.TTL),
 				})
 			}
 		}
@@ -936,9 +942,7 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 						// Cache point must be in a separate block
 						if block.CacheControl != nil {
 							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: &BedrockCachePoint{
-									Type: BedrockCachePointTypeDefault,
-								},
+								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 							})
 						}
 					}
@@ -954,9 +958,7 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 						// Cache point must be in a separate block
 						if block.CacheControl != nil {
 							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: &BedrockCachePoint{
-									Type: BedrockCachePointTypeDefault,
-								},
+								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 							})
 						}
 					}
@@ -1039,9 +1041,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		// Cache point must be in a separate block
 		if block.CacheControl != nil {
 			blocks = append(blocks, BedrockContentBlock{
-				CachePoint: &BedrockCachePoint{
-					Type: BedrockCachePointTypeDefault,
-				},
+				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 			})
 		}
 		return blocks, nil
@@ -1063,9 +1063,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		// Cache point must be in a separate block
 		if block.CacheControl != nil {
 			blocks = append(blocks, BedrockContentBlock{
-				CachePoint: &BedrockCachePoint{
-					Type: BedrockCachePointTypeDefault,
-				},
+				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 			})
 		}
 		return blocks, nil
@@ -1202,9 +1200,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		if block.Type == "" && block.CachePoint != nil {
 			return []BedrockContentBlock{
 				{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(block.CachePoint.TTL),
 				},
 			}, nil
 		}
@@ -1773,9 +1769,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, pa
 
 			if tool.CacheControl != nil && !schemas.IsNovaModelFamily(ctx, model) {
 				bedrockTools = append(bedrockTools, BedrockTool{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(tool.CacheControl.TTL),
 				})
 			}
 		}

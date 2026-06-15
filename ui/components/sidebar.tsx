@@ -1,5 +1,6 @@
 import {
   ArrowUpRight,
+  BookOpenText,
   BookUser,
   Boxes,
   BoxIcon,
@@ -48,6 +49,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Sidebar,
   SidebarContent,
@@ -83,12 +85,16 @@ import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
+import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
 // Cookie name for dismissing production setup card
 const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
+
+const newBadgeClassName =
+  "relative overflow-hidden after:pointer-events-none after:absolute after:inset-y-0 after:-left-full after:w-full after:skew-x-[-18deg] after:bg-gradient-to-r after:from-transparent after:via-primary/25 after:to-transparent after:opacity-0 after:content-[''] after:animate-[sidebar-new-badge-shine_1200ms_cubic-bezier(0.22,1,0.36,1)_260ms_both]";
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
@@ -172,6 +178,7 @@ interface SidebarItem {
   hasAccess: boolean;
   subItems?: SidebarItem[];
   tag?: string;
+  new?: boolean;
   isExternal?: boolean;
   queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
 }
@@ -289,7 +296,7 @@ const SidebarItemView = ({
 
   const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+  const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
     isHighlighted
       ? "bg-sidebar-accent text-accent-foreground border-primary/20"
       : isActive || isAnySubItemActive
@@ -310,6 +317,17 @@ const SidebarItemView = ({
         >
           {item.title}
         </span>
+        {item.new && (
+          <Badge
+            data-new-badge="true"
+            className={cn(
+              "ml-auto group-data-[collapsible=icon]:hidden",
+              newBadgeClassName,
+            )}
+          >
+            New
+          </Badge>
+        )}
         {item.tag && (
           <Badge
             variant="secondary"
@@ -434,7 +452,12 @@ const SidebarItemView = ({
             </div>
             {item.subItems?.map((subItem) => {
               const baseHref = getSidebarItemHref(subItem);
-              const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
+              const href = preserveTimeFilters(
+                baseHref,
+                subItem.url,
+                pathname,
+                search,
+              );
               const isSubItemActive = subItem.queryParam
                 ? pathname === subItem.url
                 : isRouteMatch(subItem.url);
@@ -452,6 +475,14 @@ const SidebarItemView = ({
                   >
                     {subItem.title}
                   </span>
+                  {subItem.new && (
+                    <Badge
+                      data-new-badge="true"
+                      className={cn("ml-auto", newBadgeClassName)}
+                    >
+                      New
+                    </Badge>
+                  )}
                   {subItem.tag && (
                     <Badge
                       variant="secondary"
@@ -497,7 +528,12 @@ const SidebarItemView = ({
         <SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
           {item.subItems?.map((subItem: SidebarItem) => {
             const baseHref = getSidebarItemHref(subItem);
-            const subItemHref = preserveTimeFilters(baseHref, subItem.url, pathname, search);
+            const subItemHref = preserveTimeFilters(
+              baseHref,
+              subItem.url,
+              pathname,
+              search,
+            );
             // For query param based subitems, check if tab matches
             const isSubItemActive = subItem.queryParam
               ? pathname === subItem.url
@@ -506,7 +542,7 @@ const SidebarItemView = ({
               ? subItemHref.startsWith(highlightedUrl)
               : false;
             const SubItemIcon = subItem.icon;
-            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+            const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
               isSubItemHighlighted
                 ? "bg-sidebar-accent text-accent-foreground"
                 : isSubItemActive
@@ -527,6 +563,14 @@ const SidebarItemView = ({
                 >
                   {subItem.title}
                 </span>
+                {subItem.new && (
+                  <Badge
+                    data-new-badge="true"
+                    className={cn("ml-auto", newBadgeClassName)}
+                  >
+                    New
+                  </Badge>
+                )}
                 {subItem.tag && (
                   <Badge
                     variant="secondary"
@@ -699,10 +743,17 @@ export default function AppSidebar() {
     RbacOperation.View,
   );
   const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
-  const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
+  const hasFeatureFlagsAccess = useRbac(
+    RbacResource.FeatureFlags,
+    RbacOperation.View,
+  );
   const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
   const hasPromptRepositoryAccess = useRbac(
     RbacResource.PromptRepository,
+    RbacOperation.View,
+  );
+  const hasSkillsRepositoryAccess = useRbac(
+    RbacResource.SkillsRepository,
     RbacOperation.View,
   );
   const hasAccessProfilesAccess = useRbac(
@@ -720,6 +771,7 @@ export default function AppSidebar() {
     hasGovernanceLegacyAccess;
   const { data: coreConfig } = useGetCoreConfigQuery({});
   const isDbConnected = coreConfig?.is_db_connected ?? false;
+  const envLabel = coreConfig?.env_label ?? null;
 
   const items = useMemo(
     () => [
@@ -853,13 +905,13 @@ export default function AppSidebar() {
             description: "Tool Groups",
             hasAccess: hasMCPToolGroupsAccess,
           },
-					{
-						title: "Auth Sessions",
-						url: "/workspace/mcp-sessions",
-						icon: KeyRound,
-						description: "Per-user OAuth sessions",
-						hasAccess: hasMCPGatewayAccess,
-					},
+          {
+            title: "Auth Sessions",
+            url: "/workspace/mcp-sessions",
+            icon: KeyRound,
+            description: "Per-user OAuth sessions",
+            hasAccess: hasMCPGatewayAccess,
+          },
           {
             title: "MCP Settings",
             url: "/workspace/mcp-settings",
@@ -1010,6 +1062,13 @@ export default function AppSidebar() {
               description: "Prompt repository",
               hasAccess: hasPromptRepositoryAccess,
             },
+            {
+              title: "Skills Repository",
+              url: "/workspace/skills-repo",
+              icon: BookOpenText,
+              description: "Skills repository",
+              hasAccess: hasSkillsRepositoryAccess,
+            },
           ]
         : []),
       {
@@ -1118,6 +1177,7 @@ export default function AppSidebar() {
       isAdaptiveRoutingAllowed,
       hasSettingsAccess,
       hasPromptRepositoryAccess,
+      hasSkillsRepositoryAccess,
       hasAccessProfilesAccess,
       isDbConnected,
     ],
@@ -1516,6 +1576,25 @@ export default function AppSidebar() {
           />
         </div>
       </SidebarHeader>
+      {envLabel && (
+        <div className="mx-2 mb-1">
+          {/* Expanded: full label text */}
+          <div className="flex items-center justify-center rounded-sm bg-amber-400/20 px-2 py-1 group-data-[collapsible=icon]:hidden">
+            <span className="font-mono text-[10px] font-semibold tracking-widest text-amber-700 dark:text-amber-400">
+              {envLabel}
+            </span>
+          </div>
+          {/* Collapsed: dot indicator */}
+          <div className="hidden justify-center group-data-[collapsible=icon]:flex">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
+              </TooltipTrigger>
+              <TooltipContent side="right">{envLabel}</TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+      )}
       <div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
         <div className="relative">
           <Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />

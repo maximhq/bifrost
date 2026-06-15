@@ -143,6 +143,7 @@
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
+                  "providers/supported-providers/opencode",
                   "providers/supported-providers/openai",
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
@@ -236,6 +237,7 @@
               "features/telemetry",
               "features/otel",
               "features/semantic-caching",
+              "features/skills-repository",
               {
                 "group": "Prompt Repository",
                 "icon": "folder",

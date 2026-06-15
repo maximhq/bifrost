@@ -140,7 +140,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, fmt.Errorf("postgres version is lower than 16, please upgrade to 16 or higher")
 	}
 
-	if err := triggerMigrations(ctx, mDb); err != nil {
+	if err := triggerMigrations(ctx, mDb, logger); err != nil {
 		_ = closePool(mDb)
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			return
 		}
 		// Acquire advisory lock to serialize GIN index builds across cluster nodes.
-		lock, err := acquireIndexLock(context.Background(), db)
+		lock, err := acquireIndexLock(context.Background(), db, logger)
 		if err != nil {
 			// Lock is taken by another node, so we will skip the index build
 			return
@@ -209,7 +209,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			logger.Info("logstore: dashboard enhancements completed")
 		}
 
-		if err := ensurePerformanceIndexes(context.Background(), lock.conn); err != nil {
+		if err := ensurePerformanceIndexes(context.Background(), lock.conn, logger); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
 		} else {
 			logger.Info("logstore: performance indexes are ready")

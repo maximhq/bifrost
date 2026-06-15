@@ -128,7 +128,12 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 		params := req.ResponsesRequest.Params
 
-		if params.MaxOutputTokens != nil && !isSupported["max_output_tokens"] {
+		// max_output_tokens is the Responses-API equivalent of chat max_tokens / max_completion_tokens.
+		// so if any of those token-cap spellings is supported, we let max_output_tokens pass through.
+		if params.MaxOutputTokens != nil &&
+			!isSupported["max_output_tokens"] &&
+			!isSupported["max_tokens"] &&
+			!isSupported["max_completion_tokens"] {
 			params.MaxOutputTokens = nil
 			dropped = append(dropped, "max_output_tokens")
 		}

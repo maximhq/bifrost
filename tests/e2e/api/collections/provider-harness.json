@@ -21,7 +21,11 @@
           "// Used in the criss-cross matrix (§8) to mark provider+modality cells that return NewUnsupportedOperationError by design (e.g., anthropic embeddings, bedrock audio).",
           "if (name.indexOf('[SKIP]') !== -1 && (pm.environment.get('include_skip') || pm.variables.get('include_skip') || '') !== '1') {",
           "  pm.execution.skipRequest();",
-          "}"
+          "}",
+          "// Per-request compat override: when compat is set (via Newman --env-var compat=true), inject the x-bf-compat header on every request.",
+          "// Absent => harness baseline (compat config off). Lets the suite run once with compat off and once with compat on.",
+          "var __compat = (pm.environment.get('compat') || pm.variables.get('compat') || '');",
+          "if (__compat) { pm.request.headers.upsert({ key: 'x-bf-compat', value: String(__compat) }); }"
         ]
       }
     },

@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -221,3 +222,59 @@ func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 }
 
 func capabilityIntPtr(v int) *int { return &v }
+
+func capabilityBoolPtr(v bool) *bool { return &v }
+
+// TestExtractSupportedParams_WebSearch guards the two web-search keys: the
+// model_parameters "web_search" id and the supports_web_search flag must each
+// yield both web_search (responses-path tool) and web_search_options (chat-path
+// param), so the compat plugin's drop checks match either way.
+func TestExtractSupportedParams_WebSearch(t *testing.T) {
+	webSearchParam := []struct {
+		ID string `json:"id"`
+	}{{ID: "web_search"}}
+
+	cases := []struct {
+		name   string
+		parsed *modelParametersParseResult
+	}{
+		{
+			name:   "web_search model parameter",
+			parsed: &modelParametersParseResult{ModelParameters: webSearchParam},
+		},
+		{
+			name:   "supports_web_search flag",
+			parsed: &modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(true)},
+		},
+		{
+			name: "both set",
+			parsed: &modelParametersParseResult{
+				ModelParameters:   webSearchParam,
+				SupportsWebSearch: capabilityBoolPtr(true),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractSupportedParams(tc.parsed)
+			for _, want := range []string{"web_search", "web_search_options"} {
+				if !slices.Contains(got, want) {
+					t.Errorf("expected supported params to contain %q, got %v", want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestExtractSupportedParams_WebSearchAbsent confirms neither key is added when
+// the datasheet declares no web-search support, so the tool is still stripped
+// for models that genuinely lack it.
+func TestExtractSupportedParams_WebSearchAbsent(t *testing.T) {
+	got := extractSupportedParams(&modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(false)})
+	for _, unexpected := range []string{"web_search", "web_search_options"} {
+		if slices.Contains(got, unexpected) {
+			t.Errorf("expected supported params to omit %q, got %v", unexpected, got)
+		}
+	}
+}
