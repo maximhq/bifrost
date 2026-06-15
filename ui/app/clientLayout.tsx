@@ -3,7 +3,6 @@ import NotAvailableBanner from "@/components/notAvailableBanner";
 import ProgressProvider from "@/components/progressBar";
 import Sidebar from "@/components/sidebar";
 import { ThemeProvider } from "@/components/themeProvider";
-import TrialExpiryBanner from "@/components/trialExpiryBanner";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
@@ -14,8 +13,15 @@ import {
   useIsAuthEnabledQuery,
 } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
+import LicenseContactAdminView from "@enterprise/components/license/LicenseContactAdminView";
+import LicenseExpiryBanner from "@enterprise/components/license/LicenseExpiryBanner";
+import LicenseUploadView from "@enterprise/components/license/LicenseUploadView";
+import { useGetLicenseStatusQuery } from "@enterprise/lib/store/apis/licenseApi";
 import {
+  RbacOperation,
   RbacProvider,
+  RbacResource,
+  useRbac,
   useRbacContext,
 } from "@enterprise/lib/contexts/rbacContext";
 import { useLocation, useMatches } from "@tanstack/react-router";
@@ -39,6 +45,39 @@ const DevProfiler = () => (
 function StoreSyncInitializer() {
   useStoreSync();
   return null;
+}
+
+function LicenseGate({ children }: { children: React.ReactNode }) {
+  // publicShell / tempTokenScoped routes are reachable without a dashboard
+  // session (post-OAuth landing, per-user MCP auth) and must render no chrome
+  // and make no protected API calls. Skip the license probe/gate entirely for
+  // them — AppContent renders them via MinimalShell.
+  const matches = useMatches();
+  const bypass = matches.some((m) => {
+    const data = m.staticData as
+      | { publicShell?: boolean; tempTokenScoped?: boolean }
+      | undefined;
+    return data?.publicShell === true || data?.tempTokenScoped === true;
+  });
+  const { data: licenseStatus, isLoading, isError } = useGetLicenseStatusQuery(
+    undefined,
+    { skip: bypass },
+  );
+  const { isLoading: rbacLoading } = useRbacContext();
+  const canRenew = useRbac(RbacResource.Settings, RbacOperation.Update);
+  if (bypass) return <>{children}</>;
+  if (isLoading) return <FullPageLoader />;
+  // isError means /api/license/status doesn't exist (no public key configured) — pass through.
+  if (isError || !licenseStatus || licenseStatus.valid) return <>{children}</>;
+  // License-only recovery mode: the server has no auth backend yet, so show the
+  // upload screen directly (upload is unauthenticated in this mode).
+  if (licenseStatus.bootstrap_complete === false) return <LicenseUploadView />;
+  // Running server with an invalid/expired license. Wait for RBAC so we don't
+  // flash the contact-admin screen to an admin while permissions load, then show
+  // the upload screen to admins (Settings/Update) and a contact-admin notice to
+  // everyone else.
+  if (rbacLoading) return <FullPageLoader />;
+  return canRenew ? <LicenseUploadView /> : <LicenseContactAdminView />;
 }
 
 function AppContent({ children }: { children: React.ReactNode }) {
@@ -134,7 +173,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
         <SidebarProvider>
           <Sidebar />
           <div className="dark:bg-card custom-scrollbar content-container my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800">
-            <TrialExpiryBanner />
+            <LicenseExpiryBanner />
             <main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden p-4">
               {isLoading ? (
                 <FullPageLoader />
@@ -192,7 +231,9 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
         <ReduxProvider>
           <NuqsAdapter>
             <RbacProvider>
-              <AppContent>{children}</AppContent>
+              <LicenseGate>
+                <AppContent>{children}</AppContent>
+              </LicenseGate>
               {process.env.NODE_ENV === "development" &&
                 !process.env.BIFROST_DISABLE_PROFILER && <DevProfiler />}
             </RbacProvider>
