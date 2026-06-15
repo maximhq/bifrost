@@ -1774,13 +1774,31 @@
                     },
                     "agent_addr": {
                       "type": "string",
-                      "description": "Address of the Datadog Agent for APM traces (agent mode only, can use env. prefix)",
+                      "description": "Combined host:port address of the Datadog Agent for APM traces (agent mode only, can use env. prefix). Overridden by agent_host when set.",
                       "default": "localhost:8126"
+                    },
+                    "agent_host": {
+                      "type": "string",
+                      "description": "Host of the Datadog Agent for APM traces, provided separately from the port (agent mode only, can use env. prefix). Takes precedence over agent_addr when set. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)."
+                    },
+                    "agent_port": {
+                      "type": "string",
+                      "description": "Port of the Datadog Agent for APM traces (agent mode only, can use env. prefix). Used only when agent_host is set (defaults to 8126); has no effect when agent_host is unset, in which case agent_addr supplies the port.",
+                      "default": "8126"
                     },
                     "dogstatsd_addr": {
                       "type": "string",
-                      "description": "Address of the DogStatsD server for metrics (agent mode only, can use env. prefix)",
+                      "description": "Combined host:port address of the DogStatsD server for metrics (agent mode only, can use env. prefix). Overridden by dogstatsd_host when set.",
                       "default": "localhost:8125"
+                    },
+                    "dogstatsd_host": {
+                      "type": "string",
+                      "description": "Host of the DogStatsD server for metrics, provided separately from the port (agent mode only, can use env. prefix). Takes precedence over dogstatsd_addr when set. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)."
+                    },
+                    "dogstatsd_port": {
+                      "type": "string",
+                      "description": "Port of the DogStatsD server for metrics (agent mode only, can use env. prefix). Used only when dogstatsd_host is set (defaults to 8125); has no effect when dogstatsd_host is unset, in which case dogstatsd_addr supplies the port.",
+                      "default": "8125"
                     },
                     "env": {
                       "type": "string",
