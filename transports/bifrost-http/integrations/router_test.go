@@ -489,7 +489,8 @@ func TestCreateHandler_DefaultJSONParserFailureClosesConnection(t *testing.T) {
 
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	assert.True(t, ctx.Response.ConnectionClose())
-	assert.Contains(t, string(ctx.Response.Body()), "invalid JSON request body")
+	assert.Contains(t, string(ctx.Response.Body()), "Invalid JSON: invalid JSON request body")
+	assert.Contains(t, string(ctx.Response.Body()), "invalid char")
 }
 
 func TestCreateHandler_ParseFailureClosesKeepAliveSocket(t *testing.T) {
