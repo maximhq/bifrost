@@ -51,7 +51,7 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 		return nil, fmt.Errorf("failed to remove duplicate keys: %w", err)
 	}
 	// Run migrations
-	if err := triggerMigrations(ctx, db); err != nil {
+	if err := triggerMigrations(ctx, db, logger); err != nil {
 		return nil, err
 	}
 	// Encrypt any plaintext rows if encryption is enabled

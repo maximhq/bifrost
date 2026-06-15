@@ -115,7 +115,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	if err != nil {
 		return nil, err
 	}
-	if err := triggerMigrations(ctx, mDb); err != nil {
+	if err := triggerMigrations(ctx, mDb, logger); err != nil {
 		closeDbConn(mDb, logger)
 		return nil, err
 	}
