@@ -21,22 +21,6 @@ import (
 type EntityWiseBudgets map[string][]*configstoreTables.TableBudget
 type EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
 
-// OwnerScope identifies the entity that owns a budget or rate limit for
-// alert-evaluation purposes. Type is one of "virtual_key", "team", "customer",
-// "provider", or "global"; ID is the owning entity's identifier ("" for global).
-// It mirrors the owner-scope derivation used by EachBudget/EachRateLimit so the
-// alerting layer can evaluate only the scopes a request touched.
-type OwnerScope struct {
-	Type string
-	ID   string
-}
-
-// ownerScopeIndexTTL bounds how often the owner-scope reverse index is rebuilt.
-// Rebuilds are full scans of the hot budget/rate-limit maps, so throttling keeps
-// per-request cost at O(touched scopes) regardless of request rate while keeping
-// staleness for newly created entities below this bound.
-const ownerScopeIndexTTL = time.Second
-
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
 	// Core data maps using sync.Map for lock-free reads
@@ -66,20 +50,6 @@ type LocalGovernanceStore struct {
 
 	// Model catalog for cross-provider model matching (optional)
 	modelCatalog *modelcatalog.ModelCatalog
-
-	// ownerScopeIndex maps an OwnerScope to the budget / rate-limit IDs it owns.
-	// It lets the alerting layer evaluate only the scopes touched by a request
-	// instead of scanning every budget and rate limit on every usage update.
-	// The maps are rebuilt wholesale (never mutated in place) at most once per
-	// ownerScopeIndexTTL from the hot maps using the same owner derivation logic
-	// as the collectors, so the index tolerates config churn without per-mutation
-	// bookkeeping. ownerScopeIndexMu guards rebuilds and the pointer reads; the
-	// returned maps are safe to iterate without the lock.
-	ownerScopeIndexMu      sync.Mutex
-	ownerScopeBudgets      map[OwnerScope][]string
-	ownerScopeTokenLimits  map[OwnerScope][]string
-	ownerScopeReqLimits    map[OwnerScope][]string
-	ownerScopeIndexBuiltAt time.Time
 
 	// Logger
 	logger schemas.Logger
@@ -129,15 +99,6 @@ type BudgetAndRateLimitStatus struct {
 type GovernanceStore interface {
 	GetGovernanceData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
-	// EachBudgetForScopes is the scope-targeted analogue of EachBudget: it calls
-	// fn only for budgets owned by one of the given scopes, via the owner-scope
-	// reverse index, so the consumer can evaluate just the scopes a request
-	// touched instead of scanning every budget on every usage update.
-	EachBudgetForScopes(scopes []OwnerScope, fn func(budgetID string, currentUsage, maxLimit float64, ownerScopeType, ownerScopeID string))
-	// EachRateLimitForScopes is the scope-targeted analogue of EachRateLimit.
-	EachRateLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, tokenCurrentUsage, tokenMaxLimit int64, ownerScopeType, ownerScopeID string))
-	// EachRequestLimitForScopes is the scope-targeted analogue of EachRequestLimit.
-	EachRequestLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, requestCurrentUsage, requestMaxLimit int64, ownerScopeType, ownerScopeID string))
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
@@ -2073,277 +2034,15 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 	return nil
 }
 
-// ownerScopeFromBudget derives the alert-rule scope type and ID from a budget's FK columns.
-func ownerScopeFromBudget(b *configstoreTables.TableBudget) (scopeType, scopeID string) {
-	switch {
-	case b.VirtualKeyID != nil:
-		return "virtual_key", *b.VirtualKeyID
-	case b.TeamID != nil:
-		return "team", *b.TeamID
-	case b.CustomerID != nil:
-		return "customer", *b.CustomerID
-	case b.ProviderConfigID != nil:
-		return "provider", ""
-	default:
-		return "global", ""
-	}
-}
-
 // stampBudgetCustomerOwner sets the customer owner FK on a budget that has no
 // owner yet. Customer budgets are linked via customer.budget_id, so the budget
-// row's own FK columns load as nil; ownerScopeFromBudget needs CustomerID set or
-// customer-scoped budget alerts are misattributed to global scope.
+// row's own FK columns load as nil; the alerting snapshot store's budgetOwnerScope
+// needs CustomerID set or customer-scoped budget alerts are misattributed to global scope.
 func stampBudgetCustomerOwner(b *configstoreTables.TableBudget, customerID string) {
 	if b == nil || b.VirtualKeyID != nil || b.TeamID != nil || b.CustomerID != nil || b.ProviderConfigID != nil || b.ModelConfigID != nil {
 		return
 	}
 	b.CustomerID = &customerID
-}
-
-// ensureOwnerScopeIndex returns the owner-scope reverse index, rebuilding it
-// from the hot maps if it is missing or older than ownerScopeIndexTTL. The
-// returned maps are immutable snapshots (replaced wholesale on rebuild) and are
-// safe to iterate after the lock is released. Buckets are keyed exactly as the
-// owner derivation used by the collectors, so a lookup for a scope yields the
-// same budgets/rate limits EachBudget/EachRateLimit would attribute to that
-// scope.
-func (gs *LocalGovernanceStore) ensureOwnerScopeIndex() (budgets, tokenLimits, reqLimits map[OwnerScope][]string) {
-	gs.ownerScopeIndexMu.Lock()
-	defer gs.ownerScopeIndexMu.Unlock()
-	if gs.ownerScopeBudgets == nil || time.Since(gs.ownerScopeIndexBuiltAt) > ownerScopeIndexTTL {
-		gs.rebuildOwnerScopeIndexLocked()
-	}
-	return gs.ownerScopeBudgets, gs.ownerScopeTokenLimits, gs.ownerScopeReqLimits
-}
-
-// rebuildOwnerScopeIndexLocked rebuilds the owner-scope reverse index from the
-// hot budget and owner maps. Callers must hold ownerScopeIndexMu.
-func (gs *LocalGovernanceStore) rebuildOwnerScopeIndexLocked() {
-	budgets := make(map[OwnerScope][]string)
-	tokenLimits := make(map[OwnerScope][]string)
-	reqLimits := make(map[OwnerScope][]string)
-	seenBudgets := make(map[string]struct{})
-	providerBudgetIDs := make(map[string]struct{})
-	addBudget := func(scopeType, scopeID, budgetID string) {
-		if budgetID == "" {
-			return
-		}
-		if _, seen := seenBudgets[budgetID]; seen {
-			return
-		}
-		s := OwnerScope{Type: scopeType, ID: scopeID}
-		budgets[s] = append(budgets[s], budgetID)
-		seenBudgets[budgetID] = struct{}{}
-	}
-	gs.providers.Range(func(_, value any) bool {
-		provider, ok := value.(*configstoreTables.TableProvider)
-		if !ok || provider == nil {
-			return true
-		}
-		if provider.BudgetID != nil {
-			providerBudgetIDs[*provider.BudgetID] = struct{}{}
-		}
-		return true
-	})
-	gs.budgets.Range(func(key, value any) bool {
-		if b, ok := value.(*configstoreTables.TableBudget); ok && b != nil {
-			budgetID, ok := key.(string)
-			if !ok || budgetID == "" {
-				return true
-			}
-			if b.ModelConfigID != nil {
-				return true
-			}
-			if _, ownedByProvider := providerBudgetIDs[budgetID]; ownedByProvider {
-				return true
-			}
-			scopeType, scopeID := ownerScopeFromBudget(b)
-			addBudget(scopeType, scopeID, budgetID)
-		}
-		return true
-	})
-	gs.modelConfigs.Range(func(_, value any) bool {
-		mc, ok := value.(*configstoreTables.TableModelConfig)
-		if !ok || mc == nil {
-			return true
-		}
-		scopeType := mc.Scope
-		scopeID := ""
-		if mc.Provider != nil {
-			scopeType = "provider"
-		} else if mc.ScopeID != nil {
-			scopeID = *mc.ScopeID
-		}
-		for i := range mc.Budgets {
-			addBudget(scopeType, scopeID, mc.Budgets[i].ID)
-		}
-		return true
-	})
-	indexRateLimit := func(scopeType string, scopeID string, rateLimitID string, rateLimit *configstoreTables.TableRateLimit) {
-		if rateLimit == nil {
-			return
-		}
-		s := OwnerScope{Type: string(scopeType), ID: scopeID}
-		if rateLimit.TokenMaxLimit != nil {
-			tokenLimits[s] = append(tokenLimits[s], rateLimitID)
-		}
-		if rateLimit.RequestMaxLimit != nil {
-			reqLimits[s] = append(reqLimits[s], rateLimitID)
-		}
-	}
-	gs.virtualKeys.Range(func(_, value any) bool {
-		vk, ok := value.(*configstoreTables.TableVirtualKey)
-		if !ok || vk == nil {
-			return true
-		}
-		if vk.RateLimitID != nil {
-			if rateLimitValue, exists := gs.rateLimits.Load(*vk.RateLimitID); exists && rateLimitValue != nil {
-				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					indexRateLimit("virtual_key", vk.ID, *vk.RateLimitID, rateLimit)
-				}
-			}
-		}
-		for i := range vk.ProviderConfigs {
-			pc := &vk.ProviderConfigs[i]
-			if pc.RateLimitID == nil || pc.Provider == "" {
-				continue
-			}
-			if rateLimitValue, exists := gs.rateLimits.Load(*pc.RateLimitID); exists && rateLimitValue != nil {
-				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					indexRateLimit("provider", "", *pc.RateLimitID, rateLimit)
-				}
-			}
-		}
-		return true
-	})
-	gs.providers.Range(func(_, value any) bool {
-		provider, ok := value.(*configstoreTables.TableProvider)
-		if !ok || provider == nil {
-			return true
-		}
-		if provider.BudgetID != nil {
-			if budgetValue, exists := gs.budgets.Load(*provider.BudgetID); exists && budgetValue != nil {
-				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-					addBudget("provider", "", *provider.BudgetID)
-				}
-			}
-		}
-		if provider.RateLimitID != nil {
-			if rateLimitValue, exists := gs.rateLimits.Load(*provider.RateLimitID); exists && rateLimitValue != nil {
-				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					indexRateLimit("provider", "", *provider.RateLimitID, rateLimit)
-				}
-			}
-		}
-		return true
-	})
-	gs.teams.Range(func(_, value any) bool {
-		team, ok := value.(*configstoreTables.TableTeam)
-		if !ok || team == nil || team.RateLimitID == nil {
-			return true
-		}
-		if rateLimitValue, exists := gs.rateLimits.Load(*team.RateLimitID); exists && rateLimitValue != nil {
-			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-				indexRateLimit("team", team.ID, *team.RateLimitID, rateLimit)
-			}
-		}
-		return true
-	})
-	gs.customers.Range(func(_, value any) bool {
-		customer, ok := value.(*configstoreTables.TableCustomer)
-		if !ok || customer == nil || customer.RateLimitID == nil {
-			return true
-		}
-		if rateLimitValue, exists := gs.rateLimits.Load(*customer.RateLimitID); exists && rateLimitValue != nil {
-			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-				indexRateLimit("customer", customer.ID, *customer.RateLimitID, rateLimit)
-			}
-		}
-		return true
-	})
-	gs.ownerScopeBudgets = budgets
-	gs.ownerScopeTokenLimits = tokenLimits
-	gs.ownerScopeReqLimits = reqLimits
-	gs.ownerScopeIndexBuiltAt = time.Now()
-}
-
-// dedupeScopes returns scopes with duplicates removed, preserving order. Keeps
-// the per-request scope set small so the For-scopes iterators never revisit the
-// same bucket twice.
-func dedupeScopes(scopes []OwnerScope) []OwnerScope {
-	if len(scopes) <= 1 {
-		return scopes
-	}
-	seen := make(map[OwnerScope]struct{}, len(scopes))
-	out := scopes[:0:0]
-	for _, s := range scopes {
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
-}
-
-// EachBudgetForScopes calls fn for every budget owned by one of the given
-// scopes, reading live usage from the hot map. Unlike EachBudget it does not
-// scan every budget: it consults the owner-scope reverse index, so cost is
-// O(budgets owned by the touched scopes) rather than O(all budgets). The owner
-// scope passed to fn is the bucket's scope, identical to what EachBudget would
-// report for the same budget.
-func (gs *LocalGovernanceStore) EachBudgetForScopes(scopes []OwnerScope, fn func(budgetID string, currentUsage, maxLimit float64, ownerScopeType, ownerScopeID string)) {
-	if fn == nil || len(scopes) == 0 {
-		return
-	}
-	budgetsIdx, _, _ := gs.ensureOwnerScopeIndex()
-	for _, s := range dedupeScopes(scopes) {
-		for _, id := range budgetsIdx[s] {
-			if value, ok := gs.budgets.Load(id); ok {
-				if b, ok := value.(*configstoreTables.TableBudget); ok && b != nil {
-					fn(id, b.CurrentUsage, b.MaxLimit, s.Type, s.ID)
-				}
-			}
-		}
-	}
-}
-
-// EachRateLimitForScopes calls fn for every token-limited rate limit owned by
-// one of the given scopes, reading live usage from the hot map. It is the
-// scope-targeted analogue of EachRateLimit.
-func (gs *LocalGovernanceStore) EachRateLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, tokenCurrentUsage, tokenMaxLimit int64, ownerScopeType, ownerScopeID string)) {
-	if fn == nil || len(scopes) == 0 {
-		return
-	}
-	_, tokenIdx, _ := gs.ensureOwnerScopeIndex()
-	for _, s := range dedupeScopes(scopes) {
-		for _, id := range tokenIdx[s] {
-			if value, ok := gs.rateLimits.Load(id); ok {
-				if rl, ok := value.(*configstoreTables.TableRateLimit); ok && rl != nil && rl.TokenMaxLimit != nil {
-					fn(id, rl.TokenCurrentUsage, *rl.TokenMaxLimit, s.Type, s.ID)
-				}
-			}
-		}
-	}
-}
-
-// EachRequestLimitForScopes calls fn for every request-limited rate limit owned
-// by one of the given scopes, reading live usage from the hot map. It is the
-// scope-targeted analogue of EachRequestLimit.
-func (gs *LocalGovernanceStore) EachRequestLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, requestCurrentUsage, requestMaxLimit int64, ownerScopeType, ownerScopeID string)) {
-	if fn == nil || len(scopes) == 0 {
-		return
-	}
-	_, _, reqIdx := gs.ensureOwnerScopeIndex()
-	for _, s := range dedupeScopes(scopes) {
-		for _, id := range reqIdx[s] {
-			if value, ok := gs.rateLimits.Load(id); ok {
-				if rl, ok := value.(*configstoreTables.TableRateLimit); ok && rl != nil && rl.RequestMaxLimit != nil {
-					fn(id, rl.RequestCurrentUsage, *rl.RequestMaxLimit, s.Type, s.ID)
-				}
-			}
-		}
-	}
 }
 
 // DATABASE METHODS

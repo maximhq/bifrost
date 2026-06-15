@@ -1512,12 +1512,6 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
 }
 
-// SetUsageObserver registers a usage observer on the usage tracker.
-// Called by the enterprise server after plugin initialization.
-func (p *GovernancePlugin) SetUsageObserver(o UsageObserver) {
-	p.tracker.SetUsageObserver(o)
-}
-
 // GenerateVirtualKey is a helper function
 func GenerateVirtualKey() string {
 	return VirtualKeyPrefix + uuid.NewString()
