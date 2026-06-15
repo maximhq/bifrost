@@ -74,7 +74,7 @@ func appendOpenInferenceExceptionAttributes(result []*KeyValue, span *schemas.Sp
 	if _, ok := firstAttribute(span.Attributes, schemas.AttrError); !ok && span.StatusMsg != "" {
 		result = append(result, kvStr("exception.message", span.StatusMsg))
 	}
-	return appendMappedAttribute(result, span.Attributes, "exception.type", schemas.AttrErrorTypeSpec, schemas.AttrErrorType)
+	return appendMappedAttribute(result, span.Attributes, "exception.type", schemas.AttrErrorTypeSpec, schemas.AttrErrorType, schemas.AttrErrorCode)
 }
 
 func appendOpenInferenceToolIdentity(result []*KeyValue, attrs map[string]any) []*KeyValue {

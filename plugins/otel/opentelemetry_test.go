@@ -211,9 +211,27 @@ func TestConvertTraceToResourceSpan_OpenInferenceExceptionAttributes(t *testing.
 		}
 		trace := &schemas.Trace{TraceID: "00000000000000000000000000000001", RootSpan: span, Spans: []*schemas.Span{span}}
 
-		attrs := otelAttributes((&OtelPlugin{}).convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0].Attributes)
+		exported := (&OtelPlugin{}).convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0]
+		attrs := otelAttributes(exported.Attributes)
 		assertOTELStringAttribute(t, attrs, "exception.message", "provider rejected request")
 		assertOTELStringAttribute(t, attrs, "exception.type", "rate_limit")
+		if exported.Status.Message != "provider rejected request" {
+			t.Fatalf("expected OpenInference status message to use provider error, got %q", exported.Status.Message)
+		}
+	})
+
+	t.Run("uses provider error code when type is absent", func(t *testing.T) {
+		span := makeSpan("aaaa", "", "chat test-model", schemas.SpanKindLLMCall)
+		span.Status = schemas.SpanStatusError
+		span.Attributes = map[string]any{
+			schemas.AttrError:     "The tool_choice parameter is invalid",
+			schemas.AttrErrorCode: "InternalError.Algo.InvalidParameter",
+		}
+		trace := &schemas.Trace{TraceID: "00000000000000000000000000000001", RootSpan: span, Spans: []*schemas.Span{span}}
+
+		attrs := otelAttributes((&OtelPlugin{}).convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0].Attributes)
+		assertOTELStringAttribute(t, attrs, "exception.message", "The tool_choice parameter is invalid")
+		assertOTELStringAttribute(t, attrs, "exception.type", "InternalError.Algo.InvalidParameter")
 	})
 
 	t.Run("falls back to status message", func(t *testing.T) {
@@ -226,6 +244,19 @@ func TestConvertTraceToResourceSpan_OpenInferenceExceptionAttributes(t *testing.
 		assertOTELStringAttribute(t, attrs, "exception.message", "request failed")
 		if _, ok := attrs["exception.type"]; ok {
 			t.Error("exception.type should not be inferred when no error type is available")
+		}
+	})
+
+	t.Run("does not replace GenAI profile status message", func(t *testing.T) {
+		span := makeSpan("aaaa", "", "chat test-model", schemas.SpanKindLLMCall)
+		span.Status = schemas.SpanStatusError
+		span.StatusMsg = "request failed"
+		span.Attributes = map[string]any{schemas.AttrError: "provider rejected request"}
+		trace := &schemas.Trace{TraceID: "00000000000000000000000000000001", RootSpan: span, Spans: []*schemas.Span{span}}
+
+		exported := (&OtelPlugin{}).convertTraceToResourceSpan("svc", trace, nil, TraceTypeGenAIExtension, true).ScopeSpans[0].Spans[0]
+		if exported.Status.Message != "request failed" {
+			t.Fatalf("expected GenAI status message to remain unchanged, got %q", exported.Status.Message)
 		}
 	})
 }

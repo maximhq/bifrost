@@ -102,6 +102,11 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		}
 		otelSpan := convertSpanToOTELSpan(trace.TraceID, span, attributes, disableContentLogging)
 		if traceType == TraceTypeOpenInference {
+			if span.Status == schemas.SpanStatusError {
+				if message, ok := firstAttribute(span.Attributes, schemas.AttrError); ok {
+					otelSpan.Status.Message = fmt.Sprint(message)
+				}
+			}
 			if span.Kind == schemas.SpanKindEmbedding {
 				otelSpan.Name = "CreateEmbeddings"
 			}
