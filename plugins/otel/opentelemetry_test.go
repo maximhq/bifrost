@@ -447,6 +447,9 @@ func TestConvertTraceToResourceSpan_OpenInferenceEmbedding(t *testing.T) {
 	assertOTELStringAttribute(t, attrs, "embedding.invocation_parameters", `{"dimensions":1536,"model":"test-model"}`)
 	assertOTELStringAttribute(t, attrs, oiInputValue, `["hello","world"]`)
 	assertOTELStringAttribute(t, attrs, oiInputMIMEType, "application/json")
+	if _, ok := attrs["llm.prompts.0.prompt.text"]; ok {
+		t.Error("EMBEDDING span should not carry llm.prompts.0.prompt.text")
+	}
 	if _, ok := attrs["llm.provider"]; ok {
 		t.Error("EMBEDDING span should not carry llm.provider")
 	}
@@ -473,6 +476,9 @@ func TestConvertTraceToResourceSpan_OpenInferenceEmbeddingTextContentLogging(t *
 	p := &OtelPlugin{}
 	attrs := otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, false).ScopeSpans[0].Spans[0].Attributes)
 	assertOTELStringAttribute(t, attrs, "embedding.text", "hello world")
+	if _, ok := attrs["llm.prompts.0.prompt.text"]; ok {
+		t.Error("EMBEDDING span should not carry llm.prompts.0.prompt.text")
+	}
 
 	attrs = otelAttributes(p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, true).ScopeSpans[0].Spans[0].Attributes)
 	if _, ok := attrs["embedding.text"]; ok {

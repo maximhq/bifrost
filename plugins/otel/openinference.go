@@ -204,7 +204,11 @@ func appendOpenInferenceContent(result []*KeyValue, attrs map[string]any, kind s
 	if value, ok := firstAttribute(attrs, schemas.AttrInputMessages); ok {
 		result = appendJSONContent(result, "llm.input_messages", oiInputValue, oiInputMIMEType, value)
 	} else if value, ok := firstAttribute(attrs, schemas.AttrInputText, schemas.AttrInputSpeech, schemas.AttrInputEmbedding); ok {
-		result = appendTextContent(result, "llm.prompts.0.prompt.text", oiInputValue, oiInputMIMEType, value)
+		semanticKey := "llm.prompts.0.prompt.text"
+		if kind == "EMBEDDING" {
+			semanticKey = ""
+		}
+		result = appendTextContent(result, semanticKey, oiInputValue, oiInputMIMEType, value)
 	}
 
 	if value, ok := firstAttribute(attrs, schemas.AttrOutputMessages); ok {
