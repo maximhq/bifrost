@@ -156,6 +156,11 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.AnnotationIndex = &copyAnnotationIndex
 	}
 
+	if original.Error != nil {
+		copyError := *original.Error
+		copy.Error = &copyError
+	}
+
 	if original.Code != nil {
 		copyCode := *original.Code
 		copy.Code = &copyCode

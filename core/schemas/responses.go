@@ -2758,6 +2758,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.PartialImageIndex = resp.PartialImageIndex
 	result.Annotation = resp.Annotation
 	result.AnnotationIndex = resp.AnnotationIndex
+	result.Error = resp.Error
 	result.Code = resp.Code
 	result.Message = resp.Message
 	result.Param = resp.Param
