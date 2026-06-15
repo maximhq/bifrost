@@ -47,11 +47,11 @@ Key characteristics:
 | Area | Current contract |
 | ---- | ---------------- |
 | Provider shape | Native GigaChat provider with provider-specific converters, not an OpenAI-compatible shim. |
-| Bearer auth | One bearer source is required: OAuth credentials, explicit access token, password token flow, or legacy key `value` as an access token. |
+| Authentication | Use OAuth credentials, an explicit access token, password token flow, legacy key `value` as an access token, or complete mTLS client certificate material. |
 | OAuth exchange | `credentials` must be a GigaChat authorization key. Bifrost exchanges it through `auth_url`, defaults `scope` to `GIGACHAT_API_PERS`, caches the token, and refreshes it before expiry. |
 | Explicit token | `access_token` and legacy key `value` are sent as-is and are not refreshed. Use them only for short-lived or externally managed token flows. |
 | Password flow | Requires a deployment that exposes the SDK-compatible `POST <base_url>/v1/token` endpoint. |
-| TLS/mTLS | TLS material supplements bearer auth. `ca_bundle_file` only affects trust roots, and `cert_file`/`key_file` must be configured together for mTLS. |
+| TLS/mTLS | `cert_file`/`key_file` can be used as mTLS auth material and must be configured together. `ca_bundle_file` only affects trust roots. |
 | CountTokens | Text input only through `/v1/tokens/count`; image, audio, and file inputs are rejected, and the response is an input-token estimate only. |
 | Files and attachments | Use the Files API first, then reference pre-uploaded `file_id` values in Responses. Inline file bytes and file URLs are rejected. |
 | Batches | Create/list/retrieve/results and file-backed batch input are supported for chat, Responses, and embeddings rows. Cancel/delete are unsupported. |
@@ -72,6 +72,7 @@ Configure GigaChat with `gigachat_key_config` on each key. The regular `value` f
    - **OAuth Credentials** for the GigaChat authorization key used in OAuth token exchange.
    - **Access token** for a pre-obtained short-lived token.
    - **Password** for deployments that expose the SDK-compatible password token endpoint.
+   - **Client certificate** for mTLS-only authentication.
 5. Optionally set `base_url`, `auth_url`, CA bundle, and client certificate fields.
 6. Set **Allowed Models** to `*` or to specific models such as `GigaChat-2`, `GigaChat-2-Pro`, `GigaChat-2-Max`, `Embeddings`, or `Embeddings-2`.
 7. Save the provider configuration.

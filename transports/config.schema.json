@@ -319,6 +319,9 @@
         "gemini": {
           "$ref": "#/$defs/provider"
         },
+        "gigachat": {
+          "$ref": "#/$defs/provider_with_gigachat_config"
+        },
         "opencode-go": {
           "$ref": "#/$defs/provider"
         },
@@ -3361,7 +3364,7 @@
                 },
                 "cert_file": {
                   "type": "string",
-                  "description": "Client certificate file for GigaChat mTLS. TLS material supplements bearer auth and does not replace credentials, access_token, user/password, or value."
+                  "description": "Client certificate file for GigaChat mTLS. Complete client certificate material can be used with or without bearer auth."
                 },
                 "key_file": {
                   "type": "string",
@@ -3369,7 +3372,7 @@
                 },
                 "ca_bundle_file": {
                   "type": "string",
-                  "description": "CA bundle file for GigaChat TLS roots. TLS material supplements bearer auth and does not replace credentials, access_token, user/password, or value."
+                  "description": "CA bundle file for GigaChat TLS roots."
                 }
               },
               "dependentRequired": {
@@ -3398,6 +3401,9 @@
                     },
                     {
                       "required": ["user", "password"]
+                    },
+                    {
+                      "required": ["cert_file", "key_file"]
                     }
                   ]
                 }

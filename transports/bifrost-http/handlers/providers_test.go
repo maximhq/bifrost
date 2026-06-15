@@ -1018,6 +1018,15 @@ func TestValidateProviderKeyURL_GigaChat(t *testing.T) {
 			},
 		},
 		{
+			name: "client certificate config without key value is valid",
+			key: schemas.Key{
+				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+					CertFile: "/secure/client.pem",
+					KeyFile:  "/secure/client.key",
+				},
+			},
+		},
+		{
 			name:    "missing auth material is invalid",
 			key:     schemas.Key{},
 			wantErr: true,

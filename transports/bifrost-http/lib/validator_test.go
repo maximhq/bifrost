@@ -1568,8 +1568,8 @@ func TestValidateConfigSchema_GigaChatKeyConfig_ValidUserPassword(t *testing.T) 
 	}
 }
 
-func TestValidateConfigSchema_GigaChatKeyConfig_TLSOnlyInvalid(t *testing.T) {
-	invalidConfig := `{
+func TestValidateConfigSchema_GigaChatKeyConfig_TLSOnlyValid(t *testing.T) {
+	validConfig := `{
 		"providers": {
 			"gigachat": {
 				"keys": [
@@ -1587,9 +1587,9 @@ func TestValidateConfigSchema_GigaChatKeyConfig_TLSOnlyInvalid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected TLS-only GigaChat key config to fail validation")
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected TLS-only GigaChat key config to pass validation, got: %v", err)
 	}
 }
 
