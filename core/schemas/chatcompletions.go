@@ -1225,7 +1225,8 @@ func rewriteDocumentBlock(data []byte) ([]byte, error) {
 
 // CachePoint represents a cache point marker (Bedrock-specific)
 type CachePoint struct {
-	Type string `json:"type"` // "default"
+	Type string  `json:"type"`          // "default"
+	TTL  *string `json:"ttl,omitempty"` // "5m" | "1h"
 }
 
 type CacheControlType string

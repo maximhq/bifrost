@@ -1926,6 +1926,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				if len(bifrostReq.Params.Tools) > 0 {
 					bifrostReq.Params.Tools[len(bifrostReq.Params.Tools)-1].CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  tool.CachePoint.TTL,
 					}
 				}
 			}
@@ -2466,9 +2467,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 				if tool.CacheControl != nil && !schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					bedrockTools = append(bedrockTools, BedrockTool{
-						CachePoint: &BedrockCachePoint{
-							Type: BedrockCachePointTypeDefault,
-						},
+						CachePoint: newBedrockCachePoint(tool.CacheControl.TTL),
 					})
 				}
 			}
@@ -3143,7 +3142,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				})
 				if result.CacheControl != nil {
 					resultBlocks = append(resultBlocks, BedrockContentBlock{
-						CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+						CachePoint: newBedrockCachePoint(result.CacheControl.TTL),
 					})
 				}
 				resultIDs = append(resultIDs, callID)
@@ -3193,7 +3192,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 					contentBlocks = append(contentBlocks, *toolUseBlock)
 					if toolCall.CacheControl != nil {
 						contentBlocks = append(contentBlocks, BedrockContentBlock{
-							CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+							CachePoint: newBedrockCachePoint(toolCall.CacheControl.TTL),
 						})
 					}
 				}
@@ -3340,7 +3339,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							contentBlocks = append(contentBlocks, *toolUseBlock)
 							if toolCall.CacheControl != nil {
 								contentBlocks = append(contentBlocks, BedrockContentBlock{
-									CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+									CachePoint: newBedrockCachePoint(toolCall.CacheControl.TTL),
 								})
 							}
 						}
@@ -3370,7 +3369,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						})
 						if result.CacheControl != nil {
 							resultBlocks = append(resultBlocks, BedrockContentBlock{
-								CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+								CachePoint: newBedrockCachePoint(result.CacheControl.TTL),
 							})
 						}
 						resultIDs = append(resultIDs, callID)
@@ -3664,9 +3663,7 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 					})
 					if block.CacheControl != nil {
 						systemMessages = append(systemMessages, BedrockSystemMessage{
-							CachePoint: &BedrockCachePoint{
-								Type: BedrockCachePointTypeDefault,
-							},
+							CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 						})
 					}
 				}
@@ -3711,6 +3708,7 @@ func convertBedrockSystemMessageToBifrostMessages(systemMessages []BedrockSystem
 				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
 					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  sysMsg.CachePoint.TTL,
 					}
 				}
 			}
@@ -4164,11 +4162,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
 					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  block.CachePoint.TTL,
 					}
 				} else {
 					// Fallback: set on message itself (for function_call/function_call_output)
 					lastMessage.CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  block.CachePoint.TTL,
 					}
 				}
 			}
@@ -4387,9 +4387,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 
 			if block.CacheControl != nil {
 				blocks = append(blocks, BedrockContentBlock{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 				})
 			}
 		}
