@@ -67,6 +67,21 @@ func (m *MCPManager) RunWithPluginPipeline(
 			if name := req.GetToolName(); name != "" {
 				tracer.SetAttribute(spanHandle, schemas.AttrToolName, name)
 			}
+			if tool := req.ToolDefinition; tool != nil {
+				if data, err := schemas.MarshalString(tool); err == nil {
+					tracer.SetAttribute(spanHandle, schemas.AttrBifrostToolJSONSchema, data)
+				}
+				if tool.Function != nil {
+					if tool.Function.Description != nil {
+						tracer.SetAttribute(spanHandle, schemas.AttrBifrostToolDescription, *tool.Function.Description)
+					}
+					if tool.Function.Parameters != nil {
+						if data, err := schemas.MarshalString(tool.Function.Parameters); err == nil {
+							tracer.SetAttribute(spanHandle, schemas.AttrBifrostToolParameters, data)
+						}
+					}
+				}
+			}
 			// GetToolArguments returns interface{}; the Responses branch boxes a
 			// *string, so a nil pointer survives the != nil guard. Unwrap and skip
 			// it explicitly, and deref non-nil so the attribute is the JSON string.

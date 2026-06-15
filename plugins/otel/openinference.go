@@ -125,6 +125,11 @@ func openInferenceKind(trace *schemas.Trace, span *schemas.Span) string {
 			return "AGENT"
 		}
 	}
+	if span.Kind == schemas.SpanKindMCPClient {
+		if operation, ok := span.Attributes[schemas.AttrOperationName].(string); ok && operation == schemas.OTelOperationNameExecuteTool {
+			return "TOOL"
+		}
+	}
 
 	switch span.Kind {
 	case schemas.SpanKindLLMCall, schemas.SpanKindSpeech, schemas.SpanKindTranscription:
@@ -189,6 +194,11 @@ func openInferenceInvocationParameters(attrs map[string]any) string {
 func appendOpenInferenceContent(result []*KeyValue, attrs map[string]any, kind string) []*KeyValue {
 	if kind == "EMBEDDING" {
 		result = appendMappedAttribute(result, attrs, "embedding.text", schemas.AttrInputText)
+	}
+	if kind == "TOOL" {
+		result = appendMappedAttribute(result, attrs, "tool.description", schemas.AttrBifrostToolDescription)
+		result = appendMappedAttribute(result, attrs, "tool.json_schema", schemas.AttrBifrostToolJSONSchema)
+		result = appendMappedAttribute(result, attrs, "tool.parameters", schemas.AttrBifrostToolParameters)
 	}
 
 	if value, ok := firstAttribute(attrs, schemas.AttrInputMessages); ok {

@@ -29,6 +29,7 @@ var mcpRequestPool = sync.Pool{
 func resetMCPRequest(req *schemas.BifrostMCPRequest) {
 	req.RequestType = ""
 	req.ClientName = ""
+	req.ToolDefinition = nil
 	req.BifrostMCPPingRequest = nil
 	req.BifrostMCPListToolsRequest = nil
 	req.BifrostMCPExecuteToolRequest = nil
@@ -110,6 +111,7 @@ func (m *MCPManager) executeToolWithHooks(
 	if state != nil {
 		executionConfig = state.ExecutionConfig
 		toolNameMapping = state.ToolNameMapping
+		setResolvedToolDefinition(request, state)
 	}
 
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
@@ -128,6 +130,16 @@ func (m *MCPManager) executeToolWithHooks(
 		return nil, bErr
 	}
 	return resp, nil
+}
+
+func setResolvedToolDefinition(request *schemas.BifrostMCPRequest, state *schemas.MCPClientState) {
+	if request == nil || state == nil {
+		return
+	}
+	if tool, ok := state.ToolMap[request.GetToolName()]; ok {
+		toolCopy := schemas.DeepCopyChatTool(tool)
+		request.ToolDefinition = &toolCopy
+	}
 }
 
 // prepareToolExecution resolves the tool to its owning MCP client and

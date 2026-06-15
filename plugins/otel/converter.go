@@ -220,8 +220,11 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 	}
 	kvs := make([]*KeyValue, 0, len(attrs))
 	for k, v := range attrs {
-		// Internal marker consumed by the OpenInference profile.
-		if k == schemas.AttrBifrostAgentMode {
+		// Internal attributes consumed by the OpenInference profile.
+		if k == schemas.AttrBifrostAgentMode ||
+			k == schemas.AttrBifrostToolDescription ||
+			k == schemas.AttrBifrostToolJSONSchema ||
+			k == schemas.AttrBifrostToolParameters {
 			continue
 		}
 		if disableContentLogging && isContentAttribute(k) {
@@ -246,6 +249,8 @@ func isContentAttribute(key string) bool {
 	case schemas.AttrTools, schemas.AttrRespTools,
 		schemas.AttrToolName, schemas.AttrToolCallID,
 		schemas.AttrToolCallArguments, schemas.AttrToolCallResult,
+		schemas.AttrBifrostToolDescription, schemas.AttrBifrostToolJSONSchema,
+		schemas.AttrBifrostToolParameters,
 		schemas.AttrToolType,
 		schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,
 		schemas.AttrRespToolChoiceType, schemas.AttrRespToolChoiceName:
