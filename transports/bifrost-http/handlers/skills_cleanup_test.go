@@ -55,8 +55,8 @@ func TestCleanupOrphanSkillFilesDeletesDBFallbackBlobs(t *testing.T) {
 	if err := store.CreateSkillFileBlob(ctx, &tables.TableSkillFileBlob{ID: orphanBlobID, Data: []byte("orphan")}); err != nil {
 		t.Fatalf("create orphan blob: %v", err)
 	}
-	// Backdate the orphan blob so it exceeds the 30-minute grace period.
-	if err := store.DB().WithContext(ctx).Model(&tables.TableSkillFileBlob{}).Where("id = ?", orphanBlobID).Update("created_at", time.Now().Add(-1*time.Hour)).Error; err != nil {
+	// Backdate the orphan blob so it exceeds the 24-hour grace period.
+	if err := store.DB().WithContext(ctx).Model(&tables.TableSkillFileBlob{}).Where("id = ?", orphanBlobID).Update("created_at", time.Now().Add(-25*time.Hour)).Error; err != nil {
 		t.Fatalf("backdate orphan blob: %v", err)
 	}
 	if err := store.CreateSkill(ctx, &tables.TableSkill{
@@ -110,8 +110,8 @@ func TestCleanupOrphanSkillFilesDeletesOnlyUnreferencedUploadObjects(t *testing.
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
-	// Backdate orphan object so it exceeds the 30-minute grace period.
-	objStore.SetCreatedAt(orphanKey, time.Now().Add(-1*time.Hour))
+	// Backdate orphan object so it exceeds the 24-hour grace period.
+	objStore.SetCreatedAt(orphanKey, time.Now().Add(-25*time.Hour))
 	uploadID := "referenced"
 	if err := store.CreateSkill(ctx, &tables.TableSkill{
 		Name:        "cleanup-object-test",
