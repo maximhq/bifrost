@@ -23,6 +23,8 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		return nil, err
 	}
 	dsn := postgresconn.BuildDSN(config)
+	logger.Info("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
+		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
 	// Migration-only DSN. Forces pgx into simple-query protocol on the migration
 	// pool so no statement plan is ever cached server-side; that makes SQLSTATE
@@ -33,25 +35,34 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 
 	// Throwaway pool for schema migrations. Closing it before the runtime pool
 	// opens guarantees no cached prepared-plan survives the DDL.
+	logger.Info("configstore: opening migration connection pool (if this step hangs, the database host/port is likely unreachable)")
 	mDb, err := postgresconn.Open(migrationDSN, config, newGormLogger(logger))
 	if err != nil {
+		logger.Error("configstore: failed to open migration connection pool: %v", err)
 		return nil, err
 	}
+	logger.Info("configstore: migration pool opened; running schema migrations (may block on a cross-node advisory lock if another pod is migrating)")
 	if err := triggerMigrations(ctx, mDb, logger); err != nil {
+		logger.Error("configstore: schema migrations failed: %v", err)
 		postgresconn.Close(mDb, logger)
 		return nil, err
 	}
+	logger.Info("configstore: schema migrations complete; closing migration pool")
 	postgresconn.Close(mDb, logger)
 
 	// Runtime pool. Opens against post-migration schema.
+	logger.Info("configstore: opening runtime connection pool")
 	db, err := postgresconn.Open(dsn, config, newGormLogger(logger))
 	if err != nil {
+		logger.Error("configstore: failed to open runtime connection pool: %v", err)
 		return nil, err
 	}
 	if err := postgresconn.ApplyPoolTuning(db, config); err != nil {
+		logger.Error("configstore: failed to apply connection pool tuning: %v", err)
 		postgresconn.Close(db, logger)
 		return nil, err
 	}
+	logger.Info("configstore: runtime connection pool ready")
 
 	d := &RDBConfigStore{logger: logger}
 	d.db.Store(db)
@@ -90,9 +101,12 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// Encrypt any plaintext rows if encryption is enabled. Runs on the
 	// runtime pool — pure DML (SELECT + UPDATE), no DDL, so cached plans it
 	// installs remain valid until the next external migration batch.
+	logger.Info("configstore: encrypting plaintext rows if encryption is enabled")
 	if err := d.EncryptPlaintextRows(ctx); err != nil {
+		logger.Error("configstore: failed to encrypt plaintext rows: %v", err)
 		postgresconn.Close(db, logger)
 		return nil, fmt.Errorf("failed to encrypt plaintext rows: %w", err)
 	}
+	logger.Info("configstore: postgres config store ready")
 	return d, nil
 }
