@@ -145,8 +145,6 @@ func (a *AgentModeExecutor) executeAgent(
 	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (interface{}, *schemas.BifrostError) {
-	ctx.SetTraceAttribute(schemas.AttrBifrostAgentMode, true)
-
 	// Get initial response from adapter
 	currentResponse := adapter.getInitialResponse()
 
@@ -281,6 +279,8 @@ func (a *AgentModeExecutor) executeAgent(
 		// Execute auto-executable tools first
 		var executedToolResults []*schemas.ChatMessage
 		if len(autoExecutableTools) > 0 {
+			ctx.SetTraceAttribute(schemas.AttrBifrostAgentMode, true)
+
 			// Add assistant message with auto-executable tool calls to conversation
 			conversationHistory = adapter.addAssistantMessage(conversationHistory, currentResponse)
 
