@@ -100,36 +100,49 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return sqlDB.Close()
 	}
 
+	logger.Info("logstore: postgres target host=%s port=%s db=%s sslmode=%s",
+		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
+
 	// Throwaway pool for the version gate and schema migrations. Closing it
 	// before the runtime pool opens guarantees no cached plan survives DDL.
+	logger.Info("logstore: opening migration connection pool (if this step hangs, the database host/port is likely unreachable)")
 	mDb, err := openPool(migrationDSN)
 	if err != nil {
+		logger.Error("logstore: failed to open migration connection pool: %v", err)
 		return nil, err
 	}
 
 	// Postgres version gate: refuse to start below 16 (matviews, partitioning,
 	// and some JSON operators we rely on depend on 16+).
+	logger.Info("logstore: checking postgres server version (requires 16+)")
 	var pgVersionNum int
 	if err := mDb.Raw("SELECT current_setting('server_version_num')::int").Scan(&pgVersionNum).Error; err != nil {
+		logger.Error("logstore: failed to read postgres server version: %v", err)
 		_ = closePool(mDb)
 		return nil, err
 	}
 	if pgVersionNum < 160000 {
+		logger.Error("logstore: postgres server_version_num=%d is below the required minimum of 160000 (Postgres 16)", pgVersionNum)
 		_ = closePool(mDb)
 		return nil, fmt.Errorf("postgres version is lower than 16, please upgrade to 16 or higher")
 	}
+	logger.Info("logstore: postgres server_version_num=%d; running schema migrations (may block on a cross-node advisory lock if another pod is migrating)", pgVersionNum)
 
 	if err := triggerMigrations(ctx, mDb, logger); err != nil {
+		logger.Error("logstore: schema migrations failed: %v", err)
 		_ = closePool(mDb)
 		return nil, err
 	}
+	logger.Info("logstore: schema migrations complete; closing migration pool")
 	if err := closePool(mDb); err != nil {
 		return nil, fmt.Errorf("close migration db connection: %w", err)
 	}
 
 	// Runtime pool. Opens against post-migration schema.
+	logger.Info("logstore: opening runtime connection pool")
 	db, err := openPool(dsn)
 	if err != nil {
+		logger.Error("logstore: failed to open runtime connection pool: %v", err)
 		return nil, err
 	}
 
@@ -137,6 +150,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		closePool(db)
 		return nil, err
 	}
+	logger.Info("logstore: runtime connection pool ready")
 	d := &RDBLogStore{db: db, logger: logger}
 
 	// Run all index builds sequentially in a single goroutine to prevent
