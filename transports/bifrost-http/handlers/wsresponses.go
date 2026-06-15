@@ -14,6 +14,7 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -652,23 +653,39 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.virtualKey)
 	}
 
-	// Handle Bearer token with sk-bf- prefix (virtual key via Authorization header)
+	// Handle Bearer token with the configured virtual key prefix (virtual key via Authorization header)
 	if auth.authorization != "" {
 		if strings.HasPrefix(auth.authorization, "Bearer ") {
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
-			if strings.HasPrefix(token, "sk-bf-") {
+			if strings.HasPrefix(token, governance.VirtualKeyPrefix) {
 				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
 			}
 		}
 	}
 	if auth.apiKey != "" {
-		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.apiKey)
+		if strings.HasPrefix(auth.apiKey, governance.VirtualKeyPrefix) {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.apiKey, governance.VirtualKeyPrefix))
+		} else if h.handlerStore.ShouldAllowDirectKeys() {
+			key := schemas.Key{
+				ID:     "header-provided",
+				Value:  *schemas.NewEnvVar(auth.apiKey),
+				Models: []string{},
+				Weight: 1.0,
+			}
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
 	if auth.googAPIKey != "" {
-		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
+		if strings.HasPrefix(auth.googAPIKey, governance.VirtualKeyPrefix) {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.googAPIKey, governance.VirtualKeyPrefix))
+		} else if h.handlerStore.ShouldAllowDirectKeys() {
+			key := schemas.Key{
+				ID:     "header-provided",
+				Value:  *schemas.NewEnvVar(auth.googAPIKey),
+				Models: []string{},
+				Weight: 1.0,
+			}
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
 

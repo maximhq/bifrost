@@ -2075,6 +2075,13 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	// hash is not updated on UI/API edits, so a hash match cannot prove the DB row
 	// is unchanged; forcing the sync reverts UI drift back to the file values.
 	forceFileSync := configData.isConfigJSONSourceOfTruth()
+  // Apply VirtualKeyPrefix override BEFORE the virtual-key seed loop runs,
+	// so that the prefix validation/generation paths below honor the operator's
+	// custom prefix instead of silently rewriting their seed values.
+	if configData.Governance.VirtualKeyPrefix != nil {
+		governance.SetVirtualKeyPrefix(*configData.Governance.VirtualKeyPrefix)
+		logger.Info("virtual key prefix overridden to %q", governance.VirtualKeyPrefix)
+	}
 	// Merge Budgets by ID with hash comparison
 	budgetsToAdd := make([]configstoreTables.TableBudget, 0)
 	budgetsToUpdate := make([]configstoreTables.TableBudget, 0)
