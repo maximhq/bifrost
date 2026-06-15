@@ -2955,8 +2955,9 @@ type ToolCallStateManager struct {
 	batches      []*ToolCallBatch
 
 	// Pending operations
-	pendingToolCallIDs []string               // Tool calls waiting to be emitted
+	pendingToolCallIDs []string               // Tool calls waiting to be emitted, in registration order
 	pendingResults     map[string]*ToolResult // Results waiting to be matched
+	pendingResultIDs   []string               // Insertion-order tracking for pendingResults
 }
 
 // NewToolCallStateManager creates a new state manager
@@ -3009,6 +3010,7 @@ func (m *ToolCallStateManager) RegisterToolResult(callID string, content []Bedro
 	}
 
 	m.pendingResults[callID] = result
+	m.pendingResultIDs = append(m.pendingResultIDs, callID)
 
 	// If we have the corresponding tool call, attach the result
 	if toolCall, exists := m.toolCalls[callID]; exists {
@@ -3069,17 +3071,34 @@ func (m *ToolCallStateManager) MarkToolCallsEmitted(callIDs []string, assistantM
 	}
 }
 
-// GetPendingResults returns all pending results that are ready to be emitted
+// GetPendingResults returns all pending results that are ready to be emitted.
+// Deprecated: use GetPendingResultsOrdered to guarantee deterministic ordering.
 func (m *ToolCallStateManager) GetPendingResults() map[string]*ToolResult {
 	return m.pendingResults
 }
 
+// GetPendingResultsOrdered returns pending result IDs in registration order.
+// Callers must look up each ID in the map returned by GetPendingResults.
+// Use this instead of iterating GetPendingResults directly to avoid the
+// non-deterministic map iteration that causes Bedrock to reject requests.
+func (m *ToolCallStateManager) GetPendingResultsOrdered() []string {
+	ids := make([]string, 0, len(m.pendingResultIDs))
+	for _, id := range m.pendingResultIDs {
+		if _, ok := m.pendingResults[id]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // MarkResultsEmitted marks results as having been emitted in a user message
 func (m *ToolCallStateManager) MarkResultsEmitted(callIDs []string) {
+	emitted := make(map[string]bool, len(callIDs))
 	for _, callID := range callIDs {
 		if result, exists := m.pendingResults[callID]; exists {
 			result.Emitted = true
 			delete(m.pendingResults, callID)
+			emitted[callID] = true
 
 			// Update tool call state
 			if toolCall, exists := m.toolCalls[callID]; exists {
@@ -3087,6 +3106,14 @@ func (m *ToolCallStateManager) MarkResultsEmitted(callIDs []string) {
 			}
 		}
 	}
+	// Remove emitted IDs from the ordered tracking slice.
+	filtered := m.pendingResultIDs[:0]
+	for _, id := range m.pendingResultIDs {
+		if !emitted[id] {
+			filtered = append(filtered, id)
+		}
+	}
+	m.pendingResultIDs = filtered
 }
 
 // HasPendingToolCalls checks if there are tool calls waiting to be emitted
@@ -3130,9 +3157,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 		// Emit any pending results from the state manager
 		if stateManager.HasPendingResults() {
 			pendingResults := stateManager.GetPendingResults()
+			orderedIDs := stateManager.GetPendingResultsOrdered()
 			var resultBlocks []BedrockContentBlock
-			resultIDs := []string{}
-			for callID, result := range pendingResults {
+			for _, callID := range orderedIDs {
+				result := pendingResults[callID]
 				resultBlocks = append(resultBlocks, BedrockContentBlock{
 					ToolResult: &BedrockToolResult{
 						ToolUseID: callID,
@@ -3145,7 +3173,6 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						CachePoint: newBedrockCachePoint(result.CacheControl.TTL),
 					})
 				}
-				resultIDs = append(resultIDs, callID)
 			}
 
 			if len(resultBlocks) > 0 {
@@ -3153,7 +3180,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 					Role:    BedrockMessageRoleUser,
 					Content: resultBlocks,
 				})
-				stateManager.MarkResultsEmitted(resultIDs)
+				stateManager.MarkResultsEmitted(orderedIDs)
 			}
 		}
 	}
@@ -3357,9 +3384,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				// Emit pending results after tool calls
 				if stateManager.HasPendingResults() {
 					pendingResults := stateManager.GetPendingResults()
+					orderedIDs := stateManager.GetPendingResultsOrdered()
 					var resultBlocks []BedrockContentBlock
-					resultIDs := []string{}
-					for callID, result := range pendingResults {
+					for _, callID := range orderedIDs {
+						result := pendingResults[callID]
 						resultBlocks = append(resultBlocks, BedrockContentBlock{
 							ToolResult: &BedrockToolResult{
 								ToolUseID: callID,
@@ -3372,7 +3400,6 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 								CachePoint: newBedrockCachePoint(result.CacheControl.TTL),
 							})
 						}
-						resultIDs = append(resultIDs, callID)
 					}
 
 					if len(resultBlocks) > 0 {
@@ -3380,7 +3407,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							Role:    BedrockMessageRoleUser,
 							Content: resultBlocks,
 						})
-						stateManager.MarkResultsEmitted(resultIDs)
+						stateManager.MarkResultsEmitted(orderedIDs)
 					}
 				}
 			}
@@ -3433,9 +3460,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			// Emit any pending results after tool calls
 			if stateManager.HasPendingResults() {
 				pendingResults := stateManager.GetPendingResults()
+				orderedIDs := stateManager.GetPendingResultsOrdered()
 				var resultBlocks []BedrockContentBlock
-				resultIDs := []string{}
-				for callID, result := range pendingResults {
+				for _, callID := range orderedIDs {
+					result := pendingResults[callID]
 					resultBlocks = append(resultBlocks, BedrockContentBlock{
 						ToolResult: &BedrockToolResult{
 							ToolUseID: callID,
@@ -3443,7 +3471,6 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							Status:    schemas.Ptr(result.Status),
 						},
 					})
-					resultIDs = append(resultIDs, callID)
 				}
 
 				if len(resultBlocks) > 0 {
@@ -3451,7 +3478,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						Role:    BedrockMessageRoleUser,
 						Content: resultBlocks,
 					})
-					stateManager.MarkResultsEmitted(resultIDs)
+					stateManager.MarkResultsEmitted(orderedIDs)
 				}
 			}
 
