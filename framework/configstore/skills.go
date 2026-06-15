@@ -652,13 +652,10 @@ func (s *RDBConfigStore) CreateSkill(ctx context.Context, skill *tables.TableSki
 	return nil
 }
 
-// GetSkill returns a skill with lean version summaries (id, version, created_at) and serving files.
+// GetSkill returns a skill with serving files. Version history is loaded through ListSkillVersions.
 func (s *RDBConfigStore) GetSkill(ctx context.Context, id string) (*tables.TableSkill, error) {
 	var skill tables.TableSkill
 	if err := s.ScopedDB(ctx).
-		Preload("Versions", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id", "skill_id", "version", "created_at").Order("created_at DESC")
-		}).
 		First(&skill, "skills.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -667,6 +664,15 @@ func (s *RDBConfigStore) GetSkill(ctx context.Context, id string) (*tables.Table
 	}
 	if err := populateSkillFiles(s.ScopedDB(ctx), &skill); err != nil {
 		return nil, fmt.Errorf("load serving files: %w", err)
+	}
+	// Populate the most recently created version for bump validation without
+	// returning the full version history from this endpoint.
+	latest, err := latestCreatedSkillVersion(s.ScopedDB(ctx), skill.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load latest created skill version: %w", err)
+	}
+	if latest != "" {
+		skill.HighestVersion = latest
 	}
 	return &skill, nil
 }
@@ -1081,6 +1087,7 @@ func populateSkillFiles(tx *gorm.DB, skill *tables.TableSkill) error {
 		return err
 	}
 	skill.Files = version.Files
+	skill.FileCount = int64(len(version.Files))
 	return nil
 }
 
@@ -1197,12 +1204,14 @@ func (s *RDBConfigStore) UpdateSkillConfigHash(ctx context.Context, skillID stri
 		Update("config_hash", configHash).Error
 }
 
+const SkillOrphanCleanupGracePeriod = 24 * time.Hour
+
 // CleanupOrphanSkillFileBlobs deletes DB fallback blobs not referenced by any skill file.
-// When force is false, a 30-minute grace period protects freshly uploaded pending blobs.
+// When force is false, a 24-hour grace period protects freshly uploaded pending blobs.
 func (s *RDBConfigStore) CleanupOrphanSkillFileBlobs(ctx context.Context, force bool) (int64, error) {
 	query := s.DB().WithContext(ctx)
 	if !force {
-		cutoff := time.Now().Add(-30 * time.Minute)
+		cutoff := time.Now().Add(-SkillOrphanCleanupGracePeriod)
 		query = query.Where("created_at < ?", cutoff)
 	}
 	result := query.
