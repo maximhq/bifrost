@@ -684,6 +684,12 @@ func (h *HybridLogStore) GetDimensionLatencyHistogram(ctx context.Context, filte
 
 // BulkUpdateCost delegates to the inner store and updates the cost column
 // for each (logID -> cost) pair in a single round trip.
+func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	// Pass through to inner store for index/output field reconciliation.
+	// Payload offloading is handled separately by the logging plugin.
+	return h.inner.BatchUpdate(ctx, entries)
+}
+
 func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
 	return h.inner.BulkUpdateCost(ctx, updates)
 }

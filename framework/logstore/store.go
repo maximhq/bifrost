@@ -56,6 +56,7 @@ type LogStore interface {
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
 	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
+	BatchUpdate(ctx context.Context, entries []*Log) error
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error

@@ -64,8 +64,10 @@ type pendingInjectEntries struct {
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
+// Exactly one of log (insert), logUpdate (partial update), or mcpLog is set.
 type writeQueueEntry struct {
 	log         *logstore.Log
+	logUpdate   *logstore.Log
 	mcpLog      *logstore.MCPToolLog
 	callback    func(entry *logstore.Log)
 	mcpCallback func(entry *logstore.MCPToolLog)
@@ -150,12 +152,16 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 		return
 	}
 
-	// Collect all log entries for batch insert
+	// Collect all log entries, separating inserts from partial updates.
 	logs := make([]*logstore.Log, 0, len(batch))
+	logUpdates := make([]*logstore.Log, 0, len(batch))
 	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
 			logs = append(logs, entry.log)
+		}
+		if entry.logUpdate != nil {
+			logUpdates = append(logUpdates, entry.logUpdate)
 		}
 		if entry.mcpLog != nil {
 			mcpLogs = append(mcpLogs, entry.mcpLog)
@@ -169,6 +175,20 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 			for _, log := range logs {
 				if err := p.store.BatchCreateIfNotExists(p.ctx, []*logstore.Log{log}); err != nil {
 					p.logger.Warn("individual insert failed for log %s: %v", log.ID, err)
+					p.droppedRequests.Add(1)
+				}
+			}
+		}
+	}
+	// Updates run AFTER inserts so a partial-row insert and its reconciling update
+	// landing in the same batch resolve correctly (the row exists by update time).
+	if len(logUpdates) > 0 {
+		if err := p.store.BatchUpdate(p.ctx, logUpdates); err != nil {
+			p.logger.Warn("batch update failed for %d entries, falling back to individual updates: %v", len(logUpdates), err)
+			// Individual fallback — isolate the bad entry instead of losing the whole batch
+			for _, log := range logUpdates {
+				if err := p.store.BatchUpdate(p.ctx, []*logstore.Log{log}); err != nil {
+					p.logger.Warn("individual update failed for log %s: %v", log.ID, err)
 					p.droppedRequests.Add(1)
 				}
 			}
@@ -202,7 +222,12 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 	var mcpCallbacks []mcpCbPair
 	for _, entry := range batch {
 		if entry.callback != nil {
-			callbacks = append(callbacks, cbPair{cb: entry.callback, log: entry.log})
+			// Insert entries carry log; update entries carry logUpdate.
+			cbLog := entry.log
+			if cbLog == nil {
+				cbLog = entry.logUpdate
+			}
+			callbacks = append(callbacks, cbPair{cb: entry.callback, log: cbLog})
 		}
 		if entry.mcpCallback != nil {
 			mcpCallbacks = append(mcpCallbacks, mcpCbPair{cb: entry.mcpCallback, log: entry.mcpLog})
@@ -226,9 +251,11 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 }
 
 // cleanupStalePendingLogs removes stale in-memory pending log state.
-// Pending LLM entries are dropped to prevent unbounded memory growth. Pending
-// MCP entries are converted into terminal error rows and queued for persistence,
-// because PreMCPHook does not write a processing row to the database.
+// Before dropping a stale LLM entry, its input is persisted as a partial
+// "processing" row so a late-finishing request can still be reconciled from the
+// DB (see the DB-fallback path in PostLLMHook) instead of losing its log entirely.
+// Pending MCP entries are converted into terminal error rows and queued for
+// persistence, because PreMCPHook does not write a processing row to the database.
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
 	p.pendingLogsEntries.Range(func(key, value any) bool {
@@ -242,6 +269,21 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 				lastActive = time.Unix(0, nanos)
 			}
 			if lastActive.Before(cutoff) {
+				// Persist a partial "processing" row before dropping the entry so a
+				// request that finishes after eviction can be reconciled via the
+				// DB-fallback path instead of losing its log. CreatedAt is reset to
+				// now so the row gets a fresh window before Flush reaps abandoned
+				// "processing" rows; Timestamp keeps the original request time.
+				partial := buildInitialLogEntry(pending)
+				partial.CreatedAt = time.Now().UTC()
+				p.enqueueLogEntry(partial, p.makePostWriteCallback(nil))
+				// Record the eviction in-memory so a later finish reconciles via UPDATE
+				// without a (racy) DB presence read: the partial insert is enqueued
+				// before any reconcile update, and processBatch applies inserts before
+				// updates, so the row is guaranteed present when the update runs.
+				if id, ok := key.(string); ok {
+					p.evictedPartials.Store(id, time.Now())
+				}
 				p.pendingLogsEntries.Delete(key)
 			}
 		}
@@ -275,6 +317,15 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		}
 		return true
 	})
+	// Drop evicted-partial markers whose request never finished. This matches the
+	// processing-row Flush lifecycle: after the TTL the partial row is reaped from
+	// the DB, so there is nothing left to reconcile against.
+	p.evictedPartials.Range(func(key, value any) bool {
+		if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+			p.evictedPartials.Delete(key)
+		}
+		return true
+	})
 }
 
 // enqueueLogEntry pushes a complete log entry to the write queue.
@@ -303,6 +354,29 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 // normal async write queue.
 func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 	p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+}
+
+// enqueueLogUpdate pushes a partial log update (ID + non-zero output fields) to the
+// write queue. The batch writer applies it via store.BatchUpdate after inserts, so
+// it reconciles an existing (e.g. evicted-pending) row instead of inserting. If the
+// queue is full the update is dropped, matching enqueueLogEntry's backpressure.
+func (p *LoggerPlugin) enqueueLogUpdate(entry *logstore.Log, callback func(entry *logstore.Log)) {
+	if p.closed.Load() {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			// Channel was closed between the check and send; entry is dropped
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{logUpdate: entry, callback: callback}:
+		// enqueued successfully
+	default:
+		p.droppedRequests.Add(1)
+		p.logger.Warn("log write queue full, dropping log update %s", entry.ID)
+	}
 }
 
 // enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.
@@ -334,7 +408,10 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	if entry.mcpLog != nil {
 		return estimateMCPToolLogEntrySize(entry.mcpLog)
 	}
-	return estimateLogEntrySize(entry.log)
+	if entry.log != nil {
+		return estimateLogEntrySize(entry.log)
+	}
+	return estimateLogEntrySize(entry.logUpdate)
 }
 
 // estimateLogEntrySize returns a rough byte-size estimate for a log entry
