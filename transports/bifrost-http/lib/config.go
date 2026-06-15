@@ -1153,10 +1153,14 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		logger.Warn("failed to generate client config hash from file: %v", hashErr)
 		return
 	}
-	if clientConfig.ConfigHash == fileHash {
+	// When config.json owns this section, the file always wins regardless of the
+	// stored hash: UI/API edits do not bump ConfigHash, so a hash match cannot prove
+	// the DB row is unchanged. Forcing the sync reverts UI drift back to file values.
+	forceClientSync := configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("client")
+	if !forceClientSync && clientConfig.ConfigHash == fileHash {
 		// Hash matches - keep DB config (preserves UI changes to both client and tool manager settings)
 		logger.Debug("client config hash matches, keeping DB config")
-	} else if baseHash, baseErr := configData.Client.GenerateClientConfigHash(); baseErr == nil &&
+	} else if baseHash, baseErr := configData.Client.GenerateClientConfigHash(); !forceClientSync && baseErr == nil &&
 		clientConfig.ConfigHash == baseHash && toolManagerFromFile != nil {
 		// Legacy hash match (pre-upgrade): the stored hash covers only the client section and
 		// matches the file, meaning the client section is unchanged. Only apply the tool manager
@@ -2066,6 +2070,11 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 // mergeGovernanceConfig merges governance config from file with store
 func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
 	logger.Debug("merging governance config from config file with store")
+	// When config.json is the source of truth, file-present entities must be
+	// re-synced even when the stored ConfigHash still matches the file. The stored
+	// hash is not updated on UI/API edits, so a hash match cannot prove the DB row
+	// is unchanged; forcing the sync reverts UI drift back to the file values.
+	forceFileSync := configData.isConfigJSONSourceOfTruth()
 	// Merge Budgets by ID with hash comparison
 	budgetsToAdd := make([]configstoreTables.TableBudget, 0)
 	budgetsToUpdate := make([]configstoreTables.TableBudget, 0)
@@ -2081,7 +2090,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingBudget := range governanceConfig.Budgets {
 			if existingBudget.ID == newBudget.ID {
 				found = true
-				if existingBudget.ConfigHash != fileBudgetHash {
+				if forceFileSync || existingBudget.ConfigHash != fileBudgetHash {
 					logger.Debug("config hash mismatch for budget %s, syncing from config file", newBudget.ID)
 					configData.Governance.Budgets[i].ConfigHash = fileBudgetHash
 					budgetsToUpdate = append(budgetsToUpdate, configData.Governance.Budgets[i])
@@ -2112,7 +2121,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingRateLimit := range governanceConfig.RateLimits {
 			if existingRateLimit.ID == newRateLimit.ID {
 				found = true
-				if existingRateLimit.ConfigHash != fileRLHash {
+				if forceFileSync || existingRateLimit.ConfigHash != fileRLHash {
 					logger.Debug("config hash mismatch for rate limit %s, syncing from config file", newRateLimit.ID)
 					configData.Governance.RateLimits[i].ConfigHash = fileRLHash
 					rateLimitsToUpdate = append(rateLimitsToUpdate, configData.Governance.RateLimits[i])
@@ -2149,7 +2158,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					configData.Governance.Customers[i].ID = existingCustomer.ID
 				}
 				found = true
-				if existingCustomer.ConfigHash != fileCustomerHash {
+				if forceFileSync || existingCustomer.ConfigHash != fileCustomerHash {
 					logger.Debug("config hash mismatch for customer %s, syncing from config file", newCustomer.ID)
 					configData.Governance.Customers[i].ConfigHash = fileCustomerHash
 					customersToUpdate = append(customersToUpdate, configData.Governance.Customers[i])
@@ -2189,7 +2198,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					configData.Governance.Teams[i].ID = existingTeam.ID
 				}
 				found = true
-				if existingTeam.ConfigHash != fileTeamHash {
+				if forceFileSync || existingTeam.ConfigHash != fileTeamHash {
 					logger.Debug("config hash mismatch for team %s, syncing from config file", newTeam.ID)
 					configData.Governance.Teams[i].ConfigHash = fileTeamHash
 					teamsToUpdate = append(teamsToUpdate, configData.Governance.Teams[i])
@@ -2229,7 +2238,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					configData.Governance.VirtualKeys[i].ID = existingVirtualKey.ID
 				}
 				found = true
-				if existingVirtualKey.ConfigHash != fileVKHash {
+				if forceFileSync || existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 					// This is added for backward compatibility with existing configs
@@ -2307,7 +2316,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingRoutingRule := range governanceConfig.RoutingRules {
 			if existingRoutingRule.ID == newRoutingRule.ID {
 				found = true
-				if existingRoutingRule.ConfigHash != fileRoutingRuleHash {
+				if forceFileSync || existingRoutingRule.ConfigHash != fileRoutingRuleHash {
 					logger.Debug("config hash mismatch for routing rule %s, syncing from config file", newRoutingRule.ID)
 					configData.Governance.RoutingRules[i].ConfigHash = fileRoutingRuleHash
 					routingRulesToUpdate = append(routingRulesToUpdate, configData.Governance.RoutingRules[i])
@@ -2348,7 +2357,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existing := range governanceConfig.PricingOverrides {
 			if existing.ID == newOverride.ID {
 				found = true
-				if existing.ConfigHash != fileHash {
+				if forceFileSync || existing.ConfigHash != fileHash {
 					logger.Debug("config hash mismatch for pricing override %s, syncing from config file", newOverride.ID)
 					pricingOverridesToUpdate = append(pricingOverridesToUpdate, configData.Governance.PricingOverrides[i])
 					governanceConfig.PricingOverrides[j] = configData.Governance.PricingOverrides[i]
@@ -2377,7 +2386,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingModelConfig := range governanceConfig.ModelConfigs {
 			if existingModelConfig.ID == newModelConfig.ID {
 				found = true
-				if existingModelConfig.ConfigHash != fileModelConfigHash {
+				if forceFileSync || existingModelConfig.ConfigHash != fileModelConfigHash {
 					logger.Debug("config hash mismatch for model config %s, syncing from config file", newModelConfig.ID)
 					modelConfigsToUpdate = append(modelConfigsToUpdate, configData.Governance.ModelConfigs[i])
 					governanceConfig.ModelConfigs[j] = configData.Governance.ModelConfigs[i]
@@ -2882,7 +2891,7 @@ func updateGovernanceConfigInStore(
 				// budget_id removed — unlink any budget previously owned via this path.
 				if err := tx.Model(&configstoreTables.TableBudget{}).
 					Where("customer_id = ?", customer.ID).
-					Update("customer_id", nil).Error; err != nil {
+					UpdateColumn("customer_id", nil).Error; err != nil {
 					return fmt.Errorf("failed to unlink stale budgets from customer %s: %w", customer.ID, err)
 				}
 				continue
@@ -3163,13 +3172,13 @@ func linkCustomerBudgetID(tx *gorm.DB, customerID, budgetID string, clearStale b
 	if clearStale {
 		if err := tx.Model(&configstoreTables.TableBudget{}).
 			Where("customer_id = ? AND id != ?", customerID, budgetID).
-			Update("customer_id", nil).Error; err != nil {
+			UpdateColumn("customer_id", nil).Error; err != nil {
 			return fmt.Errorf("failed to unlink stale budget from customer %s: %w", customerID, err)
 		}
 	}
 	result := tx.Model(&configstoreTables.TableBudget{}).
 		Where("id = ?", budgetID).
-		Update("customer_id", customerID)
+		UpdateColumn("customer_id", customerID)
 	if result.Error != nil {
 		return fmt.Errorf("failed to link budget %s to customer %s: %w", budgetID, customerID, result.Error)
 	}
@@ -3916,8 +3925,8 @@ func syncPluginsFromFile(ctx context.Context, config *Config, configData *Config
 				Placement: plugin.Placement,
 				Order:     plugin.Order,
 			}
-			if err := config.ConfigStore.UpsertPlugin(ctx, tablePlugin, tx); err != nil {
-				return fmt.Errorf("failed to upsert plugin %s: %w", plugin.Name, err)
+			if err := config.ConfigStore.UpdatePlugin(ctx, tablePlugin, tx); err != nil {
+				return fmt.Errorf("failed to update plugin %s: %w", plugin.Name, err)
 			}
 		}
 		return nil
