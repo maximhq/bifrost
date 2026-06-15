@@ -13,6 +13,40 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ToGeminiBatchGenerateContentRequest converts one Bifrost batch request body into the
+// Gemini GenerateContentRequest shape used for batch input. OpenAI-style bodies (with
+// "messages") have their messages converted to Gemini "contents"/"systemInstruction";
+// bodies already in Gemini form are unmarshaled directly. Shared by the Gemini and Vertex
+// batch paths so both emit identical request bodies.
+func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
+	var geminiReq GeminiBatchGenerateContentRequest
+
+	requestBytes, err := providerUtils.MarshalSorted(body)
+	if err != nil {
+		return geminiReq, fmt.Errorf("failed to marshal gemini request: %w", err)
+	}
+	if err := sonic.Unmarshal(requestBytes, &geminiReq); err != nil {
+		return geminiReq, fmt.Errorf("failed to unmarshal gemini request: %w", err)
+	}
+
+	// OpenAI-style body: convert "messages" into Gemini "contents"/"systemInstruction".
+	if rawMessages, ok := body["messages"]; ok {
+		messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
+		if err != nil {
+			return geminiReq, fmt.Errorf("failed to marshal messages: %w", err)
+		}
+		var chatMessages []schemas.ChatMessage
+		if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
+			return geminiReq, fmt.Errorf("failed to unmarshal messages: %w", err)
+		}
+		contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
+		geminiReq.Contents = contents
+		geminiReq.SystemInstruction = systemInstruction
+	}
+
+	return geminiReq, nil
+}
+
 // ToBifrostBatchStatus converts Gemini batch job state to Bifrost status.
 func ToBifrostBatchStatus(geminiState string) schemas.BatchStatus {
 	switch geminiState {
@@ -234,16 +268,6 @@ func parseGeminiTimestamp(timestamp string) int64 {
 		return 0
 	}
 	return t.Unix()
-}
-
-// extractBatchIDFromName extracts the batch ID from the full resource name.
-// e.g., "batches/abc123" -> "abc123"
-func extractBatchIDFromName(name string) string {
-	if name == "" {
-		return ""
-	}
-	parts := strings.Split(name, "/")
-	return parts[len(parts)-1]
 }
 
 // downloadBatchResultsFile downloads and parses a batch results file from Gemini.

@@ -371,6 +371,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				MimeType:    r.MimeType,
 				Provider:    r.Provider,
 			}
+			if vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); ok && vk != "" {
+				session.VirtualKey = vk
+			}
 			if err := kvStore.SetWithTTL(uploadID, session, 1*time.Minute); err != nil {
 				return true, fmt.Errorf("failed to store upload session: %w", err)
 			}
@@ -412,6 +415,15 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			session, ok := val.(*gemini.GeminiResumableUploadSession)
 			if !ok {
 				return nil, errors.New("invalid upload session type in kvstore")
+			}
+
+			// Chunk requests carry no auth headers (resumable-upload protocol:
+			// the upload_id is the credential), so restore the virtual key that
+			// initiated the upload. Headers presented on the chunk request win.
+			if session.VirtualKey != "" {
+				if vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
+					ctx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey)
+				}
 			}
 
 			filename := session.DisplayName
@@ -1111,210 +1123,219 @@ func extractGeminiCachedContentListQueryParams(ctx *fasthttp.RequestCtx, bifrost
 func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
 
-	// POST /v1beta/cachedContents — create
-	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeGenAI,
-		Path:   pathPrefix + "/v1beta/cachedContents",
-		Method: "POST",
-		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.CachedContentCreateRequest
-		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &schemas.BifrostCachedContentCreateRequest{}
-		},
-		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
-			createReq, ok := req.(*schemas.BifrostCachedContentCreateRequest)
-			if !ok {
-				return errors.New("invalid cached content create request type")
-			}
-			if body := ctx.Request.Body(); len(body) > 0 {
-				if !gjson.ValidBytes(body) {
-					return errors.New("invalid JSON")
+	// Register the lifecycle routes under both the flat Gemini path
+	// ("/v1beta/cachedContents") and the Vertex regional path
+	// ("/v1beta/projects/{project}/locations/{location}/cachedContents").
+	cachedBasePaths := []string{
+		pathPrefix + "/v1beta/cachedContents",
+		pathPrefix + "/v1beta/projects/{project}/locations/{location}/cachedContents",
+	}
+	for _, cachedBase := range cachedBasePaths {
+		// POST cachedContents — create
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeGenAI,
+			Path:   cachedBase,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CachedContentCreateRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostCachedContentCreateRequest{}
+			},
+			RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
+				createReq, ok := req.(*schemas.BifrostCachedContentCreateRequest)
+				if !ok {
+					return errors.New("invalid cached content create request type")
 				}
-				createReq.RawRequestBody = copyBytes(body)
-				model, err := requiredGJSONString(body, "model")
-				if err != nil {
-					return err
+				if body := ctx.Request.Body(); len(body) > 0 {
+					if !gjson.ValidBytes(body) {
+						return errors.New("invalid JSON")
+					}
+					createReq.RawRequestBody = copyBytes(body)
+					model, err := requiredGJSONString(body, "model")
+					if err != nil {
+						return err
+					}
+					displayName, err := optionalGJSONString(body, "displayName")
+					if err != nil {
+						return err
+					}
+					ttl, err := optionalGJSONString(body, "ttl")
+					if err != nil {
+						return err
+					}
+					expireTime, err := optionalGJSONString(body, "expireTime")
+					if err != nil {
+						return err
+					}
+					createReq.Model = strings.TrimPrefix(model, "models/")
+					createReq.DisplayName = displayName
+					createReq.TTL = ttl
+					createReq.ExpireTime = expireTime
 				}
-				displayName, err := optionalGJSONString(body, "displayName")
-				if err != nil {
-					return err
+				return nil
+			},
+			CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
+				createReq, ok := req.(*schemas.BifrostCachedContentCreateRequest)
+				if !ok {
+					return nil, errors.New("invalid cached content create request type")
 				}
-				ttl, err := optionalGJSONString(body, "ttl")
-				if err != nil {
-					return err
+				// Provider is set via PreCallback (setGeminiCachedContentCreateProvider).
+				if createReq.Provider == "" {
+					createReq.Provider = schemas.Gemini
 				}
-				expireTime, err := optionalGJSONString(body, "expireTime")
-				if err != nil {
-					return err
+				if len(createReq.RawRequestBody) > 0 {
+					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 				}
-				createReq.Model = strings.TrimPrefix(model, "models/")
-				createReq.DisplayName = displayName
-				createReq.TTL = ttl
-				createReq.ExpireTime = expireTime
-			}
-			return nil
-		},
-		CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
-			createReq, ok := req.(*schemas.BifrostCachedContentCreateRequest)
-			if !ok {
-				return nil, errors.New("invalid cached content create request type")
-			}
-			// Provider is set via PreCallback (setGeminiCachedContentCreateProvider).
-			if createReq.Provider == "" {
-				createReq.Provider = schemas.Gemini
-			}
-			if len(createReq.RawRequestBody) > 0 {
-				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
-			}
-			return &CachedContentRequest{Type: schemas.CachedContentCreateRequest, CreateRequest: createReq}, nil
-		},
-		CachedContentCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentCreateResponse) (interface{}, error) {
-			return gemini.ToGeminiCachedContentCreateResponse(resp), nil
-		},
-		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return gemini.ToGeminiError(err)
-		},
-		PreCallback: setGeminiCachedContentCreateProvider,
-	})
+				return &CachedContentRequest{Type: schemas.CachedContentCreateRequest, CreateRequest: createReq}, nil
+			},
+			CachedContentCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentCreateResponse) (interface{}, error) {
+				return gemini.ToGeminiCachedContentCreateResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return gemini.ToGeminiError(err)
+			},
+			PreCallback: setGeminiCachedContentCreateProvider,
+		})
 
-	// GET /v1beta/cachedContents — list
-	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeGenAI,
-		Path:   pathPrefix + "/v1beta/cachedContents",
-		Method: "GET",
-		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.CachedContentListRequest
-		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &schemas.BifrostCachedContentListRequest{}
-		},
-		CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
-			listReq, ok := req.(*schemas.BifrostCachedContentListRequest)
-			if !ok {
-				return nil, errors.New("invalid cached content list request type")
-			}
-			return &CachedContentRequest{Type: schemas.CachedContentListRequest, ListRequest: listReq}, nil
-		},
-		CachedContentListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentListResponse) (interface{}, error) {
-			return gemini.ToGeminiCachedContentListResponse(resp), nil
-		},
-		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return gemini.ToGeminiError(err)
-		},
-		PreCallback: extractGeminiCachedContentListQueryParams,
-	})
-
-	// GET /v1beta/cachedContents/{cached_id} — retrieve
-	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeGenAI,
-		Path:   pathPrefix + "/v1beta/cachedContents/{cached_id}",
-		Method: "GET",
-		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.CachedContentRetrieveRequest
-		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &schemas.BifrostCachedContentRetrieveRequest{}
-		},
-		CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
-			retrieveReq, ok := req.(*schemas.BifrostCachedContentRetrieveRequest)
-			if !ok {
-				return nil, errors.New("invalid cached content retrieve request type")
-			}
-			return &CachedContentRequest{Type: schemas.CachedContentRetrieveRequest, RetrieveRequest: retrieveReq}, nil
-		},
-		CachedContentRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentRetrieveResponse) (interface{}, error) {
-			return gemini.ToGeminiCachedContentRetrieveResponse(resp), nil
-		},
-		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return gemini.ToGeminiError(err)
-		},
-		PreCallback: extractGeminiCachedContentNameFromPath,
-	})
-
-	// PATCH /v1beta/cachedContents/{cached_id} — update
-	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeGenAI,
-		Path:   pathPrefix + "/v1beta/cachedContents/{cached_id}",
-		Method: "PATCH",
-		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.CachedContentUpdateRequest
-		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &schemas.BifrostCachedContentUpdateRequest{}
-		},
-		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
-			updateReq, ok := req.(*schemas.BifrostCachedContentUpdateRequest)
-			if !ok {
-				return errors.New("invalid cached content update request type")
-			}
-			if body := ctx.Request.Body(); len(body) > 0 {
-				if !gjson.ValidBytes(body) {
-					return errors.New("invalid JSON")
+		// GET /v1beta/cachedContents — list
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeGenAI,
+			Path:   cachedBase,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CachedContentListRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostCachedContentListRequest{}
+			},
+			CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
+				listReq, ok := req.(*schemas.BifrostCachedContentListRequest)
+				if !ok {
+					return nil, errors.New("invalid cached content list request type")
 				}
-				updateReq.RawRequestBody = copyBytes(body)
-				ttl, err := optionalGJSONString(body, "ttl")
-				if err != nil {
-					return err
-				}
-				expireTime, err := optionalGJSONString(body, "expireTime")
-				if err != nil {
-					return err
-				}
-				updateReq.TTL = ttl
-				updateReq.ExpireTime = expireTime
-			}
-			return nil
-		},
-		CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
-			updateReq, ok := req.(*schemas.BifrostCachedContentUpdateRequest)
-			if !ok {
-				return nil, errors.New("invalid cached content update request type")
-			}
-			// Name is set via PreCallback (extractGeminiCachedContentNameFromPath).
-			if updateReq.Provider == "" {
-				updateReq.Provider = schemas.Gemini
-			}
-			if len(updateReq.RawRequestBody) > 0 {
-				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
-			}
-			return &CachedContentRequest{Type: schemas.CachedContentUpdateRequest, UpdateRequest: updateReq}, nil
-		},
-		CachedContentUpdateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentUpdateResponse) (interface{}, error) {
-			return gemini.ToGeminiCachedContentUpdateResponse(resp), nil
-		},
-		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return gemini.ToGeminiError(err)
-		},
-		PreCallback: extractGeminiCachedContentNameFromPath,
-	})
+				return &CachedContentRequest{Type: schemas.CachedContentListRequest, ListRequest: listReq}, nil
+			},
+			CachedContentListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentListResponse) (interface{}, error) {
+				return gemini.ToGeminiCachedContentListResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return gemini.ToGeminiError(err)
+			},
+			PreCallback: extractGeminiCachedContentListQueryParams,
+		})
 
-	// DELETE /v1beta/cachedContents/{cached_id} — delete
-	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeGenAI,
-		Path:   pathPrefix + "/v1beta/cachedContents/{cached_id}",
-		Method: "DELETE",
-		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.CachedContentDeleteRequest
-		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &schemas.BifrostCachedContentDeleteRequest{}
-		},
-		CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
-			deleteReq, ok := req.(*schemas.BifrostCachedContentDeleteRequest)
-			if !ok {
-				return nil, errors.New("invalid cached content delete request type")
-			}
-			return &CachedContentRequest{Type: schemas.CachedContentDeleteRequest, DeleteRequest: deleteReq}, nil
-		},
-		CachedContentDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentDeleteResponse) (interface{}, error) {
-			return gemini.ToGeminiCachedContentDeleteResponse(resp), nil
-		},
-		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return gemini.ToGeminiError(err)
-		},
-		PreCallback: extractGeminiCachedContentNameFromPath,
-	})
+		// GET /v1beta/cachedContents/{cached_id} — retrieve
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeGenAI,
+			Path:   cachedBase + "/{cached_id}",
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CachedContentRetrieveRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostCachedContentRetrieveRequest{}
+			},
+			CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
+				retrieveReq, ok := req.(*schemas.BifrostCachedContentRetrieveRequest)
+				if !ok {
+					return nil, errors.New("invalid cached content retrieve request type")
+				}
+				return &CachedContentRequest{Type: schemas.CachedContentRetrieveRequest, RetrieveRequest: retrieveReq}, nil
+			},
+			CachedContentRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentRetrieveResponse) (interface{}, error) {
+				return gemini.ToGeminiCachedContentRetrieveResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return gemini.ToGeminiError(err)
+			},
+			PreCallback: extractGeminiCachedContentNameFromPath,
+		})
+
+		// PATCH /v1beta/cachedContents/{cached_id} — update
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeGenAI,
+			Path:   cachedBase + "/{cached_id}",
+			Method: "PATCH",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CachedContentUpdateRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostCachedContentUpdateRequest{}
+			},
+			RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
+				updateReq, ok := req.(*schemas.BifrostCachedContentUpdateRequest)
+				if !ok {
+					return errors.New("invalid cached content update request type")
+				}
+				if body := ctx.Request.Body(); len(body) > 0 {
+					if !gjson.ValidBytes(body) {
+						return errors.New("invalid JSON")
+					}
+					updateReq.RawRequestBody = copyBytes(body)
+					ttl, err := optionalGJSONString(body, "ttl")
+					if err != nil {
+						return err
+					}
+					expireTime, err := optionalGJSONString(body, "expireTime")
+					if err != nil {
+						return err
+					}
+					updateReq.TTL = ttl
+					updateReq.ExpireTime = expireTime
+				}
+				return nil
+			},
+			CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
+				updateReq, ok := req.(*schemas.BifrostCachedContentUpdateRequest)
+				if !ok {
+					return nil, errors.New("invalid cached content update request type")
+				}
+				// Name is set via PreCallback (extractGeminiCachedContentNameFromPath).
+				if updateReq.Provider == "" {
+					updateReq.Provider = schemas.Gemini
+				}
+				if len(updateReq.RawRequestBody) > 0 {
+					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+				}
+				return &CachedContentRequest{Type: schemas.CachedContentUpdateRequest, UpdateRequest: updateReq}, nil
+			},
+			CachedContentUpdateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentUpdateResponse) (interface{}, error) {
+				return gemini.ToGeminiCachedContentUpdateResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return gemini.ToGeminiError(err)
+			},
+			PreCallback: extractGeminiCachedContentNameFromPath,
+		})
+
+		// DELETE /v1beta/cachedContents/{cached_id} — delete
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeGenAI,
+			Path:   cachedBase + "/{cached_id}",
+			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CachedContentDeleteRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostCachedContentDeleteRequest{}
+			},
+			CachedContentRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error) {
+				deleteReq, ok := req.(*schemas.BifrostCachedContentDeleteRequest)
+				if !ok {
+					return nil, errors.New("invalid cached content delete request type")
+				}
+				return &CachedContentRequest{Type: schemas.CachedContentDeleteRequest, DeleteRequest: deleteReq}, nil
+			},
+			CachedContentDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentDeleteResponse) (interface{}, error) {
+				return gemini.ToGeminiCachedContentDeleteResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return gemini.ToGeminiError(err)
+			},
+			PreCallback: extractGeminiCachedContentNameFromPath,
+		})
+	}
 
 	return routes
 }

@@ -34,6 +34,12 @@ type ModelCatalog struct {
 	live      *live.Store
 	keyconf   *keyconfig.Store
 
+	// MCP library sync configuration (protected by syncMu)
+	mcpLibraryURL          string
+	mcpLibrarySyncInterval time.Duration
+	lastMCPLibrarySyncedAt time.Time
+	syncMu                 sync.RWMutex
+
 	shouldSyncGate func(ctx context.Context) bool
 	afterSyncHook  func(ctx context.Context)
 
@@ -55,6 +61,14 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if config != nil && config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
 		modelParametersURL = *config.ModelParametersURL
 	}
+	mcpLibraryURL := DefaultMCPLibraryURL
+	if config != nil && config.MCPLibraryURL != nil && *config.MCPLibraryURL != "" {
+		mcpLibraryURL = *config.MCPLibraryURL
+	}
+	mcpLibrarySyncInterval := DefaultSyncInterval
+	if config != nil && config.MCPLibrarySyncInterval != nil && *config.MCPLibrarySyncInterval > 0 {
+		mcpLibrarySyncInterval = time.Duration(*config.MCPLibrarySyncInterval) * time.Second
+	}
 	syncInterval := DefaultSyncInterval
 	if config != nil && config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
@@ -65,6 +79,8 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	logger.Info("pricing sync interval set to %v (scheduler checks every %v)", syncInterval, syncWorkerTickerPeriod)
 
 	mc := &ModelCatalog{
+		mcpLibraryURL:          mcpLibraryURL,
+		mcpLibrarySyncInterval: mcpLibrarySyncInterval,
 		configStore:            configStore,
 		logger:                 logger,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
@@ -182,6 +198,44 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		if paramsErr != nil {
 			return nil, paramsErr
 		}
+
+		// MCP library catalog follows the datasheet bootstrap pattern: if the DB
+		// already has catalog rows, refresh from URL in the background; if it is
+		// empty, block startup until the first remote sync lands so the library page
+		// is populated immediately after boot.
+		hasMCPLibraryData, err := mc.hasMCPLibraryData(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load initial MCP library data: %w", err)
+		}
+		if hasMCPLibraryData {
+			logger.Info("existing MCP library data found in database, syncing from URL in background")
+			mc.wg.Add(1)
+			go func() {
+				defer mc.wg.Done()
+				if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_mcp_library_startup_sync", 10, func() error {
+					return mc.syncMCPLibrary(mc.syncCtx)
+				}); err != nil {
+					mc.logger.Warn("background startup MCP library sync failed: %v", err)
+				} else {
+					mc.syncMu.Lock()
+					mc.lastMCPLibrarySyncedAt = time.Now()
+					mc.syncMu.Unlock()
+				}
+			}()
+		} else {
+			// Empty DB: attempt a blocking sync so the library page is populated
+			// immediately after boot. Unlike pricing, a failure here is non-fatal
+			// — the background worker will retry on the next tick.
+			if err := mc.withDistributedLock(ctx, "model_catalog_mcp_library_startup_sync", 10, func() error {
+				return mc.syncMCPLibrary(ctx)
+			}); err != nil {
+				logger.Warn("initial MCP library sync failed (will retry in background): %v", err)
+			} else {
+				mc.syncMu.Lock()
+				mc.lastMCPLibrarySyncedAt = time.Now()
+				mc.syncMu.Unlock()
+			}
+		}
 	} else {
 		if err := mc.datasheet.LoadFromURLIntoMemory(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load pricing data into memory: %w", err)
@@ -249,6 +303,19 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 	if config != nil && config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
 		modelParametersURL = *config.ModelParametersURL
 	}
+	mcpLibraryURL := DefaultMCPLibraryURL
+	if config != nil && config.MCPLibraryURL != nil && *config.MCPLibraryURL != "" {
+		mcpLibraryURL = *config.MCPLibraryURL
+	}
+	mcpLibrarySyncInterval := DefaultSyncInterval
+	if config != nil && config.MCPLibrarySyncInterval != nil && *config.MCPLibrarySyncInterval > 0 {
+		mcpLibrarySyncInterval = time.Duration(*config.MCPLibrarySyncInterval) * time.Second
+	}
+	mc.syncMu.Lock()
+	mc.mcpLibraryURL = mcpLibraryURL
+	mc.mcpLibrarySyncInterval = mcpLibrarySyncInterval
+	mc.syncMu.Unlock()
+
 	syncInterval := DefaultSyncInterval
 	if config != nil && config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
@@ -299,6 +366,22 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 			paramsErr = fmt.Errorf("failed to sync model parameters: %w", err)
 		}
 	}()
+
+	// MCP library sync runs alongside but is non-fatal: a failure here must not
+	// block a pricing/params force-reload. It is logged and the last-sync
+	// timestamp is only advanced on success.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := mc.syncMCPLibrary(ctx); err != nil {
+			mc.logger.Warn("MCP library sync during force-reload failed: %v", err)
+			return
+		}
+		mc.syncMu.Lock()
+		mc.lastMCPLibrarySyncedAt = time.Now()
+		mc.syncMu.Unlock()
+	}()
+
 	wg.Wait()
 	if pricingErr != nil {
 		return pricingErr
@@ -365,42 +448,73 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 }
 
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
-	if time.Since(mc.datasheet.LastSyncedAt()) < mc.datasheet.SyncInterval() {
+	pricingDue := time.Since(mc.datasheet.LastSyncedAt()) >= mc.datasheet.SyncInterval()
+	mcpLibraryDue := mc.isMCPLibrarySyncDue()
+	if !pricingDue && !mcpLibraryDue {
 		return
 	}
 	mc.logger.Debug("starting model catalog background sync")
-	if err := mc.withDistributedLock(ctx, "model_catalog_pricing_sync", 10, func() error {
-		var wg sync.WaitGroup
-		var pricingErr, paramsErr error
-		wg.Add(2)
+
+	// Pricing and MCP library use separate distributed locks so their
+	// independent cadences don't block each other.
+	var outerWg sync.WaitGroup
+	if pricingDue {
+		outerWg.Add(1)
 		go func() {
-			defer wg.Done()
-			if err := mc.runPricingSync(ctx); err != nil {
-				mc.logger.Error("background pricing sync failed: %v", err)
-				pricingErr = err
+			defer outerWg.Done()
+			if err := mc.withDistributedLock(ctx, "model_catalog_pricing_sync", 10, func() error {
+				var wg sync.WaitGroup
+				var pricingErr, paramsErr error
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					if err := mc.runPricingSync(ctx); err != nil {
+						mc.logger.Error("background pricing sync failed: %v", err)
+						pricingErr = err
+					}
+				}()
+				go func() {
+					defer wg.Done()
+					if err := mc.runParamsSync(ctx); err != nil {
+						mc.logger.Error("background model parameters sync failed: %v", err)
+						paramsErr = err
+					}
+				}()
+				wg.Wait()
+				if pricingErr == nil && paramsErr == nil {
+					if mc.afterSyncHook != nil {
+						mc.afterSyncHook(ctx)
+					}
+					mc.datasheet.MarkSynced(time.Now())
+				}
+				if pricingErr != nil {
+					return pricingErr
+				}
+				return paramsErr
+			}); err != nil {
+				mc.logger.Error("failed to run pricing sync: %v", err)
 			}
 		}()
-		go func() {
-			defer wg.Done()
-			if err := mc.runParamsSync(ctx); err != nil {
-				mc.logger.Error("background model parameters sync failed: %v", err)
-				paramsErr = err
-			}
-		}()
-		wg.Wait()
-		if pricingErr == nil && paramsErr == nil {
-			if mc.afterSyncHook != nil {
-				mc.afterSyncHook(ctx)
-			}
-			mc.datasheet.MarkSynced(time.Now())
-		}
-		if pricingErr != nil {
-			return pricingErr
-		}
-		return paramsErr
-	}); err != nil {
-		mc.logger.Error("failed to run model catalog sync: %v", err)
 	}
+	if mcpLibraryDue {
+		outerWg.Add(1)
+		go func() {
+			defer outerWg.Done()
+			if err := mc.withDistributedLock(ctx, "model_catalog_mcp_library_sync", 10, func() error {
+				if err := mc.syncMCPLibrary(ctx); err != nil {
+					mc.logger.Error("background MCP library sync failed: %v", err)
+					return err
+				}
+				mc.syncMu.Lock()
+				mc.lastMCPLibrarySyncedAt = time.Now()
+				mc.syncMu.Unlock()
+				return nil
+			}); err != nil {
+				mc.logger.Error("failed to run MCP library sync: %v", err)
+			}
+		}()
+	}
+	outerWg.Wait()
 	mc.logger.Debug("model catalog background sync completed")
 }
 
@@ -452,6 +566,31 @@ func (mc *ModelCatalog) withDistributedLock(ctx context.Context, key string, ret
 // and background sync.
 func (mc *ModelCatalog) hasPricingData() bool {
 	return len(mc.datasheet.DatasheetProviders()) > 0
+}
+
+func (mc *ModelCatalog) hasMCPLibraryData(ctx context.Context) (bool, error) {
+	if mc.configStore == nil {
+		return false, nil
+	}
+	_, totalCount, err := mc.configStore.GetMCPLibraryPaginated(ctx, configstore.MCPLibraryQueryParams{Limit: 1})
+	if err != nil {
+		return false, err
+	}
+	return totalCount > 0, nil
+}
+
+func (mc *ModelCatalog) isMCPLibrarySyncDue() bool {
+	if mc.configStore == nil {
+		return false
+	}
+	mc.syncMu.RLock()
+	lastSyncedAt := mc.lastMCPLibrarySyncedAt
+	syncInterval := mc.mcpLibrarySyncInterval
+	mc.syncMu.RUnlock()
+	if syncInterval <= 0 {
+		syncInterval = DefaultSyncInterval
+	}
+	return lastSyncedAt.IsZero() || time.Since(lastSyncedAt) >= syncInterval
 }
 
 // knownProviders returns the union of providers seen by any store. Used by

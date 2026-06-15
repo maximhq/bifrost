@@ -13,6 +13,7 @@ FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
+COMPAT ?=
 
 # Colors for output
 RED=\033[0;31m
@@ -1743,6 +1744,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
+		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
+		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
 		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
@@ -1769,6 +1772,21 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		exit 0; \
 	fi
 	@if [ -n "$(HELP)" ]; then exit 0; fi; \
+	if [ "$(COMPAT)" = "both" ]; then \
+		mkdir -p tmp; \
+		$(ECHO) "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		for mode in off on; do \
+			$(ECHO) "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
+			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
+			RC=$$?; \
+			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
+			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
+			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
+			if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
+		done; \
+		$(ECHO) "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
+		exit $${BOTH_RC:-0}; \
+	fi; \
 	$(EXPOSE_ENV); \
 	mkdir -p tmp; \
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
@@ -1891,10 +1909,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			( \
 				newman run "tmp/harness-filtered-$$p.json" \
 					--env-var "baseUrl=$$BASE_URL_VAL" \
+					$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 					$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
 					$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
+					$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
+					$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
 					--reporters cli,json \
@@ -1971,10 +1992,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			echo $$! > tmp/harness-monitor.pid; \
 			newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
+				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
+				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json,htmlextra \
@@ -1992,10 +2016,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		else \
 			newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
+				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
+				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json,htmlextra \

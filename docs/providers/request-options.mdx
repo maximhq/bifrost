@@ -180,8 +180,12 @@ Both conditions must hold; neither alone takes effect. Virtual keys (`sk-bf-*`) 
 
 In the **Go SDK** there is no flag: set `BifrostContextKeyDirectKey` to a `schemas.Key` and it is used as-is.
 
+<Note>
+A direct key is **not** authentication. If [`enforce_auth_on_inference`](../deployment-guides/config-json/client) is enabled, a request with *only* a raw provider key is rejected with `401` — send a virtual key (`x-bf-vk`) or user token alongside it.
+</Note>
+
 <Warning>
-A direct key bypasses Bifrost's key management entirely — **no governance** (virtual key budgets, rate limits, provider/model allow-lists, routing rules), **no weighted selection**, and **no rotation or fallback** across alternate keys. The key is used exactly as supplied. Enable `allow_direct_keys` only when you intend callers to manage their own provider credentials.
+A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
 </Warning>
 
 <Tabs>
@@ -201,6 +205,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ```go
 ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+    ID:     "caller-provided",
+    Name:   "caller-provided",
     Value:  schemas.EnvVar{Val: "sk-your-real-openai-key"},
     Models: []string{},
     Weight: 1.0,

@@ -84,6 +84,8 @@ Supply a raw provider API key to use directly, bypassing the registered key pool
 
 ```go
 bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+    ID:     "caller-provided",
+    Name:   "caller-provided",
     Value:  schemas.EnvVar{Val: "sk-your-real-openai-key"},
     Models: []string{},
     Weight: 1.0,
@@ -91,7 +93,7 @@ bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
 ```
 
 <Warning>
-A direct key bypasses governance, weighted selection, and rotation/fallback — the key is used exactly as supplied. Prefer [API Key Selection](#api-key-selection) when you want to reference a Bifrost-managed key instead of passing the secret.
+A direct key bypasses the **key pool** (no weighted selection, no rotation or fallback, no per-key model restrictions) — the key is used exactly as supplied. It does **not** bypass governance: if a virtual key (`BifrostContextKeyVirtualKey`) is set alongside it, that key's budgets, rate limits, allow-lists, and routing are still enforced. Prefer [API Key Selection](#api-key-selection) when you want to reference a Bifrost-managed key instead of passing the secret.
 </Warning>
 
 ### Session Stickiness (Session ID)

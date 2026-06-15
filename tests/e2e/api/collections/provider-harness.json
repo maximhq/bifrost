@@ -21,7 +21,11 @@
           "// Used in the criss-cross matrix (§8) to mark provider+modality cells that return NewUnsupportedOperationError by design (e.g., anthropic embeddings, bedrock audio).",
           "if (name.indexOf('[SKIP]') !== -1 && (pm.environment.get('include_skip') || pm.variables.get('include_skip') || '') !== '1') {",
           "  pm.execution.skipRequest();",
-          "}"
+          "}",
+          "// Per-request compat override: when compat is set (via Newman --env-var compat=true), inject the x-bf-compat header on every request.",
+          "// Absent => harness baseline (compat config off). Lets the suite run once with compat off and once with compat on.",
+          "var __compat = (pm.environment.get('compat') || pm.variables.get('compat') || '');",
+          "if (__compat) { pm.request.headers.upsert({ key: 'x-bf-compat', value: String(__compat) }); }"
         ]
       }
     },
@@ -36,7 +40,9 @@
           "",
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
-          "if (pm.response.code < 400 && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1) {",
+          "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
+          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1;",
+          "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
           "    try { j = pm.response.json(); } catch (e) {",
@@ -117,6 +123,9 @@
           "    } else if (j.background === true && typeof j.id === 'string') {",
           "        shape = 'openai-responses-background';",
           "        hasContent = !!j.id;",
+          "    } else if (j.object === 'file' && typeof j.id === 'string') {",
+          "        shape = 'file-object';",
+          "        hasContent = !!j.id;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
@@ -136,7 +145,11 @@
     { "key": "genaiModel", "value": "gemini-2.5-pro", "type": "string" },
     { "key": "vertexModel", "value": "gemini-2.5-pro", "type": "string" },
     { "key": "bedrockGuardrailIdentifier", "value": "", "type": "string" },
-    { "key": "bedrockGuardrailVersion", "value": "DRAFT", "type": "string" }
+    { "key": "bedrockGuardrailVersion", "value": "DRAFT", "type": "string" },
+    { "key": "vertexGcsBucket", "value": "replace-me-bucket", "type": "string" },
+    { "key": "vertexGcsPrefix", "value": "bifrost-e2e/", "type": "string" },
+    { "key": "vertexProject", "value": "replace-me-project", "type": "string" },
+    { "key": "vertexLocation", "value": "us-central1", "type": "string" }
   ],
   "item": [
     {
@@ -857,7 +870,10 @@
                 { "name": "8.6.4.A native chat → anthropic/claude-opus-4-7 (thinking)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-7\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"max_tokens\": 2048,\n  \"thinking\": { \"type\": \"enabled\", \"budget_tokens\": 1024 }\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
                 { "name": "8.6.4.A native chat → anthropic/claude-opus-4-8 (thinking)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"max_tokens\": 2048,\n  \"thinking\": { \"type\": \"adaptive\" }\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
                 { "name": "8.6.4.A native chat → gemini/gemini-2.5-flash (reasoning_effort translated)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"low\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
-                { "name": "8.6.4.E /anthropic/v1/messages → openai/gpt-5 (thinking translated)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"thinking\": { \"type\": \"enabled\", \"budget_tokens\": 1024 }\n}" }, "url": { "raw": "{{baseUrl}}/anthropic/v1/messages", "host": ["{{baseUrl}}"], "path": ["anthropic", "v1", "messages"] } } }
+                { "name": "8.6.4.E /anthropic/v1/messages → openai/gpt-5 (thinking translated)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"thinking\": { \"type\": \"enabled\", \"budget_tokens\": 1024 }\n}" }, "url": { "raw": "{{baseUrl}}/anthropic/v1/messages", "host": ["{{baseUrl}}"], "path": ["anthropic", "v1", "messages"] } } },
+                { "name": "8.6.4.A native chat → vertex/moonshotai/kimi-k2-thinking-maas (reasoning_effort none → dropped)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/moonshotai/kimi-k2-thinking-maas\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"none\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
+                { "name": "8.6.4.A native chat → vertex/minimaxai/minimax-m2-maas (reasoning_effort none → dropped)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/minimaxai/minimax-m2-maas\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"none\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
+                { "name": "8.6.4.B native /v1/responses → vertex/moonshotai/kimi-k2-thinking-maas (reasoning none → dropped)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/moonshotai/kimi-k2-thinking-maas\",\n  \"input\": \"What is 17 * 23? Think step by step.\",\n  \"reasoning\": { \"effort\": \"none\" }\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
               ]
             },
             {
@@ -1906,6 +1922,723 @@
                 "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
                 "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ],\n  \"instructions\": \"You are a helpful geography assistant. Be concise.\"\n}"},
                 "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11b. Vertex GCS Files (/openai + native resumable)",
+      "description": "Vertex stores files in a customer GCS bucket. CRUD runs via the OpenAI drop-in (storage_config.gcs); resumable upload runs via the native API (mint session -> client PUTs bytes straight to GCS -> cleanup). All [PREVIEW]-tagged: needs a gateway Vertex provider key (server-side) + a GCS bucket. Set vertexGcsBucket and run with --env-var include_preview=1. The OpenAI-drop-in rows send no Authorization header (routing is by provider=vertex).",
+      "item": [
+        {
+          "name": "[PREVIEW] Vertex: upload file (GCS, /openai)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "vertex",
+                  "type": "text"
+                },
+                {
+                  "key": "storage_config[gcs][bucket]",
+                  "value": "{{vertexGcsBucket}}",
+                  "type": "text"
+                },
+                {
+                  "key": "storage_config[gcs][prefix]",
+                  "value": "{{vertexGcsPrefix}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex upload: gcs backend', function () { pm.expect(j.storage_backend).to.eql('gcs'); });",
+                  "pm.test('Vertex upload: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('vertexFileId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: list files (GCS, /openai)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files?provider=vertex&storage_config[gcs][bucket]={{vertexGcsBucket}}&storage_config[gcs][prefix]={{vertexGcsPrefix}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                },
+                {
+                  "key": "storage_config[gcs][bucket]",
+                  "value": "{{vertexGcsBucket}}"
+                },
+                {
+                  "key": "storage_config[gcs][prefix]",
+                  "value": "{{vertexGcsPrefix}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex list: uploaded file present', function () { pm.expect((j.data || []).map(function (f) { return f.id; })).to.include(pm.collectionVariables.get('vertexFileId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: retrieve file (GCS, /openai)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{vertexFileId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{vertexFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex retrieve: id matches uploaded', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('vertexFileId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: download file content (GCS, /openai)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{vertexFileId}}/content?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{vertexFileId}}",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex content: non-empty body', function () { pm.expect((pm.response.text() || '').length).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: delete file (GCS, /openai)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{vertexFileId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{vertexFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex delete: deleted true', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: mint resumable session (native)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "filename",
+                  "value": "harness-video.bin",
+                  "type": "text"
+                },
+                {
+                  "key": "content_type",
+                  "value": "application/octet-stream",
+                  "type": "text"
+                },
+                {
+                  "key": "gcs_bucket",
+                  "value": "{{vertexGcsBucket}}",
+                  "type": "text"
+                },
+                {
+                  "key": "gcs_prefix",
+                  "value": "{{vertexGcsPrefix}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex resumable: status pending_upload', function () { pm.expect(j.status).to.eql('pending_upload'); });",
+                  "pm.test('Vertex resumable: has upload_url', function () { pm.expect(j.upload_url).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('vertexUploadUrl', j.upload_url);",
+                  "pm.collectionVariables.set('vertexResumableId', encodeURIComponent(j.id));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: PUT bytes to GCS session (resumable, direct to GCS)",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/sample.txt"
+              }
+            },
+            "url": {
+              "raw": "{{vertexUploadUrl}}",
+              "host": [
+                "{{vertexUploadUrl}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex resumable: GCS accepted bytes (2xx)', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: delete resumable file (native, cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{vertexResumableId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{vertexResumableId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex resumable cleanup: deleted', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11c. Vertex Batches (/openai + native passthrough)",
+      "description": "Vertex batch prediction is GCS-backed. CRUD (create/list/retrieve/cancel) runs via the OpenAI drop-in (/openai/v1/batches, routed by provider=vertex); the base64 batch ids round-trip through every endpoint. The last two rows exercise the native genai surface raw passthrough: a verbatim Vertex BatchPredictionJob body POSTed to .../batchPredictionJobs is forwarded as-is and the native job resource is returned. All [PREVIEW]-tagged: needs a gateway Vertex provider key + a GCS bucket, plus vertexProject/vertexLocation for the native rows. Set vertexGcsBucket, vertexProject and run with --env-var include_preview=1.",
+      "item": [
+        {
+          "name": "[PREVIEW] Vertex: upload batch input (GCS, /openai)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "vertex",
+                  "type": "text"
+                },
+                {
+                  "key": "storage_config[gcs][bucket]",
+                  "value": "{{vertexGcsBucket}}",
+                  "type": "text"
+                },
+                {
+                  "key": "storage_config[gcs][prefix]",
+                  "value": "{{vertexGcsPrefix}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex batch input: gcs backend', function () { pm.expect(j.storage_backend).to.eql('gcs'); });",
+                  "pm.test('Vertex batch input: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('vertexBatchInputFileId', j.id);",
+                  "pm.collectionVariables.set('vertexBatchInputGcsUri', j.storage_uri);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: create batch (/openai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_file_id\": \"{{vertexBatchInputFileId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"provider\": \"vertex\",\n  \"model\": \"gemini-2.5-flash\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/{{vertexGcsPrefix}}batch-output\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex create batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                  "pm.test('Vertex create batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                  "pm.test('Vertex create batch: input_file_id round-trips', function () { pm.expect(j.input_file_id).to.eql(pm.collectionVariables.get('vertexBatchInputFileId')); });",
+                  "pm.collectionVariables.set('vertexBatchId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: list batches (/openai)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex list batches: created batch present', function () { pm.expect((j.data || []).map(function (b) { return b.id; })).to.include(pm.collectionVariables.get('vertexBatchId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: retrieve batch (/openai)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{vertexBatchId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{vertexBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex retrieve batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                  "pm.test('Vertex retrieve batch: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('vertexBatchId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: cancel batch (/openai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"vertex\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{vertexBatchId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{vertexBatchId}}",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex cancel batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                  "pm.test('Vertex cancel batch: cancelling/cancelled', function () { pm.expect(['cancelling','cancelled']).to.include(j.status); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: create batch RAW passthrough (native genai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"bifrost-harness-passthrough\",\n  \"model\": \"publishers/google/models/gemini-2.5-flash\",\n  \"inputConfig\": {\n    \"instancesFormat\": \"jsonl\",\n    \"gcsSource\": {\n      \"uris\": [\n        \"{{vertexBatchInputGcsUri}}\"\n      ]\n    }\n  },\n  \"outputConfig\": {\n    \"predictionsFormat\": \"jsonl\",\n    \"gcsDestination\": {\n      \"outputUriPrefix\": \"gs://{{vertexGcsBucket}}/{{vertexGcsPrefix}}batch-output\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/batchPredictionJobs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "batchPredictionJobs"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sends a verbatim Vertex BatchPredictionJob body; Bifrost passes it through (UseRawRequestBody)",
+                  "// and returns the native Vertex job resource. Proves the raw-passthrough path end to end.",
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex RAW passthrough: name is a batchPredictionJobs resource', function () { pm.expect(j.name).to.be.a('string'); pm.expect(j.name).to.include('batchPredictionJobs'); });",
+                  "pm.test('Vertex RAW passthrough: has JOB_STATE_ state', function () { pm.expect(j.state || '').to.match(/^JOB_STATE_/); });",
+                  "var parts = (j.name || '').split('/'); pm.collectionVariables.set('vertexRawBatchId', parts[parts.length - 1]);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: delete batch RAW passthrough (native genai, cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/batchPredictionJobs/{{vertexRawBatchId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "batchPredictionJobs",
+                "{{vertexRawBatchId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex RAW passthrough cleanup: 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: delete batch input file (/openai, cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{vertexBatchInputFileId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{vertexBatchInputFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex batch input cleanup: deleted', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
               }
             }
           ]

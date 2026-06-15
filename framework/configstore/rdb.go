@@ -1609,7 +1609,247 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 	return clients, totalCount, nil
 }
 
-// GetMCPClientByID retrieves an MCP client by ID from the database.
+// mcpLibrarySortColumns whitelists the columns the MCP library list endpoint
+// may sort by. Restricting to a fixed set keeps the ORDER BY clause free of
+// caller-supplied identifiers.
+var mcpLibrarySortColumns = map[string]string{
+	"name":       "name",
+	"category":   "category",
+	"publisher":  "publisher",
+	"created_at": "created_at",
+	"updated_at": "updated_at",
+}
+
+// GetMCPLibraryPaginated retrieves MCP library catalog entries with optional
+// search, filtering, sorting, and pagination. Returns the page of rows and the
+// total count matching the filters (before pagination).
+func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
+	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPLibrary{}).Where("deleted_at IS NULL")
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where(
+			"LOWER(name) LIKE ? OR LOWER(description) LIKE ? OR LOWER(publisher) LIKE ?",
+			search, search, search,
+		)
+	}
+	if len(params.Categories) > 0 {
+		baseQuery = baseQuery.Where("category IN ?", params.Categories)
+	}
+	if len(params.ConnectionTypes) > 0 {
+		baseQuery = baseQuery.Where("connection_type IN ?", params.ConnectionTypes)
+	}
+	if len(params.AuthTypes) > 0 {
+		baseQuery = baseQuery.Where("auth_type IN ?", params.AuthTypes)
+	}
+	// Tags are stored as a JSON-encoded array string; match rows whose JSON
+	// contains any requested tag as a quoted token. This is a substring match
+	// over the serialized array, which is sufficient for the catalog's small,
+	// well-formed tag values and avoids a DB-specific JSON operator. LIKE
+	// metacharacters in the tag are escaped (with an explicit ESCAPE clause) so
+	// a tag containing % or _ matches literally instead of as a wildcard.
+	likeEscaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	for _, tag := range params.Tags {
+		if tag == "" {
+			continue
+		}
+		escapedTag := likeEscaper.Replace(tag)
+		baseQuery = baseQuery.Where(`tags LIKE ? ESCAPE '\'`, `%"`+escapedTag+`"%`)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	sortColumn := "name"
+	if col, ok := mcpLibrarySortColumns[params.SortBy]; ok {
+		sortColumn = col
+	}
+	dir := "ASC"
+	if strings.EqualFold(params.Order, "desc") {
+		dir = "DESC"
+	}
+	// id as a stable tiebreaker so paging is deterministic across equal keys.
+	orderClause := fmt.Sprintf("%s %s, id ASC", sortColumn, dir)
+
+	var entries []tables.TableMCPLibrary
+	if err := baseQuery.
+		Order(orderClause).
+		Offset(offset).
+		Limit(limit).
+		Find(&entries).Error; err != nil {
+		return nil, 0, err
+	}
+	return entries, totalCount, nil
+}
+
+// GetMCPLibraryFilterData returns the distinct facet values for the MCP library
+// filter sidebar: categories, connection types, auth types, and tags. Empty
+// values are skipped. Tags are stored as JSON arrays, so they are decoded and
+// unioned in Go rather than via a DB-specific JSON operator.
+func (s *RDBConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error) {
+	db := s.DB().WithContext(ctx)
+	result := &MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}
+
+	distinct := func(column string, dst *[]string) error {
+		var values []string
+		if err := db.Model(&tables.TableMCPLibrary{}).
+			Distinct(column).
+			Where("deleted_at IS NULL").
+			Where(column+" IS NOT NULL AND "+column+" != ?", "").
+			Order(column+" ASC").
+			Pluck(column, &values).Error; err != nil {
+			return err
+		}
+		*dst = append(*dst, values...)
+		return nil
+	}
+
+	if err := distinct("category", &result.Categories); err != nil {
+		return nil, err
+	}
+	if err := distinct("connection_type", &result.ConnectionTypes); err != nil {
+		return nil, err
+	}
+	if err := distinct("auth_type", &result.AuthTypes); err != nil {
+		return nil, err
+	}
+
+	// Tags: gather distinct JSON blobs, decode, and union the values.
+	var tagBlobs []string
+	if err := db.Model(&tables.TableMCPLibrary{}).
+		Distinct("tags").
+		Where("deleted_at IS NULL").
+		Where("tags IS NOT NULL AND tags != ?", "").
+		Pluck("tags", &tagBlobs).Error; err != nil {
+		return nil, err
+	}
+	tagSet := make(map[string]struct{})
+	for _, blob := range tagBlobs {
+		var tags []string
+		if err := json.Unmarshal([]byte(blob), &tags); err != nil {
+			continue // skip malformed blobs rather than failing the whole request
+		}
+		for _, tag := range tags {
+			if tag == "" {
+				continue
+			}
+			tagSet[tag] = struct{}{}
+		}
+	}
+	for tag := range tagSet {
+		result.Tags = append(result.Tags, tag)
+	}
+	sort.Strings(result.Tags)
+
+	return result, nil
+}
+
+// mcpLibrarySyncUpdateColumns enumerates the columns the MCP library sync may
+// overwrite on conflict. The list is explicit (not UpdateAll) so id/created_at
+// are preserved and any future editorial-only columns can be excluded.
+var mcpLibrarySyncUpdateColumns = []string{
+	"name",
+	"description",
+	"category",
+	"connection_type",
+	"connection_url",
+	"stdio_config",
+	"auth_type",
+	"required_header_keys",
+	"icon_url",
+	"docs_url",
+	"publisher",
+	"tags",
+	"metadata",
+	"updated_at",
+}
+
+// UpsertMCPLibraryEntry creates or updates an MCP library catalog row, keyed by
+// the unique slug. Mirrors UpsertModelPrices: a single atomic ON CONFLICT
+// statement so concurrent syncs across nodes don't deadlock.
+func (s *RDBConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "slug"}},
+		DoUpdates: clause.AssignmentColumns(mcpLibrarySyncUpdateColumns),
+		// Atomically protect custom/tombstoned rows: only overwrite an existing
+		// row if it is still a live remote row. This closes the TOCTOU race where
+		// a row turns custom or is soft-deleted between the snapshot taken by
+		// GetProtectedMCPLibrarySlugs and this upsert. INSERTs are unaffected.
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "mcp_library.source = 'remote' AND mcp_library.deleted_at IS NULL"},
+		}},
+	}).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+// Source is forced to "custom" regardless of what the caller passed. The unique
+// slug index prevents duplicates; parseGormError maps that to ErrAlreadyExists.
+func (s *RDBConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
+	entry.Source = "custom"
+	if err := s.DB().WithContext(ctx).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at to
+// now) so it no longer appears in listings and the remote sync respects the
+// tombstone. Works on both "remote" and "custom" rows.
+func (s *RDBConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Update("deleted_at", time.Now())
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must skip:
+// custom rows (any source != "remote") and soft-deleted rows (deleted_at set).
+func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
+	var slugs []string
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("source != 'remote' OR deleted_at IS NOT NULL").
+		Pluck("slug", &slugs).Error; err != nil {
+		return nil, err
+	}
+	return slugs, nil
+}
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
 	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
@@ -1828,31 +2068,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 
 		headersJSONStr := string(headersJSON)
-		vaultEnabled := tables.VaultIsEnabled()
-		mcpTableName := tables.TableMCPClient{}.TableName()
-		vaultPfx := tables.VaultPrefix()
-		if tables.VaultHooks.Prefix != nil {
-			vaultPfx = tables.VaultHooks.Prefix()
-		}
-		headersPath := fmt.Sprintf("%s/%s/%s/headers_json", vaultPfx, mcpTableName, id)
-		connPath := fmt.Sprintf("%s/%s/%s/connection_string", vaultPfx, mcpTableName, id)
-		// StoreString runs before Updates so the vault ref is available to write to DB.
-		// vaultStoredPaths tracks paths written to vault so we can compensate (remove)
-		// if the subsequent DB write fails — preventing vault/DB divergence.
-		// vaultRemovePaths tracks cleared/env-backed paths to remove post-commit so a
-		// DB failure doesn't leave DB holding a ref to an already-deleted vault entry.
-		var vaultStoredPaths []string
-		var vaultRemovePaths []string
-		if vaultEnabled {
-			if headersJSONStr != "" && headersJSONStr != "{}" {
-				if err := tables.VaultHooks.StoreString(ctx, headersPath, &headersJSONStr); err != nil {
-					return fmt.Errorf("failed to vault mcp headers: %w", err)
-				}
-				vaultStoredPaths = append(vaultStoredPaths, headersPath)
-			} else if tables.VaultHooks.Remove != nil {
-				vaultRemovePaths = append(vaultRemovePaths, headersPath)
-			}
-		} else if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
+		if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
 			encrypted, encErr := encrypt.Encrypt(headersJSONStr)
 			if encErr != nil {
 				return fmt.Errorf("failed to encrypt mcp headers: %w", encErr)
@@ -1875,9 +2091,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
 		}
-		if vaultEnabled {
-			updates["encryption_status"] = tables.EncryptionStatusVault
-		} else if encrypt.IsEnabled() {
+		if encrypt.IsEnabled() {
 			updates["encryption_status"] = encryptionStatusEncrypted
 		}
 		if clientConfigCopy.OauthConfigID != nil {
@@ -1901,19 +2115,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		// also sync connection/auth metadata from config.json and persist the hash.
 		if clientConfigCopy.ConfigHash != "" {
 			connectionStringToPersist := clientConfigCopy.ConnectionString
-			if vaultEnabled {
-				if connectionStringToPersist != nil && !connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
-					// Mirror TableMCPClient.BeforeSave vault behavior for map-based Updates.
-					cs := *connectionStringToPersist
-					if err := tables.VaultHooks.StoreString(ctx, connPath, &cs.Val); err != nil {
-						return fmt.Errorf("failed to vault mcp connection string: %w", err)
-					}
-					connectionStringToPersist = &cs
-					vaultStoredPaths = append(vaultStoredPaths, connPath)
-				} else if tables.VaultHooks.Remove != nil {
-					vaultRemovePaths = append(vaultRemovePaths, connPath)
-				}
-			} else if encrypt.IsEnabled() && connectionStringToPersist != nil &&
+			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
 				!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
 				// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
 				cs := *connectionStringToPersist
@@ -1942,20 +2144,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {
-			// DB write failed — compensate by removing any vault entries we just wrote
-			// so vault and DB don't diverge (old DB ref would point to nothing).
-			if tables.VaultHooks.Remove != nil {
-				for _, p := range vaultStoredPaths {
-					_ = tables.VaultHooks.Remove(ctx, p)
-				}
-			}
 			return s.parseGormError(err)
-		}
-		// Post-commit: best-effort vault removal for cleared/env-backed fields.
-		// Runs after DB succeeds so a failed Updates doesn't leave DB holding a
-		// ref to a vault entry we already deleted.
-		for _, p := range vaultRemovePaths {
-			_ = tables.VaultHooks.Remove(ctx, p)
 		}
 		return nil
 	})
@@ -1963,45 +2152,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 // DeleteMCPClientConfig deletes an MCP client configuration from the database.
 func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
-	// Find existing client upfront so we can pre-select vault-backed rows.
-	var existingClient tables.TableMCPClient
-	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("MCP client with id '%s' not found", id)
+	return s.DB().Transaction(func(tx *gorm.DB) error {
+		// Find existing client
+		var existingClient tables.TableMCPClient
+		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("MCP client with id '%s' not found", id)
+			}
+			return err
 		}
-		return err
-	}
 
-	// Fetch IDs of vault-backed rows before deletion for post-tx cleanup.
-	var vaultTokenIDs, vaultSessionIDs, vaultCredIDs []string
-	if tables.VaultHooks.Remove != nil {
-		var tokens []tables.TableOauthUserToken
-		if err := s.DB().WithContext(ctx).Select("id").
-			Where("mcp_client_id = ? AND encryption_status = ?", existingClient.ClientID, tables.EncryptionStatusVault).
-			Find(&tokens).Error; err == nil {
-			for _, t := range tokens {
-				vaultTokenIDs = append(vaultTokenIDs, t.ID)
-			}
-		}
-		var sessions []tables.TableOauthUserSession
-		if err := s.DB().WithContext(ctx).Select("id").
-			Where("mcp_client_id = ? AND encryption_status = ?", existingClient.ClientID, tables.EncryptionStatusVault).
-			Find(&sessions).Error; err == nil {
-			for _, sess := range sessions {
-				vaultSessionIDs = append(vaultSessionIDs, sess.ID)
-			}
-		}
-		var creds []tables.TableMCPPerUserHeaderCredential
-		if err := s.DB().WithContext(ctx).Select("id").
-			Where("mcp_client_id = ? AND encryption_status = ?", existingClient.ClientID, tables.EncryptionStatusVault).
-			Find(&creds).Error; err == nil {
-			for _, c := range creds {
-				vaultCredIDs = append(vaultCredIDs, c.ID)
-			}
-		}
-	}
-
-	err := s.DB().Transaction(func(tx *gorm.DB) error {
 		// Delete any virtual key MCP configs that reference this client
 		var configIDs []uint
 		if err := dbForUpdate(tx.WithContext(ctx)).
@@ -2038,20 +2198,6 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 		// Delete the client (this will also handle foreign key cascades)
 		return tx.WithContext(ctx).Delete(&existingClient).Error
 	})
-	if err != nil {
-		return err
-	}
-
-	// Best-effort vault cleanup after successful transaction.
-	if len(vaultTokenIDs) > 0 || len(vaultSessionIDs) > 0 || len(vaultCredIDs) > 0 {
-		go func() {
-			tables.TableOauthUserToken{}.DeleteVaultSecrets(context.Background(), vaultTokenIDs)
-			tables.TableOauthUserSession{}.DeleteVaultSecrets(context.Background(), vaultSessionIDs)
-			tables.TableMCPPerUserHeaderCredential{}.DeleteVaultSecrets(context.Background(), vaultCredIDs)
-		}()
-	}
-
-	return nil
 }
 
 // GetVectorStoreConfig retrieves the vector store configuration from the database.
@@ -2186,6 +2332,8 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_token_priority",
 	"input_cost_per_token_flex",
 	"output_cost_per_token_flex",
+	"input_cost_per_token_fast",
+	"output_cost_per_token_fast",
 	"input_cost_per_character",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
@@ -4810,12 +4958,12 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		return nil, nil
 	}
 	var authConfig *AuthConfig
+	var complexityAnalyzerConfig *ComplexityAnalyzerConfig
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
 		var username *string
 		var password *string
 		var isEnabled bool
-		var disableAuthOnInference bool
 		for _, entry := range governanceConfigs {
 			switch entry.Key {
 			case tables.ConfigAdminUsernameKey:
@@ -4824,31 +4972,105 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 				password = bifrost.Ptr(entry.Value)
 			case tables.ConfigIsAuthEnabledKey:
 				isEnabled = entry.Value == "true"
-			case tables.ConfigDisableAuthOnInferenceKey:
-				disableAuthOnInference = entry.Value == "true"
+			case tables.ConfigComplexityAnalyzerConfigKey:
+				if strings.TrimSpace(entry.Value) == "" {
+					continue
+				}
+				decoded, err := DecodeComplexityAnalyzerConfig([]byte(entry.Value))
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("failed to load complexity analyzer config from governance_config: %v", err)
+					}
+					continue
+				}
+				complexityAnalyzerConfig = decoded
 			}
 		}
 		if username != nil && password != nil {
 			authConfig = &AuthConfig{
-				AdminUserName:          schemas.NewEnvVar(*username),
-				AdminPassword:          schemas.NewEnvVar(*password),
-				IsEnabled:              isEnabled,
-				DisableAuthOnInference: disableAuthOnInference,
+				AdminUserName: schemas.NewEnvVar(*username),
+				AdminPassword: schemas.NewEnvVar(*password),
+				IsEnabled:     isEnabled,
 			}
 		}
 	}
 	return &GovernanceConfig{
-		VirtualKeys:      virtualKeys,
-		Teams:            teams,
-		Customers:        customers,
-		Budgets:          budgets,
-		RateLimits:       rateLimits,
-		ModelConfigs:     modelConfigs,
-		Providers:        providers,
-		RoutingRules:     routingRules,
-		PricingOverrides: pricingOverrides,
-		AuthConfig:       authConfig,
+		VirtualKeys:              virtualKeys,
+		Teams:                    teams,
+		Customers:                customers,
+		Budgets:                  budgets,
+		RateLimits:               rateLimits,
+		ModelConfigs:             modelConfigs,
+		Providers:                providers,
+		RoutingRules:             routingRules,
+		PricingOverrides:         pricingOverrides,
+		AuthConfig:               authConfig,
+		ComplexityAnalyzerConfig: complexityAnalyzerConfig,
 	}, nil
+}
+
+// GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config.
+func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
+	return s.getComplexityAnalyzerConfigWithDB(ctx, s.DB())
+}
+
+func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, db *gorm.DB) (*ComplexityAnalyzerConfig, error) {
+	if db == nil {
+		db = s.DB()
+	}
+
+	var configEntry tables.TableGovernanceConfig
+	err := db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(configEntry.Value) == "" {
+		return nil, nil
+	}
+	decoded, err := DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed analyzer config.
+func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if config == nil {
+		return fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+
+	txDB := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		txDB = tx[0]
+	}
+
+	if normalized.ConfigHashes.Empty() {
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, txDB)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			normalized.ConfigHashes = existing.ConfigHashes
+		}
+	}
+
+	raw, err := encodeComplexityAnalyzerConfig(normalized)
+	if err != nil {
+		return err
+	}
+	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: string(raw),
+	}, tx...)
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.
@@ -4856,7 +5078,6 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	var username *string
 	var password *string
 	var isEnabled bool
-	var disableAuthOnInference bool
 	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminUsernameKey).Select("value").Scan(&username).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
@@ -4872,23 +5093,13 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 			return nil, err
 		}
 	}
-	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigDisableAuthOnInferenceKey).Select("value").Scan(&disableAuthOnInference).Error; err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-	}
 	if username == nil || password == nil {
 		return nil, nil
 	}
-	// We are no longer keeping this option in the database
-	if !isEnabled {
-		disableAuthOnInference = true
-	}
 	return &AuthConfig{
-		AdminUserName:          schemas.NewEnvVar(*username),
-		AdminPassword:          schemas.NewEnvVar(*password),
-		IsEnabled:              isEnabled,
-		DisableAuthOnInference: disableAuthOnInference,
+		AdminUserName: schemas.NewEnvVar(*username),
+		AdminPassword: schemas.NewEnvVar(*password),
+		IsEnabled:     isEnabled,
 	}, nil
 }
 
@@ -4910,12 +5121,6 @@ func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfi
 		if err := tx.Save(&tables.TableGovernanceConfig{
 			Key:   tables.ConfigIsAuthEnabledKey,
 			Value: fmt.Sprintf("%t", config.IsEnabled),
-		}).Error; err != nil {
-			return err
-		}
-		if err := tx.Save(&tables.TableGovernanceConfig{
-			Key:   tables.ConfigDisableAuthOnInferenceKey,
-			Value: fmt.Sprintf("%t", config.DisableAuthOnInference),
 		}).Error; err != nil {
 			return err
 		}
@@ -5106,20 +5311,11 @@ func (s *RDBConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope
 	if len(tx) > 0 {
 		db = tx[0]
 	}
-	var vaultIDs []string
-	if tables.VaultHooks.Remove != nil {
-		db.WithContext(ctx).Model(&tables.TempToken{}).
-			Where("scope = ? AND resource_id = ? AND encryption_status = ?", scope, resourceID, tables.EncryptionStatusVault).
-			Pluck("id", &vaultIDs)
-	}
 	res := db.WithContext(ctx).
 		Where("scope = ? AND resource_id = ?", scope, resourceID).
 		Delete(&tables.TempToken{})
 	if res.Error != nil {
 		return 0, res.Error
-	}
-	if len(vaultIDs) > 0 {
-		go tables.TempToken{}.DeleteVaultSecrets(context.Background(), vaultIDs)
 	}
 	return res.RowsAffected, nil
 }
@@ -5127,18 +5323,9 @@ func (s *RDBConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope
 // DeleteExpiredTempTokens hard-deletes rows whose expires_at is at or before
 // the given cutoff. Returns the number of rows deleted.
 func (s *RDBConfigStore) DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error) {
-	var vaultIDs []string
-	if tables.VaultHooks.Remove != nil {
-		s.DB().WithContext(ctx).Model(&tables.TempToken{}).
-			Where("expires_at <= ? AND encryption_status = ?", before, tables.EncryptionStatusVault).
-			Pluck("id", &vaultIDs)
-	}
 	res := s.DB().WithContext(ctx).Where("expires_at <= ?", before).Delete(&tables.TempToken{})
 	if res.Error != nil {
 		return 0, res.Error
-	}
-	if len(vaultIDs) > 0 {
-		go tables.TempToken{}.DeleteVaultSecrets(context.Background(), vaultIDs)
 	}
 	return res.RowsAffected, nil
 }

@@ -143,6 +143,7 @@
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
+                  "providers/supported-providers/opencode",
                   "providers/supported-providers/openai",
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
@@ -229,12 +230,14 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers"
+                  "features/governance/required-headers",
+                  "features/governance/complexity-router"
                 ]
               },
               "features/telemetry",
               "features/otel",
               "features/semantic-caching",
+              "features/skills-repository",
               {
                 "group": "Prompt Repository",
                 "icon": "folder",
@@ -315,16 +318,6 @@
                   "integrations/guardrails/patronus-ai"
                 ]
               },
-              {
-                "group": "Alerting",
-                "icon": "bell",
-                "pages": [
-                  "enterprise/alerting/overview",
-                  "enterprise/alerting/alert-channels",
-                  "enterprise/alerting/alert-rules",
-                  "enterprise/alerting/alert-history"
-                ]
-              },
               "enterprise/audit-logs",
               "enterprise/log-exports",
               "enterprise/datadog-connector",
@@ -338,6 +331,51 @@
             "icon": "shield",
             "pages": [
               "security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Edge",
+        "icon": "globe",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "edge/overview",
+              "edge/how-it-works"
+            ]
+          },
+          {
+            "group": "Governance & Control",
+            "icon": "shield-halved",
+            "pages": [
+              "edge/app-governance",
+              "edge/mcp-governance",
+              "edge/security"
+            ]
+          },
+          {
+            "group": "Admin controls",
+            "icon": "sliders",
+            "pages": [
+              "edge/admin-devices",
+              "edge/admin-approvals",
+              "edge/admin-configurations"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "icon": "cloud-arrow-up",
+            "pages": [
+              "edge/deployment-mdm"
+            ]
+          },
+          {
+            "group": "Reference",
+            "icon": "list",
+            "pages": [
+              "edge/supported-applications"
             ]
           }
         ]
@@ -595,6 +633,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.13",
+              "changelogs/v1.5.12",
               "changelogs/v1.5.11",
               "changelogs/v1.5.10",
               "changelogs/v1.5.9",
@@ -774,6 +814,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.9",
               "changelogs/ent-v1.4.8",
               "changelogs/ent-v1.4.7",
               "changelogs/ent-v1.4.7-rc1",
@@ -838,6 +879,8 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.23",
+              "changelogs/helm-v2.1.22",
               "changelogs/helm-v2.1.21",
               "changelogs/helm-v2.1.20",
               "changelogs/helm-v2.1.19",
@@ -1030,18 +1073,6 @@
     {
       "source": "/enterprise/getting-started",
       "destination": "/enterprise/overview"
-    },
-    {
-      "source": "/enterprise/alerting",
-      "destination": "/enterprise/alerting/overview"
-    },
-    {
-      "source": "/alerting/alert-channels",
-      "destination": "/enterprise/alerting/alert-channels"
-    },
-    {
-      "source": "/alerting/alert-rules",
-      "destination": "/enterprise/alerting/alert-rules"
     }
   ],
   "footer": {

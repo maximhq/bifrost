@@ -34,6 +34,11 @@ type AnthropicResponsesStreamState struct {
 	WebFetchToolID      *string // Tool ID of active web fetch
 	WebFetchOutputIndex *int    // Output index for this fetch
 
+	// Advisor tool accumulation
+	AdvisorToolID      *string                // Tool ID of active advisor call
+	AdvisorOutputIndex *int                   // Output index for this advisor call
+	AdvisorResult      *AnthropicContentBlock // advisor_tool_result block when it arrives
+
 	// OpenAI Responses API mapping state
 	ContentIndexToOutputIndex map[int]int                       // Maps Anthropic content_index to OpenAI output_index
 	ContentIndexToBlockType   map[int]AnthropicContentBlockType // Tracks content block types
@@ -174,6 +179,9 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.WebSearchResult = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
+	state.AdvisorToolID = nil
+	state.AdvisorOutputIndex = nil
+	state.AdvisorResult = nil
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
@@ -207,6 +215,9 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.WebSearchResult = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
+	state.AdvisorToolID = nil
+	state.AdvisorOutputIndex = nil
+	state.AdvisorResult = nil
 	state.ContentIndexToOutputIndex = nil
 	state.ContentIndexToBlockType = nil
 	state.ToolArgumentBuffers = nil
@@ -537,6 +548,54 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					}}, nil, false
 				}
 
+				return nil, nil, false
+			}
+
+			// Handle advisor server_tool_use (the call; input is always empty).
+			// The paired advisor_tool_result is emitted as output_item.done when
+			// the result block's content_block_stop arrives (mirrors web_search).
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+				chunk.ContentBlock.Name != nil &&
+				*chunk.ContentBlock.Name == string(AnthropicToolNameAdvisor) &&
+				chunk.ContentBlock.ID != nil {
+
+				state.SeenRealToolCall = true
+				state.ChunkIndex = chunk.Index // absorbs the empty advisor input_json_delta
+				state.AccumulatedJSON = ""
+				state.AdvisorToolID = chunk.ContentBlock.ID
+				state.AdvisorOutputIndex = schemas.Ptr(outputIndex)
+				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+
+				item := &schemas.ResponsesMessage{
+					ID:     chunk.ContentBlock.ID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeAdvisorCall),
+					Status: schemas.Ptr("in_progress"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: chunk.ContentBlock.ID,
+						Name:   schemas.Ptr(string(AnthropicToolNameAdvisor)),
+					},
+				}
+
+				return []*schemas.BifrostResponsesStreamResponse{{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				}}, nil, false
+			}
+
+			// Handle advisor_tool_result block (arrives complete in one event).
+			// Store it; the output_item.done is emitted on its content_block_stop.
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeAdvisorToolResult &&
+				chunk.ContentBlock.ToolUseID != nil {
+
+				if chunk.Index != nil {
+					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeAdvisorToolResult
+				}
+				if state.AdvisorToolID != nil && *state.AdvisorToolID == *chunk.ContentBlock.ToolUseID {
+					state.AdvisorResult = chunk.ContentBlock
+				}
 				return nil, nil, false
 			}
 
@@ -1039,6 +1098,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					state.ChunkIndex = nil
 					return nil, nil, false
 				}
+
+				// Advisor server_tool_use block ended — wait for the result block.
+				if state.AdvisorToolID != nil {
+					state.ChunkIndex = nil
+					return nil, nil, false
+				}
 			}
 
 			// Check if this is the end of a web_search_tool_result block
@@ -1118,12 +1183,65 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}, nil, false
 			}
 
+			// End of an advisor_tool_result block — emit the advisor_call done.
+			if state.AdvisorResult != nil && state.AdvisorToolID != nil {
+				advisor := &schemas.ResponsesAdvisorCall{}
+				// content is a single object on the wire (ContentObj); UnmarshalJSON
+				// wraps incoming objects into ContentBlocks, so accept either.
+				if c := state.AdvisorResult.Content; c != nil {
+					inner := c.ContentObj
+					if inner == nil && len(c.ContentBlocks) > 0 {
+						inner = &c.ContentBlocks[0]
+					}
+					if inner != nil {
+						advisor.ResultType = string(inner.Type)
+						advisor.Text = inner.Text
+						advisor.EncryptedContent = inner.EncryptedContent
+						advisor.ErrorCode = inner.ErrorCode
+						advisor.StopReason = inner.StopReason
+					}
+				}
+				item := &schemas.ResponsesMessage{
+					ID:     state.AdvisorToolID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeAdvisorCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:               state.AdvisorToolID,
+						Name:                 schemas.Ptr(string(AnthropicToolNameAdvisor)),
+						ResponsesAdvisorCall: advisor,
+					},
+				}
+				outputIdx := state.AdvisorOutputIndex
+				// Persist into OutputItems so message_stop includes the advisor_call
+				// in response.completed (mirrors the web_search_call handling).
+				if outputIdx != nil {
+					cloned := *item
+					clonedToolMsg := *item.ResponsesToolMessage
+					cloned.ResponsesToolMessage = &clonedToolMsg
+					state.OutputItems[*outputIdx] = &cloned
+				}
+				state.AdvisorToolID = nil
+				state.AdvisorOutputIndex = nil
+				state.AdvisorResult = nil
+				if chunk.Index != nil {
+					delete(state.ContentIndexToBlockType, *chunk.Index)
+				}
+				return []*schemas.BifrostResponsesStreamResponse{{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    outputIdx,
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				}}, nil, false
+			}
+
 			// Skip generic output_item.done if this is a web_search_tool_result or compaction block
 			// (their handlers already emitted the proper done event)
 			if chunk.Index != nil {
 				if blockType, exists := state.ContentIndexToBlockType[*chunk.Index]; exists {
 					if blockType == AnthropicContentBlockTypeWebSearchToolResult ||
-						blockType == AnthropicContentBlockTypeWebFetchToolResult {
+						blockType == AnthropicContentBlockTypeWebFetchToolResult ||
+						blockType == AnthropicContentBlockTypeAdvisorToolResult {
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 						return nil, nil, false
 					}
@@ -1589,6 +1707,27 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			contentBlock.Input = json.RawMessage("{}")
 
 			streamResp.ContentBlock = contentBlock
+		} else if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeAdvisorCall {
+
+			// Advisor call - emit content_block_start with server_tool_use (input is always empty)
+			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
+			if bifrostResp.ContentIndex != nil {
+				streamResp.Index = bifrostResp.ContentIndex
+			} else if bifrostResp.OutputIndex != nil {
+				streamResp.Index = bifrostResp.OutputIndex
+			}
+			toolUseID := bifrostResp.Item.ID
+			if bifrostResp.Item.ResponsesToolMessage != nil && bifrostResp.Item.ResponsesToolMessage.CallID != nil {
+				toolUseID = bifrostResp.Item.ResponsesToolMessage.CallID
+			}
+			streamResp.ContentBlock = &AnthropicContentBlock{
+				Type:  AnthropicContentBlockTypeServerToolUse,
+				ID:    toolUseID,
+				Name:  schemas.Ptr(string(AnthropicToolNameAdvisor)),
+				Input: json.RawMessage("{}"),
+			}
 		} else {
 			// Text or other content blocks - emit content_block_start
 			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
@@ -2040,6 +2179,71 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				}
 				events = append(events, resultStopEvent)
 			}
+
+			return events
+		} else if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeAdvisorCall {
+
+			// Advisor call complete - emit content_block_stop for the server_tool_use
+			// block, then the advisor_tool_result block (start + stop) at the next index.
+			var events []*AnthropicStreamEvent
+
+			toolUseID := bifrostResp.Item.ID
+			if bifrostResp.Item.ResponsesToolMessage != nil && bifrostResp.Item.ResponsesToolMessage.CallID != nil {
+				toolUseID = bifrostResp.Item.ResponsesToolMessage.CallID
+			}
+
+			var serverIdx *int
+			if bifrostResp.OutputIndex != nil {
+				serverIdx = bifrostResp.OutputIndex
+			} else if bifrostResp.ContentIndex != nil {
+				serverIdx = bifrostResp.ContentIndex
+			}
+
+			// 1. content_block_stop for the server_tool_use block.
+			events = append(events, &AnthropicStreamEvent{
+				Type:  AnthropicStreamEventTypeContentBlockStop,
+				Index: serverIdx,
+			})
+
+			// 2. content_block_start for advisor_tool_result at the next index.
+			var resultIdx *int
+			if serverIdx != nil {
+				next := *serverIdx + 1
+				resultIdx = &next
+			}
+			resultBlock := &AnthropicContentBlock{
+				Type:      AnthropicContentBlockTypeAdvisorToolResult,
+				ToolUseID: toolUseID,
+			}
+			if bifrostResp.Item.ResponsesToolMessage != nil && bifrostResp.Item.ResponsesToolMessage.ResponsesAdvisorCall != nil {
+				adv := bifrostResp.Item.ResponsesToolMessage.ResponsesAdvisorCall
+				resultType := adv.ResultType
+				if resultType == "" {
+					resultType = "advisor_result"
+				}
+				resultBlock.Content = &AnthropicContent{
+					ContentObj: &AnthropicContentBlock{
+						Type:             AnthropicContentBlockType(resultType),
+						Text:             adv.Text,
+						EncryptedContent: adv.EncryptedContent,
+						ErrorCode:        adv.ErrorCode,
+						StopReason:       adv.StopReason,
+					},
+				}
+			}
+			events = append(events, &AnthropicStreamEvent{
+				Type:         AnthropicStreamEventTypeContentBlockStart,
+				Index:        resultIdx,
+				ContentBlock: resultBlock,
+			})
+
+			// 3. content_block_stop for the advisor_tool_result block.
+			events = append(events, &AnthropicStreamEvent{
+				Type:  AnthropicStreamEventTypeContentBlockStop,
+				Index: resultIdx,
+			})
 
 			return events
 		} else if bifrostResp.Item != nil &&
@@ -2866,6 +3070,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		bifrostResp.ServiceTier = &mapped
 	}
 
+	// Forward the speed actually served (fast mode) — drives fast-mode billing.
+	if response.Usage != nil && response.Usage.Speed != nil {
+		bifrostResp.Speed = response.Usage.Speed
+	}
+
 	return bifrostResp
 }
 
@@ -2926,6 +3135,13 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		}
 		mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
 		anthropicResp.Usage.ServiceTier = &mapped
+	}
+
+	if bifrostResp.Speed != nil {
+		if anthropicResp.Usage == nil {
+			anthropicResp.Usage = &AnthropicUsage{}
+		}
+		anthropicResp.Usage.Speed = bifrostResp.Speed
 	}
 
 	return anthropicResp
@@ -3469,6 +3685,32 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 						currentToolCallIDs = make(map[string]bool)
 					}
 					currentToolCallIDs[*webSearchBlocks[0].ID] = true
+				}
+			}
+
+		case schemas.ResponsesMessageTypeAdvisorCall:
+			// Advisor calls, like web search, emit a server_tool_use + result
+			// pair that lives inside the assistant message.
+			flushPendingToolResults()
+			advisorBlocks := convertBifrostAdvisorCallToAnthropicBlocks(&msg)
+			if len(advisorBlocks) > 0 {
+				if currentAssistantMessage == nil {
+					currentAssistantMessage = &AnthropicMessage{
+						Role: AnthropicMessageRoleAssistant,
+					}
+				}
+				if len(pendingReasoningContentBlocks) > 0 {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					pendingToolCalls = append(copied, pendingToolCalls...)
+					pendingReasoningContentBlocks = nil
+				}
+				pendingToolCalls = append(pendingToolCalls, advisorBlocks...)
+				if advisorBlocks[0].ID != nil {
+					if currentToolCallIDs == nil {
+						currentToolCallIDs = make(map[string]bool)
+					}
+					currentToolCallIDs[*advisorBlocks[0].ID] = true
 				}
 			}
 
@@ -4247,6 +4489,54 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					bifrostMsg.ID = block.ID
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
 				}
+			} else if block.Name != nil && *block.Name == string(AnthropicToolNameAdvisor) {
+				// advisor server_tool_use — the paired advisor_tool_result is
+				// attached onto this message when it is encountered below.
+				bifrostMsg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeAdvisorCall),
+					ID:     block.ID,
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Name:   schemas.Ptr(string(AnthropicToolNameAdvisor)),
+						CallID: block.ID,
+					},
+				}
+				if isOutputMessage {
+					bifrostMessages = append(bifrostMessages, bifrostMsg)
+				}
+			}
+
+		case AnthropicContentBlockTypeAdvisorToolResult:
+			// Attach the advisor result onto the matching advisor_call.
+			if block.ToolUseID != nil {
+				for i := len(bifrostMessages) - 1; i >= 0; i-- {
+					msg := &bifrostMessages[i]
+					if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeAdvisorCall {
+						continue
+					}
+					if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.CallID == nil ||
+						*msg.ResponsesToolMessage.CallID != *block.ToolUseID {
+						continue
+					}
+					advisor := &schemas.ResponsesAdvisorCall{}
+					// content is a single object on the wire (ContentObj); UnmarshalJSON
+					// wraps incoming objects into ContentBlocks, so accept either.
+					if c := block.Content; c != nil {
+						inner := c.ContentObj
+						if inner == nil && len(c.ContentBlocks) > 0 {
+							inner = &c.ContentBlocks[0]
+						}
+						if inner != nil {
+							advisor.ResultType = string(inner.Type)
+							advisor.Text = inner.Text
+							advisor.EncryptedContent = inner.EncryptedContent
+							advisor.ErrorCode = inner.ErrorCode
+							advisor.StopReason = inner.StopReason
+						}
+					}
+					msg.ResponsesToolMessage.ResponsesAdvisorCall = advisor
+					break
+				}
 			}
 
 		case AnthropicContentBlockTypeWebSearchToolResult:
@@ -4837,6 +5127,51 @@ func convertBifrostWebSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage)
 	return blocks
 }
 
+// convertBifrostAdvisorCallToAnthropicBlocks rebuilds the advisor server_tool_use
+// block and its paired advisor_tool_result block from a neutral advisor_call.
+// Anthropic requires both blocks to appear together in the assistant message.
+func convertBifrostAdvisorCallToAnthropicBlocks(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
+	// Resolve the tool-use id (server_tool_use.id == advisor_tool_result.tool_use_id).
+	var toolUseID *string
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
+		toolUseID = msg.ResponsesToolMessage.CallID
+	} else {
+		toolUseID = msg.ID
+	}
+
+	// 1. server_tool_use block — advisor input is always empty.
+	serverToolUseBlock := AnthropicContentBlock{
+		Type:  AnthropicContentBlockTypeServerToolUse,
+		ID:    toolUseID,
+		Name:  schemas.Ptr(string(AnthropicToolNameAdvisor)),
+		Input: json.RawMessage("{}"),
+	}
+
+	// 2. advisor_tool_result block carrying the advisor's result content.
+	resultBlock := AnthropicContentBlock{
+		Type:      AnthropicContentBlockTypeAdvisorToolResult,
+		ToolUseID: toolUseID,
+	}
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.ResponsesAdvisorCall != nil {
+		adv := msg.ResponsesToolMessage.ResponsesAdvisorCall
+		resultType := adv.ResultType
+		if resultType == "" {
+			resultType = "advisor_result"
+		}
+		resultBlock.Content = &AnthropicContent{
+			ContentObj: &AnthropicContentBlock{
+				Type:             AnthropicContentBlockType(resultType),
+				Text:             adv.Text,
+				EncryptedContent: adv.EncryptedContent,
+				ErrorCode:        adv.ErrorCode,
+				StopReason:       adv.StopReason,
+			},
+		}
+	}
+
+	return []AnthropicContentBlock{serverToolUseBlock, resultBlock}
+}
+
 // convertBifrostUnsupportedToolCallToAnthropicMessage converts unsupported tool calls to text messages
 func convertBifrostUnsupportedToolCallToAnthropicMessage(msg *schemas.ResponsesMessage, msgType schemas.ResponsesMessageType) *AnthropicMessage {
 	if msg.ResponsesToolMessage != nil {
@@ -5025,6 +5360,25 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728),
 				Name: &tool.Name,
 			}
+
+		case AnthropicToolTypeAdvisor20260301:
+			bifrostTool := &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeAdvisor,
+			}
+			if tool.AnthropicToolAdvisor != nil {
+				bifrostTool.ResponsesToolAdvisor = &schemas.ResponsesToolAdvisor{
+					Model:     tool.AnthropicToolAdvisor.Model,
+					MaxUses:   tool.AnthropicToolAdvisor.MaxUses,
+					MaxTokens: tool.AnthropicToolAdvisor.MaxTokens,
+				}
+				if tool.AnthropicToolAdvisor.Caching != nil {
+					bifrostTool.ResponsesToolAdvisor.Caching = &schemas.ResponsesToolAdvisorCaching{
+						Type: tool.AnthropicToolAdvisor.Caching.Type,
+						TTL:  tool.AnthropicToolAdvisor.Caching.TTL,
+					}
+				}
+			}
+			return bifrostTool
 		}
 	}
 
@@ -5383,6 +5737,24 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		return &AnthropicTool{
 			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250728),
 			Name: string(AnthropicToolNameTextEditor),
+		}
+	case schemas.ResponsesToolTypeAdvisor:
+		advisor := &AnthropicToolAdvisor{}
+		if tool.ResponsesToolAdvisor != nil {
+			advisor.Model = tool.ResponsesToolAdvisor.Model
+			advisor.MaxUses = tool.ResponsesToolAdvisor.MaxUses
+			advisor.MaxTokens = tool.ResponsesToolAdvisor.MaxTokens
+			if tool.ResponsesToolAdvisor.Caching != nil {
+				advisor.Caching = &AnthropicToolAdvisorCaching{
+					Type: tool.ResponsesToolAdvisor.Caching.Type,
+					TTL:  tool.ResponsesToolAdvisor.Caching.TTL,
+				}
+			}
+		}
+		return &AnthropicTool{
+			Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+			Name:                 string(AnthropicToolNameAdvisor),
+			AnthropicToolAdvisor: advisor,
 		}
 	}
 

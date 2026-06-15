@@ -334,13 +334,37 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 	// KeyID must be propagated through the routing decision.
 	assert.Equal(t, pinnedKeyID, decision.KeyID)
 
-	// Simulate the propagation step performed by governance/main.go so that we can
-	// assert the pinned key_id is visible in the BifrostContext.
-	if decision.KeyID != "" {
-		bgCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
+	// Now exercise the REAL propagation path through applyRoutingRules, under the same
+	// restricted-write block that core's RunPreRequestHooks installs around every
+	// PreRequestHook (core/bifrost.go: ctx.BlockRestrictedWrites + ctx.WithPluginScope).
+	// This is what production actually does — the routing pin lands on the dedicated,
+	// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (a write to the reserved
+	// BifrostContextKeyAPIKeyID would be silently dropped during this phase). Key selection
+	// (selectKeyFromProviderForModelWithPool) reads the pinned key back from this context.
+	plugin := &GovernancePlugin{
+		logger: NewMockLogger(),
+		store:  store,
+		engine: engine,
 	}
-	ctxKeyID, _ := bgCtx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
-	assert.Equal(t, pinnedKeyID, ctxKeyID)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+	}
+
+	root := schemas.NewBifrostContext(context.Background(), time.Now())
+	root.BlockRestrictedWrites()
+	pluginName := PluginName
+	scoped := root.WithPluginScope(&pluginName)
+
+	appliedDecision, err := plugin.applyRoutingRules(scoped, req, nil)
+	require.NoError(t, err)
+	require.NotNil(t, appliedDecision)
+	assert.Equal(t, pinnedKeyID, appliedDecision.KeyID)
+
+	// The pinned key_id must be readable from the root context that key selection consults.
+	ctxKeyID, _ := root.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+	assert.Equal(t, pinnedKeyID, ctxKeyID,
+		"routing-rule pinned key_id must reach BifrostContextKeyRoutingPinnedAPIKeyID that selectKeyFromProviderForModelWithPool reads")
 }
 
 // TestEvaluateRoutingRules_ScopePrecedence tests virtual_key scope takes precedence over global

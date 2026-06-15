@@ -848,6 +848,54 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			expectHeaders: []string{AnthropicMCPClientBetaHeader},
 		},
 		{
+			name:     "Anthropic gets advisor header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			expectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Vertex skips advisor header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Bedrock skips advisor header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Azure skips advisor header",
+			provider: schemas.Azure,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
 			name:     "Vertex gets compaction header",
 			provider: schemas.Vertex,
 			req: &AnthropicMessageRequest{

@@ -877,6 +877,12 @@ export function LogDetailView({
 							/>
 							{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={log.model} />}
 							{!isContainer && log.alias && <LogEntryDetailsView className="w-full" label="Alias" value={log.alias} />}
+							{!isContainer && log.canonical_model_name && (
+								<LogEntryDetailsView className="w-full" label="Canonical Model" value={log.canonical_model_name} />
+							)}
+							{!isContainer && log.alias_model_family && (
+								<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
+							)}
 							<LogEntryDetailsView
 								className="w-full"
 								label="Type"

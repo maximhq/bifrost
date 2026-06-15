@@ -29,6 +29,10 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableKey{},
 		&tables.TableBudget{},
 		&tables.TableRateLimit{},
+		&tables.TableModelConfig{},
+		&tables.TableRoutingRule{},
+		&tables.TableRoutingTarget{},
+		&tables.TablePricingOverride{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
@@ -36,8 +40,10 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
+		&tables.TableGovernanceConfig{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
+		&tables.TableMCPLibrary{},
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableFolder{},
 		&tables.TablePrompt{},
@@ -63,6 +69,345 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	}
 	s.refreshPoolFn = func(ctx context.Context) error { return nil }
 	return s
+}
+
+func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
+	return &ComplexityAnalyzerConfig{
+		TierBoundaries: ComplexityTierBoundaries{
+			SimpleMedium:     0.10,
+			MediumComplex:    0.30,
+			ComplexReasoning: 0.70,
+		},
+		Keywords: ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{" Function ", "api", "API"},
+			ReasoningKeywords: []string{"tradeoffs"},
+			TechnicalKeywords: []string{"latency"},
+			SimpleKeywords:    []string{"hello"},
+		},
+	}
+}
+
+func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := testComplexityAnalyzerConfig()
+	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "tier-hash-1",
+		CodeKeywords:      "code-hash-1",
+		ReasoningKeywords: "reason-hash-1",
+		TechnicalKeywords: "tech-hash-1",
+		SimpleKeywords:    "simple-hash-1",
+	}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, ComplexityTierBoundaries{
+		SimpleMedium:     0.10,
+		MediumComplex:    0.30,
+		ComplexReasoning: 0.70,
+	}, got.TierBoundaries)
+	assert.Equal(t, []string{"api", "function"}, got.Keywords.CodeKeywords)
+	assert.Equal(t, cfg.ConfigHashes, got.ConfigHashes)
+}
+
+func TestRDBConfigStore_GetComplexityAnalyzerConfigMissingReturnsNil(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashesOnRuntimeUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	fileConfig := testComplexityAnalyzerConfig()
+	fileConfig.ConfigHashes = ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "tier-hash-1",
+		CodeKeywords:      "code-hash-1",
+		ReasoningKeywords: "reason-hash-1",
+		TechnicalKeywords: "tech-hash-1",
+		SimpleKeywords:    "simple-hash-1",
+	}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, fileConfig))
+
+	runtimeConfig := testComplexityAnalyzerConfig()
+	runtimeConfig.TierBoundaries.SimpleMedium = 0.12
+	runtimeConfig.ConfigHashes = ComplexityAnalyzerConfigHashes{}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, runtimeConfig))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 0.12, got.TierBoundaries.SimpleMedium)
+	assert.Equal(t, fileConfig.ConfigHashes, got.ConfigHashes)
+}
+
+func TestGenerateComplexityAnalyzerConfigHashesCanonicalizesKeywords(t *testing.T) {
+	left := testComplexityAnalyzerConfig()
+	right := testComplexityAnalyzerConfig()
+	right.Keywords.CodeKeywords = []string{"api", "function"}
+	left.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-a"}
+	right.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-b"}
+
+	leftHashes, err := GenerateComplexityAnalyzerConfigHashes(left)
+	require.NoError(t, err)
+	rightHashes, err := GenerateComplexityAnalyzerConfigHashes(right)
+	require.NoError(t, err)
+
+	assert.Equal(t, leftHashes, rightHashes)
+}
+
+func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testing.T) {
+	base := testComplexityAnalyzerConfig()
+	file := testComplexityAnalyzerConfig()
+	file.TierBoundaries = ComplexityTierBoundaries{
+		SimpleMedium:     0.20,
+		MediumComplex:    0.40,
+		ComplexReasoning: 0.80,
+	}
+	file.Keywords.CodeKeywords = []string{"GraphQL", "api"}
+	file.Keywords.ReasoningKeywords = []string{"tradeoffs", "step by step"}
+	file.Keywords.TechnicalKeywords = []string{"latency", "kubernetes"}
+	file.Keywords.SimpleKeywords = []string{"hello", "thanks"}
+
+	merged, err := MergeComplexityAnalyzerConfig(base, file)
+	require.NoError(t, err)
+	require.NotNil(t, merged)
+
+	assert.Equal(t, file.TierBoundaries, merged.TierBoundaries)
+	assert.Equal(t, []string{"api", "function", "graphql"}, merged.Keywords.CodeKeywords)
+	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ReasoningKeywords)
+	assert.Equal(t, []string{"kubernetes", "latency"}, merged.Keywords.TechnicalKeywords)
+	assert.Equal(t, []string{"hello", "thanks"}, merged.Keywords.SimpleKeywords)
+}
+
+func TestMergeComplexityAnalyzerConfigByHashesOnlyAppliesChangedSections(t *testing.T) {
+	base := testComplexityAnalyzerConfig()
+	base.ConfigHashes = ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "tier-hash-1",
+		CodeKeywords:      "code-hash-1",
+		ReasoningKeywords: "reason-hash-1",
+		TechnicalKeywords: "tech-hash-1",
+		SimpleKeywords:    "simple-hash-1",
+	}
+	base.TierBoundaries.SimpleMedium = 0.12
+	base.Keywords.CodeKeywords = []string{"ui-code"}
+	base.Keywords.ReasoningKeywords = []string{"ui-reason"}
+
+	file := testComplexityAnalyzerConfig()
+	file.ConfigHashes = base.ConfigHashes
+	file.ConfigHashes.CodeKeywords = "code-hash-2"
+	file.TierBoundaries.SimpleMedium = 0.20
+	file.Keywords.CodeKeywords = []string{"file-code"}
+	file.Keywords.ReasoningKeywords = []string{"file-reason"}
+
+	merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+	require.NoError(t, err)
+	require.NotNil(t, merged)
+
+	assert.Equal(t, 0.12, merged.TierBoundaries.SimpleMedium)
+	assert.Equal(t, []string{"file-code", "ui-code"}, merged.Keywords.CodeKeywords)
+	assert.Equal(t, []string{"ui-reason"}, merged.Keywords.ReasoningKeywords)
+	assert.Equal(t, "code-hash-2", merged.ConfigHashes.CodeKeywords)
+	assert.Equal(t, "reason-hash-1", merged.ConfigHashes.ReasoningKeywords)
+}
+
+func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := testComplexityAnalyzerConfig()
+	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    "tier-hash-2",
+		CodeKeywords:      "code-hash-2",
+		ReasoningKeywords: "reason-hash-2",
+		TechnicalKeywords: "tech-hash-2",
+		SimpleKeywords:    "simple-hash-2",
+	}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	governanceConfig, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, governanceConfig)
+	require.NotNil(t, governanceConfig.ComplexityAnalyzerConfig)
+	assert.Equal(t, 0.70, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.ComplexReasoning)
+	assert.Equal(t, cfg.ConfigHashes, governanceConfig.ComplexityAnalyzerConfig.ConfigHashes)
+}
+
+func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name   string
+		mutate func(*ComplexityAnalyzerConfig)
+	}{
+		{
+			name: "simple medium below minimum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.SimpleMedium = -0.1
+			},
+		},
+		{
+			name: "medium complex at minimum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.MediumComplex = 0
+			},
+		},
+		{
+			name: "complex reasoning at maximum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.ComplexReasoning = 1.0
+			},
+		},
+		{
+			name: "boundaries out of order",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.ComplexReasoning = cfg.TierBoundaries.MediumComplex - 0.1
+			},
+		},
+		{
+			name: "empty code keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.CodeKeywords = nil
+			},
+		},
+		{
+			name: "empty reasoning keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.ReasoningKeywords = nil
+			},
+		},
+		{
+			name: "empty technical keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.TechnicalKeywords = nil
+			},
+		},
+		{
+			name: "empty simple keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.SimpleKeywords = nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invalid := testComplexityAnalyzerConfig()
+			tt.mutate(invalid)
+
+			err := store.UpdateComplexityAnalyzerConfig(ctx, invalid)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestUpsertMCPLibraryEntry(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	entry := &tables.TableMCPLibrary{
+		Slug:           "filesystem",
+		Name:           "Filesystem",
+		Description:    "original",
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		AuthType:       schemas.MCPAuthTypeNone,
+		Source:         "remote",
+	}
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, entry))
+
+	entry.Description = "updated"
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, entry))
+
+	entries, totalCount, err := store.GetMCPLibraryPaginated(ctx, MCPLibraryQueryParams{Limit: 1})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), totalCount)
+	require.Len(t, entries, 1)
+	require.Equal(t, "updated", entries[0].Description)
+}
+
+func TestValidateSkillVersionIncrementRequiresGreaterVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		latest  string
+		next    string
+		wantErr bool
+	}{
+		{name: "rejects lower prerelease core", latest: "1.0.3", next: "1.0.2-1", wantErr: true},
+		{name: "accepts same core with suffix after release", latest: "1.0.3", next: "1.0.3-1", wantErr: false},
+		{name: "accepts release after same core suffix", latest: "1.0.3-beta1", next: "1.0.3", wantErr: false},
+		{name: "accepts higher patch", latest: "1.0.3", next: "1.0.4", wantErr: false},
+		{name: "accepts higher minor", latest: "1.0.3", next: "1.1.0", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSkillVersionIncrement(tt.latest, tt.next)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestLatestCreatedSkillVersionUsesCreationOrder(t *testing.T) {
+	store := setupRDBTestStore(t)
+	err := store.DB().AutoMigrate(
+		&tables.TableSkill{},
+		&tables.TableSkillVersion{},
+		&tables.TableSkillFile{},
+		&tables.TableSkillFileBlob{},
+	)
+	require.NoError(t, err)
+	ctx := context.Background()
+	baseTime := time.Now()
+
+	skillID := "skill-latest-created"
+	err = store.DB().Create(&tables.TableSkill{
+		ID:            skillID,
+		Name:          "latest-created",
+		Description:   "Latest created version test",
+		SkillMDBody:   "body",
+		LatestVersion: "1.0.3",
+		CreatedAt:     baseTime,
+		UpdatedAt:     baseTime,
+	}).Error
+	require.NoError(t, err)
+	err = store.DB().Create(&tables.TableSkillVersion{
+		ID:                  "skill-version-old",
+		SkillID:             skillID,
+		Version:             "1.0.3",
+		SkillMDBody:         "body",
+		FrontmatterSnapshot: tables.SkillJSONMap{"name": "latest-created", "description": "Latest created version test"},
+		CreatedAt:           baseTime,
+	}).Error
+	require.NoError(t, err)
+	err = store.DB().Create(&tables.TableSkillVersion{
+		ID:                  "skill-version-new",
+		SkillID:             skillID,
+		Version:             "1.0.2-1",
+		SkillMDBody:         "body",
+		FrontmatterSnapshot: tables.SkillJSONMap{"name": "latest-created", "description": "Latest created version test"},
+		CreatedAt:           baseTime.Add(time.Minute),
+	}).Error
+	require.NoError(t, err)
+
+	latest, err := latestCreatedSkillVersion(store.DB(), skillID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.2-1", latest)
+
+	skill, err := store.GetSkillLean(ctx, skillID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.2-1", skill.HighestVersion)
 }
 
 // =============================================================================

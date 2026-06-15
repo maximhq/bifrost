@@ -433,6 +433,8 @@ export interface FrameworkConfig {
 	pricing_url: string;
 	pricing_sync_interval: number;
 	model_parameters_url: string;
+	mcp_library_url?: string;
+	mcp_library_sync_interval?: number;
 }
 
 // Auth config
@@ -440,7 +442,6 @@ export interface AuthConfig {
 	admin_username: EnvVar;
 	admin_password: EnvVar;
 	is_enabled: boolean;
-	disable_auth_on_inference?: boolean;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
@@ -513,8 +514,10 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
+	env_label?: string;
 }
 
 export interface CompatConfig {

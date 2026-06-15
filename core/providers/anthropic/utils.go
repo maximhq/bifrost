@@ -34,6 +34,7 @@ var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport) b
 	"memory_":           func(f ProviderFeatureSupport) bool { return f.Memory },
 	"text_editor_":      func(f ProviderFeatureSupport) bool { return f.TextEditor },
 	"tool_search_tool_": func(f ProviderFeatureSupport) bool { return f.ToolSearch },
+	"advisor_":          func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
 }
 
 // isAnthropicServerToolSupported returns whether the given Anthropic server-tool
@@ -137,6 +138,10 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 			}
 		case schemas.ResponsesToolTypeImageGeneration:
 			if !features.ImageGeneration {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeAdvisor:
+			if !features.AdvisorTool {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 			// ResponsesToolTypeFunction, ResponsesToolTypeCustom, etc. are always allowed
@@ -981,6 +986,10 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 					if !hasProvider || features.ComputerUse {
 						headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20250124)
 					}
+				case AnthropicToolTypeAdvisor20260301:
+					if !hasProvider || features.AdvisorTool {
+						headers = appendUniqueHeader(headers, AnthropicAdvisorBetaHeader)
+					}
 				}
 			}
 			// Check for strict (structured-outputs)
@@ -1079,7 +1088,7 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// Check for fast mode. Only add the beta header when both the provider
 	// supports fast mode AND the model does (Opus 4.6 only per
 	// SupportsFastMode); otherwise sending the header guarantees a 400.
-	if req.Speed != nil && *req.Speed == "fast" {
+	if req.Speed != nil {
 		if (!hasProvider || features.FastMode) && SupportsFastMode(req.Model) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
@@ -1174,6 +1183,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicRedactThinkingBetaHeaderPrefix,
 	AnthropicTaskBudgetsBetaHeaderPrefix,
 	AnthropicEagerInputStreamingBetaHeaderPrefix,
+	AnthropicAdvisorBetaHeaderPrefix,
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -1238,11 +1248,16 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 	schemas.Vertex: {
 		"web_fetch_",     // No web fetch support on Vertex
 		"code_execution", // No code execution on Vertex
+		"advisor_",       // Advisor tool is Anthropic API only
 	},
 	schemas.Bedrock: {
 		"web_search_",    // No web search on Bedrock
 		"web_fetch_",     // No web fetch on Bedrock
 		"code_execution", // No code execution on Bedrock
+		"advisor_",       // Advisor tool is Anthropic API only
+	},
+	schemas.Azure: {
+		"advisor_", // Advisor tool is Anthropic API only (Azure supports all other tools)
 	},
 }
 
@@ -1485,6 +1500,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
 	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
+	AnthropicAdvisorBetaHeaderPrefix:             func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

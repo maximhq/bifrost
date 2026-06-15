@@ -1,0 +1,2281 @@
+{
+  "$schema": "./schema.json",
+  "lastUpdatedAt": "2026-06-09T00:00:00Z",
+  "servers": [
+    {
+      "name": "Filesystem",
+      "description": "Read and write files on the local filesystem within configured directories.",
+      "category": "Developer Tools",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/path/to/allowed/dir"
+        ],
+        "envs": []
+      },
+      "auth_type": "none",
+      "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "publisher": "Anthropic",
+      "tags": [
+        "files",
+        "local",
+        "storage"
+      ],
+      "icon_url": "/images/mcp-servers/filesystem.png"
+    },
+    {
+      "name": "GitHub (Remote)",
+      "description": "Connect AI tools directly to GitHub's platform to read repositories and code, manage issues and pull requests, analyze code, monitor GitHub Actions, and automate workflows. Hosted remotely by GitHub.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://api.githubcopilot.com/mcp/",
+      "auth_type": "oauth",
+      "docs_url": "https://github.com/github/github-mcp-server",
+      "publisher": "GitHub",
+      "tags": [
+        "github",
+        "git",
+        "repositories",
+        "issues",
+        "pull-requests",
+        "ci-cd",
+        "code"
+      ],
+      "icon_url": "/images/mcp-servers/github_light.svg"
+    },
+    {
+      "name": "GitHub (Local)",
+      "description": "Run the GitHub MCP Server locally via Docker to read repositories and code, manage issues and pull requests, analyze code, monitor GitHub Actions, and automate workflows. Requires a GitHub Personal Access Token.",
+      "category": "Developer Tools",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "docker",
+        "args": [
+          "run",
+          "-i",
+          "--rm",
+          "-e",
+          "GITHUB_PERSONAL_ACCESS_TOKEN",
+          "ghcr.io/github/github-mcp-server"
+        ],
+        "envs": [
+          "GITHUB_PERSONAL_ACCESS_TOKEN"
+        ]
+      },
+      "auth_type": "none",
+      "docs_url": "https://github.com/github/github-mcp-server",
+      "publisher": "GitHub",
+      "tags": [
+        "github",
+        "git",
+        "repositories",
+        "issues",
+        "pull-requests",
+        "ci-cd",
+        "code",
+        "docker"
+      ],
+      "icon_url": "/images/mcp-servers/github_light.svg"
+    },
+    {
+      "name": "Linear",
+      "description": "Connect AI tools to Linear to find, create, and update issues, projects, and comments. Hosted remotely by Linear.",
+      "category": "Project Management",
+      "connection_type": "http",
+      "connection_url": "https://mcp.linear.app/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://linear.app/docs/mcp",
+      "publisher": "Linear",
+      "tags": [
+        "linear",
+        "issues",
+        "projects",
+        "comments",
+        "project-management"
+      ],
+      "icon_url": "/images/mcp-servers/linear.svg"
+    },
+    {
+      "name": "Notion",
+      "description": "Connect AI tools to your Notion workspace to search, read, create, and update pages and databases. Hosted remotely by Notion.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.notion.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.notion.com/docs/mcp",
+      "publisher": "Notion",
+      "tags": [
+        "notion",
+        "docs",
+        "wiki",
+        "knowledge-base",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/notion.svg"
+    },
+    {
+      "name": "Atlassian",
+      "description": "Connect AI tools to your Atlassian Cloud site to interact with Jira, Confluence, and Compass data in real time. Hosted remotely by Atlassian.",
+      "category": "Project Management",
+      "connection_type": "http",
+      "connection_url": "https://mcp.atlassian.com/v1/mcp/authv2",
+      "auth_type": "oauth",
+      "docs_url": "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/",
+      "publisher": "Atlassian",
+      "tags": [
+        "atlassian",
+        "jira",
+        "confluence",
+        "compass",
+        "project-management"
+      ],
+      "icon_url": "/images/mcp-servers/atlassian.svg"
+    },
+    {
+      "name": "Maxim",
+      "description": "Run the Maxim AI MCP server locally to manage log repositories, datasets, and evaluators, and analyze logs of sessions and traces. Requires a Maxim API key.",
+      "category": "AI Tools",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@maximai/mcp-server@latest"
+        ],
+        "envs": [
+          "MAXIM_API_KEY"
+        ]
+      },
+      "auth_type": "none",
+      "docs_url": "https://www.npmjs.com/package/@maximai/mcp-server",
+      "publisher": "Maxim AI",
+      "tags": [
+        "maxim",
+        "observability",
+        "evaluation",
+        "datasets",
+        "logs",
+        "ai"
+      ],
+      "icon_url": "/images/mcp-servers/maxim.png"
+    },
+    {
+      "name": "Ahrefs",
+      "description": "Connect AI tools to the Ahrefs API to enrich answers with SEO metrics, backlink data, keyword research, and site analysis. Hosted remotely by Ahrefs.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://api.ahrefs.com/mcp/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.ahrefs.com/en/mcp/docs/introduction",
+      "publisher": "Ahrefs",
+      "tags": [
+        "ahrefs",
+        "seo",
+        "backlinks",
+        "keywords",
+        "marketing"
+      ],
+      "icon_url": "/images/mcp-servers/ahrefs.svg"
+    },
+    {
+      "name": "Calendly",
+      "description": "Connect AI tools to Calendly to list event types, find available slots, book and cancel events, manage availability, and generate scheduling links. Hosted remotely by Calendly.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.calendly.com",
+      "auth_type": "oauth",
+      "docs_url": "https://developer.calendly.com/calendly-mcp-server",
+      "publisher": "Calendly",
+      "tags": [
+        "calendly",
+        "scheduling",
+        "calendar",
+        "meetings",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/calendly.svg"
+    },
+    {
+      "name": "Stripe",
+      "description": "Connect AI tools to the Stripe API to manage customers, invoices, products, prices, subscriptions, payment links, refunds, and disputes, and to search Stripe documentation. Hosted remotely by Stripe.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.stripe.com",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.stripe.com/mcp",
+      "publisher": "Stripe",
+      "tags": [
+        "stripe",
+        "payments",
+        "billing",
+        "invoices",
+        "subscriptions",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/stripe.svg"
+    },
+    {
+      "name": "Vercel",
+      "description": "Connect AI tools to Vercel to search documentation, manage projects and deployments, and analyze deployment logs. Hosted remotely by Vercel.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.vercel.com",
+      "auth_type": "oauth",
+      "docs_url": "https://vercel.com/docs/agent-resources/vercel-mcp",
+      "publisher": "Vercel",
+      "tags": [
+        "vercel",
+        "deployments",
+        "projects",
+        "logs",
+        "hosting",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/vercel.svg"
+    },
+    {
+      "name": "Netlify",
+      "description": "Run the Netlify MCP server locally to create, manage, and deploy projects, manage access controls and extensions, handle form submissions, and set environment variables via the Netlify API and CLI. Requires Node.js 22+ and a Netlify account.",
+      "category": "Developer Tools",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@netlify/mcp"
+        ],
+        "envs": [
+          "NETLIFY_PERSONAL_ACCESS_TOKEN"
+        ]
+      },
+      "auth_type": "none",
+      "docs_url": "https://docs.netlify.com/welcome/build-with-ai/netlify-mcp-server/",
+      "publisher": "Netlify",
+      "tags": [
+        "netlify",
+        "deployments",
+        "projects",
+        "hosting",
+        "cli",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/netlify.svg"
+    },
+    {
+      "name": "Vanta",
+      "description": "Connect AI tools to Vanta to retrieve compliance test results, manage security findings, review framework requirements, track vulnerabilities, and access controls, documents, integrations, and risk scenarios. Hosted remotely by Vanta.",
+      "category": "Security",
+      "connection_type": "http",
+      "connection_url": "https://mcp.vanta.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://help.vanta.com/en/articles/14094979-connecting-to-vanta-mcp",
+      "publisher": "Vanta",
+      "tags": [
+        "vanta",
+        "compliance",
+        "security",
+        "soc2",
+        "iso27001",
+        "vulnerabilities"
+      ],
+      "icon_url": "/images/mcp-servers/vanta.png"
+    },
+    {
+      "name": "Airtable",
+      "description": "Connect AI tools to your Airtable bases to search, analyze, create, and update records, manage tables and fields, and explore schemas and interfaces. Hosted remotely by Airtable.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.airtable.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://support.airtable.com/docs/using-the-airtable-mcp-server",
+      "publisher": "Airtable",
+      "icon_url": "/images/mcp-servers/airtable.svg",
+      "tags": [
+        "airtable",
+        "database",
+        "records",
+        "spreadsheet",
+        "productivity"
+      ]
+    },
+    {
+      "name": "Cal.com",
+      "description": "Connect AI tools to Cal.com to manage bookings, event types, schedules, availability, and organization memberships through natural language. Hosted remotely by Cal.com.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.cal.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://cal.com/docs/platform/mcp-server",
+      "publisher": "Cal.com",
+      "tags": [
+        "cal.com",
+        "scheduling",
+        "calendar",
+        "bookings",
+        "meetings",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/cal.svg"
+    },
+    {
+      "name": "Asana",
+      "description": "Connect AI tools to Asana to access tasks, projects, and workspaces, track status and ownership, and work across workspace activity. Hosted remotely by Asana.",
+      "category": "Project Management",
+      "connection_type": "http",
+      "connection_url": "https://mcp.asana.com/v2/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.asana.com/docs/using-asanas-model-control-protocol-mcp-server",
+      "publisher": "Asana",
+      "tags": [
+        "asana",
+        "tasks",
+        "projects",
+        "workspaces",
+        "project-management"
+      ],
+      "icon_url": "/images/mcp-servers/asana-logo.svg"
+    },
+    {
+      "name": "Canva",
+      "description": "Connect AI tools to Canva to find and discuss designs, assets, exports, and comments, and iterate on creative work conversationally. Hosted remotely by Canva.",
+      "category": "Design",
+      "connection_type": "http",
+      "connection_url": "https://mcp.canva.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.canva.dev/docs/connect/canva-mcp-server-setup/",
+      "publisher": "Canva",
+      "tags": [
+        "canva",
+        "design",
+        "assets",
+        "exports",
+        "comments"
+      ],
+      "icon_url": "/images/mcp-servers/canva.svg"
+    },
+    {
+      "name": "Cloudflare",
+      "description": "Connect AI tools to Cloudflare to inspect resources, plan infrastructure changes, and work across Workers, D1, R2, DNS, and account APIs. Hosted remotely by Cloudflare.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.cloudflare.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.cloudflare.com/agents/model-context-protocol/",
+      "publisher": "Cloudflare",
+      "tags": [
+        "cloudflare",
+        "workers",
+        "dns",
+        "d1",
+        "r2",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/cloudflare.svg"
+    },
+    {
+      "name": "Figma",
+      "description": "Connect AI tools to Figma to bring files, designs, and Dev Mode context into workflows so agents can understand and act on visual work. Hosted remotely by Figma.",
+      "category": "Design",
+      "connection_type": "http",
+      "connection_url": "https://mcp.figma.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.figma.com/docs/figma-mcp-server/",
+      "publisher": "Figma",
+      "tags": [
+        "figma",
+        "design",
+        "dev-mode",
+        "files",
+        "prototyping"
+      ],
+      "icon_url": "/images/mcp-servers/figma.svg"
+    },
+    {
+      "name": "HubSpot",
+      "description": "Connect AI tools to HubSpot to read and act on CRM objects, records, and account data, and understand customer workflows. Hosted remotely by HubSpot.",
+      "category": "Sales",
+      "connection_type": "http",
+      "connection_url": "https://mcp.hubspot.com",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.hubspot.com/mcp",
+      "publisher": "HubSpot",
+      "tags": [
+        "hubspot",
+        "crm",
+        "sales",
+        "marketing",
+        "contacts"
+      ],
+      "icon_url": "/images/mcp-servers/hubspot.png"
+    },
+    {
+      "name": "Neon",
+      "description": "Connect AI tools to Neon to manage Postgres projects and branches, run SQL, and search documentation. Hosted remotely by Neon.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.neon.tech/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://neon.com/docs/ai/neon-mcp-server",
+      "publisher": "Neon",
+      "tags": [
+        "neon",
+        "postgres",
+        "database",
+        "sql",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/neon.svg"
+    },
+    {
+      "name": "Railway",
+      "description": "Connect AI tools to Railway to access project and deployment context, investigate app state, plan changes, and work across environments. Hosted remotely by Railway.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.railway.com",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.railway.com/reference/mcp-server",
+      "publisher": "Railway",
+      "tags": [
+        "railway",
+        "deployments",
+        "projects",
+        "environments",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/railway.svg"
+    },
+    {
+      "name": "Parallel",
+      "description": "Connect AI tools to Parallel for real-time web search and content extraction in search-grounded AI workflows. Hosted remotely by Parallel.",
+      "category": "Search",
+      "connection_type": "http",
+      "connection_url": "https://search.parallel.ai/mcp",
+      "auth_type": "none",
+      "docs_url": "https://docs.parallel.ai/integrations/mcp/quickstart",
+      "publisher": "Parallel",
+      "tags": [
+        "parallel",
+        "search",
+        "web",
+        "content-extraction",
+        "research"
+      ],
+      "icon_url": "/images/mcp-servers/parallel.png"
+    },
+    {
+      "name": "Sentry",
+      "description": "Connect AI tools to Sentry to retrieve, analyze, and debug application issues and errors, and bring project, issue, and reliability context into incident workflows. Hosted remotely by Sentry.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.sentry.dev/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.sentry.io/product/sentry-mcp/",
+      "publisher": "Sentry",
+      "tags": [
+        "sentry",
+        "errors",
+        "debugging",
+        "observability",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/sentry.svg"
+    },
+    {
+      "name": "Slack",
+      "description": "Connect AI tools to Slack to find decisions, summarize discussions, and understand channel activity across messages, channels, users, and canvases. Hosted remotely by Slack.",
+      "category": "Communication",
+      "connection_type": "http",
+      "connection_url": "https://mcp.slack.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://slack.com/intl/en-in/help/articles/48855576908307-Guide-to-the-Slack-MCP-server",
+      "publisher": "Slack",
+      "tags": [
+        "slack",
+        "messages",
+        "channels",
+        "communication",
+        "collaboration"
+      ],
+      "icon_url": "/images/mcp-servers/slack.svg"
+    },
+    {
+      "name": "Supabase",
+      "description": "Connect AI tools to Supabase to work with project, database, and documentation context across Postgres, auth, storage, and edge functions. Hosted remotely by Supabase.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.supabase.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://supabase.com/docs/guides/getting-started/mcp",
+      "publisher": "Supabase",
+      "tags": [
+        "supabase",
+        "postgres",
+        "database",
+        "auth",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/supabase.svg"
+    },
+    {
+      "name": "GitLab",
+      "description": "Connect AI tools securely to your GitLab data to work with projects, issues, merge requests, and CI/CD. Hosted remotely by GitLab.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://gitlab.com/api/v4/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.gitlab.com/user/gitlab_duo/model_context_protocol/mcp_server/",
+      "publisher": "GitLab",
+      "tags": [
+        "gitlab",
+        "git",
+        "repositories",
+        "merge-requests",
+        "ci-cd",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/gitlab.svg"
+    },
+    {
+      "name": "Todoist",
+      "description": "Connect AI tools to Todoist to search, create, complete, and manage your tasks and projects. Hosted remotely by Todoist.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://ai.todoist.net/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.todoist.com/help/articles/connect-todoist-to-ai-tools-with-mcp",
+      "publisher": "Todoist",
+      "tags": [
+        "todoist",
+        "tasks",
+        "projects",
+        "to-do",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/todoist.svg"
+    },
+    {
+      "name": "PayPal",
+      "description": "Connect AI tools to the PayPal platform to access payments, invoicing, subscriptions, and transaction data. Hosted remotely by PayPal.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.paypal.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.paypal.ai/docs/tools/mcp-quickstart",
+      "publisher": "PayPal",
+      "tags": [
+        "paypal",
+        "payments",
+        "invoicing",
+        "subscriptions",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/paypal.svg"
+    },
+    {
+      "name": "Monday",
+      "description": "Connect AI tools to monday.com to manage projects, boards, items, and workflows. Hosted remotely by monday.com.",
+      "category": "Project Management",
+      "connection_type": "http",
+      "connection_url": "https://mcp.monday.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developer.monday.com/apps/docs/mcp",
+      "publisher": "monday.com",
+      "tags": [
+        "monday",
+        "boards",
+        "projects",
+        "workflows",
+        "project-management"
+      ],
+      "icon_url": "/images/mcp-servers/monday.png"
+    },
+    {
+      "name": "Honeycomb",
+      "description": "Connect AI tools to Honeycomb to query and explore observability data, traces, and SLOs. Hosted remotely by Honeycomb.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.honeycomb.io/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.honeycomb.io/integrations/mcp/",
+      "publisher": "Honeycomb",
+      "tags": [
+        "honeycomb",
+        "observability",
+        "tracing",
+        "slo",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/honeycomb.png"
+    },
+    {
+      "name": "Square",
+      "description": "Connect AI tools to Square to search and manage transaction, merchant, and payment data. Hosted remotely by Square.",
+      "category": "Finance",
+      "connection_type": "sse",
+      "connection_url": "https://mcp.squareup.com/sse",
+      "auth_type": "oauth",
+      "docs_url": "https://developer.squareup.com/docs/mcp",
+      "publisher": "Square",
+      "tags": [
+        "square",
+        "payments",
+        "merchants",
+        "transactions",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/square.png"
+    },
+    {
+      "name": "ClickUp",
+      "description": "Connect AI tools to ClickUp to manage tasks, docs, and projects with real-time workspace context. Hosted remotely by ClickUp.",
+      "category": "Project Management",
+      "connection_type": "http",
+      "connection_url": "https://mcp.clickup.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://clickup.com/blog/clickup-mcp-server/",
+      "publisher": "ClickUp",
+      "tags": [
+        "clickup",
+        "tasks",
+        "docs",
+        "projects",
+        "project-management"
+      ],
+      "icon_url": "/images/mcp-servers/clickup.svg"
+    },
+    {
+      "name": "Intercom",
+      "description": "Connect AI tools to Intercom to access conversations, contacts, and support data for better customer insights. Hosted remotely by Intercom.",
+      "category": "Customer Support",
+      "connection_type": "http",
+      "connection_url": "https://mcp.intercom.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.intercom.com/docs/guides/mcp",
+      "publisher": "Intercom",
+      "tags": [
+        "intercom",
+        "support",
+        "conversations",
+        "contacts",
+        "customer-support"
+      ],
+      "icon_url": "/images/mcp-servers/intercom.png"
+    },
+    {
+      "name": "Miro",
+      "description": "Connect AI tools to Miro to access and create content on boards for visual collaboration. Hosted remotely by Miro.",
+      "category": "Design",
+      "connection_type": "http",
+      "connection_url": "https://mcp.miro.com/",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.miro.com/docs/miro-mcp",
+      "publisher": "Miro",
+      "tags": [
+        "miro",
+        "whiteboard",
+        "boards",
+        "collaboration",
+        "design"
+      ],
+      "icon_url": "/images/mcp-servers/miro.png"
+    },
+    {
+      "name": "Mixpanel",
+      "description": "Connect AI tools to Mixpanel to analyze, query, and manage your product analytics data. Hosted remotely by Mixpanel.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://mcp.mixpanel.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.mixpanel.com/docs/mcp",
+      "publisher": "Mixpanel",
+      "tags": [
+        "mixpanel",
+        "analytics",
+        "product-analytics",
+        "events",
+        "data"
+      ],
+      "icon_url": "/images/mcp-servers/mixpanel.png"
+    },
+    {
+      "name": "Cloudinary",
+      "description": "Connect AI tools to Cloudinary to manage, transform, and deliver images and videos across your media assets. Hosted remotely by Cloudinary.",
+      "category": "Developer Tools",
+      "connection_type": "sse",
+      "connection_url": "https://asset-management.mcp.cloudinary.com/sse",
+      "auth_type": "oauth",
+      "docs_url": "https://cloudinary.com/documentation/cloudinary_llm_mcp",
+      "publisher": "Cloudinary",
+      "tags": [
+        "cloudinary",
+        "media",
+        "images",
+        "video",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/cloudinary.svg"
+    },
+    {
+      "name": "PlanetScale",
+      "description": "Connect AI tools to PlanetScale for authenticated access to your Postgres and MySQL databases. Hosted remotely by PlanetScale.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.pscale.dev/mcp/planetscale",
+      "auth_type": "oauth",
+      "docs_url": "https://planetscale.com/docs/concepts/planetscale-mcp-server",
+      "publisher": "PlanetScale",
+      "tags": [
+        "planetscale",
+        "mysql",
+        "postgres",
+        "database",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/planetscale.svg"
+    },
+    {
+      "name": "Box",
+      "description": "Connect AI tools to Box for governed access to file and folder context, search, and Box AI within your existing permissions. Hosted remotely by Box.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.box.com",
+      "auth_type": "oauth",
+      "docs_url": "https://developer.box.com/guides/box-mcp/remote/",
+      "publisher": "Box",
+      "tags": [
+        "box",
+        "files",
+        "storage",
+        "documents",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/box.png"
+    },
+    {
+      "name": "Sanity",
+      "description": "Connect AI tools to Sanity to create, query, and manage structured content. Hosted remotely by Sanity.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.sanity.io",
+      "auth_type": "oauth",
+      "docs_url": "https://www.sanity.io/docs/cli-reference/cli-mcp",
+      "publisher": "Sanity",
+      "tags": [
+        "sanity",
+        "cms",
+        "content",
+        "structured-content",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/sanity-light.svg"
+    },
+    {
+      "name": "Postman",
+      "description": "Connect AI tools to Postman to give API context to your coding agents across collections, requests, and workspaces. Hosted remotely by Postman.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.postman.com/minimal",
+      "auth_type": "oauth",
+      "docs_url": "https://learning.postman.com/docs/reference/postman-api/postman-mcp-server/overview/",
+      "publisher": "Postman",
+      "tags": [
+        "postman",
+        "api",
+        "collections",
+        "testing",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/postman.svg"
+    },
+    {
+      "name": "Mintlify",
+      "description": "Connect AI tools to Mintlify to search, read, and edit your documentation. Hosted remotely by Mintlify.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.mintlify.com",
+      "auth_type": "oauth",
+      "docs_url": "https://mintlify.com/docs/ai/model-context-protocol",
+      "publisher": "Mintlify",
+      "tags": [
+        "mintlify",
+        "documentation",
+        "docs",
+        "search",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/mintlify.svg"
+    },
+    {
+      "name": "Hugging Face",
+      "description": "Connect AI tools to the Hugging Face Hub to access models, datasets, Spaces, and thousands of Gradio apps. Hosted remotely by Hugging Face.",
+      "category": "AI Tools",
+      "connection_type": "http",
+      "connection_url": "https://huggingface.co/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://huggingface.co/settings/mcp",
+      "publisher": "Hugging Face",
+      "tags": [
+        "hugging-face",
+        "models",
+        "datasets",
+        "spaces",
+        "ai"
+      ],
+      "icon_url": "/images/mcp-servers/hugging_face.svg"
+    },
+    {
+      "name": "Microsoft Learn",
+      "description": "Connect AI tools to Microsoft Learn to search trusted Microsoft documentation and power your development. Hosted remotely by Microsoft.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://learn.microsoft.com/api/mcp",
+      "auth_type": "none",
+      "docs_url": "https://learn.microsoft.com/en-us/training/support/mcp",
+      "publisher": "Microsoft",
+      "tags": [
+        "microsoft",
+        "documentation",
+        "docs",
+        "search",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/microsoft.svg"
+    },
+    {
+      "name": "Context7",
+      "description": "Connect AI tools to Context7 to fetch up-to-date, version-specific documentation and code examples for libraries and frameworks. Hosted remotely by Context7.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.context7.com/mcp",
+      "auth_type": "none",
+      "docs_url": "https://context7.com/",
+      "publisher": "Context7",
+      "tags": [
+        "context7",
+        "documentation",
+        "libraries",
+        "code-examples",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/context7.svg"
+    },
+    {
+      "name": "Exa",
+      "description": "Connect AI tools to Exa for web search and code documentation search to ground answers in real-time results. Hosted remotely by Exa.",
+      "category": "Search",
+      "connection_type": "http",
+      "connection_url": "https://mcp.exa.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.exa.ai/reference/exa-mcp",
+      "publisher": "Exa",
+      "tags": [
+        "exa",
+        "search",
+        "web",
+        "research",
+        "documentation"
+      ],
+      "icon_url": "/images/mcp-servers/exa.png"
+    },
+    {
+      "name": "Tavily",
+      "description": "Connect AI tools to Tavily to search the web and extract content for agentic, search-grounded workflows. Hosted remotely by Tavily.",
+      "category": "Search",
+      "connection_type": "http",
+      "connection_url": "https://mcp.tavily.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.tavily.com/documentation/mcp",
+      "publisher": "Tavily",
+      "tags": [
+        "tavily",
+        "search",
+        "web",
+        "research",
+        "content-extraction"
+      ],
+      "icon_url": "/images/mcp-servers/tavily.png"
+    },
+    {
+      "name": "Semrush",
+      "description": "Connect AI tools to Semrush to access SEO, market data, and brand visibility insights. Hosted remotely by Semrush.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://mcp.semrush.com/claude/v1/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.semrush.com/apps/",
+      "publisher": "Semrush",
+      "tags": [
+        "semrush",
+        "seo",
+        "marketing",
+        "keywords",
+        "analytics"
+      ],
+      "icon_url": "/images/mcp-servers/semrush.png"
+    },
+    {
+      "name": "Clerk",
+      "description": "Connect AI tools to Clerk to manage authentication, organizations, users, and billing. Hosted remotely by Clerk.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.clerk.com/mcp",
+      "auth_type": "none",
+      "docs_url": "https://clerk.com/docs/guides/ai/mcp/clerk-mcp-server",
+      "publisher": "Clerk",
+      "tags": [
+        "clerk",
+        "authentication",
+        "users",
+        "billing",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/clerk-icon-light.svg"
+    },
+    {
+      "name": "Amplitude",
+      "description": "Connect AI tools to Amplitude to give teams powerful behavioral and product analytics insights. Hosted remotely by Amplitude.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://mcp.amplitude.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://amplitude.com/docs/get-started/mcp",
+      "publisher": "Amplitude",
+      "tags": [
+        "amplitude",
+        "analytics",
+        "product-analytics",
+        "behavioral",
+        "data"
+      ],
+      "icon_url": "/images/mcp-servers/amplitude.svg"
+    },
+    {
+      "name": "Hex",
+      "description": "Connect AI tools to Hex to answer questions with the Hex agent across your data and notebooks. Hosted remotely by Hex.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://app.hex.tech/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://learn.hex.tech/docs/api-integrations/mcp-server",
+      "publisher": "Hex",
+      "tags": [
+        "hex",
+        "analytics",
+        "data-science",
+        "notebooks",
+        "data"
+      ],
+      "icon_url": "/images/mcp-servers/hex.png"
+    },
+    {
+      "name": "WordPress.com",
+      "description": "Connect AI tools to WordPress.com for secure, permission-scoped access to manage your sites and content. Hosted remotely by WordPress.com.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://public-api.wordpress.com/wpcom/v2/mcp/v1",
+      "auth_type": "oauth",
+      "docs_url": "https://developer.wordpress.com/docs/mcp/",
+      "publisher": "Automattic",
+      "tags": [
+        "wordpress",
+        "cms",
+        "websites",
+        "content",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/wordpress.svg"
+    },
+    {
+      "name": "Jotform",
+      "description": "Connect AI tools to Jotform to create forms and analyze submissions. Hosted remotely by Jotform.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.jotform.com/mcp-app",
+      "auth_type": "oauth",
+      "docs_url": "https://www.jotform.com/developers/mcp/",
+      "publisher": "Jotform",
+      "tags": [
+        "jotform",
+        "forms",
+        "submissions",
+        "surveys",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/jotform.png"
+    },
+    {
+      "name": "Eraser",
+      "description": "Connect AI tools to Eraser to generate, manage, and update diagrams and files. Hosted remotely by Eraser.",
+      "category": "Design",
+      "connection_type": "http",
+      "connection_url": "https://app.eraser.io/api/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.eraser.io/docs/mcp",
+      "publisher": "Eraser",
+      "tags": [
+        "eraser",
+        "diagrams",
+        "documentation",
+        "architecture",
+        "design"
+      ],
+      "icon_url": "/images/mcp-servers/eraser.png"
+    },
+    {
+      "name": "GoCardless",
+      "description": "Connect AI tools to GoCardless to build and manage bank payment and direct debit integrations. Hosted remotely by GoCardless.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.gocardless.com",
+      "auth_type": "oauth",
+      "docs_url": "https://developer.gocardless.com/developer-tools/mcp",
+      "publisher": "GoCardless",
+      "tags": [
+        "gocardless",
+        "payments",
+        "direct-debit",
+        "billing",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/gocardless.png"
+    },
+    {
+      "name": "Twilio",
+      "description": "Connect AI tools to Twilio to search and explore Twilio documentation for building communications and customer engagement. Hosted remotely by Twilio.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.twilio.com/docs",
+      "auth_type": "none",
+      "docs_url": "https://www.twilio.com/docs/alpha/mcp-server",
+      "publisher": "Twilio",
+      "tags": [
+        "twilio",
+        "documentation",
+        "communications",
+        "sms",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/twilio.svg"
+    },
+    {
+      "name": "Quartr",
+      "description": "Connect AI tools to Quartr for financial data and AI infrastructure for company research. Hosted remotely by Quartr.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.quartr.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://quartr.com/mcp",
+      "publisher": "Quartr",
+      "tags": [
+        "quartr",
+        "financial-data",
+        "research",
+        "earnings",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/quartr.png"
+    },
+    {
+      "name": "Bigdata.com",
+      "description": "Connect AI tools to Bigdata.com for institutional-grade financial data covering global news, transcripts, and regulatory filings. Hosted remotely by Bigdata.com.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.bigdata.com/",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "x-api-key"
+      ],
+      "docs_url": "https://docs.bigdata.com/mcp-reference/introduction",
+      "publisher": "Bigdata.com",
+      "tags": [
+        "bigdata",
+        "financial-data",
+        "news",
+        "filings",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/bigdata.png"
+    },
+    {
+      "name": "Fiscal.ai",
+      "description": "Connect AI tools to Fiscal.ai for clean public-equity fundamental data and structured company and market context. Hosted remotely by Fiscal.ai.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://api.fiscal.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.fiscal.ai/docs/guides/mcp-integration",
+      "publisher": "Fiscal.ai",
+      "tags": [
+        "fiscal-ai",
+        "financial-data",
+        "equities",
+        "fundamentals",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/fiscal.png"
+    },
+    {
+      "name": "Ramp",
+      "description": "Connect AI tools to Ramp to search, access, and analyze your Ramp financial data and spending patterns. Hosted remotely by Ramp.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://ramp-mcp-remote.ramp.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.ramp.com/developer-api/v1/mcp",
+      "publisher": "Ramp",
+      "tags": [
+        "ramp",
+        "spend",
+        "expenses",
+        "finance",
+        "procurement"
+      ],
+      "icon_url": "/images/mcp-servers/ramp.png"
+    },
+    {
+      "name": "Ramp Data",
+      "description": "Connect AI tools to Ramp Data for spend analysis and benchmarking across a large network of business transaction data. Hosted remotely by Ramp.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.ramp.com/ramp-data/anthropic/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.ramp.com/developer-api/v1/mcp",
+      "publisher": "Ramp",
+      "tags": [
+        "ramp",
+        "spend",
+        "benchmarking",
+        "finance",
+        "data"
+      ],
+      "icon_url": "/images/mcp-servers/ramp.png"
+    },
+    {
+      "name": "CoinDesk",
+      "description": "Connect AI tools to CoinDesk for real-time and historical digital asset market data and indices. Hosted remotely by CoinDesk.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.coindesk.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://mcp.coindesk.com/",
+      "publisher": "CoinDesk",
+      "tags": [
+        "coindesk",
+        "crypto",
+        "market-data",
+        "indices",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/coindesk.png"
+    },
+    {
+      "name": "Crypto.com",
+      "description": "Connect AI tools to Crypto.com for real-time prices, order books, conversions, candlestick charts, and token-market information. Hosted remotely by Crypto.com.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.crypto.com/market-data/mcp",
+      "auth_type": "none",
+      "docs_url": "https://crypto.com/",
+      "publisher": "Crypto.com",
+      "tags": [
+        "crypto-com",
+        "crypto",
+        "market-data",
+        "trading",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/crypto.png"
+    },
+    {
+      "name": "Rillet",
+      "description": "Connect AI tools to Rillet to query your live general ledger and financials in plain English. Hosted remotely by Rillet.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://api.rillet.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.rillet.com/",
+      "publisher": "Rillet",
+      "tags": [
+        "rillet",
+        "accounting",
+        "general-ledger",
+        "erp",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/rillet.png"
+    },
+    {
+      "name": "Carta",
+      "description": "Connect AI tools to Carta to work with cap table, investor, fund, accounting, and company financial data for private-capital workflows. Hosted remotely by Carta.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.app.carta.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://carta.com/",
+      "publisher": "Carta",
+      "tags": [
+        "carta",
+        "cap-table",
+        "equity",
+        "fund-administration",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/carta.png"
+    },
+    {
+      "name": "Privacy.com",
+      "description": "Connect AI tools to Privacy.com to manage virtual cards and track spending patterns. Hosted remotely by Privacy.com.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.privacy.com",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.privacy.com/docs/mcp-server",
+      "publisher": "Privacy.com",
+      "tags": [
+        "privacy",
+        "virtual-cards",
+        "payments",
+        "spend",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/privacy.png"
+    },
+    {
+      "name": "Airwallex",
+      "description": "Connect AI tools to Airwallex to access documentation, API references, and sandbox testing context for building payment integrations. Hosted remotely by Airwallex.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp-demo.airwallex.com/developer",
+      "auth_type": "oauth",
+      "docs_url": "https://www.airwallex.com/docs/developer-tools/ai/agentos/connectors",
+      "publisher": "Airwallex",
+      "tags": [
+        "airwallex",
+        "payments",
+        "documentation",
+        "fintech",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/airwallex.svg"
+    },
+    {
+      "name": "Yahoo Finance",
+      "description": "Connect AI tools to Yahoo Finance for stock data, market news, financials, and price history. Hosted remotely.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://gateway.mcpservers.org/yahoo-finance/mcp",
+      "auth_type": "none",
+      "docs_url": "https://finance.yahoo.com/",
+      "publisher": "mcpservers.org",
+      "tags": [
+        "yahoo-finance",
+        "stocks",
+        "market-data",
+        "news",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/yahoo-finance.png"
+    },
+    {
+      "name": "Expedia",
+      "description": "Connect AI tools to Expedia to plan trips and search flights and hotels. Hosted remotely by Expedia.",
+      "category": "Travel",
+      "connection_type": "http",
+      "connection_url": "https://www.expedia.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.expedia.com/",
+      "publisher": "Expedia",
+      "tags": [
+        "expedia",
+        "travel",
+        "flights",
+        "hotels",
+        "booking"
+      ],
+      "icon_url": "/images/mcp-servers/expedia.png"
+    },
+    {
+      "name": "Granola",
+      "description": "Connect AI tools to Granola to capture meeting notes and context with AI-powered summaries and follow-ups. Hosted remotely by Granola.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.granola.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.granola.ai/",
+      "publisher": "Granola",
+      "tags": [
+        "granola",
+        "meetings",
+        "notes",
+        "transcripts",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/granola-light.svg"
+    },
+    {
+      "name": "Otter.ai",
+      "description": "Connect AI tools to Otter.ai to access meeting transcripts, summaries, and conversation records and extract decisions and action items. Hosted remotely by Otter.ai.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.otter.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server",
+      "publisher": "Otter.ai",
+      "tags": [
+        "otter",
+        "meetings",
+        "transcripts",
+        "notes",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/otter.png"
+    },
+    {
+      "name": "Grain",
+      "description": "Connect AI tools to Grain to turn meetings into insights, summaries, and next steps. Hosted remotely by Grain.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://api.grain.com/_/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://grain.com/",
+      "publisher": "Grain",
+      "tags": [
+        "grain",
+        "meetings",
+        "transcripts",
+        "insights",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/grain.png"
+    },
+    {
+      "name": "Krisp",
+      "description": "Connect AI tools to Krisp to bring meeting transcripts and notes into workflows for summaries, follow-ups, and decisions. Hosted remotely by Krisp.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.krisp.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://krisp.ai/",
+      "publisher": "Krisp",
+      "tags": [
+        "krisp",
+        "meetings",
+        "transcripts",
+        "notes",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/krisp.png"
+    },
+    {
+      "name": "Mem",
+      "description": "Connect AI tools to Mem, the AI notebook for notes, thoughts, and personal knowledge. Hosted remotely by Mem.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.mem.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://get.mem.ai/",
+      "publisher": "Mem",
+      "tags": [
+        "mem",
+        "notes",
+        "knowledge-base",
+        "personal",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/mem.png"
+    },
+    {
+      "name": "Craft",
+      "description": "Connect AI tools to Craft to create structured documents, manage tasks, and organize a personal knowledge base. Hosted remotely by Craft.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.craft.do/my/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.craft.do/imagine/guide/mcp/mcp",
+      "publisher": "Craft",
+      "tags": [
+        "craft",
+        "notes",
+        "documents",
+        "knowledge-base",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/craft.png"
+    },
+    {
+      "name": "Workable",
+      "description": "Connect AI tools to Workable for hiring and HR workflows across candidates, jobs, and pipelines. Hosted remotely by Workable.",
+      "category": "Human Resources",
+      "connection_type": "http",
+      "connection_url": "https://mcp.workable.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://workable.readme.io/reference/workable-mcp-server",
+      "publisher": "Workable",
+      "tags": [
+        "workable",
+        "hiring",
+        "recruiting",
+        "hr",
+        "ats"
+      ],
+      "icon_url": "/images/mcp-servers/workable.png"
+    },
+    {
+      "name": "Metaview",
+      "description": "Connect AI tools to Metaview for interview, hiring, and recruiting context. Hosted remotely by Metaview.",
+      "category": "Human Resources",
+      "connection_type": "http",
+      "connection_url": "https://mcp.metaview.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.metaview.ai/",
+      "publisher": "Metaview",
+      "tags": [
+        "metaview",
+        "recruiting",
+        "interviews",
+        "hiring",
+        "hr"
+      ],
+      "icon_url": "/images/mcp-servers/metaview.png"
+    },
+    {
+      "name": "Harmonic",
+      "description": "Connect AI tools to Harmonic to discover, research, and enrich companies and people for market mapping and prospect research. Hosted remotely by Harmonic.",
+      "category": "Sales",
+      "connection_type": "http",
+      "connection_url": "https://mcp.api.harmonic.ai",
+      "auth_type": "oauth",
+      "docs_url": "https://harmonic.ai/",
+      "publisher": "Harmonic",
+      "tags": [
+        "harmonic",
+        "prospecting",
+        "enrichment",
+        "companies",
+        "sales"
+      ],
+      "icon_url": "/images/mcp-servers/harmonic.png"
+    },
+    {
+      "name": "ZoomInfo",
+      "description": "Connect AI tools to ZoomInfo for verified B2B company and contact data to search companies, identify stakeholders, and build account lists. Hosted remotely by ZoomInfo.",
+      "category": "Sales",
+      "connection_type": "http",
+      "connection_url": "https://mcp.zoominfo.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.zoominfo.com/docs/zi-api-mcp-overview",
+      "publisher": "ZoomInfo",
+      "tags": [
+        "zoominfo",
+        "prospecting",
+        "enrichment",
+        "contacts",
+        "sales"
+      ],
+      "icon_url": "/images/mcp-servers/zoominfo.png"
+    },
+    {
+      "name": "Sprouts",
+      "description": "Connect AI tools to Sprouts.ai for natural-language access to a B2B prospect database with role, industry, and lead-qualification signals. Hosted remotely by Sprouts.ai.",
+      "category": "Sales",
+      "connection_type": "http",
+      "connection_url": "https://sprouts-mcp-server.kartikay-dhar.workers.dev",
+      "auth_type": "oauth",
+      "docs_url": "https://sprouts.ai/",
+      "publisher": "Sprouts.ai",
+      "tags": [
+        "sprouts",
+        "prospecting",
+        "lead-generation",
+        "contacts",
+        "sales"
+      ],
+      "icon_url": "/images/mcp-servers/sprouts.png"
+    },
+    {
+      "name": "Scite",
+      "description": "Connect AI tools to Scite for evidence-based answers grounded in peer-reviewed research and citation context. Hosted remotely by Scite.",
+      "category": "Research",
+      "connection_type": "http",
+      "connection_url": "https://api.scite.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://scite.ai/",
+      "publisher": "Scite",
+      "tags": [
+        "scite",
+        "research",
+        "citations",
+        "academic",
+        "science"
+      ],
+      "icon_url": "/images/mcp-servers/scite.png"
+    },
+    {
+      "name": "Synthesize Bio",
+      "description": "Connect AI tools to Synthesize Bio to generate and analyze gene-expression data from a virtual human using natural-language experiment descriptions. Hosted remotely by Synthesize Bio.",
+      "category": "Research",
+      "connection_type": "http",
+      "connection_url": "https://app.synthesize.bio/api/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.synthesize.bio/platform",
+      "publisher": "Synthesize Bio",
+      "tags": [
+        "synthesize-bio",
+        "biology",
+        "gene-expression",
+        "biotech",
+        "research"
+      ],
+      "icon_url": "/images/mcp-servers/synthesize-bio.png"
+    },
+    {
+      "name": "Legal Data Hunter",
+      "description": "Connect AI tools to Legal Data Hunter to search 23M+ legal documents across 160+ jurisdictions for research and document comparison. Hosted remotely by Legal Data Hunter.",
+      "category": "Legal",
+      "connection_type": "http",
+      "connection_url": "https://legaldatahunter.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://legaldatahunter.com/",
+      "publisher": "Legal Data Hunter",
+      "tags": [
+        "legal-data-hunter",
+        "legal",
+        "research",
+        "documents",
+        "jurisdictions"
+      ],
+      "icon_url": "/images/mcp-servers/legal-data-hunter.png"
+    },
+    {
+      "name": "Shopify",
+      "description": "Connect AI tools to Shopify to build, manage, and analyze online stores across products, inventory, orders, customers, and analytics. Hosted remotely by Shopify.",
+      "category": "E-Commerce",
+      "connection_type": "http",
+      "connection_url": "https://setup.shopify.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://shopify.dev/docs/apps/build/model-context-protocol",
+      "publisher": "Shopify",
+      "tags": [
+        "shopify",
+        "ecommerce",
+        "products",
+        "orders",
+        "inventory"
+      ],
+      "icon_url": "/images/mcp-servers/shopify.svg"
+    },
+    {
+      "name": "GoDaddy",
+      "description": "Connect AI tools to GoDaddy to search domains, check availability, and explore naming ideas. Hosted remotely by GoDaddy.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://api.godaddy.com/v1/domains/mcp",
+      "auth_type": "none",
+      "docs_url": "https://developer.godaddy.com/mcp",
+      "publisher": "GoDaddy",
+      "tags": [
+        "godaddy",
+        "domains",
+        "dns",
+        "hosting",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/godaddy.svg"
+    },
+    {
+      "name": "Magic Patterns",
+      "description": "Connect AI tools to Magic Patterns to discuss and iterate on product interface designs, explore UI ideas, and revise concepts. Hosted remotely by Magic Patterns.",
+      "category": "Design",
+      "connection_type": "http",
+      "connection_url": "https://mcp.magicpatterns.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.magicpatterns.com/",
+      "publisher": "Magic Patterns",
+      "tags": [
+        "magic-patterns",
+        "design",
+        "ui",
+        "prototyping",
+        "components"
+      ],
+      "icon_url": "/images/mcp-servers/magic-patterns.png"
+    },
+    {
+      "name": "Excalidraw",
+      "description": "Connect AI tools to Excalidraw to create interactive hand-drawn diagrams from conversations. Hosted remotely.",
+      "category": "Design",
+      "connection_type": "http",
+      "connection_url": "https://excalidraw-mcp-app.vercel.app/mcp",
+      "auth_type": "none",
+      "docs_url": "https://excalidraw.com/",
+      "publisher": "Excalidraw",
+      "tags": [
+        "excalidraw",
+        "diagrams",
+        "whiteboard",
+        "sketching",
+        "design"
+      ],
+      "icon_url": "/images/mcp-servers/excalidraw.png"
+    },
+    {
+      "name": "Netlify (Remote)",
+      "description": "Connect AI tools to Netlify to create, deploy, manage, and secure websites. Hosted remotely by Netlify.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://netlify-mcp.netlify.app/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.netlify.com/welcome/build-with-ai/netlify-mcp-server/",
+      "publisher": "Netlify",
+      "tags": [
+        "netlify",
+        "deployments",
+        "hosting",
+        "websites",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/netlify.svg"
+    },
+    {
+      "name": "MailerLite",
+      "description": "Connect AI tools to MailerLite for drafting, reviewing, and planning email marketing work. Hosted remotely by MailerLite.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://mcp.mailerlite.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.mailerlite.com/",
+      "publisher": "MailerLite",
+      "tags": [
+        "mailerlite",
+        "email-marketing",
+        "campaigns",
+        "newsletters",
+        "marketing"
+      ],
+      "icon_url": "/images/mcp-servers/mailerlite.png"
+    },
+    {
+      "name": "Coupler.io",
+      "description": "Connect AI tools to Coupler.io to access business data from hundreds of marketing, sales, finance, and ecommerce sources. Hosted remotely by Coupler.io.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://mcp.coupler.io/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.coupler.io/",
+      "publisher": "Coupler.io",
+      "tags": [
+        "coupler",
+        "data-integration",
+        "analytics",
+        "reporting",
+        "data"
+      ],
+      "icon_url": "/images/mcp-servers/coupler.png"
+    },
+    {
+      "name": "Lumin",
+      "description": "Connect AI tools to Lumin to manage documents, send signature requests, and convert Markdown to PDF. Hosted remotely by Lumin.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://mcp.luminpdf.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.luminpdf.com/",
+      "publisher": "Lumin",
+      "tags": [
+        "lumin",
+        "documents",
+        "signatures",
+        "pdf",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/lumin.png"
+    },
+    {
+      "name": "Clarify",
+      "description": "Connect AI tools to Clarify to query, create, and update CRM records conversationally. Hosted remotely by Clarify.",
+      "category": "Sales",
+      "connection_type": "http",
+      "connection_url": "https://api.clarify.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://clarify.ai/",
+      "publisher": "Clarify",
+      "tags": [
+        "clarify",
+        "crm",
+        "sales",
+        "records",
+        "contacts"
+      ],
+      "icon_url": "/images/mcp-servers/clarify.png"
+    },
+    {
+      "name": "Crossbeam",
+      "description": "Connect AI tools to Crossbeam to surface partner overlaps, warm paths, and co-sell opportunities with real-time partnership context. Hosted remotely by Crossbeam.",
+      "category": "Sales",
+      "connection_type": "http",
+      "connection_url": "https://mcp.crossbeam.com",
+      "auth_type": "oauth",
+      "docs_url": "https://www.crossbeam.com/",
+      "publisher": "Crossbeam",
+      "tags": [
+        "crossbeam",
+        "partnerships",
+        "co-sell",
+        "ecosystem",
+        "sales"
+      ],
+      "icon_url": "/images/mcp-servers/crossbeam.png"
+    },
+    {
+      "name": "Pylon",
+      "description": "Connect AI tools to Pylon to search and manage support issues, track customer status, and coordinate responses. Hosted remotely by Pylon.",
+      "category": "Customer Support",
+      "connection_type": "http",
+      "connection_url": "https://mcp.usepylon.com",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.usepylon.com/pylon-docs/integrations/pylon-mcp",
+      "publisher": "Pylon",
+      "tags": [
+        "pylon",
+        "support",
+        "tickets",
+        "customer-support",
+        "helpdesk"
+      ],
+      "icon_url": "/images/mcp-servers/pylon.png"
+    },
+    {
+      "name": "Unthread",
+      "description": "Connect AI tools to Unthread to search conversations, monitor SLAs, analyze support metrics, and manage support tickets. Hosted remotely by Unthread.",
+      "category": "Customer Support",
+      "connection_type": "http",
+      "connection_url": "https://app.unthread.io/api/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://unthread.io/",
+      "publisher": "Unthread",
+      "tags": [
+        "unthread",
+        "support",
+        "tickets",
+        "sla",
+        "customer-support"
+      ],
+      "icon_url": "/images/mcp-servers/unthread.png"
+    },
+    {
+      "name": "Jam",
+      "description": "Connect AI tools to Jam to capture screen recordings and automatic context for issue reports and bug tracking. Hosted remotely by Jam.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.jam.dev/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://jam.dev/docs/jam-mcp",
+      "publisher": "Jam",
+      "tags": [
+        "jam",
+        "bug-reports",
+        "screen-recording",
+        "debugging",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/jam.png"
+    },
+    {
+      "name": "Omni Analytics",
+      "description": "Connect AI tools to Omni to query data through a semantic model with natural language for governed analytics. Hosted remotely by Omni.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://callbacks.omniapp.co/callback/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://omni.co/",
+      "publisher": "Omni",
+      "tags": [
+        "omni",
+        "analytics",
+        "semantic-model",
+        "data",
+        "bi"
+      ],
+      "icon_url": "/images/mcp-servers/omni.png"
+    },
+    {
+      "name": "Similarweb",
+      "description": "Connect AI tools to Similarweb for real-time web, mobile app, and market intelligence data on traffic, keywords, and benchmarking. Hosted remotely by Similarweb.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://mcp.similarweb.com",
+      "auth_type": "headers",
+      "docs_url": "https://developers.similarweb.com/docs/similarweb-mcp",
+      "publisher": "Similarweb",
+      "tags": [
+        "similarweb",
+        "traffic",
+        "market-data",
+        "competitive-intelligence",
+        "marketing"
+      ],
+      "icon_url": "/images/mcp-servers/similarweb.png"
+    },
+    {
+      "name": "Peec AI",
+      "description": "Connect AI tools to Peec AI to analyze brand visibility across LLMs with AI-search and brand-monitoring context. Hosted remotely by Peec AI.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://api.peec.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://peec.ai/",
+      "publisher": "Peec AI",
+      "tags": [
+        "peec-ai",
+        "brand-monitoring",
+        "ai-search",
+        "visibility",
+        "marketing"
+      ],
+      "icon_url": "/images/mcp-servers/peec.png"
+    },
+    {
+      "name": "Motion",
+      "description": "Connect AI tools to Motion to analyze Meta ad creative and competitor ad libraries for creative-performance context and paid-social strategy. Hosted remotely by Motion.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://projects.motionapp.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://motionapp.com/",
+      "publisher": "Motion",
+      "tags": [
+        "motion",
+        "ads",
+        "creative",
+        "meta",
+        "marketing"
+      ],
+      "icon_url": "/images/mcp-servers/motion.svg"
+    },
+    {
+      "name": "Splice",
+      "description": "Connect AI tools to Splice to search the sounds catalog, build stacks, and explore samples. Hosted remotely by Splice.",
+      "category": "Lifestyle",
+      "connection_type": "http",
+      "connection_url": "https://mcp.splice.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://splice.com/",
+      "publisher": "Splice",
+      "tags": [
+        "splice",
+        "music",
+        "samples",
+        "audio",
+        "lifestyle"
+      ],
+      "icon_url": "/images/mcp-servers/splice.png"
+    },
+    {
+      "name": "Ticket Tailor",
+      "description": "Connect AI tools to Ticket Tailor to manage events, tickets, and orders. Hosted remotely by Ticket Tailor.",
+      "category": "Lifestyle",
+      "connection_type": "http",
+      "connection_url": "https://mcp.tickettailor.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://developers.tickettailor.com/docs/mcp/",
+      "publisher": "Ticket Tailor",
+      "tags": [
+        "ticket-tailor",
+        "events",
+        "tickets",
+        "ticketing",
+        "lifestyle"
+      ],
+      "icon_url": "/images/mcp-servers/ticket-tailor.png"
+    },
+    {
+      "name": "Google Cloud BigQuery",
+      "description": "Connect AI tools to Google Cloud BigQuery for advanced analytical insights for data agents. Hosted remotely by Google Cloud.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://bigquery.googleapis.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://cloud.google.com/bigquery/docs",
+      "publisher": "Google Cloud",
+      "tags": [
+        "bigquery",
+        "data-warehouse",
+        "analytics",
+        "sql",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/google-cloud.svg"
+    },
+    {
+      "name": "Enterpret",
+      "description": "Connect AI tools to Enterpret to unify customer feedback and understand themes across sources. Hosted remotely by Enterpret.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://wisdom-api.enterpret.com/server/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://helpcenter.enterpret.com/en/articles/12665166-enterpret-mcp-server",
+      "publisher": "Enterpret",
+      "tags": [
+        "enterpret",
+        "feedback",
+        "customer-insights",
+        "themes",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/enterpret.png"
+    },
+    {
+      "name": "pg-aiguide",
+      "description": "Connect AI tools to pg-aiguide to search Postgres and Tiger documentation and learn database skills. Hosted remotely by TigerData.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.tigerdata.com/docs",
+      "auth_type": "none",
+      "docs_url": "https://www.tigerdata.com/",
+      "publisher": "TigerData",
+      "tags": [
+        "pg-aiguide",
+        "postgres",
+        "documentation",
+        "database",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/tigerdata.png"
+    },
+    {
+      "name": "Send",
+      "description": "Connect AI tools to Send to create shareable documents, one-pagers, decks, and presentations. Hosted remotely by Send.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://www.send.co/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.send.co/",
+      "publisher": "Send",
+      "tags": [
+        "send",
+        "documents",
+        "presentations",
+        "decks",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/send.png"
+    },
+    {
+      "name": "Malwarebytes",
+      "description": "Connect AI tools to Malwarebytes to check links, phone numbers, and emails for scams with security-screening context. Hosted remotely by Malwarebytes.",
+      "category": "Security",
+      "connection_type": "http",
+      "connection_url": "https://scamguard.malwarebytes.com/claude/mcp",
+      "auth_type": "none",
+      "docs_url": "https://www.malwarebytes.com/",
+      "publisher": "Malwarebytes",
+      "tags": [
+        "malwarebytes",
+        "security",
+        "scam-detection",
+        "phishing",
+        "safety"
+      ],
+      "icon_url": "/images/mcp-servers/malwarebytes.png"
+    },
+    {
+      "name": "Era Context",
+      "description": "Connect AI tools to Era Context to bring personal-finance context into workflows. Hosted remotely by Era.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://context.era.app",
+      "auth_type": "oauth",
+      "docs_url": "https://era.app/",
+      "publisher": "Era",
+      "tags": [
+        "era",
+        "personal-finance",
+        "budgeting",
+        "money",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/era.png"
+    },
+    {
+      "name": "Granted",
+      "description": "Connect AI tools to Granted to discover grant opportunities, compare funding options, and plan applications. Hosted remotely by Granted.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://grantedai.com/api/mcp/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://grantedai.com/developers#mcp",
+      "publisher": "Granted",
+      "tags": [
+        "granted",
+        "grants",
+        "funding",
+        "applications",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/granted.png"
+    },
+    {
+      "name": "Quo",
+      "description": "Connect AI tools to Quo to surface call insights and missed opportunities through conversation intelligence. Hosted remotely by Quo.",
+      "category": "Sales",
+      "connection_type": "sse",
+      "connection_url": "https://mcp.quo.com/sse",
+      "auth_type": "headers",
+      "docs_url": "https://mcp.quo.com/",
+      "publisher": "Quo",
+      "tags": [
+        "quo",
+        "conversation-intelligence",
+        "calls",
+        "sales",
+        "insights"
+      ],
+      "icon_url": "/images/mcp-servers/quo.png"
+    },
+    {
+      "name": "Zocks",
+      "description": "Connect AI tools to Zocks for client conversation intelligence for financial advisors, including meeting insights, goals, and planning opportunities. Hosted remotely by Zocks.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.zocks.io/v1/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.zocks.io/",
+      "publisher": "Zocks",
+      "tags": [
+        "zocks",
+        "financial-advisors",
+        "conversation-intelligence",
+        "wealth",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/zocks.png"
+    },
+    {
+      "name": "Shapes",
+      "description": "Connect AI tools to Shapes for live HR and people data, including headcount, attrition risk, compensation gaps, and time off. Hosted remotely by Shapes.",
+      "category": "Human Resources",
+      "connection_type": "http",
+      "connection_url": "https://mcp.shapes.co/",
+      "auth_type": "oauth",
+      "docs_url": "https://www.shapes.co/",
+      "publisher": "Shapes",
+      "tags": [
+        "shapes",
+        "hr",
+        "people-analytics",
+        "headcount",
+        "workforce"
+      ],
+      "icon_url": "/images/mcp-servers/shapes.png"
+    },
+    {
+      "name": "Adobe Journey Optimizer",
+      "description": "Connect AI tools to Adobe Journey Optimizer to review statuses, find draft issues, and understand orchestration portfolios. Hosted remotely by Adobe.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://ajo-mcp.adobe.io/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://business.adobe.com/products/journey-optimizer/adobe-journey-optimizer.html",
+      "publisher": "Adobe",
+      "tags": [
+        "adobe",
+        "journey-optimizer",
+        "campaigns",
+        "orchestration",
+        "marketing"
+      ],
+      "icon_url": "/images/mcp-servers/adobe.svg"
+    },
+    {
+      "name": "Adobe Marketing Agent",
+      "description": "Connect AI tools to Adobe for marketing campaign and audience insights. Hosted remotely by Adobe.",
+      "category": "Marketing",
+      "connection_type": "http",
+      "connection_url": "https://aep-ai-ama.adobe.io/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://business.adobe.com/products/experience-platform/adobe-experience-platform.html",
+      "publisher": "Adobe",
+      "tags": [
+        "adobe",
+        "marketing",
+        "campaigns",
+        "audiences",
+        "analytics"
+      ],
+      "icon_url": "/images/mcp-servers/adobe.svg"
+    },
+    {
+      "name": "Autodesk Product Help",
+      "description": "Connect AI tools to Autodesk Product Help to search and retrieve official product documentation across more than 110 products. Hosted remotely by Autodesk.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://developer.api.autodesk.com/knowledge/public/v1/mcp",
+      "auth_type": "none",
+      "docs_url": "https://www.autodesk.com/",
+      "publisher": "Autodesk",
+      "tags": [
+        "autodesk",
+        "documentation",
+        "cad",
+        "product-help",
+        "developer-tools"
+      ],
+      "icon_url": "/images/mcp-servers/autodesk.png"
+    },
+    {
+      "name": "Orion by Gravity",
+      "description": "Connect AI tools to Orion for business insights and data-backed recommendations from an autonomous AI analyst. Hosted remotely by Gravity.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://g.runorion.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.runorion.com/",
+      "publisher": "Gravity",
+      "tags": [
+        "orion",
+        "analytics",
+        "ai-analyst",
+        "insights",
+        "data"
+      ],
+      "icon_url": "/images/mcp-servers/orion.png"
+    },
+    {
+      "name": "Tropic",
+      "description": "Connect AI tools to Tropic to benchmark software and AI contract pricing against verified technology transactions and prepare negotiations. Hosted remotely by Tropic.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://app.tropicapp.io/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://help.tropicapp.io/hc/en-us/articles/45502083594267-Using-Model-Context-Protocol-MCP-with-Tropic",
+      "publisher": "Tropic",
+      "tags": [
+        "tropic",
+        "procurement",
+        "contracts",
+        "spend",
+        "finance"
+      ],
+      "icon_url": "/images/mcp-servers/tropic.png"
+    },
+    {
+      "name": "PostHog",
+      "description": "Connect AI tools to PostHog to manage feature flags, query product analytics, investigate errors, and explore your PostHog data. Hosted remotely by PostHog.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://mcp.posthog.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://posthog.com/docs/model-context-protocol",
+      "publisher": "PostHog",
+      "tags": [
+        "posthog",
+        "analytics",
+        "product-analytics",
+        "feature-flags",
+        "data"
+      ],
+      "icon_url": "/images/mcp-servers/posthog.svg"
+    },
+    {
+      "name": "Tally",
+      "description": "Connect AI tools to Tally to create and edit forms, pull submission data, and generate insights from responses. Hosted remotely by Tally.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://api.tally.so/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://tally.so/help/mcp",
+      "publisher": "Tally",
+      "tags": [
+        "tally",
+        "forms",
+        "surveys",
+        "submissions",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/tally.png"
+    },
+    {
+      "name": "Playwright",
+      "description": "Automate browser interactions for testing, scraping, and web automation using Playwright. Runs locally via npx with support for Chrome, Firefox, WebKit, and Edge.",
+      "category": "Developer Tools",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "@playwright/mcp@latest"
+        ],
+        "envs": []
+      },
+      "auth_type": "none",
+      "docs_url": "https://playwright.dev/docs/getting-started-mcp",
+      "publisher": "Microsoft",
+      "tags": [
+        "playwright",
+        "browser",
+        "testing",
+        "automation",
+        "web"
+      ],
+      "icon_url": "/images/mcp-servers/playwright.png"
+    },
+    {
+      "name": "Brave Search",
+      "description": "Connect AI tools to Brave Search for web search, local business search, image search, video search, news search, and AI-powered summarization. Runs locally via npx.",
+      "category": "Search",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@brave/brave-search-mcp-server",
+          "--transport",
+          "stdio"
+        ],
+        "envs": [
+          "BRAVE_API_KEY"
+        ]
+      },
+      "auth_type": "none",
+      "docs_url": "https://github.com/brave/brave-search-mcp-server",
+      "publisher": "Brave",
+      "tags": [
+        "brave",
+        "search",
+        "web-search",
+        "news",
+        "local-search"
+      ],
+      "icon_url": "/images/mcp-servers/brave.png"
+    },
+    {
+      "name": "Perplexity",
+      "description": "Connect AI assistants to Perplexity's search and reasoning capabilities for web search with citations and AI-powered summarization. Runs locally via npx.",
+      "category": "Search",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@perplexity-ai/mcp-server"
+        ],
+        "envs": [
+          "PERPLEXITY_API_KEY"
+        ]
+      },
+      "auth_type": "none",
+      "docs_url": "https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server",
+      "publisher": "Perplexity",
+      "tags": [
+        "perplexity",
+        "search",
+        "web-search",
+        "ai-search",
+        "citations"
+      ],
+      "icon_url": "/images/mcp-servers/perplexity.png"
+    }
+  ]
+}

@@ -748,6 +748,8 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 		`{"type":"function","name":"get_weather","description":"Get weather","strict":true}`,
 		`{"type":"function","name":"search_db","description":"Search database","cache_control":{"type":"ephemeral"},"strict":false}`,
 		`{"type":"file_search","vector_store_ids":["vs_1"],"max_num_results":10}`,
+		// Anthropic advisor server tool: model/max_uses/max_tokens/caching must survive the JSON boundary.
+		`{"type":"advisor","name":"advisor","model":"claude-opus-4-8","max_uses":3,"max_tokens":2048,"caching":{"type":"ephemeral","ttl":"5m"}}`,
 	}
 
 	for _, input := range inputs {
@@ -1214,6 +1216,8 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		wantWebFetch   bool
 		wantComputer   bool
 		wantCodeInterp bool
+		wantAdvisor    bool
+		wantModel      string
 	}{
 		// web_search variants
 		{name: "web_search canonical", input: `{"type":"web_search"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
@@ -1240,6 +1244,10 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		{name: "code_execution_20250522", input: `{"type":"code_execution_20250522"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 		{name: "code_execution_20250825", input: `{"type":"code_execution_20250825"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 
+		// advisor variants → advisor
+		{name: "advisor canonical", input: `{"type":"advisor","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+		{name: "advisor_20260301", input: `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+
 		// unrecognized types pass through unchanged
 		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
 		{name: "custom unchanged", input: `{"type":"custom","name":"bar"}`, wantType: ResponsesToolTypeCustom},
@@ -1263,6 +1271,10 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 			}
 			if tt.wantCodeInterp {
 				assert.NotNil(t, tool.ResponsesToolCodeInterpreter, "ResponsesToolCodeInterpreter should be populated")
+			}
+			if tt.wantAdvisor {
+				require.NotNil(t, tool.ResponsesToolAdvisor, "ResponsesToolAdvisor should be populated")
+				assert.Equal(t, tt.wantModel, tool.ResponsesToolAdvisor.Model)
 			}
 		})
 	}

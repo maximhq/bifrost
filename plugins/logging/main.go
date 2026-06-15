@@ -741,6 +741,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		CreatedAt:          time.Now(),
 		Status:             "processing",
 	}
+	// Seed LastActivity so the first idle-eviction check has a baseline even if no
+	// PostLLMHook chunk has fired yet.
+	pending.LastActivity.Store(pending.CreatedAt.UnixNano())
 	p.pendingLogsEntries.Store(effectiveRequestID, pending)
 	// Call callback synchronously for immediate UI feedback (WebSocket "processing" notification).
 	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
@@ -800,6 +803,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
 
 	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
+	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
 
@@ -841,6 +845,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.MetadataParsed["isAsyncRequest"] = true
 			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
+			applyResolvedAliasInfo(entry, resolvedKeyAlias)
 			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
 				entry.ErrorDetails = string(data)
 			}
@@ -857,6 +862,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	pending := pendingVal.(*PendingLogData)
+
+	// Refresh the idle clock on every PostLLMHook call (notably each streaming
+	// chunk) so a long-running stream is not evicted by cleanupStalePendingLogs
+	// before it finishes. Safe to mutate in place: pending is a pointer held in
+	// the sync.Map, and LastActivity is atomic.
+	pending.LastActivity.Store(time.Now().UnixNano())
 
 	// Should never happen, but just in case
 	// Fallback to request type from pending data if request type is not set
@@ -914,6 +925,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
+	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 		entry.ClusterNodeID = &nodeID

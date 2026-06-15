@@ -2500,44 +2500,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			// Inline requests: convert Bifrost requests to Gemini format
 			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
 			for i, bifrostItem := range request.Requests {
-				body := bifrostItem.Body
-
-				var geminiReq GeminiBatchGenerateContentRequest
-
-				// The body is in OpenAI format (with "messages"), so we need to convert
-				// messages to Gemini's "contents" format using the standard conversion.
-				if rawMessages, ok := body["messages"]; ok {
-					requestBytes, err := providerUtils.MarshalSorted(body)
-					if err != nil {
-						return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err)
-					}
-					if err := sonic.Unmarshal(requestBytes, &geminiReq); err != nil {
-						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal gemini request", err)
-					}
-
-					messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
-					if err != nil {
-						return nil, providerUtils.NewBifrostOperationError("failed to marshal messages", err)
-					}
-					var chatMessages []schemas.ChatMessage
-					err = sonic.Unmarshal(messagesBytes, &chatMessages)
-					if err != nil {
-						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal messages", err)
-					}
-
-					contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
-					geminiReq.Contents = contents
-					geminiReq.SystemInstruction = systemInstruction
-				} else {
-					// If no "messages" key, try direct unmarshal (already in Gemini format)
-					requestBytes, err := providerUtils.MarshalSorted(body)
-					if err != nil {
-						return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err)
-					}
-					err = sonic.Unmarshal(requestBytes, &geminiReq)
-					if err != nil {
-						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal gemini request", err)
-					}
+				geminiReq, err := ToGeminiBatchGenerateContentRequest(bifrostItem.Body)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError("failed to convert batch request to gemini format", err)
 				}
 
 				geminiRequests[i] = GeminiBatchRequestItem{
@@ -2754,7 +2719,8 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	data := make([]schemas.BifrostBatchRetrieveResponse, 0, len(geminiResp.Operations))
 	for _, batch := range geminiResp.Operations {
 		data = append(data, schemas.BifrostBatchRetrieveResponse{
-			ID:            extractBatchIDFromName(batch.Name),
+			// Full name (batches/<id>), matching create/retrieve so the id is stable.
+			ID:            batch.Name,
 			Object:        "batch",
 			Status:        ToBifrostBatchStatus(batch.Metadata.State),
 			CreatedAt:     parseGeminiTimestamp(batch.Metadata.CreateTime),

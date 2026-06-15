@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -50,8 +51,8 @@ func vertexBatchJobsBaseURL(key schemas.Key) (string, *schemas.BifrostError) {
 		return "", providerUtils.NewConfigurationError("project ID is not set")
 	}
 	region := key.VertexKeyConfig.Region.GetValue()
-	if region == "" || region == "global" {
-		return "", providerUtils.NewConfigurationError("a regional vertex key (e.g. us-central1) is required for batch prediction; global is not supported")
+	if region == "" {
+		return "", providerUtils.NewConfigurationError("region is required for batch prediction")
 	}
 	return getVertexProjectLocationURL(region, "v1", projectID), nil
 }
@@ -72,14 +73,6 @@ func vertexBatchJobURL(key schemas.Key, batchID string) (string, *schemas.Bifros
 		return "", cfgErr
 	}
 	return base + "/batchPredictionJobs/" + batchID, nil
-}
-
-// vertexBatchJobIDFromName extracts the bare job ID from a full resource name.
-func vertexBatchJobIDFromName(name string) string {
-	if idx := strings.LastIndexByte(name, '/'); idx >= 0 {
-		return name[idx+1:]
-	}
-	return name
 }
 
 // vertexBatchJobToBifrost maps a BatchPredictionJob resource to the Bifrost retrieve response.
@@ -145,11 +138,6 @@ func parseVertexJobAPIError(body []byte, statusCode int, op string) *schemas.Bif
 	return providerUtils.NewProviderAPIError(msg, nil, statusCode, nil, nil)
 }
 
-// vertexBatchControlParams are extra_params consumed by BatchCreate for Bifrost-side
-// storage/routing; they are stripped before the rest of extra_params is passed through to
-// the Vertex BatchPredictionJob body.
-var vertexBatchControlParams = []string{"output_uri", "gcs_bucket", "gcs_prefix"}
-
 // ToVertexBatchCreateRequest maps a Bifrost batch create request to a Vertex
 // BatchPredictionJob request. The model, display name and input/output GCS config are
 // mapped explicitly; every other field is taken from extra_params (e.g. modelParameters,
@@ -177,24 +165,13 @@ func ToVertexBatchCreateRequest(request *schemas.BifrostBatchCreateRequest, disp
 		ExtraParams: request.ExtraParams,
 	}
 
-	// Strip Bifrost control keys so they are not forwarded to Vertex as unknown fields.
-	if len(req.ExtraParams) > 0 {
-		stripped := make(map[string]interface{}, len(req.ExtraParams))
-		for k, v := range req.ExtraParams {
-			stripped[k] = v
-		}
-		for _, k := range vertexBatchControlParams {
-			delete(stripped, k)
-		}
-		req.ExtraParams = stripped
-	}
-
 	return req
 }
 
 // vertexConvertRequestsToJSONL converts inline batch request items to Vertex batch JSONL.
-// Bodies are passed through as-is (callers provide Gemini-native request bodies, mirroring
-// the Anthropic/Bedrock providers); each custom_id is carried in request labels.
+// Each body is converted to Vertex's native GenerateContentRequest shape (the same converter
+// the Gemini provider uses), so OpenAI-style "messages" become "contents"; batchPredictionJobs
+// expects {"request": {contents...}}. Each custom_id is carried in the request labels.
 func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, error) {
 	var buf bytes.Buffer
 	for i, item := range requests {
@@ -205,6 +182,26 @@ func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, 
 		if body == nil {
 			return nil, fmt.Errorf("batch request item %d (custom_id %q) has no body", i, item.CustomID)
 		}
+
+		// OpenAI-style bodies (with "messages") are converted to Gemini's request shape; native
+		// Gemini/Vertex bodies pass through verbatim so caller-supplied fields (tools, toolConfig,
+		// labels, cachedContent, ...) are not dropped by the lossy struct conversion.
+		if _, isOpenAI := body["messages"]; isOpenAI {
+			geminiReq, err := gemini.ToGeminiBatchGenerateContentRequest(body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert batch request item %d (custom_id %q): %w", i, item.CustomID, err)
+			}
+			reqBytes, err := providerUtils.MarshalSorted(geminiReq)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal batch request item %d (custom_id %q): %w", i, item.CustomID, err)
+			}
+			converted := map[string]interface{}{}
+			if err := sonic.Unmarshal(reqBytes, &converted); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal batch request item %d (custom_id %q): %w", i, item.CustomID, err)
+			}
+			body = converted
+		}
+
 		if item.CustomID != "" {
 			// Shallow-copy before injecting labels so the caller's map is not mutated.
 			withLabels := make(map[string]interface{}, len(body)+1)
@@ -221,6 +218,7 @@ func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, 
 			withLabels["labels"] = labels
 			body = withLabels
 		}
+
 		line, err := providerUtils.MarshalSorted(map[string]interface{}{"request": body})
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal batch request item %d (custom_id %q): %w", i, item.CustomID, err)

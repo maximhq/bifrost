@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,7 +27,9 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
@@ -757,6 +760,22 @@ func (s *BifrostHTTPServer) GetGovernanceData(ctx context.Context) *governance.G
 	return governancePlugin.GetGovernanceStore().GetGovernanceData(ctx)
 }
 
+// ReloadComplexityAnalyzerConfig reloads the complexity analyzer config into the governance plugin.
+func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return fmt.Errorf("governance plugin not found: %w", err)
+	}
+	reloader, ok := governancePlugin.(interface {
+		ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig)
+	})
+	if !ok {
+		return fmt.Errorf("governance plugin does not support complexity analyzer config reload")
+	}
+	reloader.ReloadComplexityAnalyzerConfig(config)
+	return nil
+}
+
 // ReloadRoutingRule reloads a routing rule from the database into the governance store
 func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) error {
 	governancePluginName := governance.PluginName
@@ -1320,8 +1339,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Initializing plugin specific handlers
 	var loggingHandler *handlers.LoggingHandler
 	loggerPlugin, _ := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
+	var govLogManager logging.LogManager
 	if loggerPlugin != nil {
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
+		govLogManager = loggerPlugin.GetPluginLogManager()
 	}
 	var governanceHandler *handlers.GovernanceHandler
 	governancePluginName := governance.PluginName
@@ -1330,7 +1351,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
@@ -1388,6 +1409,14 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if promptsHandler != nil {
 		promptsHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	skillsHandler := handlers.NewSkillsHandler(s.Config.ConfigStore, s.Config.ObjectStore)
+	if skillsHandler != nil {
+		skillsHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	skillsServingHandler := handlers.NewSkillsServingHandler(s.Config.ConfigStore, s.Config.ObjectStore)
+	if skillsServingHandler != nil {
+		skillsServingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	cacheHandler.RegisterRoutes(s.Router, middlewares...)
 	if featureFlagsHandler != nil {
@@ -1488,7 +1517,49 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 	} else {
 		logger.Warn("prometheus plugin not found, skipping telemetry middleware")
 	}
+	// OTel HTTP metrics (http_requests_total etc., pushed via OTLP). The otel plugin is
+	// resolved per request rather than captured here: a config reload swaps in a freshly
+	// constructed plugin instance, and a pointer captured at startup would keep recording
+	// against exporters whose meter provider has been shut down.
+	commonMiddlewares = append(commonMiddlewares, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			start := time.Now()
+			reqSize := float64(ctx.Request.Header.ContentLength())
+			next(ctx)
+			otelPlugin, err := lib.FindPluginAs[*otel.OtelPlugin](s.Config, otel.PluginName)
+			if err != nil {
+				return
+			}
+			otelPlugin.RecordHTTPMetrics(ctx,
+				string(ctx.Path()),
+				string(ctx.Method()),
+				strconv.Itoa(ctx.Response.StatusCode()),
+				time.Since(start).Seconds(),
+				reqSize,
+				float64(ctx.Response.Header.ContentLength()),
+			)
+		}
+	})
 	return commonMiddlewares
+}
+
+func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config) {
+	if config == nil || config.ConfigStore == nil {
+		return
+	}
+
+	// Run once on startup asynchronously with a 10-minute timeout so a stalled
+	// DB or object-store call does not leave the goroutine hanging indefinitely.
+	go func() {
+		cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		result, err := handlers.CleanupOrphanSkillFiles(cleanupCtx, config.ConfigStore, config.ObjectStore, false)
+		if err != nil {
+			logger.Warn("skills orphan cleanup failed during startup: %v", err)
+		} else {
+			logger.Info("skills orphan cleanup completed during startup: deleted_db_blobs=%d deleted_storage_objects=%d", result.DeletedDBBlobs, result.DeletedStorageObjects)
+		}
+	}()
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
@@ -1737,14 +1808,23 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
+	// Serve a minimal robots.txt so crawlers/CLI tools (e.g. Claude Code) don't
+	// trigger 404 warnings when probing the host before marketplace fetches.
+	s.Router.GET("/robots.txt", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("text/plain; charset=utf-8")
+		ctx.SetBodyString("User-agent: *\nAllow: /\n")
+	})
 	// Register UI handler
 	s.RegisterUIRoutes()
+	// Checking if config has server config and use it to set read buffer size
+	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.SecurityHeadersMiddleware()(handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
-		ReadBufferSize:     1024 * 64, // 64kb
+		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
+	startSkillsOrphanCleanupWorker(s.Ctx, s.Config)
 	return nil
 }
 

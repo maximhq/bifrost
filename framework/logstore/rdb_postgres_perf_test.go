@@ -36,7 +36,7 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 	db.Exec("DELETE FROM migrations")
 
 	ctx := context.Background()
-	err := triggerMigrations(ctx, db)
+	err := triggerMigrations(ctx, db, testLogger{})
 	require.NoError(t, err, "migrations should succeed")
 
 	err = ensureMatViews(ctx, db)
@@ -539,7 +539,7 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 	db.Exec("DELETE FROM migrations")
 
 	ctx := context.Background()
-	err := triggerMigrations(ctx, db)
+	err := triggerMigrations(ctx, db, testLogger{})
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
@@ -554,7 +554,7 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 
 	conn := acquirePerfTestSQLConn(t, ctx, db)
 	// First run
-	err = ensurePerformanceIndexes(ctx, conn)
+	err = ensurePerformanceIndexes(ctx, conn, testLogger{})
 	require.NoError(t, err, "ensurePerformanceIndexes should succeed")
 
 	// Verify all indexes exist and are valid
@@ -573,7 +573,7 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 	}
 
 	// Idempotent — second run should be a no-op
-	err = ensurePerformanceIndexes(ctx, conn)
+	err = ensurePerformanceIndexes(ctx, conn, testLogger{})
 	require.NoError(t, err, "ensurePerformanceIndexes should be idempotent")
 }
 
@@ -586,7 +586,7 @@ func TestContentSearch_Postgres(t *testing.T) {
 	// Build indexes
 	conn := acquirePerfTestSQLConn(t, ctx, db)
 
-	err := ensurePerformanceIndexes(ctx, conn)
+	err := ensurePerformanceIndexes(ctx, conn, testLogger{})
 	require.NoError(t, err)
 
 	insertPerfLog(t, db, logOpts{
@@ -627,7 +627,7 @@ func TestMCPContentSearch_Postgres(t *testing.T) {
 
 	// Build indexes
 	conn := acquirePerfTestSQLConn(t, ctx, db)
-	err := ensurePerformanceIndexes(ctx, conn)
+	err := ensurePerformanceIndexes(ctx, conn, testLogger{})
 	require.NoError(t, err)
 
 	insertPerfMCPLog(t, db, mcpLogOpts{

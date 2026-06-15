@@ -941,6 +941,10 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
 | `http_requests_total` | Counter | Total HTTP requests |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
+| `http_request_size_bytes` | Histogram | HTTP request body size |
+| `http_response_size_bytes` | Histogram | HTTP response body size |
+
+> **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
 
 ### OTEL Collector Configuration
 
