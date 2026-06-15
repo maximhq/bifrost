@@ -241,6 +241,7 @@ const (
 // BedrockCachePoint represents a cache point for the content block
 type BedrockCachePoint struct {
 	Type BedrockCachePointType `json:"type"`
+	TTL  *string               `json:"ttl,omitempty"` // "5m" | "1h"; omitted = Bedrock default (5m)
 }
 
 // BedrockImageSource represents image content
