@@ -262,18 +262,25 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_canonical_model_columns"}, run: migrationAddCanonicalModelColumns},
 }
 
+// areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
+func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) bool {
+	pending, err := pendingMigrationStepIDs(ctx, db, logstoreMigrationSteps)
+	if err != nil {
+		logger.Warn("[logstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
+	}
+	logger.Info("[logstore] pending migrations")
+	for _, id := range pending {
+		logger.Info("[logstore] migration : %s", id)
+	}
+	return err != nil || len(pending) > 0
+}
+
 // triggerMigrations runs all registered logstore schema migrations in order under
 // a PostgreSQL advisory lock so only one node migrates the logstore at a time.
 func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	if db.Dialector.Name() == "postgres" {
-		pending, err := pendingMigrationStepIDs(ctx, db, logstoreMigrationSteps)
-		if err == nil && len(pending) == 0 {
-			logger.Info("[logstore] migrations already current; skipping migration lock")
-			return nil
-		}
-		if err != nil {
-			logger.Warn("[logstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
-		}
+	if !areThereAnyPendingMigrations(ctx, db, logger) {
+		logger.Info("[logstore] migrations already current; skipping migration lock")
+		return nil
 	}
 
 	// Acquire advisory lock to serialize migrations across cluster nodes.
@@ -283,15 +290,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) 
 	}
 	defer lock.release(ctx)
 
-	if db.Dialector.Name() == "postgres" {
-		pending, err := pendingMigrationStepIDs(ctx, db, logstoreMigrationSteps)
-		if err == nil && len(pending) == 0 {
-			logger.Info("[logstore] migrations completed by another node; skipping migration run")
-			return nil
-		}
-		if err != nil {
-			logger.Warn("[logstore] migration preflight after lock failed; running migrations: %v", err)
-		}
+	if !areThereAnyPendingMigrations(ctx, db, logger) {
+		logger.Info("[logstore] migrations completed by another node; skipping migration run")
+		return nil
 	}
 
 	return runMigrationSteps(ctx, db, logger, logstoreMigrationSteps)
@@ -347,7 +348,6 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB, logger 
 			tx = tx.WithContext(ctx)
 
 			if tx.Dialector.Name() != "postgres" {
-				logger.Info("[logstore] %s: executing UPDATE logs SET object_type = CASE object_type WHEN 'chat.completion' THEN 'chat", migrationName)
 				result := tx.Exec(`
 						UPDATE logs
 						SET object_type = CASE object_type
@@ -437,7 +437,6 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB, logger 
 					'transcription_stream', 'responses', 'responses_stream'
 				)`
 
-			logger.Info("[logstore] %s: %s", migrationName, "executing rollbackSQL) if result.Error != nil { return fmt.Errorf(\"failed to rollback obje")
 			result := tx.Exec(rollbackSQL)
 			if result.Error != nil {
 				return fmt.Errorf("failed to rollback object_type values: %w", result.Error)
@@ -853,7 +852,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Add index on timestamp for range queries and default ordering
 			// Used in: WHERE timestamp >= ? AND timestamp <= ? and ORDER BY timestamp
 			if !migrator.HasIndex(&Log{}, "idx_logs_timestamp") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)\").Error; err !=")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)").Error; err != nil {
 					return fmt.Errorf("failed to create index on timestamp: %w", err)
 				}
@@ -862,7 +860,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Add index on status for filtering (success, error, processing)
 			// Used in: WHERE status IN ('success', 'error'), WHERE status = 'processing'
 			if !migrator.HasIndex(&Log{}, "idx_logs_status") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status)\").Error; err != nil {")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status)").Error; err != nil {
 					return fmt.Errorf("failed to create index on status: %w", err)
 				}
@@ -871,7 +868,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Add index on created_at for Flush operations
 			// Used in: WHERE created_at < ?
 			if !migrator.HasIndex(&Log{}, "idx_logs_created_at") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at)\").Error; err ")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at)").Error; err != nil {
 					return fmt.Errorf("failed to create index on created_at: %w", err)
 				}
@@ -880,7 +876,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Add index on provider for filtering
 			// Used in: WHERE provider IN (?)
 			if !migrator.HasIndex(&Log{}, "idx_logs_provider") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_provider ON logs(provider)\").Error; err != n")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_provider ON logs(provider)").Error; err != nil {
 					return fmt.Errorf("failed to create index on provider: %w", err)
 				}
@@ -889,7 +884,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Add index on model for filtering
 			// Used in: WHERE model IN (?)
 			if !migrator.HasIndex(&Log{}, "idx_logs_model") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_model ON logs(model)\").Error; err != nil { r")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_model ON logs(model)").Error; err != nil {
 					return fmt.Errorf("failed to create index on model: %w", err)
 				}
@@ -898,7 +892,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Add index on object_type for filtering
 			// Used in: WHERE object_type IN (?)
 			if !migrator.HasIndex(&Log{}, "idx_logs_object_type") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_object_type ON logs(object_type)\").Error; er")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_object_type ON logs(object_type)").Error; err != nil {
 					return fmt.Errorf("failed to create index on object_type: %w", err)
 				}
@@ -907,7 +900,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Add index on cost for range queries and ordering
 			// Used in: WHERE cost >= ? AND cost <= ?, ORDER BY cost
 			if !migrator.HasIndex(&Log{}, "idx_logs_cost") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_cost ON logs(cost)\").Error; err != nil { ret")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_cost ON logs(cost)").Error; err != nil {
 					return fmt.Errorf("failed to create index on cost: %w", err)
 				}
@@ -919,7 +911,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Used when filtering completed requests (status IN ('success', 'error')) with timestamp ranges
 			// This composite index is more efficient than individual indices for these combined queries
 			if !migrator.HasIndex(&Log{}, "idx_logs_status_timestamp") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_logs_status_timestamp ON logs(status, timestamp)\"")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_status_timestamp ON logs(status, timestamp)").Error; err != nil {
 					return fmt.Errorf("failed to create composite index on (status, timestamp): %w", err)
 				}
@@ -929,7 +920,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			// Used in Flush: WHERE status = 'processing' AND created_at < ?
 			// This composite index significantly improves cleanup query performance
 			if !migrator.HasIndex(&Log{}, "idx_logs_status_created_at") {
-				logger.Info("[logstore] %s: executing CREATE INDEX IF NOT EXISTS idx_logs_status_created_at ON logs(status, created_at", migrationName)
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_status_created_at ON logs(status, created_at)").Error; err != nil {
 					return fmt.Errorf("failed to create composite index on (status, created_at): %w", err)
 				}
@@ -957,7 +947,6 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB, logger s
 			logger.Info("[logstore] %s: processing %d indices", migrationName, len(indices))
 			for _, indexName := range indices {
 				if migrator.HasIndex(&Log{}, indexName) {
-					logger.Info("[logstore] %s: %s", migrationName, "executing fmt.Sprintf(\"DROP INDEX IF EXISTS %s\", indexName)).Error; err != nil { return fm")
 					if err := tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", indexName)).Error; err != nil {
 						return fmt.Errorf("failed to drop index %s: %w", indexName, err)
 					}
@@ -982,15 +971,15 @@ func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB, logger sch
 	defer logger.Info("[logstore] finished migration %s", migrationName)
 	// only run the migration for sqlite databases
 	dialect := db.Dialector.Name()
-	if dialect != "sqlite" {
-		return nil
-	}
-
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
+			if dialect != "sqlite" {
+				logger.Info("[logstore] skipping migration %s for dialect %s", migrationName, dialect)
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 
 			updateSQL := `
@@ -1009,7 +998,6 @@ func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB, logger sch
 					AND created_at NOT LIKE '%+00%';
 				`
 
-			logger.Info("[logstore] %s: %s", migrationName, "executing updateSQL) if result.Error != nil { return fmt.Errorf(\"failed to update timestam")
 			result := tx.Exec(updateSQL)
 			if result.Error != nil {
 				return fmt.Errorf("failed to update timestamp values: %w", result.Error)
@@ -1423,7 +1411,6 @@ func migrationAddRoutingEngineUsedColumn(ctx context.Context, db *gorm.DB, logge
 			// Only add the column if it doesn't exist
 			if !migrator.HasColumn(&Log{}, "routing_engine_used") && !migrator.HasColumn(&Log{}, "routing_engines_used") {
 				// Use raw SQL to avoid GORM struct field dependency
-				logger.Info("[logstore] %s: %s", migrationName, "executing ALTER TABLE logs ADD COLUMN routing_engine_used VARCHAR(255)\").Error; err != nil")
 				if err := tx.Exec("ALTER TABLE logs ADD COLUMN routing_engine_used VARCHAR(255)").Error; err != nil {
 					return err
 				}
@@ -1841,7 +1828,6 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 					return err
 				}
 			} else {
-				logger.Info("[logstore] %s: executing UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id ", migrationName)
 				result := tx.Exec("UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''")
 				if result.Error != nil {
 					return fmt.Errorf("failed to backfill mcp request_id values: %w", result.Error)
@@ -1934,7 +1920,6 @@ func migrationAddHistogramCompositeIndexes(ctx context.Context, db *gorm.DB, log
 					)`
 				}
 
-				logger.Info("[logstore] %s: %s", migrationName, "executing createSQL).Error; err != nil { return fmt.Errorf(\"failed to create covering inde")
 				if err := tx.Exec(createSQL).Error; err != nil {
 					return fmt.Errorf("failed to create covering index for histograms: %w", err)
 				}
@@ -1947,7 +1932,6 @@ func migrationAddHistogramCompositeIndexes(ctx context.Context, db *gorm.DB, log
 			migrator := tx.Migrator()
 
 			if migrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_logs_histogram_cover\").Error; err != nil { return fmt.E")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_histogram_cover").Error; err != nil {
 					return fmt.Errorf("failed to drop index idx_logs_histogram_cover: %w", err)
 				}
@@ -2048,7 +2032,6 @@ func migrationAddProviderHistogramIndex(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			logger.Info("[logstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_logs_ts_provider_status\").Error; err != nil { return fm")
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_ts_provider_status").Error; err != nil {
 				return fmt.Errorf("failed to drop index idx_logs_ts_provider_status: %w", err)
 			}
@@ -2160,7 +2143,6 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB, logger schem
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Dialector.Name() == "postgres" {
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_logs_metadata_gin\").Error; err != nil { return fmt.Erro")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin").Error; err != nil {
 					return fmt.Errorf("failed to drop metadata GIN index: %w", err)
 				}
@@ -2194,11 +2176,9 @@ func migrationAddMultiTeamBusinessUnitGINIndexes(ctx context.Context, db *gorm.D
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Dialector.Name() == "postgres" {
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_logs_team_ids_gin\").Error; err != nil { return fmt.Erro")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_team_ids_gin").Error; err != nil {
 					return fmt.Errorf("failed to drop team_ids GIN index: %w", err)
 				}
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_logs_business_unit_ids_gin\").Error; err != nil { return")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_business_unit_ids_gin").Error; err != nil {
 					return fmt.Errorf("failed to drop business_unit_ids GIN index: %w", err)
 				}
@@ -2541,7 +2521,6 @@ func migrationAddLogsAndDashboardPerformanceIndexes(ctx context.Context, db *gor
 				"idx_logs_routing_engines_arr",
 				"idx_mcp_logs_timestamp",
 			} {
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP INDEX CONCURRENTLY IF EXISTS \" + indexName).Error; err != nil { return fmt.")
 				if err := tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + indexName).Error; err != nil {
 					return fmt.Errorf("failed to drop performance index %s: %w", indexName, err)
 				}
@@ -3317,7 +3296,6 @@ func migrationSplitFilterDataMatView(ctx context.Context, db *gorm.DB, logger sc
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			logger.Info("[logstore] %s: %s", migrationName, "executing DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE\").Error; err != nil ")
 			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE").Error; err != nil {
 				return fmt.Errorf("failed to drop legacy mv_logs_filterdata: %w", err)
 			}
@@ -3585,7 +3563,6 @@ BEGIN
     RETURN jsonb_build_array(j->-1)::text;
 END;
 $$;`
-			logger.Info("[logstore] %s: %s", migrationName, "executing stmt).Error; err != nil { return fmt.Errorf(\"failed to create bifrost_safe_jsonb")
 			if err := tx.Exec(stmt).Error; err != nil {
 				return fmt.Errorf("failed to create bifrost_safe_jsonb: %w", err)
 			}
@@ -3741,15 +3718,12 @@ func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB, logger sch
 			}
 
 			if tx.Dialector.Name() == "postgres" {
-				logger.Info("[logstore] %s: %s", migrationName, "executing CREATE SEQUENCE IF NOT EXISTS logs_inc_number_seq\").Error; err != nil { return f")
 				if err := tx.Exec("CREATE SEQUENCE IF NOT EXISTS logs_inc_number_seq").Error; err != nil {
 					return fmt.Errorf("failed to create logs_inc_number_seq: %w", err)
 				}
-				logger.Info("[logstore] %s: %s", migrationName, "executing ALTER SEQUENCE logs_inc_number_seq OWNED BY logs.inc_number\").Error; err != nil ")
 				if err := tx.Exec("ALTER SEQUENCE logs_inc_number_seq OWNED BY logs.inc_number").Error; err != nil {
 					return fmt.Errorf("failed to set logs_inc_number_seq ownership: %w", err)
 				}
-				logger.Info("[logstore] %s: executing ALTER TABLE logs ALTER COLUMN inc_number SET DEFAULT nextval('logs_inc_number_se", migrationName)
 				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number SET DEFAULT nextval('logs_inc_number_seq')").Error; err != nil {
 					return fmt.Errorf("failed to set inc_number default: %w", err)
 				}
@@ -3759,11 +3733,9 @@ func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB, logger sch
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Dialector.Name() == "postgres" {
-				logger.Info("[logstore] %s: %s", migrationName, "executing ALTER TABLE logs ALTER COLUMN inc_number DROP DEFAULT\").Error; err != nil { retu")
 				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number DROP DEFAULT").Error; err != nil {
 					return fmt.Errorf("failed to drop inc_number default: %w", err)
 				}
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP SEQUENCE IF EXISTS logs_inc_number_seq\").Error; err != nil { return fmt.Err")
 				if err := tx.Exec("DROP SEQUENCE IF EXISTS logs_inc_number_seq").Error; err != nil {
 					return fmt.Errorf("failed to drop logs_inc_number_seq: %w", err)
 				}
@@ -3801,7 +3773,6 @@ func migrationRecreateFilterUsersMatView(ctx context.Context, db *gorm.DB, logge
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			logger.Info("[logstore] %s: %s", migrationName, "executing DROP MATERIALIZED VIEW IF EXISTS mv_filter_users CASCADE\").Error; err != nil { r")
 			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_users CASCADE").Error; err != nil {
 				return fmt.Errorf("failed to drop mv_filter_users: %w", err)
 			}
@@ -3839,7 +3810,6 @@ func migrationRecreateFilterTeamBUMatViews(ctx context.Context, db *gorm.DB, log
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			for _, view := range []string{"mv_filter_teams", "mv_filter_business_units"} {
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP MATERIALIZED VIEW IF EXISTS \" + view + \" CASCADE\").Error; err != nil { retu")
 				if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE").Error; err != nil {
 					return fmt.Errorf("failed to drop %s: %w", view, err)
 				}
@@ -3923,7 +3893,6 @@ func migrationAddCustomerArrayGINIndexes(ctx context.Context, db *gorm.DB, logge
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Dialector.Name() == "postgres" {
-				logger.Info("[logstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_logs_customer_ids_gin\").Error; err != nil { return fmt.")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_customer_ids_gin").Error; err != nil {
 					return fmt.Errorf("failed to drop customer_ids GIN index: %w", err)
 				}
@@ -3954,7 +3923,6 @@ func migrationRecreateFilterCustomersMatView(ctx context.Context, db *gorm.DB, l
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			logger.Info("[logstore] %s: %s", migrationName, "executing DROP MATERIALIZED VIEW IF EXISTS mv_filter_customers CASCADE\").Error; err != nil")
 			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_customers CASCADE").Error; err != nil {
 				return fmt.Errorf("failed to drop mv_filter_customers: %w", err)
 			}

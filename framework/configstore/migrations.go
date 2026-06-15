@@ -591,17 +591,14 @@ func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
 func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) bool {
-	if db.Dialector.Name() == "postgres" {
-		pending, err := pendingMigrationStepIDs(ctx, db, configstoreMigrationSteps)
-		if err != nil {
-			logger.Warn("[configstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
-		}
-		// Fail open: on a preflight error we proceed to acquire the lock and run
-		// migrations rather than silently skipping them (matches logstore and the
-		// warn log above). Only a clean "nothing pending" result skips the run.
-		return err != nil || len(pending) > 0
+	pending, err := pendingMigrationStepIDs(ctx, db, configstoreMigrationSteps)
+	if err != nil {
+		logger.Warn("[configstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
 	}
-	return true
+	// Fail open: on a preflight error we proceed to acquire the lock and run
+	// migrations rather than silently skipping them (matches logstore and the
+	// warn log above). Only a clean "nothing pending" result skips the run.
+	return err != nil || len(pending) > 0
 }
 
 // Migrate performs the necessary database migrations.
@@ -1155,7 +1152,6 @@ func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logger 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE\").E")
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
@@ -1275,7 +1271,6 @@ func migrationDropAllowDirectKeysColumnDDL(ctx context.Context, db *gorm.DB, log
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE\").E")
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
@@ -1301,7 +1296,6 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB, 
 			// Use raw SQL since the struct field was removed in a later migration.
 			// This column is subsequently dropped by migrationReplaceEnableLiteLLMWithCompatColumns.
 			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
-				logger.Info("[configstore] %s: executing ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FA", migrationName)
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
@@ -1310,7 +1304,6 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client DROP COLUMN IF EXISTS enable_litellm_fallbacks\").Error")
 			if err := tx.Exec("ALTER TABLE config_client DROP COLUMN IF EXISTS enable_litellm_fallbacks").Error; err != nil {
 				return err
 			}
@@ -1445,7 +1438,6 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB, logger schemas.
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TableKey{}, "name") {
 				// Step 1: Add the column as nullable first
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys ADD COLUMN name VARCHAR(255)\").Error; err != nil { retur")
 				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN name VARCHAR(255)").Error; err != nil {
 					return fmt.Errorf("failed to add name column: %w", err)
 				}
@@ -1473,7 +1465,6 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB, logger schemas.
 				}
 
 				// Step 3: Add unique index (SQLite compatible)
-				logger.Info("[configstore] %s: %s", migrationName, "executing CREATE UNIQUE INDEX IF NOT EXISTS idx_key_name ON config_keys (name)\").Error; er")
 				if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_key_name ON config_keys (name)").Error; err != nil {
 					return fmt.Errorf("failed to create unique index on name: %w", err)
 				}
@@ -1485,7 +1476,6 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB, logger schemas.
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			// Drop the unique index first to avoid orphaned index artifacts
-			logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_key_name\").Error; err != nil { return err } if err := m")
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_key_name").Error; err != nil {
 				return err
 			}
@@ -1537,7 +1527,6 @@ func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB, logg
 				SET tools_to_execute_json = '["*"]'
 				WHERE tools_to_execute_json = '[]' OR tools_to_execute_json = '' OR tools_to_execute_json IS NULL
 			`
-			logger.Info("[configstore] %s: %s", migrationName, "executing updateSQL).Error; err != nil { return fmt.Errorf(\"failed to update empty ToolsTo")
 			if err := tx.Exec(updateSQL).Error; err != nil {
 				return fmt.Errorf("failed to update empty ToolsToExecuteJSON to wildcard: %w", err)
 			}
@@ -1554,7 +1543,6 @@ func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB, logg
 				SET tools_to_execute_json = '[]'
 				WHERE tools_to_execute_json = '["*"]'
 			`
-			logger.Info("[configstore] %s: %s", migrationName, "executing revertSQL).Error; err != nil { return fmt.Errorf(\"failed to revert wildcard Tool")
 			if err := tx.Exec(revertSQL).Error; err != nil {
 				return fmt.Errorf("failed to revert wildcard ToolsToExecuteJSON to empty arrays: %w", err)
 			}
@@ -1619,7 +1607,6 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB,
 			// Note: budget_id is added via raw SQL because the field was later removed from the struct
 			// (migrated to governance_budgets.provider_config_id in add_multi_budget_tables)
 			if migrator.HasTable(&tables.TableVirtualKeyProviderConfig{}) {
-				logger.Info("[configstore] %s: executing ALTER TABLE governance_virtual_key_provider_configs ADD COLUMN IF NOT EXISTS bud", migrationName)
 				if err := tx.Exec("ALTER TABLE governance_virtual_key_provider_configs ADD COLUMN IF NOT EXISTS budget_id VARCHAR(255)").Error; err != nil {
 					// Ignore error for databases that don't support IF NOT EXISTS (e.g., SQLite)
 					// The column may already exist from a previous run
@@ -1634,13 +1621,11 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB,
 				}
 
 				// Create foreign key indexes for better performance
-				logger.Info("[configstore] %s: executing CREATE INDEX IF NOT EXISTS idx_provider_config_budget ON governance_virtual_key_", migrationName)
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_budget ON governance_virtual_key_provider_configs (budget_id)").Error; err != nil {
 					// Ignore - index may already exist or column may not exist yet
 				}
 
 				if !migrator.HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_provider_config_rate_limit") {
-					logger.Info("[configstore] %s: executing CREATE INDEX IF NOT EXISTS idx_provider_config_rate_limit ON governance_virtual_", migrationName)
 					if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_rate_limit ON governance_virtual_key_provider_configs (rate_limit_id)").Error; err != nil {
 						return fmt.Errorf("failed to create rate_limit_id index: %w", err)
 					}
@@ -1853,7 +1838,6 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB, logger sche
 
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "client_id") {
 				// Add the column as nullable first
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_mcp_clients ADD COLUMN client_id VARCHAR(255)\").Error; err !=")
 				if err := tx.Exec("ALTER TABLE config_mcp_clients ADD COLUMN client_id VARCHAR(255)").Error; err != nil {
 					return fmt.Errorf("failed to add client_id column: %w", err)
 				}
@@ -1876,13 +1860,11 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB, logger sche
 				}
 
 				// Create unique index on client_id
-				logger.Info("[configstore] %s: executing CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_client_id ON config_mcp_clients (clien", migrationName)
 				if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_client_id ON config_mcp_clients (client_id)").Error; err != nil {
 					return fmt.Errorf("failed to create unique index on client_id: %w", err)
 				}
 				// Enforce NOT NULL in Postgres to guarantee ID presence on new rows
 				if tx.Dialector.Name() == "postgres" {
-					logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_mcp_clients ALTER COLUMN client_id SET NOT NULL\").Error; err ")
 					if err := tx.Exec("ALTER TABLE config_mcp_clients ALTER COLUMN client_id SET NOT NULL").Error; err != nil {
 						return fmt.Errorf("failed to set client_id NOT NULL: %w", err)
 					}
@@ -1896,7 +1878,6 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB, logger sche
 			migrator := tx.Migrator()
 
 			// Drop the unique index first to avoid orphaned index artifacts
-			logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_mcp_client_id\").Error; err != nil { return fmt.Errorf(\"")
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_mcp_client_id").Error; err != nil {
 				return fmt.Errorf("failed to drop client_id index: %w", err)
 			}
@@ -1963,7 +1944,6 @@ func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB, l
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys ADD COLUMN vertex_deployments_json TEXT\").Error; err != ")
 				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN vertex_deployments_json TEXT").Error; err != nil {
 					return err
 				}
@@ -1973,7 +1953,6 @@ func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB, l
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys DROP COLUMN vertex_deployments_json\").Error; err != nil ")
 				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN vertex_deployments_json").Error; err != nil {
 					return err
 				}
@@ -2072,7 +2051,6 @@ func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB, 
 					return err
 				}
 				// Initialize existing rows with empty array
-				logger.Info("[configstore] %s: executing UPDATE config_mcp_clients SET tools_to_auto_execute_json = '[]' WHERE tools_to_a", migrationName)
 				if err := tx.Exec("UPDATE config_mcp_clients SET tools_to_auto_execute_json = '[]' WHERE tools_to_auto_execute_json IS NULL OR tools_to_auto_execute_json = ''").Error; err != nil {
 					return fmt.Errorf("failed to initialize tools_to_auto_execute_json: %w", err)
 				}
@@ -2112,7 +2090,6 @@ func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB, logger
 					return err
 				}
 				// Initialize existing rows with false (default value)
-				logger.Info("[configstore] %s: executing UPDATE config_mcp_clients SET is_code_mode_client = false WHERE is_code_mode_cli", migrationName)
 				if err := tx.Exec("UPDATE config_mcp_clients SET is_code_mode_client = false WHERE is_code_mode_client IS NULL").Error; err != nil {
 					return fmt.Errorf("failed to initialize is_code_mode_client: %w", err)
 				}
@@ -2191,7 +2168,6 @@ func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB, logge
 				}
 			}
 			// Set default = true for existing rows
-			logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE config_keys SET enabled = TRUE WHERE enabled IS NULL\").Error; err != nil ")
 			if err := tx.Exec("UPDATE config_keys SET enabled = TRUE WHERE enabled IS NULL").Error; err != nil {
 				return fmt.Errorf("failed to backfill enabled column: %w", err)
 			}
@@ -3841,13 +3817,11 @@ func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB, logger 
 					created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 				)
 			`
-			logger.Info("[configstore] %s: %s", migrationName, "executing createTableSQL).Error; err != nil { return fmt.Errorf(\"failed to create distribu")
 			if err := tx.Exec(createTableSQL).Error; err != nil {
 				return fmt.Errorf("failed to create distributed_locks table: %w", err)
 			}
 			// Create index on expires_at for efficient cleanup queries
 			createIndexSQL := `CREATE INDEX IF NOT EXISTS idx_distributed_locks_expires_at ON distributed_locks (expires_at)`
-			logger.Info("[configstore] %s: %s", migrationName, "executing createIndexSQL).Error; err != nil { return fmt.Errorf(\"failed to create expires_")
 			if err := tx.Exec(createIndexSQL).Error; err != nil {
 				return fmt.Errorf("failed to create expires_at index: %w", err)
 			}
@@ -3855,7 +3829,6 @@ func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			logger.Info("[configstore] %s: %s", migrationName, "executing DROP TABLE IF EXISTS distributed_locks\").Error; err != nil { return fmt.Errorf(\"")
 			if err := tx.Exec("DROP TABLE IF EXISTS distributed_locks").Error; err != nil {
 				return fmt.Errorf("failed to drop distributed_locks table: %w", err)
 			}
@@ -3925,7 +3898,6 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB, log
 			}
 			// Create index for budget_id (outside HasColumn to handle reruns where column exists but index doesn't)
 			if !migrator.HasIndex(provider, "idx_provider_budget") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing CREATE INDEX IF NOT EXISTS idx_provider_budget ON config_providers (budget_id)\")")
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_budget ON config_providers (budget_id)").Error; err != nil {
 					return fmt.Errorf("failed to create budget_id index: %w", err)
 				}
@@ -3940,7 +3912,6 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB, log
 			}
 			// Create index for rate_limit_id (outside HasColumn to handle reruns where column exists but index doesn't)
 			if !migrator.HasIndex(provider, "idx_provider_rate_limit") {
-				logger.Info("[configstore] %s: executing CREATE INDEX IF NOT EXISTS idx_provider_rate_limit ON config_providers (rate_lim", migrationName)
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_rate_limit ON config_providers (rate_limit_id)").Error; err != nil {
 					return fmt.Errorf("failed to create rate_limit_id index: %w", err)
 				}
@@ -3955,14 +3926,12 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB, log
 
 			// Drop indexes first
 			if migrator.HasIndex(provider, "idx_provider_rate_limit") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_provider_rate_limit\").Error; err != nil { return fmt.Er")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_rate_limit").Error; err != nil {
 					return fmt.Errorf("failed to drop rate_limit_id index: %w", err)
 				}
 			}
 
 			if migrator.HasIndex(provider, "idx_provider_budget") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_provider_budget\").Error; err != nil { return fmt.Errorf")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_budget").Error; err != nil {
 					return fmt.Errorf("failed to drop budget_id index: %w", err)
 				}
@@ -4026,7 +3995,6 @@ func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB, logge
 			}
 			// Belt-and-suspenders backfill in case the column default did not populate
 			// existing rows on this dialect.
-			logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE governance_model_configs SET scope = ? WHERE scope IS NULL OR scope = ''\"")
 			if err := tx.Exec("UPDATE governance_model_configs SET scope = ? WHERE scope IS NULL OR scope = ''", tables.ModelConfigScopeGlobal).Error; err != nil {
 				return fmt.Errorf("failed to backfill scope: %w", err)
 			}
@@ -4227,7 +4195,6 @@ func migrationAddBudgetModelConfigIDColumn(ctx context.Context, db *gorm.DB, log
 				if mc.BudgetID == nil {
 					continue
 				}
-				logger.Info("[configstore] %s: executing UPDATE governance_budgets SET model_config_id = ? WHERE id = ? AND model_config_", migrationName)
 				if err := tx.Exec(
 					"UPDATE governance_budgets SET model_config_id = ? WHERE id = ? AND model_config_id IS NULL",
 					mc.ID, *mc.BudgetID,
@@ -4321,7 +4288,6 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 					}
 					logger.Info("[configstore] %s: processing %d vk.Budgets", migrationName, len(vk.Budgets))
 					for _, b := range vk.Budgets {
-						logger.Info("[configstore] %s: executing UPDATE governance_budgets SET model_config_id = ?, virtual_key_id = NULL WHERE i", migrationName)
 						if err := tx.Exec(
 							"UPDATE governance_budgets SET model_config_id = ?, virtual_key_id = NULL WHERE id = ? AND model_config_id IS NULL",
 							mcID, b.ID,
@@ -4330,11 +4296,9 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 						}
 					}
 					if vk.RateLimitID != nil {
-						logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?\", *vk.RateLim")
 						if err := tx.Exec("UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?", *vk.RateLimitID, mcID).Error; err != nil {
 							return fmt.Errorf("failed to move VK rate limit to model config: %w", err)
 						}
-						logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?\", vk.ID).Er")
 						if err := tx.Exec("UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?", vk.ID).Error; err != nil {
 							return fmt.Errorf("failed to clear VK rate limit FK: %w", err)
 						}
@@ -4355,7 +4319,6 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 					}
 					logger.Info("[configstore] %s: processing %d pc.Budgets", migrationName, len(pc.Budgets))
 					for _, b := range pc.Budgets {
-						logger.Info("[configstore] %s: executing UPDATE governance_budgets SET model_config_id = ?, provider_config_id = NULL WHE", migrationName)
 						if err := tx.Exec(
 							"UPDATE governance_budgets SET model_config_id = ?, provider_config_id = NULL WHERE id = ? AND model_config_id IS NULL",
 							mcID, b.ID,
@@ -4364,11 +4327,9 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 						}
 					}
 					if pc.RateLimitID != nil {
-						logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?\", *pc.RateLim")
 						if err := tx.Exec("UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?", *pc.RateLimitID, mcID).Error; err != nil {
 							return fmt.Errorf("failed to move provider-config rate limit to model config: %w", err)
 						}
-						logger.Info("[configstore] %s: executing UPDATE governance_virtual_key_provider_configs SET rate_limit_id = NULL WHERE id", migrationName)
 						if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET rate_limit_id = NULL WHERE id = ?", pc.ID).Error; err != nil {
 							return fmt.Errorf("failed to clear provider-config rate limit FK: %w", err)
 						}
@@ -4406,13 +4367,11 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 					// VK top-level: restore VK ownership + rate limit.
 					logger.Info("[configstore] %s: processing %d budgets", migrationName, len(budgets))
 					for _, b := range budgets {
-						logger.Info("[configstore] %s: executing UPDATE governance_budgets SET virtual_key_id = ?, model_config_id = NULL WHERE i", migrationName)
 						if err := tx.Exec("UPDATE governance_budgets SET virtual_key_id = ?, model_config_id = NULL WHERE id = ?", *mc.ScopeID, b.ID).Error; err != nil {
 							return fmt.Errorf("failed to restore VK budget %q: %w", b.ID, err)
 						}
 					}
 					if mc.RateLimitID != nil {
-						logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE governance_virtual_keys SET rate_limit_id = ? WHERE id = ?\", *mc.RateLimi")
 						if err := tx.Exec("UPDATE governance_virtual_keys SET rate_limit_id = ? WHERE id = ?", *mc.RateLimitID, *mc.ScopeID).Error; err != nil {
 							return fmt.Errorf("failed to restore VK rate limit: %w", err)
 						}
@@ -4428,13 +4387,11 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 						pcID := pcs[0].ID
 						logger.Info("[configstore] %s: processing %d budgets", migrationName, len(budgets))
 						for _, b := range budgets {
-							logger.Info("[configstore] %s: executing UPDATE governance_budgets SET provider_config_id = ?, model_config_id = NULL WHE", migrationName)
 							if err := tx.Exec("UPDATE governance_budgets SET provider_config_id = ?, model_config_id = NULL WHERE id = ?", pcID, b.ID).Error; err != nil {
 								return fmt.Errorf("failed to restore provider-config budget %q: %w", b.ID, err)
 							}
 						}
 						if mc.RateLimitID != nil {
-							logger.Info("[configstore] %s: executing UPDATE governance_virtual_key_provider_configs SET rate_limit_id = ? WHERE id = ", migrationName)
 							if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET rate_limit_id = ? WHERE id = ?", *mc.RateLimitID, pcID).Error; err != nil {
 								return fmt.Errorf("failed to restore provider-config rate limit: %w", err)
 							}
@@ -4489,7 +4446,6 @@ func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.
 				if !r.CalendarAligned {
 					continue // default is already false
 				}
-				logger.Info("[configstore] %s: executing UPDATE governance_model_configs SET calendar_aligned = ? WHERE scope = ? AND sco", migrationName)
 				if err := tx.Exec(
 					"UPDATE governance_model_configs SET calendar_aligned = ? WHERE scope = ? AND scope_id = ?",
 					true, tables.ModelConfigScopeVirtualKey, r.ID,
@@ -4955,7 +4911,6 @@ func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys ADD COLUMN replicate_deployments_json TEXT\").Error; err ")
 				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN replicate_deployments_json TEXT").Error; err != nil {
 					return err
 				}
@@ -4965,7 +4920,6 @@ func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys DROP COLUMN replicate_deployments_json\").Error; err != n")
 				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN replicate_deployments_json").Error; err != nil {
 					return err
 				}
@@ -5012,7 +4966,6 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 				if !m.HasColumn(&tables.TableKey{}, col) {
 					continue
 				}
-				logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE config_keys SET aliases_json = \" + col + \" WHERE aliases_json IS NULL AND")
 				if err := tx.Exec(
 					"UPDATE config_keys SET aliases_json = " + col +
 						" WHERE aliases_json IS NULL AND " + col + " IS NOT NULL AND " + col + " != ''",
@@ -5029,7 +4982,6 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 				"replicate_deployments_json",
 			} {
 				if m.HasColumn(&tables.TableKey{}, col) {
-					logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys DROP COLUMN \" + col).Error; err != nil { return err } } ")
 					if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN " + col).Error; err != nil {
 						return err
 					}
@@ -5086,7 +5038,6 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 						if encErr != nil {
 							return fmt.Errorf("failed to encrypt aliases for key %d: %w", row.ID, encErr)
 						}
-						logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE config_keys SET aliases_json = ? WHERE id = ?\", encrypted, row.ID, ).Erro")
 						if err := tx.Exec(
 							"UPDATE config_keys SET aliases_json = ? WHERE id = ?",
 							encrypted, row.ID,
@@ -5721,7 +5672,6 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB, 
 				}
 			}
 			// Populate from old fields: set to true if either old flag was true
-			logger.Info("[configstore] %s: executing UPDATE config_client SET enforce_auth_on_inference = true WHERE enforce_governan", migrationName)
 			if err := tx.Exec("UPDATE config_client SET enforce_auth_on_inference = true WHERE enforce_governance_header = true OR enforce_scim_auth = true").Error; err != nil {
 				return err
 			}
@@ -5848,7 +5798,6 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB, logger sche
 			}
 			logger.Info("[configstore] %s: processing %d backfillTables", migrationName, len(backfillTables))
 			for _, table := range backfillTables {
-				logger.Info("[configstore] %s: %s", migrationName, "executing fmt.Sprintf( \"UPDATE %s SET encryption_status = 'plain_text' WHERE encryption_st")
 				if err := tx.Exec(fmt.Sprintf(
 					"UPDATE %s SET encryption_status = 'plain_text' WHERE encryption_status IS NULL OR encryption_status = ''",
 					table,
@@ -5860,7 +5809,6 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB, logger sche
 			// Backfill value_hash for existing virtual keys
 			// Use NULL instead of '' to avoid unique constraint violations
 			// (multiple rows with '' would violate the unique index, but NULLs are excluded)
-			logger.Info("[configstore] %s: executing UPDATE governance_virtual_keys SET value_hash = NULL WHERE value_hash IS NULL OR", migrationName)
 			if err := tx.Exec(`
 				UPDATE governance_virtual_keys
 				SET value_hash = NULL
@@ -5871,7 +5819,6 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB, logger sche
 
 			// Backfill token_hash for existing sessions
 			// Use NULL instead of '' to avoid unique constraint violations
-			logger.Info("[configstore] %s: executing UPDATE sessions SET token_hash = NULL WHERE token_hash IS NULL OR token_hash = '", migrationName)
 			if err := tx.Exec(`
 				UPDATE sessions
 				SET token_hash = NULL
@@ -6013,7 +5960,6 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB, log
 			// azure_api_version was removed in v1 API migration; only widen it if it
 			// still exists (existing DBs that haven't run the drop migration yet).
 			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys ALTER COLUMN azure_api_version TYPE TEXT\").Error; err !=")
 				if err := tx.Exec("ALTER TABLE config_keys ALTER COLUMN azure_api_version TYPE TEXT").Error; err != nil {
 					return fmt.Errorf("failed to widen column azure_api_version: %w", err)
 				}
@@ -6404,12 +6350,10 @@ func migrationRenameTruncatedPricingColumn(ctx context.Context, db *gorm.DB, log
 			const oldNameSQLite = "output_cost_per_image_above_512_and_512_pixels_and_premium_image"
 
 			if mg.HasColumn(&tables.TableModelPricing{}, oldNamePG) {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE governance_model_pricing RENAME COLUMN \" + oldNamePG + \" TO \" + newN")
 				if err := tx.Exec("ALTER TABLE governance_model_pricing RENAME COLUMN " + oldNamePG + " TO " + newName).Error; err != nil {
 					return fmt.Errorf("failed to rename column %s to %s: %w", oldNamePG, newName, err)
 				}
 			} else if mg.HasColumn(&tables.TableModelPricing{}, oldNameSQLite) {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE governance_model_pricing RENAME COLUMN \" + oldNameSQLite + \" TO \" + ")
 				if err := tx.Exec("ALTER TABLE governance_model_pricing RENAME COLUMN " + oldNameSQLite + " TO " + newName).Error; err != nil {
 					return fmt.Errorf("failed to rename column %s to %s: %w", oldNameSQLite, newName, err)
 				}
@@ -7265,7 +7209,6 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 					return fmt.Errorf("failed to add blacklisted_models_json column: %w", err)
 				}
 			}
-			logger.Info("[configstore] %s: executing UPDATE config_keys SET blacklisted_models_json = '[]' WHERE blacklisted_models_j", migrationName)
 			if err := tx.Exec("UPDATE config_keys SET blacklisted_models_json = '[]' WHERE blacklisted_models_json IS NULL OR blacklisted_models_json = ''").Error; err != nil {
 				return fmt.Errorf("failed to backfill blacklisted_models_json: %w", err)
 			}
@@ -7735,7 +7678,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB, logger sche
 
 			// Backfill: set virtual_key_id from legacy VK budget_id (if column still exists)
 			if mg.HasColumn(&tables.TableVirtualKey{}, "budget_id") {
-				logger.Info("[configstore] %s: executing UPDATE governance_budgets SET virtual_key_id = ( SELECT id FROM governance_virtu", migrationName)
 				if err := tx.Exec(`
 					UPDATE governance_budgets SET virtual_key_id = (
 						SELECT id FROM governance_virtual_keys
@@ -7751,7 +7693,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB, logger sche
 
 			// Backfill: set provider_config_id from legacy PC budget_id (if column still exists)
 			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id") {
-				logger.Info("[configstore] %s: executing UPDATE governance_budgets SET provider_config_id = ( SELECT id FROM governance_v", migrationName)
 				if err := tx.Exec(`
 					UPDATE governance_budgets SET provider_config_id = (
 						SELECT id FROM governance_virtual_key_provider_configs
@@ -7768,7 +7709,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB, logger sche
 			// Backfill: copy calendar_aligned from legacy budget column to VK-level field
 			// (governance_budgets.calendar_aligned was added by add_budget_calendar_aligned_column on main)
 			if mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				logger.Info("[configstore] %s: executing UPDATE governance_virtual_keys SET calendar_aligned = true WHERE id IN ( SELECT ", migrationName)
 				if err := tx.Exec(`
 					UPDATE governance_virtual_keys SET calendar_aligned = true
 					WHERE id IN (
@@ -7781,7 +7721,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB, logger sche
 				// Drop the legacy calendar_aligned column from governance_budgets.
 				// Plain column with no FK references — not a correctness risk if left behind,
 				// but log a warning so it's not invisible.
-				logger.Info("[configstore] %s: %s", migrationName, "executing dropColumnSQL(tx, \"governance_budgets\", \"calendar_aligned\")).Error; err != nil {")
 				if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
 					logger.Info("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 				}
@@ -7914,7 +7853,6 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB, log
 					)
 				}
 
-				logger.Info("[configstore] %s: executing UPDATE governance_budgets SET team_id = ( SELECT id FROM governance_teams WHERE ", migrationName)
 				if err := tx.Exec(`
 					UPDATE governance_budgets SET team_id = (
 						SELECT id FROM governance_teams
@@ -8038,7 +7976,6 @@ func migrationAddModelConfigBudgetsFKConstraint(ctx context.Context, db *gorm.DB
 			// removed, so delete them — but only when nothing live still
 			// references them via the legacy governance_model_configs.budget_id
 			// (a NO ACTION FK), so this DELETE can't trip that constraint.
-			logger.Info("[configstore] %s: executing DELETE FROM governance_budgets WHERE model_config_id IS NOT NULL AND model_confi", migrationName)
 			if err := tx.Exec(`
 				DELETE FROM governance_budgets
 				WHERE model_config_id IS NOT NULL
@@ -8566,14 +8503,12 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 				}
 			}
 
-			logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE config_client SET compat_should_convert_params = FALSE\").Error; err != ni")
 			if err := tx.Exec("UPDATE config_client SET compat_should_convert_params = FALSE").Error; err != nil {
 				return err
 			}
 
 			// Migrate data: if enable_litellm_fallbacks was true, set convert_text_to_chat = true
 			if mig.HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE config_client SET compat_convert_text_to_chat = enable_litellm_fallbacks\"")
 				if err := tx.Exec("UPDATE config_client SET compat_convert_text_to_chat = enable_litellm_fallbacks").Error; err != nil {
 					return err
 				}
@@ -8589,13 +8524,11 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
-				logger.Info("[configstore] %s: executing ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FA", migrationName)
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
 			}
 			if mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat") {
-				logger.Info("[configstore] %s: executing UPDATE config_client SET enable_litellm_fallbacks = COALESCE(compat_convert_text", migrationName)
 				if err := tx.Exec("UPDATE config_client SET enable_litellm_fallbacks = COALESCE(compat_convert_text_to_chat, FALSE)").Error; err != nil {
 					return err
 				}
@@ -8640,7 +8573,6 @@ func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gor
 				return nil
 			}
 
-			logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE config_client SET compat_should_convert_params = FALSE\").Error; err != ni")
 			if err := tx.Exec("UPDATE config_client SET compat_should_convert_params = FALSE").Error; err != nil {
 				return err
 			}
@@ -8661,7 +8593,6 @@ func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gor
 
 			switch tx.Dialector.Name() {
 			case "postgres":
-				logger.Info("[configstore] %s: executing ALTER TABLE config_client ALTER COLUMN compat_should_convert_params SET DEFAULT ", migrationName)
 				if err := tx.Exec("ALTER TABLE config_client ALTER COLUMN compat_should_convert_params SET DEFAULT FALSE").Error; err != nil {
 					return err
 				}
@@ -8693,7 +8624,6 @@ func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB, logge
 			// multinode deployments, and CREATE UNIQUE INDEX will fail on a table
 			// that still contains them. Keep the row with the lowest ID for each
 			// (model, provider, mode) combination.
-			logger.Info("[configstore] %s: executing DELETE FROM governance_model_pricing WHERE id NOT IN ( SELECT MIN(id) FROM gover", migrationName)
 			result := tx.Exec(`
 				DELETE FROM governance_model_pricing
 				WHERE id NOT IN (
@@ -8798,7 +8728,6 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 				return fmt.Errorf("failed to introspect governance_budgets for calendar_aligned: %w", err)
 			}
 			if !budgetsHasCol {
-				logger.Info("[configstore] %s: executing ALTER TABLE governance_budgets ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE", migrationName)
 				if err := tx.Exec(`ALTER TABLE governance_budgets ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to budgets: %w", err)
 				}
@@ -8809,7 +8738,6 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 				return fmt.Errorf("failed to introspect governance_rate_limits for calendar_aligned: %w", err)
 			}
 			if !rateLimitsHasCol {
-				logger.Info("[configstore] %s: executing ALTER TABLE governance_rate_limits ADD COLUMN calendar_aligned BOOLEAN DEFAULT F", migrationName)
 				if err := tx.Exec(`ALTER TABLE governance_rate_limits ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to rate_limits: %w", err)
 				}
@@ -8818,7 +8746,6 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 			// Use subquery-based raw SQL (compatible with both PostgreSQL and SQLite) to avoid
 			// "cached plan must not change result type" (SQLSTATE 0A000): earlier migrations in
 			// the same run added columns to these tables, invalidating pgx's prepared-statement cache.
-			logger.Info("[configstore] %s: executing UPDATE governance_rate_limits SET calendar_aligned = true WHERE id IN ( SELECT r", migrationName)
 			if err := tx.Exec(`
 				UPDATE governance_rate_limits
 				SET calendar_aligned = true
@@ -8829,7 +8756,6 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 			`).Error; err != nil {
 				return fmt.Errorf("failed to propagate calendar_aligned to rate limits: %w", err)
 			}
-			logger.Info("[configstore] %s: executing UPDATE governance_budgets SET calendar_aligned = true WHERE virtual_key_id IN ( ", migrationName)
 			if err := tx.Exec(`
 				UPDATE governance_budgets
 				SET calendar_aligned = true
@@ -8910,7 +8836,6 @@ func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB, logg
 			// MCPExternalServerURL/MCPExternalClientURL by a follow-up migration, so
 			// we can no longer reference the original field name on the struct.
 			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client ADD COLUMN mcp_external_base_url VARCHAR(512)\").Error;")
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_base_url VARCHAR(512)").Error; err != nil {
 					return fmt.Errorf("failed to add mcp_external_base_url column: %w", err)
 				}
@@ -8921,7 +8846,6 @@ func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB, logg
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client DROP COLUMN mcp_external_base_url\").Error; err != nil ")
 				if err := tx.Exec("ALTER TABLE config_client DROP COLUMN mcp_external_base_url").Error; err != nil {
 					return fmt.Errorf("failed to drop mcp_external_base_url column: %w", err)
 				}
@@ -8951,7 +8875,6 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB, logger s
 			// already ran this migration take the fast no-op path via
 			// HasColumn.
 			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_server_url") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client ADD COLUMN mcp_external_server_url VARCHAR(512)\").Erro")
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_server_url VARCHAR(512)").Error; err != nil {
 					return fmt.Errorf("failed to add mcp_external_server_url column: %w", err)
 				}
@@ -8965,13 +8888,11 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB, logger s
 			// Backfill: existing deployments treated mcp_external_base_url as applying
 			// to both roles, so copy it into both new columns to preserve behavior.
 			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
-				logger.Info("[configstore] %s: executing UPDATE config_client SET mcp_external_server_url = mcp_external_base_url, mcp_ex", migrationName)
 				if err := tx.Exec(
 					"UPDATE config_client SET mcp_external_server_url = mcp_external_base_url, mcp_external_client_url = mcp_external_base_url WHERE mcp_external_base_url IS NOT NULL AND mcp_external_base_url != ''",
 				).Error; err != nil {
 					return fmt.Errorf("failed to backfill mcp_external_*_url columns: %w", err)
 				}
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client DROP COLUMN mcp_external_base_url\").Error; err != nil ")
 				if err := tx.Exec("ALTER TABLE config_client DROP COLUMN mcp_external_base_url").Error; err != nil {
 					return fmt.Errorf("failed to drop mcp_external_base_url column: %w", err)
 				}
@@ -8982,13 +8903,11 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB, logger s
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client ADD COLUMN mcp_external_base_url VARCHAR(512)\").Error;")
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_base_url VARCHAR(512)").Error; err != nil {
 					return fmt.Errorf("failed to recreate mcp_external_base_url column: %w", err)
 				}
 			}
 			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_server_url") {
-				logger.Info("[configstore] %s: executing UPDATE config_client SET mcp_external_base_url = mcp_external_server_url WHERE m", migrationName)
 				if err := tx.Exec(
 					"UPDATE config_client SET mcp_external_base_url = mcp_external_server_url WHERE mcp_external_server_url IS NOT NULL AND mcp_external_server_url != ''",
 				).Error; err != nil {
@@ -9030,7 +8949,6 @@ func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB, logge
 					return fmt.Errorf("failed to add disabled column: %w", err)
 				}
 				// Initialize existing rows with false (default value)
-				logger.Info("[configstore] %s: %s", migrationName, "executing UPDATE config_mcp_clients SET disabled = false WHERE disabled IS NULL\").Error; e")
 				if err := tx.Exec("UPDATE config_mcp_clients SET disabled = false WHERE disabled IS NULL").Error; err != nil {
 					return fmt.Errorf("failed to initialize disabled column: %w", err)
 				}
@@ -9096,7 +9014,6 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB, logger schemas.L
 				}
 				for _, r := range rows[1:] {
 					newName := d.Name + "-" + r.ID[:8]
-					logger.Info("[configstore] %s: executing UPDATE governance_teams SET name = ? WHERE id = ?`, newName, r.ID).Error; err !=", migrationName)
 					if err := tx.Exec(`UPDATE governance_teams SET name = ? WHERE id = ?`, newName, r.ID).Error; err != nil {
 						return fmt.Errorf("rename duplicate team %s: %w", r.ID, err)
 					}
@@ -9149,7 +9066,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 					// NOT NULL from the struct tag and fail on tables with
 					// existing rows. The backfill below populates every
 					// row, then we tighten to NOT NULL on Postgres.
-					logger.Info("[configstore] %s: executing ALTER TABLE oauth_user_tokens ADD COLUMN auth_mode VARCHAR(20)`).Error; err != n", migrationName)
 					if err := tx.Exec(`ALTER TABLE oauth_user_tokens ADD COLUMN auth_mode VARCHAR(20)`).Error; err != nil {
 						return fmt.Errorf("add auth_mode to oauth_user_tokens: %w", err)
 					}
@@ -9192,7 +9108,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 						END
 					`
 				}
-				logger.Info("[configstore] %s: %s", migrationName, "executing backfillSQL).Error; err != nil { return fmt.Errorf(\"backfill oauth_user_tokens.a")
 				if err := tx.Exec(backfillSQL).Error; err != nil {
 					return fmt.Errorf("backfill oauth_user_tokens.auth_mode: %w", err)
 				}
@@ -9200,7 +9115,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				// lookup, so they're dead data. Drop them now — leaving them as
 				// 'vk' would let them sneak past migrationDropNonVKOauthUserRows
 				// later in the chain and pollute the sessions UI.
-				logger.Info("[configstore] %s: executing DELETE FROM oauth_user_tokens WHERE auth_mode IS NULL`).Error; err != nil { retu", migrationName)
 				if err := tx.Exec(`DELETE FROM oauth_user_tokens WHERE auth_mode IS NULL`).Error; err != nil {
 					return fmt.Errorf("delete identity-less oauth_user_tokens rows: %w", err)
 				}
@@ -9209,13 +9123,11 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				// app-level validation (BeforeSave) enforces non-empty
 				// AuthMode there instead.
 				if tx.Dialector.Name() == "postgres" {
-					logger.Info("[configstore] %s: executing ALTER TABLE oauth_user_tokens ALTER COLUMN auth_mode SET NOT NULL`).Error; err !", migrationName)
 					if err := tx.Exec(`ALTER TABLE oauth_user_tokens ALTER COLUMN auth_mode SET NOT NULL`).Error; err != nil {
 						return fmt.Errorf("set oauth_user_tokens.auth_mode NOT NULL: %w", err)
 					}
 				}
 				// Ensure status is populated for legacy rows.
-				logger.Info("[configstore] %s: executing UPDATE oauth_user_tokens SET status = 'active' WHERE status IS NULL OR status = ", migrationName)
 				if err := tx.Exec(`UPDATE oauth_user_tokens SET status = 'active' WHERE status IS NULL OR status = ''`).Error; err != nil {
 					return fmt.Errorf("backfill oauth_user_tokens.status: %w", err)
 				}
@@ -9327,7 +9239,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				}
 
 				// Partial index on orphaned rows to keep the sessions-tab "orphaned" query cheap.
-				logger.Info("[configstore] %s: executing CREATE INDEX IF NOT EXISTS idx_oauth_user_tokens_orphaned ON oauth_user_tokens (", migrationName)
 				if err := tx.Exec(`
 					CREATE INDEX IF NOT EXISTS idx_oauth_user_tokens_orphaned
 						ON oauth_user_tokens (status)
@@ -9347,7 +9258,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				}
 				// Same vk → user precedence as the token backfill above so
 				// migrationDropNonVKOauthUserRows preserves dual-identity rows.
-				logger.Info("[configstore] %s: executing UPDATE oauth_user_sessions SET flow_mode = CASE WHEN virtual_key_id IS NOT NULL ", migrationName)
 				if err := tx.Exec(`
 					UPDATE oauth_user_sessions
 					SET flow_mode = CASE
@@ -9373,7 +9283,6 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				"idx_oauth_user_tokens_session_mcp",
 				"idx_oauth_user_tokens_orphaned",
 			} {
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS \" + name).Error; err != nil { return fmt.Errorf(\"drop %s: %")
 				if err := tx.Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
 					return fmt.Errorf("drop %s: %w", name, err)
 				}
@@ -9381,11 +9290,9 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 
 			// Restore legacy composite non-unique indexes.
 			if mg.HasTable(&tables.TableOauthUserToken{}) {
-				logger.Info("[configstore] %s: executing CREATE INDEX IF NOT EXISTS idx_vk_mcp ON oauth_user_tokens (virtual_key_id, mcp_", migrationName)
 				if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_vk_mcp ON oauth_user_tokens (virtual_key_id, mcp_client_id)`).Error; err != nil {
 					return fmt.Errorf("restore idx_vk_mcp: %w", err)
 				}
-				logger.Info("[configstore] %s: executing CREATE INDEX IF NOT EXISTS idx_user_mcp ON oauth_user_tokens (user_id, mcp_clien", migrationName)
 				if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_user_mcp ON oauth_user_tokens (user_id, mcp_client_id)`).Error; err != nil {
 					return fmt.Errorf("restore idx_user_mcp: %w", err)
 				}
@@ -9447,7 +9354,6 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 				// "idx_oauth_user_sessions_session_token_hash". DROP COLUMN drops
 				// the dependent index on Postgres/SQLite, but be explicit on
 				// Postgres for safety.
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_oauth_user_sessions_session_token_hash\").Error; err != ")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_oauth_user_sessions_session_token_hash").Error; err != nil {
 					return fmt.Errorf("drop legacy session_token_hash index on oauth_user_sessions: %w", err)
 				}
@@ -9475,11 +9381,9 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 						return fmt.Errorf("add session_id to oauth_user_tokens: %w", err)
 					}
 				}
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_oauth_user_tokens_session_mcp\").Error; err != nil { ret")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_oauth_user_tokens_session_mcp").Error; err != nil {
 					return fmt.Errorf("drop legacy idx_oauth_user_tokens_session_mcp: %w", err)
 				}
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_oauth_user_tokens_session_token_hash\").Error; err != ni")
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_oauth_user_tokens_session_token_hash").Error; err != nil {
 					return fmt.Errorf("drop legacy session_token_hash index on oauth_user_tokens: %w", err)
 				}
@@ -9502,7 +9406,6 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 				// migrationAddOAuthAuthModeColumns; without it, a row that
 				// carries both session_id and another identity column could
 				// participate in two uniqueness domains.
-				logger.Info("[configstore] %s: executing CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_user_tokens_session_mcp ON oauth_use", migrationName)
 				if err := tx.Exec(`
 					CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_user_tokens_session_mcp
 						ON oauth_user_tokens (session_id, mcp_client_id)
@@ -9519,7 +9422,6 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 			mg := tx.Migrator()
 
 			// Drop the new partial unique index keyed on session_id.
-			logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_oauth_user_tokens_session_mcp\").Error; err != nil { ret")
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_oauth_user_tokens_session_mcp").Error; err != nil {
 				return fmt.Errorf("drop idx_oauth_user_tokens_session_mcp: %w", err)
 			}
@@ -9529,12 +9431,10 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 			// schema-only rollback; original session tokens are gone, so
 			// callers depending on this data would need their own recovery.
 			for _, tableName := range []string{"oauth_user_sessions", "oauth_user_tokens"} {
-				logger.Info("[configstore] %s: %s", migrationName, "executing fmt.Sprintf(\"ALTER TABLE %s ADD COLUMN session_token VARCHAR(255)\", tableName)).")
 				if err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN session_token VARCHAR(255)", tableName)).Error; err != nil {
 					// Ignore "column already exists" / dialect quirks.
 					_ = err
 				}
-				logger.Info("[configstore] %s: %s", migrationName, "executing fmt.Sprintf(\"ALTER TABLE %s ADD COLUMN session_token_hash VARCHAR(64)\", tableNam")
 				if err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN session_token_hash VARCHAR(64)", tableName)).Error; err != nil {
 					_ = err
 				}
@@ -9583,7 +9483,6 @@ func migrationDropLegacyOAuthServerTables(ctx context.Context, db *gorm.DB, logg
 			// Postgres but not SQLite — fall back to checking via Migrator.
 			mg := tx.Migrator()
 			if mg.HasTable("oauth_user_sessions") && mg.HasColumn("oauth_user_sessions", "gateway_session_id") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE oauth_user_sessions DROP COLUMN gateway_session_id\").Error; err != n")
 				if err := tx.Exec("ALTER TABLE oauth_user_sessions DROP COLUMN gateway_session_id").Error; err != nil {
 					return fmt.Errorf("drop gateway_session_id from oauth_user_sessions: %w", err)
 				}
@@ -9595,7 +9494,6 @@ func migrationDropLegacyOAuthServerTables(ctx context.Context, db *gorm.DB, logg
 				"oauth_per_user_sessions",
 				"oauth_per_user_clients",
 			} {
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP TABLE IF EXISTS \" + table).Error; err != nil { return fmt.Errorf(\"drop %s: ")
 				if err := tx.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
 					return fmt.Errorf("drop %s: %w", table, err)
 				}
@@ -9641,13 +9539,11 @@ func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB, logger sc
 			// still carry a NULL discriminator — explicitly include those so
 			// stale user/session state can't survive the cleanup.
 			if mg.HasTable("oauth_user_tokens") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing DELETE FROM oauth_user_tokens WHERE auth_mode IS NULL OR auth_mode != 'vk'\").Err")
 				if err := tx.Exec("DELETE FROM oauth_user_tokens WHERE auth_mode IS NULL OR auth_mode != 'vk'").Error; err != nil {
 					return fmt.Errorf("delete non-vk oauth_user_tokens: %w", err)
 				}
 			}
 			if mg.HasTable("oauth_user_sessions") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing DELETE FROM oauth_user_sessions WHERE flow_mode IS NULL OR flow_mode != 'vk'\").E")
 				if err := tx.Exec("DELETE FROM oauth_user_sessions WHERE flow_mode IS NULL OR flow_mode != 'vk'").Error; err != nil {
 					return fmt.Errorf("delete non-vk oauth_user_sessions: %w", err)
 				}
@@ -9686,7 +9582,6 @@ func migrationDropMCPExternalServerURL(ctx context.Context, db *gorm.DB, logger 
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasTable("config_client") && mg.HasColumn("config_client", "mcp_external_server_url") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client DROP COLUMN mcp_external_server_url\").Error; err != ni")
 				if err := tx.Exec("ALTER TABLE config_client DROP COLUMN mcp_external_server_url").Error; err != nil {
 					return fmt.Errorf("drop mcp_external_server_url from config_client: %w", err)
 				}
@@ -9828,11 +9723,9 @@ func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB,
 			// GORM's Migrator.DropColumn, which on SQLite does a full table rebuild that aborts on
 			// pre-existing FK violations; since these unconstrained boolean columns are safe to
 			// leave behind, we log a warning rather than fail boot.
-			logger.Info("[configstore] %s: %s", migrationName, "executing dropColumnSQL(tx, \"governance_budgets\", \"calendar_aligned\")).Error; err != nil {")
 			if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
 				logger.Info("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 			}
-			logger.Info("[configstore] %s: %s", migrationName, "executing dropColumnSQL(tx, \"governance_rate_limits\", \"calendar_aligned\")).Error; err != n")
 			if err := tx.Exec(dropColumnSQL(tx, "governance_rate_limits", "calendar_aligned")).Error; err != nil {
 				logger.Info("[Migration] warning: could not drop legacy calendar_aligned column from governance_rate_limits: %v", err)
 			}
@@ -9869,7 +9762,6 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB, log
 			// calendar_aligned=true, or a team rate-limit with calendar_aligned=true,
 			// promotes the team to calendar-aligned so behavior is preserved across upgrade.
 			if mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				logger.Info("[configstore] %s: executing UPDATE governance_teams SET calendar_aligned = TRUE WHERE EXISTS ( SELECT 1 FROM", migrationName)
 				if err := tx.Exec(`
 					UPDATE governance_teams
 					SET calendar_aligned = TRUE
@@ -9882,7 +9774,6 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB, log
 				}
 			}
 			if mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
-				logger.Info("[configstore] %s: executing UPDATE governance_teams SET calendar_aligned = TRUE WHERE rate_limit_id IN ( SEL", migrationName)
 				if err := tx.Exec(`
 					UPDATE governance_teams
 					SET calendar_aligned = TRUE
@@ -10064,7 +9955,6 @@ func migrationBackfillVirtualKeyBlacklistedModels(ctx context.Context, db *gorm.
 			tx = tx.WithContext(ctx)
 
 			// Backfill empty arrays for existing rows. Idempotent via the WHERE clause.
-			logger.Info("[configstore] %s: executing UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHE", migrationName)
 			if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE blacklisted_models IS NULL OR blacklisted_models = ''").Error; err != nil {
 				return fmt.Errorf("failed to backfill blacklisted_models: %w", err)
 			}
@@ -10134,7 +10024,6 @@ func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB, logg
 			// DROP INDEX IF EXISTS avoids aborting the Postgres transaction when
 			// the index was never created (e.g. fresh installs where the add
 			// migration ran as a no-op).
-			logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS idx_governance_virtual_keys_access_profile_id\").Error; err ")
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_governance_virtual_keys_access_profile_id").Error; err != nil {
 				return fmt.Errorf("failed to drop index idx_governance_virtual_keys_access_profile_id: %w", err)
 			}
@@ -10144,7 +10033,6 @@ func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB, logg
 			// unrelated columns to fail against test data.
 			// ALTER TABLE DROP COLUMN (SQLite 3.35+) modifies the schema in place.
 			if tx.Migrator().HasColumn("governance_virtual_keys", "access_profile_id") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE governance_virtual_keys DROP COLUMN access_profile_id\").Error; err !")
 				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN access_profile_id").Error; err != nil {
 					return fmt.Errorf("failed to drop access_profile_id column from governance_virtual_keys: %w", err)
 				}
@@ -10252,7 +10140,6 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB, logger s
 				"idx_mcp_per_user_header_credentials_orphaned",
 				"idx_mcp_per_user_header_credentials_needs_update",
 			} {
-				logger.Info("[configstore] %s: %s", migrationName, "executing DROP INDEX IF EXISTS \" + name).Error; err != nil { return fmt.Errorf(\"drop %s: %")
 				if err := tx.Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
 					return fmt.Errorf("drop %s: %w", name, err)
 				}
@@ -10331,7 +10218,6 @@ func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *go
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE governance_virtual_keys ADD COLUMN created_by_user_id VARCHAR(255)\")")
 				if err := tx.Exec("ALTER TABLE governance_virtual_keys ADD COLUMN created_by_user_id VARCHAR(255)").Error; err != nil {
 					return fmt.Errorf("failed to add created_by_user_id column to governance_virtual_keys: %w", err)
 				}
@@ -10341,7 +10227,6 @@ func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *go
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE governance_virtual_keys DROP COLUMN created_by_user_id\").Error; err ")
 				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN created_by_user_id").Error; err != nil {
 					return fmt.Errorf("failed to drop created_by_user_id column from governance_virtual_keys: %w", err)
 				}
@@ -10365,7 +10250,6 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB, logger
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys DROP COLUMN azure_api_version\").Error; err != nil { retu")
 				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN azure_api_version").Error; err != nil {
 					return fmt.Errorf("failed to drop azure_api_version column: %w", err)
 				}
@@ -10375,7 +10259,6 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB, logger
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_keys ADD COLUMN azure_api_version TEXT\").Error; err != nil { ")
 				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN azure_api_version TEXT").Error; err != nil {
 					return fmt.Errorf("failed to re-add azure_api_version column: %w", err)
 				}
@@ -10401,7 +10284,6 @@ func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logge
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE\").E")
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return fmt.Errorf("failed to re-add allow_direct_keys column: %w", err)
 				}
@@ -10435,7 +10317,6 @@ func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB, logg
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableMCPClient{}, "tls_config_json") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_mcp_clients ADD COLUMN tls_config_json TEXT\").Error; err != n")
 				if err := tx.Exec("ALTER TABLE config_mcp_clients ADD COLUMN tls_config_json TEXT").Error; err != nil {
 					return fmt.Errorf("failed to add tls_config_json column: %w", err)
 				}
@@ -10445,7 +10326,6 @@ func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB, logg
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if tx.Migrator().HasColumn(&tables.TableMCPClient{}, "tls_config_json") {
-				logger.Info("[configstore] %s: %s", migrationName, "executing ALTER TABLE config_mcp_clients DROP COLUMN tls_config_json\").Error; err != nil {")
 				if err := tx.Exec("ALTER TABLE config_mcp_clients DROP COLUMN tls_config_json").Error; err != nil {
 					return fmt.Errorf("failed to drop tls_config_json column: %w", err)
 				}
@@ -10588,7 +10468,6 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB,
 					)
 				}
 
-				logger.Info("[configstore] %s: executing UPDATE governance_budgets SET customer_id = ( SELECT id FROM governance_customer", migrationName)
 				if err := tx.Exec(`
 					UPDATE governance_budgets SET customer_id = (
 						SELECT id FROM governance_customers
@@ -10711,7 +10590,6 @@ func migrationNullLegacyCustomerBudgetID(ctx context.Context, db *gorm.DB, logge
 			// Defensive backfill (same shape as migrationAddCustomerBudgetsToBudgetsTable)
 			// in case a budget_id was written after that migration ran, e.g. by an older
 			// instance in a mixed-version cluster. Only claims budgets with no owner yet.
-			logger.Info("[configstore] %s: executing UPDATE governance_budgets SET customer_id = ( SELECT id FROM governance_customer", migrationName)
 			if err := tx.Exec(`
 				UPDATE governance_budgets SET customer_id = (
 					SELECT id FROM governance_customers
@@ -10743,7 +10621,6 @@ func migrationNullLegacyCustomerBudgetID(ctx context.Context, db *gorm.DB, logge
 					return fmt.Errorf("failed to update hash for customer %s: %w", customerID, err)
 				}
 			}
-			logger.Info("[configstore] %s: executing UPDATE governance_customers SET budget_id = NULL WHERE budget_id IS NOT NULL`).E", migrationName)
 			if err := tx.Exec(`UPDATE governance_customers SET budget_id = NULL WHERE budget_id IS NOT NULL`).Error; err != nil {
 				return fmt.Errorf("failed to clear legacy governance_customers.budget_id values: %w", err)
 			}
@@ -10763,7 +10640,6 @@ func migrationNullLegacyCustomerBudgetID(ctx context.Context, db *gorm.DB, logge
 			if !legacyExists {
 				return nil
 			}
-			logger.Info("[configstore] %s: executing UPDATE governance_customers SET budget_id = ( SELECT id FROM governance_budgets ", migrationName)
 			if err := tx.Exec(`
 				UPDATE governance_customers SET budget_id = (
 					SELECT id FROM governance_budgets
