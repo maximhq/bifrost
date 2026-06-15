@@ -800,8 +800,9 @@ const freshAggregateMatViewMinWindow = 24 * time.Hour
 // (both StartTime and EndTime nil) are treated as matview-safe — a half-bounded
 // range has no measurable width and could still be a short window.
 //
-// Used by both /api/logs/stats (full metric payload) and /api/logs (pagination
-// total count) so those two surfaces stay consistent on the same window.
+// Used by /api/logs/stats (full metric payload), /api/logs (pagination total
+// count), and the model/user/dimension ranking readers so all those surfaces
+// stay consistent on the same window.
 func (s *RDBLogStore) canUseMatViewForFreshAggregate(f SearchFilters) bool {
 	if !s.canUseMatView(f) {
 		return false
