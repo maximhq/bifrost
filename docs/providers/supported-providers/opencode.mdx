@@ -1,0 +1,339 @@
+---
+title: "OpenCode"
+description: "OpenCode Zen and Go API gateway providers — OpenAI-compatible format, multi-model access, pay-as-you-go (Zen) and subscription (Go) gateways"
+icon: "code"
+---
+
+## Overview
+
+OpenCode provides two AI gateway providers — **OpenCode Zen** (pay-as-you-go) and **OpenCode Go** (subscription-based). Both expose an OpenAI-compatible API that proxies to a curated set of models from multiple underlying providers (OpenAI, Anthropic, Google, DeepSeek, xAI, Kimi, Qwen, MiniMax, GLM, and more). 
+
+Bifrost implements both providers through a shared codebase, differing only in default base URL and provider key.
+
+Key features:
+- **Full OpenAI compatibility** — Standard Chat Completions `/v1/chat/completions` format
+- **Multi-model access** — GPT, Claude, Gemini, DeepSeek, Grok, Kimi, Qwen, and more through a single API key
+- **Curated quality** — Models are tested and verified by the OpenCode team for coding agent performance
+- **Two gateways** — Zen (pay-as-you-go with per-token billing) and Go (subscription-based)
+- **Streaming support** — Server-Sent Events with delta-based updates
+- **Reasoning** — Chat models return `reasoning` content and `reasoning_tokens` in usage
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` (converted) |
+| List Models | ✅ | - | `/v1/models` |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the OpenCode API. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+### Choosing a Gateway
+
+| | OpenCode Zen | OpenCode Go |
+|---|---|---|
+| **Billing** | Pay-as-you-go (per token) | Subscription-based |
+| **Base URL** | `https://opencode.ai/zen` | `https://opencode.ai/zen/go` |
+| **Provider key** | `opencode-zen` | `opencode-go` |
+| **API key** | From [opencode.ai/auth](https://opencode.ai/auth) | From OpenCode Go subscription |
+| **Models** | Full catalog (~50 models) | Curated subset |
+
+Configure either provider (or both) in Bifrost:
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **OpenCode Zen** or **OpenCode Go** under **Configured Providers**. If missing, click **Add New Provider** and select the desired provider.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your OpenCode API key directly or use an environment variable (for example, `env.OPENCODE_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json (Zen)">
+
+```json
+{
+  "providers": {
+    "opencode-zen": {
+      "keys": [
+        {
+          "name": "zen-key-1",
+          "value": "env.OPENCODE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+The default Base URL is `https://opencode.ai/zen`. Override via `network_config.base_url` if needed.
+
+</Tab>
+<Tab title="config.json (Go)">
+
+```json
+{
+  "providers": {
+    "opencode-go": {
+      "keys": [
+        {
+          "name": "go-key-1",
+          "value": "env.OPENCODE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+The default Base URL is `https://opencode.ai/zen/go`. Override via `network_config.base_url` if needed.
+
+</Tab>
+<Tab title="Go SDK">
+For OpenCode Zen:
+
+```go
+case schemas.OpencodeZen:
+    return []schemas.Key{{
+        Name:   "zen-key-1",
+        Value:  *schemas.NewEnvVar("env.OPENCODE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+For OpenCode Go:
+
+```go
+case schemas.OpencodeGo:
+    return []schemas.Key{{
+        Name:   "go-key-1",
+        Value:  *schemas.NewEnvVar("env.OPENCODE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+OpenCode Zen and Go use standard OpenAI Chat Completions format. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+## Request Parameters
+
+All standard OpenAI chat completion parameters are supported, including:
+- `model` — Model ID (e.g., `deepseek-v4-flash`, `gpt-5.5`, `claude-sonnet-4-6`)
+- `messages` — Standard message array with `role` and `content`
+- `max_tokens` — Maximum output tokens
+- `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`
+- `stream` — Enable SSE streaming
+- `tools`, `tool_choice` — Function calling support
+- `reasoning_effort` — Control reasoning depth (`"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"max"`)
+
+<Note>
+**Provider-specific parameters**: Not all parameters are forwarded to the underlying model. Bifrost applies standard OpenAI normalization through the OpenAI-compatible handler. Model-specific features (e.g., thinking mode, prompt caching) depend on the underlying provider serving the model.
+</Note>
+
+## Responses
+
+All chat models return standard OpenAI response format:
+
+```json
+{
+  "id": "chatcmpl-...",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "Paris is the capital of France.",
+        "reasoning": "The user asked about the capital of France...",
+        "reasoning_details": [
+          {
+            "index": 0,
+            "type": "reasoning.text",
+            "text": "The user asked about the capital of France..."
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 117,
+    "completion_tokens": 42,
+    "total_tokens": 159,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 39
+    }
+  }
+}
+```
+
+## Usage & Token Tracking
+
+OpenCode returns comprehensive token usage data:
+
+| Field | Description |
+|-------|-------------|
+| `usage.prompt_tokens` | Input tokens consumed |
+| `usage.completion_tokens` | Output tokens generated |
+| `usage.total_tokens` | Total tokens for the request |
+| `usage.prompt_tokens_details.cached_tokens` | Tokens served from cache (if caching is active) |
+| `usage.completion_tokens_details.reasoning_tokens` | Tokens consumed for reasoning/thinking |
+
+Cache tracking depends on the underlying model. Some providers report `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` fields. Bifrost maps these into the standard `cached_tokens` field for pricing calculations.
+
+## Error Format
+
+OpenCode uses a custom error format that differs from standard OpenAI errors:
+
+```json
+{
+  "type": "error",
+  "error": {
+    "type": "AuthError",
+    "message": "Invalid API key."
+  }
+}
+```
+
+Bifrost's custom error converter parses this format transparently. Error types include:
+
+| Error Type | HTTP Status | Description |
+|-----------|-------------|-------------|
+| `AuthError` | 401 | Invalid or missing API key |
+| `ModelError` | 400/404 | Requested model is not available |
+| `insufficient_quota` | 429 | Quota exceeded |
+| `server_error` | 5xx | Internal server error |
+| `context_length_exceeded` | 400/413 | Input exceeds model context window |
+
+---
+
+# 2. Responses API
+
+The Responses API is converted internally to Chat Completions:
+
+```go
+// Responses request → Chat request conversion
+request.ToChatRequest() → ChatCompletion → ToBifrostResponsesResponse()
+```
+
+Same parameter mapping and message conversion as Chat Completions.
+
+---
+
+# 3. List Models
+
+OpenCode's model listing endpoint returns the available models for your gateway tier. Model IDs are prefixed with the provider key in Bifrost (e.g., `opencode-go/deepseek-v4-flash`).
+
+**Zen** typically exposes 50+ models across all supported providers. **Go** exposes a curated subset focused on coding agent performance. Available models are discovered automatically at startup via the `/v1/models` endpoint.
+
+---
+
+## Pricing
+
+OpenCode Zen pricing is publicly available at [opencode.ai/docs/zen](https://opencode.ai/docs/zen). OpenCode Go pricing is subscription-based. Bifrost does not yet include OpenCode entries in the central [pricing datasheet](https://getbifrost.ai/datasheet).
+
+### Pricing Overrides
+
+Until central datasheet entries are available, use `pricing_overrides` in your configuration to set per-model rates. These take precedence over the datasheet:
+
+```json
+{
+  "providers": {
+    "opencode-zen": {
+      "keys": [{ "value": "env.OPENCODE_API_KEY", "models": ["*"] }]
+    }
+  },
+  "pricing_overrides": [
+    {
+      "id": "deepseek-v4-flash-zen",
+      "name": "DeepSeek V4 Flash on Zen",
+      "scope_kind": "provider",
+      "provider_id": "opencode-zen",
+      "match_type": "exact",
+      "pattern": "deepseek-v4-flash",
+      "request_types": ["chat_completion"],
+      "pricing_patch": "{\"input_cost_per_token\":1.4e-07,\"output_cost_per_token\":2.8e-07,\"cache_read_input_token_cost\":2.8e-08}"
+    },
+    {
+      "id": "gpt-5-nano-zen",
+      "name": "GPT 5 Nano on Zen",
+      "scope_kind": "provider",
+      "provider_id": "opencode-zen",
+      "match_type": "exact",
+      "pattern": "gpt-5-nano",
+      "request_types": ["chat_completion"],
+      "pricing_patch": "{\"input_cost_per_token\":5.0e-08,\"output_cost_per_token\":4.0e-07}"
+    }
+  ]
+}
+```
+
+For context window sizes and model capability metadata, point `pricing_url` and `model_parameters_url` to local JSON files with per-model entries. See the [Pricing & Model Parameters](/providers/supported-providers/overview#pricing-and-model-parameters) guide for details.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Embedding | Not offered by OpenCode API |
+| Image Generation | Not offered by OpenCode API |
+| Speech/TTS | Not offered by OpenCode API |
+| Transcription/STT | Not offered by OpenCode API |
+| Batch Operations | Not offered by OpenCode API |
+| File Management | Not offered by OpenCode API |
+| WebSocket Responses | Not offered by OpenCode API |
+
+---
+
+## Caveats
+
+<Accordion title="No Central Datasheet Entries Yet">
+**Severity**: Low
+**Behavior**: OpenCode models do not yet have entries in the central Bifrost pricing datasheet. Cost tracking and context window awareness require local overrides.
+**Resolution**: Use `pricing_overrides` in `config.json` (see [Pricing section](#pricing)) for per-model rates. Use `pricing_url` and `model_parameters_url` for context window sizes and capability metadata.
+</Accordion>
+
+<Accordion title="Error Format Differs from OpenAI">
+**Severity**: Low
+**Behavior**: OpenCode returns `{"type":"error","error":{"type":"...","message":"..."}}` instead of OpenAI's `{"error":{...}}` envelope. Bifrost's custom error converter handles this transparently.
+**Impact**: No user impact — error messages are correctly extracted and presented.
+</Accordion>
+
+<Accordion title="Go Models Are a Subset of Zen">
+**Severity**: Low
+**Behavior**: OpenCode Go exposes fewer models than Zen. Attempting to use a Zen-only model on Go (e.g., `big-pickle`) returns a model-not-found error.
+**Resolution**: Check [opencode.ai/docs/zen](https://opencode.ai/docs/zen) for the current Go model list, or query `/v1/models` on your Go endpoint.
+</Accordion>
+
+<Accordion title="Cache Behavior Varies by Underlying Model">
+**Severity**: Low
+**Behavior**: Prompt caching support depends on the underlying provider serving the model. Some models report `cached_tokens` in usage; others (e.g., DeepSeek V4 Flash on Go) may not cache at all.
+**Impact**: Cache-aware pricing only applies when cache tokens are reported. Verify model-specific cache behavior if you depend on cache cost savings.
+</Accordion>
