@@ -941,6 +941,10 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
 | `http_requests_total` | Counter | Total HTTP requests |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
+| `http_request_size_bytes` | Histogram | HTTP request body size |
+| `http_response_size_bytes` | Histogram | HTTP response body size |
+
+> **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
 
 ### OTEL Collector Configuration
 
@@ -1056,7 +1060,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 }
 ```
 
-**Via the UI**: Open the Plugins page and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+**Via the UI**: Open the **Observability** page, select the **Open Telemetry** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
 
 **Filter modes:**
 
@@ -1065,7 +1069,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 | `exclude` | Export spans for all plugins **except** those listed |
 | `include` | Export spans **only** for the listed plugins |
 
-**Built-in plugin names** (for reference): `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, `maxim`.
+**Plugin names:** list each plugin using the exact name shown for it in the **Configure Plugin Tracing** sheet — this is the same name that appears in the span (`plugin.<name>.<stage>`), and it is what the filter matches against. The built-in OSS plugins are `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, and `maxim`. In enterprise deployments some plugins are registered under a different name than their config key — for example the prompts and governance plugins appear as `enterprise-prompts` and `enterprise-governance` — so always copy the name from the tracing sheet rather than assuming the config key.
 
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
 

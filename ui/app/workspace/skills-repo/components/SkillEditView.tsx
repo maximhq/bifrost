@@ -1,0 +1,562 @@
+"use client";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scrollArea";
+import { Textarea } from "@/components/ui/textarea";
+import { Markdown } from "@/components/ui/markdown";
+import { CodeEditor, type CompletionItem } from "@/components/ui/codeEditor";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { validateVersionBump } from "@/lib/validators/skills";
+import { cn } from "@/lib/utils";
+import { ArrowLeft, Check, Copy, Eye, Loader2, Plus, Save, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { type SkillFormReturn, composeFrontmatter } from "./helpers";
+import { FormSection } from "./shared";
+import { FileManagerSection } from "./FileManager";
+import { MetadataTableEditor } from "./MetadataTableEditor";
+
+// ---------- SkillEditView ----------
+
+export function SkillEditView({
+  form,
+  skillName,
+  previousVersion,
+  onSave,
+  onCancel,
+  onBack,
+  isSaving,
+  mode = "edit",
+}: {
+  form: SkillFormReturn;
+  skillName?: string;
+  previousVersion?: string;
+  onSave: (serve: boolean) => void;
+  onCancel: () => void;
+  onBack: () => void;
+  isSaving: boolean;
+  mode?: "edit" | "create";
+}) {
+  const isCreate = mode === "create";
+  const [bodyTab, setBodyTab] = useState<"edit" | "preview">("edit");
+  const [showPreviewDialog, setShowPreviewDialog] = useState(false);
+  const { copy: copyPreviewContent, copied: copiedPreviewContent } = useCopyToClipboard({
+    successMessage: "Copied raw SKILL.md",
+    errorMessage: "Failed to copy raw SKILL.md",
+  });
+
+  const previewContent = useMemo(() => {
+    return (
+      composeFrontmatter({
+        name: form.name,
+        description: form.description,
+        license: form.license,
+        compatibility: form.compatibility,
+        allowed_tools: form.allowedTools,
+        extra_frontmatter_json: form.extraFrontmatterJson,
+        metadata_json: form.metadataJson,
+      }) +
+      "\n\n" +
+      form.skillMdBody
+    );
+  }, [
+    form.name,
+    form.description,
+    form.license,
+    form.compatibility,
+    form.allowedTools,
+    form.extraFrontmatterJson,
+    form.metadataJson,
+    form.skillMdBody,
+  ]);
+
+  const filePathCompletions = useMemo<CompletionItem[]>(() => {
+    const completions: CompletionItem[] = [];
+    const folderPaths = new Set<string>();
+
+    form.files
+      .filter((file) => file.path)
+      .forEach((file) => {
+        const pathParts = file.path.split("/").filter(Boolean);
+        const fileName = pathParts.at(-1) ?? file.path;
+        const rootRelativePath = `./${file.path}`;
+
+        pathParts.slice(0, -1).forEach((_, index) => {
+          folderPaths.add(pathParts.slice(0, index + 1).join("/"));
+        });
+
+        completions.push({
+          label: fileName,
+          insertText: `@[${fileName}](${rootRelativePath})`,
+          type: "object" as const,
+          description: rootRelativePath,
+          documentation: `Full path: ${rootRelativePath}`,
+        });
+      });
+
+    folderPaths.forEach((folderPath) => {
+      const folderName = folderPath.split("/").filter(Boolean).pop() ?? folderPath;
+      const rootRelativePath = `./${folderPath}/`;
+      completions.push({
+        label: folderName,
+        insertText: `@[${folderName}](${rootRelativePath})`,
+        type: "folder" as const,
+        description: rootRelativePath,
+        documentation: `Full path: ${rootRelativePath}`,
+      });
+    });
+
+    return completions.sort((a, b) => a.description?.localeCompare(b.description ?? "") ?? 0);
+  }, [form.files]);
+
+  const descriptionLength = form.description.length;
+  const descriptionLimitColor =
+    descriptionLength > 1024
+      ? "text-destructive"
+      : descriptionLength > 900
+        ? "text-yellow-600 dark:text-yellow-500"
+        : "text-muted-foreground";
+
+  return (
+    <div className="animate-in fade-in duration-200">
+      <div className="px-4">
+        {/* Top bar with back button integrated */}
+        <div className="sticky top-0 z-10 flex items-center gap-3 py-4 bg-white dark:bg-card">
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="skill-back-btn"
+            onClick={onBack}
+            aria-label="Go back"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground min-w-0">
+            <span>{isCreate ? "Creating" : "Editing"}</span>
+            <span className="font-mono text-foreground truncate">
+              {isCreate ? form.name || "<new-skill>" : skillName}
+            </span>
+          </div>
+        </div>
+
+        {/* Edit sections */}
+        <div className="flex flex-col gap-8">
+          {/* Name — create mode only */}
+          {isCreate && (
+            <FormSection title="Name">
+              <Input
+                data-testid="skill-name-input"
+                value={form.name}
+                onChange={(e) => {
+                  form.setName(e.target.value);
+                  form.validateField("name", e.target.value);
+                }}
+                placeholder="my-skill-name"
+                className={cn(
+                  "font-mono",
+                  form.errors.name && "border-destructive",
+                )}
+              />
+              {form.errors.name && (
+                <p className="text-destructive text-xs" role="alert">
+                  {form.errors.name}
+                </p>
+              )}
+              <p className="text-muted-foreground text-xs">
+                Lowercase letters, numbers, and hyphens only.{" "}
+                <span className="font-bold">
+                  Cannot be changed after creation.
+                </span>
+              </p>
+            </FormSection>
+          )}
+
+          {/* Description */}
+          <FormSection title="Description">
+            <Textarea
+              data-testid="skill-description-input"
+              value={form.description}
+              onChange={(e) => {
+                form.setDescription(e.target.value);
+                form.validateField("description", e.target.value);
+              }}
+              placeholder="What does this skill do?"
+              rows={3}
+              className={cn(form.errors.description && "border-destructive")}
+            />
+            <div className="flex justify-between">
+              <span
+                className={cn(
+                  "text-xs tabular-nums transition-colors",
+                  descriptionLimitColor,
+                )}
+              >
+                {descriptionLength}/1024
+              </span>
+              {form.errors.description ? (
+                <p className="text-destructive text-xs" role="alert">
+                  {form.errors.description}
+                </p>
+              ) : (
+                <span />
+              )}
+            </div>
+          </FormSection>
+
+          {/* Spec Fields */}
+          <FormSection title="Spec Fields">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">License</Label>
+                <Input
+                  data-testid="skill-license-input"
+                  value={form.license}
+                  onChange={(e) => form.setLicense(e.target.value)}
+                  placeholder="MIT (optional)"
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">
+                  Compatibility
+                </Label>
+                <Input
+                  data-testid="skill-compatibility-input"
+                  value={form.compatibility}
+                  onChange={(e) => form.setCompatibility(e.target.value)}
+                  placeholder="Claude Code, Codex (optional)"
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">
+                  Allowed Tools
+                </Label>
+                <Input
+                  data-testid="skill-allowed-tools-input"
+                  value={form.allowedTools}
+                  onChange={(e) => form.setAllowedTools(e.target.value)}
+                  placeholder="Bash Read Grep (optional)"
+                  className="text-sm"
+                />
+              </div>
+            </div>
+          </FormSection>
+
+          {/* Extra Frontmatter */}
+          <FormSection title="Extra Frontmatter" optional>
+            <p className="text-xs text-muted-foreground -mt-1">
+              Enter valid JSON. Its top-level keys are merged into the SKILL.md YAML frontmatter.
+            </p>
+            <div className="overflow-hidden rounded-sm border">
+              <CodeEditor
+                className="z-0 w-full"
+                code={form.extraFrontmatterJson}
+                lang="json"
+                onChange={(value: string) => {
+                  form.setExtraFrontmatterJson(value);
+                  form.validateField("extra_frontmatter", value);
+                }}
+                autoResize
+                minHeight={80}
+                maxHeight={300}
+                wrap
+                options={{
+                  scrollBeyondLastLine: false,
+                  lineNumbers: "on",
+                  alwaysConsumeMouseWheel: false,
+                }}
+              />
+            </div>
+            {form.errors.extra_frontmatter && (
+              <p className="text-destructive text-xs" role="alert">
+                {form.errors.extra_frontmatter}
+              </p>
+            )}
+          </FormSection>
+
+          {/* Metadata */}
+          <FormSection title="Metadata" optional>
+            <p className="text-xs text-muted-foreground -mt-1">
+              Flat key-value pairs nested under{" "}
+              <code className="font-mono">metadata:</code> in SKILL.md
+            </p>
+            <MetadataTableEditor
+              metadataJson={form.metadataJson}
+              onChange={(json) => {
+                form.setMetadataJson(json);
+                form.validateField("metadata", json);
+              }}
+              error={form.errors.metadata}
+            />
+          </FormSection>
+
+          {/* SKILL.md Body */}
+          <FormSection
+            title="SKILL.md Body"
+            helperText={
+              <>
+                Use <code className="font-mono">@</code> to reference uploaded files.
+              </>
+            }
+          >
+            <div className="space-y-0">
+              <div
+                className="flex items-center gap-1 mb-2"
+                role="tablist"
+                aria-label="Body editor tabs"
+              >
+                <button
+                  type="button"
+                  className={cn(
+                    "px-3 py-1 text-xs rounded-sm transition-colors cursor-pointer",
+                    bodyTab === "edit"
+                      ? "bg-muted font-medium"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  data-testid="skill-body-tab-edit"
+                  onClick={() => setBodyTab("edit")}
+                  role="tab"
+                  aria-selected={bodyTab === "edit"}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "px-3 py-1 text-xs rounded-sm transition-colors cursor-pointer",
+                    bodyTab === "preview"
+                      ? "bg-muted font-medium"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  data-testid="skill-body-tab-preview"
+                  onClick={() => setBodyTab("preview")}
+                  role="tab"
+                  aria-selected={bodyTab === "preview"}
+                >
+                  Preview
+                </button>
+              </div>
+              {bodyTab === "edit" ? (
+                <div className="overflow-hidden rounded-sm border">
+                  <CodeEditor
+                    className="z-0 w-full"
+                    code={form.skillMdBody}
+                    lang="markdown"
+                    onChange={(value: string) => form.setSkillMdBody(value)}
+                    autoResize
+                    minHeight={300}
+                    maxHeight={600}
+                    wrap
+                    customCompletions={filePathCompletions}
+                    options={{
+                      scrollBeyondLastLine: false,
+                      lineNumbers: "on",
+                      alwaysConsumeMouseWheel: false,
+                      quickSuggestions: false,
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="min-h-[300px] max-h-[600px] overflow-y-auto rounded-sm border p-4">
+                  <Markdown
+                    content={form.skillMdBody || ""}
+                    className="text-sm"
+                  />
+                </div>
+              )}
+            </div>
+            {form.errors.skill_md_body && (
+              <p className="text-destructive text-xs" role="alert">
+                {form.errors.skill_md_body}
+              </p>
+            )}
+            {form.bodyWarning && (
+              <p
+                className="text-yellow-600 dark:text-yellow-500 text-xs"
+                role="status"
+              >
+                {form.bodyWarning}
+              </p>
+            )}
+          </FormSection>
+
+          {/* Version */}
+          <FormSection title="Version">
+            {(() => {
+              const bumpError =
+                !isCreate &&
+                form.version &&
+                !form.errors.version &&
+                previousVersion
+                  ? validateVersionBump(form.version, previousVersion)
+                  : null;
+              const hasError = !!form.errors.version || !!bumpError;
+              return (
+                <>
+                  <div className="flex items-center gap-3">
+                    {!isCreate && previousVersion && (
+                      <>
+                        <span className="font-mono text-sm text-muted-foreground">
+                          {previousVersion}
+                        </span>
+                        <span className="text-muted-foreground/50">→</span>
+                      </>
+                    )}
+                    <Input
+                      data-testid="skill-version-input"
+                      value={form.version}
+                      onChange={(e) => {
+                        form.setVersion(e.target.value);
+                        form.validateField("version", e.target.value);
+                      }}
+                      placeholder="1.0.0"
+                      className={cn(
+                        "font-mono text-sm max-w-[200px]",
+                        hasError && "border-destructive",
+                      )}
+                    />
+                  </div>
+                  {form.errors.version && (
+                    <p className="text-destructive text-xs" role="alert">
+                      {form.errors.version}
+                    </p>
+                  )}
+                  {bumpError && (
+                    <p className="text-destructive text-xs" role="alert">
+                      {bumpError}
+                    </p>
+                  )}
+                </>
+              );
+            })()}
+          </FormSection>
+
+          {/* Files */}
+          <FormSection title="Files">
+            <FileManagerSection
+              files={form.files}
+              onAddFile={form.addFile}
+              onRemoveFile={form.removeFile}
+              onUpdateFile={form.updateFile}
+              readOnly={false}
+            />
+          </FormSection>
+        </div>
+      </div>
+
+      <div className="sticky bottom-0 z-20 mt-4 flex items-center justify-end gap-2 border-t bg-white/95 px-1 py-3 backdrop-blur dark:bg-card/95">
+        <Button
+          variant="ghost"
+          size="sm"
+          data-testid="skill-cancel-btn"
+          onClick={onCancel}
+          className="text-muted-foreground hover:bg-transparent hover:text-red-600 dark:hover:text-red-400"
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          data-testid="skill-preview-btn"
+          onClick={() => setShowPreviewDialog(true)}
+        >
+          <Eye className="h-3.5 w-3.5" />
+          Preview Raw SKILL.md
+        </Button>
+        {isCreate ? (
+          <Button
+            size="sm"
+            data-testid="skill-create-save-btn"
+            onClick={() => onSave(true)}
+            disabled={isSaving || form.hasErrors}
+          >
+            {isSaving ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Plus className="h-3.5 w-3.5" />
+            )}
+            {isSaving ? "Creating..." : "Create Skill"}
+          </Button>
+        ) : (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="skill-save-btn"
+              onClick={() => onSave(false)}
+              disabled={isSaving || form.hasErrors}
+            >
+              {isSaving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              {isSaving ? "Saving..." : "Save"}
+            </Button>
+            <Button
+              size="sm"
+              data-testid="skill-save-serve-btn"
+              onClick={() => onSave(true)}
+              disabled={isSaving || form.hasErrors}
+            >
+              {isSaving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              {isSaving ? "Saving..." : "Save & Serve"}
+            </Button>
+          </>
+        )}
+      </div>
+
+      {/* Preview SKILL.md Dialog */}
+      <Dialog open={showPreviewDialog} onOpenChange={setShowPreviewDialog}>
+        <DialogContent
+          showCloseButton={false}
+          className="h-[90vh] max-h-[90vh] w-[95vw] sm:w-[80vw] md:w-[50vw] min-w-0 max-w-[95vw] sm:max-w-[80vw] md:max-w-[50vw] overflow-hidden border-0 bg-transparent p-0 shadow-none"
+        >
+          <DialogHeader className="sr-only">
+            <DialogTitle>SKILL.md Preview</DialogTitle>
+          </DialogHeader>
+          <div className="relative overflow-hidden rounded-sm border bg-muted shadow-lg">
+            <div className="absolute right-3 top-3 z-10 flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                data-testid="skill-preview-copy-btn"
+                className="h-8 w-8 rounded-sm bg-background/70 text-muted-foreground hover:bg-background/90 hover:text-foreground"
+                onClick={() => copyPreviewContent(previewContent)}
+                aria-label={copiedPreviewContent ? "Raw SKILL.md copied" : "Copy raw SKILL.md"}
+              >
+                {copiedPreviewContent ? (
+                  <Check className="h-4 w-4" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </Button>
+              <DialogClose className="cursor-pointer rounded-sm p-1.5 text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground">
+                <X className="h-4 w-4" />
+                <span className="sr-only">Close</span>
+              </DialogClose>
+            </div>
+            <ScrollArea className="h-[90vh]" viewportClassName="bg-muted">
+              <pre className="min-h-[420px] bg-muted p-5 pr-24 text-xs font-mono leading-5 whitespace-pre-wrap">
+                {previewContent}
+              </pre>
+            </ScrollArea>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

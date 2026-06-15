@@ -88,6 +88,10 @@ type OpenAIChatRequest struct {
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
 
+	// Provider is the originating provider, used for provider-specific marshalling
+	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
+	Provider schemas.ModelProvider `json:"-"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
@@ -134,10 +138,17 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	}
 	type Alias OpenAIChatRequest
 
+	// OpenRouter forwards Anthropic-style cache_control breakpoints to the
+	// underlying model, so we must preserve cache_control (on content blocks
+	// and tools) when targeting OpenRouter. Everything else (citations,
+	// file types, Anthropic server tools, Anthropic-only tool flags) is still
+	// stripped — OpenRouter is otherwise an OpenAI-format endpoint.
+	keepCacheControl := req.Provider == schemas.OpenRouter
+
 	// First pass: check if we need to modify any messages
 	needsCopy := false
 	for _, msg := range req.Messages {
-		if hasFieldsToStripInChatMessage(msg) {
+		if hasFieldsToStripInChatMessage(msg, keepCacheControl) {
 			needsCopy = true
 			break
 		}
@@ -148,7 +159,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if needsCopy {
 		processedMessages = make([]OpenAIMessage, len(req.Messages))
 		for i, msg := range req.Messages {
-			if !hasFieldsToStripInChatMessage(msg) {
+			if !hasFieldsToStripInChatMessage(msg, keepCacheControl) {
 				// No modification needed, use original
 				processedMessages[i] = msg
 				continue
@@ -162,10 +173,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
 				for j, block := range msg.Content.ContentBlocks {
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.File != nil && block.File.FileType != nil)
+					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil))
 					if needsBlockCopy {
 						blockCopy := block
-						blockCopy.CacheControl = nil
+						if stripBlockCacheControl {
+							blockCopy.CacheControl = nil
+						}
 						blockCopy.Citations = nil
 						// Strip FileType and FileURL from file block
 						if blockCopy.File != nil && (blockCopy.File.FileType != nil || blockCopy.File.FileURL != nil) {
@@ -197,7 +211,8 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if len(req.Tools) > 0 {
 		needsToolChange := false
 		for _, tool := range req.Tools {
-			if tool.CacheControl != nil || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
+			stripToolCacheControl := tool.CacheControl != nil && !keepCacheControl
+			if stripToolCacheControl || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
 				needsToolChange = true
 				break
 			}
@@ -211,12 +226,15 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				if isAnthropicServerToolShape(tool) {
 					continue
 				}
-				if tool.CacheControl == nil && !hasAnthropicOnlyToolFlags(tool) {
+				stripToolCacheControl := tool.CacheControl != nil && !keepCacheControl
+				if !stripToolCacheControl && !hasAnthropicOnlyToolFlags(tool) {
 					processedTools = append(processedTools, tool)
 					continue
 				}
 				toolCopy := tool
-				toolCopy.CacheControl = nil
+				if stripToolCacheControl {
+					toolCopy.CacheControl = nil
+				}
 				toolCopy.DeferLoading = nil
 				toolCopy.AllowedCallers = nil
 				toolCopy.InputExamples = nil
@@ -575,10 +593,10 @@ func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
 		t.Type == schemas.ResponsesToolTypeMemory
 }
 
-func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
+func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) bool {
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
-			if block.CacheControl != nil {
+			if block.CacheControl != nil && !keepCacheControl {
 				return true
 			}
 			if block.Citations != nil {

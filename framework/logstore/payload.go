@@ -55,7 +55,7 @@ var payloadFields = []string{
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
 // The map keys are the DB column names.
 func ExtractPayload(l *Log) map[string]string {
-	m := make(map[string]string, len(payloadFields))
+	m := make(map[string]string, len(payloadFields)+1)
 	m["input_history"] = l.InputHistory
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
@@ -90,10 +90,15 @@ func ExtractPayload(l *Log) map[string]string {
 	m["passthrough_request_body"] = l.PassthroughRequestBody
 	m["passthrough_response_body"] = l.PassthroughResponseBody
 	m["routing_engine_logs"] = l.RoutingEngineLogs
-	// Metadata is deliberately NOT included in the snapshot (nor in
-	// payloadFields): it must always stay DB-resident (filters, rankings,
-	// log-list display). The DB row is authoritative, so metadata is neither
-	// written to nor restored from the object store.
+	// Metadata is written to the snapshot so consumers reading objects
+	// directly see custom attributes, but it is deliberately NOT part of
+	// payloadFields: it must always stay DB-resident as well (filters,
+	// rankings, log-list display), so ClearPayload never strips it from the
+	// row. NOTE: the snapshot carries the metadata value as of upload time;
+	// subsequent DB updates are NOT reflected in the object store.
+	if l.Metadata != nil && *l.Metadata != "" {
+		m["metadata"] = *l.Metadata
+	}
 	return m
 }
 
@@ -281,8 +286,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["routing_engine_logs"]; ok && v != "" {
 		l.RoutingEngineLogs = v
 	}
-	// Metadata is intentionally NOT restored from the snapshot: it is never
-	// written there (see ExtractPayload), and the DB row is authoritative.
+	// Metadata is intentionally NOT restored from the snapshot: the copy
+	// written there (see ExtractPayload) is for external object consumers
+	// only, and the DB row stays authoritative.
 	return l.DeserializeFields()
 }
 

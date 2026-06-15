@@ -41,20 +41,18 @@ const (
 	ProtocolGRPC Protocol = "grpc"
 )
 
-// PluginSpanFilterMode controls whether the plugins list is an allowlist or denylist.
-type PluginSpanFilterMode string
-
-const (
-	PluginSpanFilterModeInclude PluginSpanFilterMode = "include"
-	PluginSpanFilterModeExclude PluginSpanFilterMode = "exclude"
+// PluginSpanFilter, its mode type, and the include/exclude constants are shared across
+// all observability connectors and live in core/schemas. They are re-exported here as
+// aliases so existing OTEL config parsing, tests, and the UI keep their import paths.
+type (
+	PluginSpanFilterMode = schemas.PluginSpanFilterMode
+	PluginSpanFilter     = schemas.PluginSpanFilter
 )
 
-// PluginSpanFilter configures which plugin spans are exported to the OTEL collector.
-// Mode "include" exports only the listed plugins; mode "exclude" exports everything except them.
-type PluginSpanFilter struct {
-	Mode    PluginSpanFilterMode `json:"mode"`
-	Plugins []string             `json:"plugins"`
-}
+const (
+	PluginSpanFilterModeInclude = schemas.PluginSpanFilterModeInclude
+	PluginSpanFilterModeExclude = schemas.PluginSpanFilterModeExclude
+)
 
 // Profile is a single OTEL export target: a collector endpoint and an optional
 // metrics-push destination. A Config holds one or more profiles; each profile gets
@@ -349,13 +347,8 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	if len(config.Profiles) == 0 {
 		return nil, fmt.Errorf("at least one otel profile is required")
 	}
-	if config.PluginSpanFilter != nil {
-		switch config.PluginSpanFilter.Mode {
-		case PluginSpanFilterModeInclude, PluginSpanFilterModeExclude:
-		default:
-			return nil, fmt.Errorf("plugin_span_filter.mode %q is invalid: must be %q or %q",
-				config.PluginSpanFilter.Mode, PluginSpanFilterModeInclude, PluginSpanFilterModeExclude)
-		}
+	if err := config.PluginSpanFilter.Validate(); err != nil {
+		return nil, err
 	}
 	// Loading attributes from environment
 	attributesFromEnvironment := make([]*commonpb.KeyValue, 0)
@@ -604,6 +597,30 @@ func (p *OtelPlugin) anyMetricsEnabled() bool {
 		}
 	}
 	return false
+}
+
+// RecordHTTPMetrics records HTTP-layer metrics (request count, duration, request/response
+// sizes) against every profile's metrics exporter. The HTTP transport's middleware calls
+// this once per completed request; it is a no-op when no profile has metrics enabled.
+// Non-positive sizes are skipped (fasthttp reports -1 when Content-Length is unknown).
+func (p *OtelPlugin) RecordHTTPMetrics(ctx context.Context, path, method, status string, durationSeconds, requestSizeBytes, responseSizeBytes float64) {
+	if !p.anyMetricsEnabled() {
+		return
+	}
+	attrs := BuildHTTPAttributes(path, method, status)
+	for _, t := range p.targets {
+		if t.metricsExporter == nil {
+			continue
+		}
+		t.metricsExporter.RecordHTTPRequest(ctx, attrs...)
+		t.metricsExporter.RecordHTTPRequestDuration(ctx, durationSeconds, attrs...)
+		if requestSizeBytes > 0 {
+			t.metricsExporter.RecordHTTPRequestSize(ctx, requestSizeBytes, attrs...)
+		}
+		if responseSizeBytes > 0 {
+			t.metricsExporter.RecordHTTPResponseSize(ctx, responseSizeBytes, attrs...)
+		}
+	}
 }
 
 // Inject receives a completed trace and sends it to the OTEL collector.

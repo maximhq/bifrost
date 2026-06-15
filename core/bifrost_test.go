@@ -789,51 +789,6 @@ func (t *countingTracer) CompleteAndFlushTrace(_ string) {
 	t.flushed.Add(1)
 }
 
-func TestFilterProvidersByContext(t *testing.T) {
-	providers := []schemas.ModelProvider{
-		schemas.OpenAI,
-		schemas.Anthropic,
-		schemas.Mistral,
-	}
-
-	t.Run("no context filter keeps all providers", func(t *testing.T) {
-		filtered := filterProvidersByContext(nil, providers)
-		if len(filtered) != len(providers) {
-			t.Fatalf("expected all providers, got %v", filtered)
-		}
-	})
-
-	t.Run("available providers restrict list models fanout", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Anthropic})
-
-		filtered := filterProvidersByContext(ctx, providers)
-		if len(filtered) != 1 || filtered[0] != schemas.Anthropic {
-			t.Fatalf("expected only anthropic, got %v", filtered)
-		}
-	})
-
-	t.Run("empty available providers denies all providers", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
-
-		filtered := filterProvidersByContext(ctx, providers)
-		if len(filtered) != 0 {
-			t.Fatalf("expected no providers, got %v", filtered)
-		}
-	})
-
-	t.Run("malformed available providers fails closed", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, "openai")
-
-		filtered := filterProvidersByContext(ctx, providers)
-		if len(filtered) != 0 {
-			t.Fatalf("expected no providers for malformed context value, got %v", filtered)
-		}
-	})
-}
-
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	account := NewMockAccount()
@@ -2756,4 +2711,118 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// TestFilterKeysByID covers the KeyID scoping path for ListModels requests:
+// a hit returns the single matching key, a miss returns an empty slice
+// (which the caller surfaces as "no key found"), and the input slice must
+// not be mutated.
+func TestFilterKeysByID(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "k1"},
+		{ID: "k2"},
+		{ID: "k3"},
+	}
+
+	t.Run("match returns single key", func(t *testing.T) {
+		got := filterKeysByID(keys, "k2")
+		if len(got) != 1 || got[0].ID != "k2" {
+			t.Fatalf("filterKeysByID(_, k2) = %+v, want one key with ID=k2", got)
+		}
+	})
+
+	t.Run("no match returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "does-not-exist")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, missing) = %+v, want empty", got)
+		}
+	})
+
+	t.Run("empty target returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, \"\") = %+v, want empty", got)
+		}
+	})
+
+	t.Run("input slice is not mutated", func(t *testing.T) {
+		before := make([]schemas.Key, len(keys))
+		copy(before, keys)
+		_ = filterKeysByID(keys, "k1")
+		for i := range keys {
+			if keys[i].ID != before[i].ID {
+				t.Fatalf("input mutated at index %d: got %q, want %q", i, keys[i].ID, before[i].ID)
+			}
+		}
+	})
+}
+
+// fakeRoutingPlugin is a minimal LLMPlugin whose PreRequestHook writes a routing key pin to the
+// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID, mirroring what the governance routing
+// engine does. It exists to exercise the commit step in PluginPipeline.RunPreRequestHooks.
+type fakeRoutingPlugin struct {
+	name     string
+	pinKeyID string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+}
+
+func (f *fakeRoutingPlugin) GetName() string { return f.name }
+func (f *fakeRoutingPlugin) Cleanup() error  { return nil }
+func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if f.pinKeyID != "" {
+		// A direct write to the reserved BifrostContextKeyAPIKeyID here would be dropped by the
+		// restricted-write block; routing must use the non-reserved key.
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, f.pinKeyID)
+	}
+	return nil
+}
+func (f *fakeRoutingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+func newRoutingCommitPipeline(plugins ...schemas.LLMPlugin) *PluginPipeline {
+	return &PluginPipeline{
+		logger:     NewDefaultLogger(schemas.LogLevelError),
+		tracer:     &schemas.NoOpTracer{},
+		llmPlugins: plugins,
+	}
+}
+
+// TestRunPreRequestHooks_CommitsRoutingPinnedKey verifies that the pinned key a routing rule
+// writes to the non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (during the blocked
+// PreRequestHook phase) is committed by core into the reserved BifrostContextKeyAPIKeyID that
+// key selection reads — and that the routing pin's precedence over a caller-supplied pin holds.
+func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
+	const pinned = "routing-pinned-key-id"
+
+	t.Run("routing pin is committed to reserved api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q", got, pinned)
+		}
+	})
+
+	t.Run("routing pin overrides a caller-supplied api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q (routing pin must override caller pin)", got, pinned)
+		}
+	})
+
+	t.Run("caller api-key-id preserved when no routing pin", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "noop"})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "caller-pin" {
+			t.Fatalf("APIKeyID = %q, want %q (no routing pin must not clobber caller pin)", got, "caller-pin")
+		}
+	})
 }

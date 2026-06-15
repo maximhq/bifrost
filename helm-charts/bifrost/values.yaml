@@ -75,6 +75,7 @@ service:
   port: 8080
   annotations: {}
 
+# Single ingress (legacy format):
 ingress:
   enabled: false
   className: ""
@@ -85,6 +86,30 @@ ingress:
         - path: /
           pathType: Prefix
   tls: []
+# Named ingresses map (new format) — replaces the single ingress above.
+# Each key becomes a separate Ingress resource named "<release>-<key>".
+# Use this when you need multiple ingress controllers (e.g. public + internal).
+# ingress:
+#   public:
+#     enabled: true
+#     className: nginx-public
+#     annotations: {}
+#     hosts:
+#       - host: bifrost.example.com
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#     tls: []
+#   internal:
+#     enabled: true
+#     className: nginx-internal
+#     annotations: {}
+#     hosts:
+#       - host: bifrost.internal.example.com
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#     tls: []
 
 resources:
   limits:
@@ -192,7 +217,6 @@ bifrost:
     adminUsername: ""
     adminPassword: ""
     isEnabled: false
-    disableAuthOnInference: false
     # Use existing Kubernetes secret for admin credentials
     existingSecret: ""
     usernameKey: "username"
@@ -230,7 +254,7 @@ bifrost:
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
     # Require auth (VK, API key, or user token) on inference endpoints.
-    # When unset, inference endpoints follow authConfig.disableAuthOnInference behavior.
+    # Open by default in the raw binary; this chart enables enforcement for production.
     enforceAuthOnInference: true
     maxRequestBodySizeMb: 100
     compat:
@@ -258,6 +282,10 @@ bifrost:
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
 
+  # Server configuration
+  server:
+    readBufferSize: 65536      # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+
   # Framework configuration
   framework:
     pricing:
@@ -267,6 +295,10 @@ bifrost:
       modelParametersUrl: "https://getbifrost.ai/datasheet/model-parameters"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
+      # Custom MCP server catalog URL (optional, leave empty to use the default Bifrost catalog)
+      # mcpLibraryUrl: ""
+      # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
+      # mcpLibrarySyncInterval: 86400
 
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
@@ -515,11 +547,83 @@ bifrost:
       version: 1
       config:
         service_name: "bifrost"
+        # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
+        # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
+        # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
         agent_addr: "localhost:8126"
+        # dogstatsd_addr: "localhost:8125"  # DogStatsD address (supports env.VAR_NAME)
         env: ""
         version: ""
         custom_tags: {}
         enable_traces: true
+        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
+        # enable_metrics: true
+        # enable_llm_obs: true
+        # disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # Agentless mode (direct to Datadog API, no local agent):
+        # agentless: true
+        # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
+        # site: "datadoghq.com"       # Datadog site/region (e.g. datadoghq.eu)
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    bigquery:
+      enabled: false
+      version: 1
+      config:
+        project_id: ""                # GCP project ID (required when enabled)
+        dataset_id: "bifrost_traces"
+        table_id: "traces"
+        location: "US"
+        # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
+        create_table_if_not_exists: true
+        flush_interval_seconds: 5
+        buffer_size: 500
+        custom_labels: {}
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    kafka:
+      enabled: false
+      version: 1
+      config:
+        brokers: []                   # Kafka broker addresses (required when enabled)
+        topic: ""                     # Topic to publish traces to (required when enabled)
+        sasl_enabled: false
+        # sasl:
+        #   mechanism: "PLAIN"        # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
+        #   username: "env.KAFKA_USERNAME"
+        #   password: "env.KAFKA_PASSWORD"
+        tls_enabled: false
+        # ca_cert: "env.KAFKA_CA_CERT" # PEM CA certificate to verify the broker. Omit to use the system CA pool.
+        compression: "none"           # none | gzip | snappy | lz4 | zstd
+        batch_size: 100
+        flush_interval_ms: 1000
+        auto_create_topic: false
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    pubsub:
+      enabled: false
+      version: 1
+      config:
+        project_id: ""                # GCP project ID (required when enabled)
+        topic_id: ""                  # Pub/Sub topic ID (required when enabled)
+        # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
+        auto_create_topic: false
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
 
     # Custom/dynamic plugins
     custom: []
@@ -638,11 +742,20 @@ bifrost:
       #   pattern: "gpt-4o-mini"
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
+    complexityAnalyzerConfig: null
+      # tier_boundaries:
+      #   simple_medium: 0.15
+      #   medium_complex: 0.35
+      #   complex_reasoning: 0.60
+      # keywords:
+      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
+      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
+      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
+      #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
     authConfig:
       adminUsername: ""
       adminPassword: ""
       isEnabled: false
-      disableAuthOnInference: false
       # Use existing Kubernetes secret for admin credentials
       existingSecret: ""
       usernameKey: "username"

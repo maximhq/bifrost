@@ -848,6 +848,54 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			expectHeaders: []string{AnthropicMCPClientBetaHeader},
 		},
 		{
+			name:     "Anthropic gets advisor header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			expectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Vertex skips advisor header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Bedrock skips advisor header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Azure skips advisor header",
+			provider: schemas.Azure,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
 			name:     "Vertex gets compaction header",
 			provider: schemas.Vertex,
 			req: &AnthropicMessageRequest{
@@ -2225,6 +2273,11 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6-20250514", true},
 		{"claude-sonnet-4.6-20250514", true},
+		// Fable/Mythos family: adaptive thinking is always on.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
@@ -2238,6 +2291,70 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 			got := SupportsAdaptiveThinking(tt.model)
 			if got != tt.expected {
 				t.Errorf("SupportsAdaptiveThinking(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsFableFamily pins the Fable/Mythos family predicate. These models share
+// Opus 4.7+'s adaptive-only / no-sampling surface and additionally reject
+// thinking:{type:"disabled"}.
+func TestIsFableFamily(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
+		{"anthropic.claude-mythos-5-v1", true},
+		// Not Fable/Mythos.
+		{"claude-opus-4-8", false},
+		{"claude-opus-4-7", false},
+		{"claude-sonnet-4-6", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsFableFamily(tt.model); got != tt.expected {
+				t.Errorf("IsFableFamily(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsAdaptiveOnlyThinkingModel covers the union gate used for the thinking
+// and sampling-parameter surfaces: Opus 4.7+ OR the Fable/Mythos family.
+func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Opus 4.7+.
+		{"claude-opus-4-8", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.8-20260601", true},
+		// Fable/Mythos.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
+		{"claude-opus-4-6", false},
+		{"claude-sonnet-4-6", false},
+		// Other.
+		{"claude-opus-4-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsAdaptiveOnlyThinkingModel(tt.model); got != tt.expected {
+				t.Errorf("IsAdaptiveOnlyThinkingModel(%q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2265,6 +2382,13 @@ func TestSupportsMidConversationSystem(t *testing.T) {
 		// Not supported: other model families.
 		{schemas.Anthropic, "claude-sonnet-4-8", false},
 		{schemas.Anthropic, "claude-haiku-4-8", false},
+		// Supported: Fable/Mythos family (Anthropic provider). Fable post-dates
+		// Opus 4.8 and supports mid-conversation system messages.
+		{schemas.Anthropic, "claude-fable-5", true},
+		{schemas.Anthropic, "claude-mythos-5", true},
+		// Not supported off the Anthropic provider, even for Fable.
+		{schemas.Bedrock, "claude-fable-5", false},
+		{schemas.Vertex, "claude-fable-5", false},
 		// Defensive cases.
 		{schemas.Anthropic, "", false},
 		{"", "claude-opus-4-8", false},
@@ -2303,6 +2427,10 @@ func TestSupportsFastMode(t *testing.T) {
 		{"claude-haiku-4-5", false},
 		{"claude-opus-4-5", false},
 		{"claude-opus-4-1", false},
+		// Fable/Mythos do NOT support fast mode (Opus 4.6/4.7/4.8 only).
+		{"claude-fable-5", false},
+		{"claude-mythos-5", false},
+		{"claude-mythos-preview", false},
 		// Defensive cases.
 		{"", false},
 		{"some-non-claude-model", false},
@@ -2327,7 +2455,10 @@ func TestSupportsEffortParameter(t *testing.T) {
 		expected bool
 	}{
 		// Supported per docs.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7", true},
@@ -2647,6 +2778,11 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"claude-sonnet-4.6", ComputerUseGen20251124},
 		{"claude-opus-4-5", ComputerUseGen20251124},
 		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
+		// Fable/Mythos family uses the new generation, like Opus 4.8.
+		{"claude-fable-5", ComputerUseGen20251124},
+		{"claude-mythos-5", ComputerUseGen20251124},
+		{"claude-mythos-preview", ComputerUseGen20251124},
+		{"global.anthropic.claude-fable-5", ComputerUseGen20251124},
 		{"claude-sonnet-4-5", ComputerUseGen20250124},
 		{"claude-sonnet-4-5-20250929", ComputerUseGen20250124},
 		{"claude-haiku-4-5", ComputerUseGen20250124},
@@ -2977,8 +3113,8 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 	const minBudget = MinimumReasoningMaxTokens
 
 	cases := []struct {
-		maxTokens    int
-		wantBudget   int
+		maxTokens  int
+		wantBudget int
 	}{
 		{maxTokens: 16000, wantBudget: 15999},
 		{maxTokens: 32000, wantBudget: 31999},

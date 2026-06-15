@@ -8,8 +8,10 @@ import (
 	"sync"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 // DefaultRoutingChainMaxDepth is the default maximum depth for routing rule chain evaluation.
@@ -35,14 +37,15 @@ type RoutingDecision struct {
 // RoutingContext holds all data needed for routing rule evaluation
 // Reuses existing configstore table types for VirtualKey, Team, Customer
 type RoutingContext struct {
-	VirtualKey               *configstoreTables.TableVirtualKey // nil if no VK
-	Provider                 schemas.ModelProvider              // Current provider
-	Model                    string                             // Current model
-	RequestType              string                             // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
-	Fallbacks                []string                           // Fallback chain: ["provider/model", ...]
-	Headers                  map[string]string                  // Request headers for dynamic routing
-	QueryParams              map[string]string                  // Query parameters for dynamic routing
-	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus          // Budget and rate limit status by provider/model
+	VirtualKey               *configstoreTables.TableVirtualKey  // nil if no VK
+	Provider                 schemas.ModelProvider               // Current provider
+	Model                    string                              // Current model
+	RequestType              string                              // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
+	Fallbacks                []string                            // Fallback chain: ["provider/model", ...]
+	Headers                  map[string]string                   // Request headers for dynamic routing
+	QueryParams              map[string]string                   // Query parameters for dynamic routing
+	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus           // Budget and rate limit status by provider/model
+	computeComplexity        func() *complexity.ComplexityResult // Lazy complexity computation; called at most once when a rule references "complexity_tier"
 }
 
 type RoutingEngine struct {
@@ -122,6 +125,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
 
 	var finalDecision *RoutingDecision
+	var complexityResult *complexity.ComplexityResult
+	computeComplexity := routingCtx.computeComplexity
 
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
@@ -149,6 +154,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			re.logger.Error("[RoutingEngine] Failed to extract routing variables: %v", err)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Failed to extract routing variables: %v", err))
 			return nil, fmt.Errorf("failed to extract routing variables: %w", err)
+		}
+		if complexityResult != nil {
+			variables["complexity_tier"] = complexityResult.Tier
 		}
 
 		re.logger.Debug("[RoutingEngine] Chain Step: %d", chainStep)
@@ -180,6 +188,17 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				}
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
+				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+
+				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
+				if complexityResult == nil && computeComplexity != nil && referencesComplexity {
+					complexityResult = computeComplexity()
+					computeComplexity = nil // compute at most once
+					if complexityResult != nil {
+						variables["complexity_tier"] = complexityResult.Tier
+					}
+				}
+
 				program, err := re.store.GetRoutingProgram(ctx, rule)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
@@ -187,7 +206,12 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					continue
 				}
 
-				matched, err := evaluateCELExpression(program, variables)
+				var unknowns []*cel.AttributePatternType
+				if referencesComplexity && complexityResult == nil {
+					unknowns = append(unknowns, cel.AttributePattern("complexity_tier"))
+				}
+
+				matched, err := evaluateCELExpression(program, variables, unknowns...)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
@@ -369,19 +393,35 @@ func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables
-func evaluateCELExpression(program cel.Program, variables map[string]any) (bool, error) {
+func evaluateCELExpression(program cel.Program, variables map[string]any, unknowns ...*cel.AttributePatternType) (bool, error) {
 	if program == nil {
 		return false, fmt.Errorf("CEL program is nil")
 	}
 
+	activation := any(variables)
+	if len(unknowns) > 0 {
+		partial, err := cel.PartialVars(variables, unknowns...)
+		if err != nil {
+			return false, fmt.Errorf("CEL partial activation error: %w", err)
+		}
+		activation = partial
+	}
+
 	// Evaluate the program
-	out, _, err := program.Eval(variables)
+	out, _, err := program.Eval(activation)
 	if err != nil {
 		// Gracefully handle "no such key" errors - when a header/param is missing, treat as non-match
 		if strings.Contains(err.Error(), "no such key") {
 			return false, nil
 		}
 		return false, fmt.Errorf("CEL evaluation error: %w", err)
+	}
+
+	// Unknown means the expression depends on a value that is unavailable for
+	// this request. For routing safety, treat it as a no-match rather than
+	// allowing sentinels like complexity_tier == "" to leak into product logic.
+	if types.IsUnknown(out) {
+		return false, nil
 	}
 
 	// Convert result to boolean
@@ -473,6 +513,11 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 		variables["tokens_used"] = 0.0
 		variables["request"] = 0.0
 	}
+
+	// Placeholder only: EvaluateRoutingRules fills this lazily when a rule
+	// actually references complexity_tier. If complexity is unavailable, it is
+	// evaluated as a CEL unknown so negative predicates do not accidentally match.
+	variables["complexity_tier"] = ""
 
 	return variables, nil
 }
@@ -576,5 +621,9 @@ func createCELEnvironment() (*cel.Env, error) {
 		cel.Variable("tokens_used", cel.DoubleType),
 		cel.Variable("request", cel.DoubleType),
 		cel.Variable("budget_used", cel.DoubleType),
+
+		// Complexity tier. When analysis is unavailable, evaluation marks this
+		// variable as CEL unknown so complexity-dependent predicates do not match.
+		cel.Variable("complexity_tier", cel.StringType),
 	)
 }

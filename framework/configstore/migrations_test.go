@@ -1090,8 +1090,8 @@ func TestMigrationDropDeploymentColumnsAndAddAliases_BedrockEncrypted(t *testing
 	// Verify the aliases contain the original deployment data (not double-encrypted)
 	aliases := keys[0].Aliases
 	assert.Contains(t, aliases, "claude")
-	assert.Equal(t, "dep-claude", aliases["claude"])
-	assert.Equal(t, "dep-instant", aliases["claude-instant"])
+	assert.Equal(t, "dep-claude", aliases["claude"].ModelID)
+	assert.Equal(t, "dep-instant", aliases["claude-instant"].ModelID)
 }
 
 // ============================================================================
@@ -1791,6 +1791,54 @@ func TestMigrationBackfillEmptyVirtualKeyConfigs(t *testing.T) {
 		Where("id = ?", "vk-backfill-1").Scan(&vkHash).Error
 	require.NoError(t, err)
 	assert.NotEmpty(t, vkHash, "VK config_hash should be recomputed after backfill")
+}
+
+func TestTriggerMigrationsAddsVKProviderConfigBlacklistColumnBeforeBackfill(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Simulate an existing DB that has provider configs but predates the
+	// provider-config blacklisted_models migration. This matches upgrades where
+	// backfill_empty_virtual_key_configs has not run yet.
+	require.NoError(t, db.Exec(`DELETE FROM migrations WHERE id IN (
+		'add_vk_provider_config_blacklisted_models_column',
+		'backfill_vk_provider_config_blacklisted_models',
+		'backfill_empty_virtual_key_configs'
+	)`).Error)
+
+	if db.Migrator().HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"))
+	}
+	require.False(t, db.Migrator().HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"))
+
+	err := db.Exec(`INSERT INTO config_providers (name, encryption_status, created_at, updated_at)
+		VALUES ('legacy-openai', 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	err = db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, is_active, encryption_status, created_at, updated_at)
+		VALUES ('vk-legacy-missing-blacklist', 'legacy-vk', 'vk-value', true, 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	err = triggerMigrations(ctx, db)
+	require.NoError(t, err)
+
+	require.True(t, db.Migrator().HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"))
+
+	var providerConfigCount int64
+	err = db.Table("governance_virtual_key_provider_configs").
+		Where("virtual_key_id = ?", "vk-legacy-missing-blacklist").
+		Count(&providerConfigCount).Error
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), providerConfigCount)
+
+	var blacklistedModels string
+	err = db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").
+		Where("virtual_key_id = ?", "vk-legacy-missing-blacklist").
+		Scan(&blacklistedModels).Error
+	require.NoError(t, err)
+	assert.Equal(t, "[]", blacklistedModels)
 }
 
 func TestMigrationBackfillAllowedModelsWildcard(t *testing.T) {

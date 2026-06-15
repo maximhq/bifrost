@@ -10,7 +10,7 @@ import (
 
 // ToBifrostTranscriptionRequest converts an OpenAI transcription request to Bifrost format
 func (request *OpenAITranscriptionRequest) ToBifrostTranscriptionRequest(ctx *schemas.BifrostContext) *schemas.BifrostTranscriptionRequest {
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	return &schemas.BifrostTranscriptionRequest{
 		Provider: provider,

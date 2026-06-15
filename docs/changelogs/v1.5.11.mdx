@@ -17,13 +17,17 @@ description: "v1.5.11 changelog - 2026-06-08"
 </Tabs>
 
 <Update label="Bifrost(HTTP)" description="1.5.11">
+
 ## 🐞 Fixed
 
 - **VK Budget Quota & Reload APIs** — The virtual key quota and reload (rotate) APIs now hydrate governance data (model configs and budgets) before returning, so budget information is accurate instead of missing or stale. Also added proper error handling when fetching model config during hydration.
 
-## ⏲️Rolling back (to 1.5.8)
+## ⏲️ Rolling back (to 1.5.8)
 
-### Single node setup
+These are the DB queries you would need to fire if you need to rollback to v1.5.8.
+
+<AccordionGroup>
+  <Accordion title="Single node setup">
 
 ```sql
 -- ============================================================
@@ -127,7 +131,9 @@ DELETE FROM migrations WHERE id = 'add_budget_model_config_id_column';
 COMMIT;
 ```
 
-### Multiple nodes
+  </Accordion>
+
+  <Accordion title="Multiple nodes">
 
 ```sql
 -- ============================================================
@@ -225,5 +231,8 @@ DELETE FROM migrations WHERE id = 'migrate_provider_governance_to_model_configs'
 
 COMMIT;
 ```
+
+  </Accordion>
+</AccordionGroup>
 
 </Update>

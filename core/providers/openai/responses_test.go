@@ -302,8 +302,13 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 }
 
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
+	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+
 	tests := []struct {
 		name     string
+		provider schemas.ModelProvider
 		model    string
 		effort   string
 		expected string
@@ -386,12 +391,39 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "high",
 		},
+		{
+			// DeepSeek V4 is routed via a custom OpenAI-compatible provider, so the
+			// OpenAI-only reasoning-stripping doesn't apply and "max" passes through.
+			name:     "preserves max for deepseek-v4-pro",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
 			req := ToOpenAIResponsesRequest(&schemas.BifrostResponsesRequest{
-				Provider: schemas.OpenAI,
+				Provider: provider,
 				Model:    tt.model,
 				Input: []schemas.ResponsesMessage{{
 					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),

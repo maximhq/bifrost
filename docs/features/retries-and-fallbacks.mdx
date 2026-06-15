@@ -367,6 +367,32 @@ The retry budget is set per-provider in `network_config`. If your fallback provi
 
 ---
 
+## Auditing retry and fallback decisions
+
+Every retry transition and every fallback transition is recorded on the request's **routing engine log trail** under the engine name `core`. This is the same per-request trail that plugins like `governance`, `loadbalancing`, `routing-rule`, and `model-catalog` write to when they make routing decisions — so the chain reads end-to-end: which engine picked the primary, what the primary failed with, what core retried with, and which fallback ultimately served the response.
+
+Entries core emits:
+
+| Phase | Level | Shape |
+|---|---|---|
+| Primary failed, entering fallback loop | Info | `Primary <p>/<m> failed (<type> HTTP <code>); evaluating N configured fallback(s)` |
+| Each fallback iteration | Info | `Trying fallback i/N: <p>/<m> (previous attempt failed: <type> HTTP <code>)` |
+| Fallback skipped (no provider config) | Warn | `Fallback <p>/<m> skipped: missing provider config` |
+| Fallback succeeded | Info | `Request served by fallback <p>/<m> (attempt i/N)` |
+| Fallback halted by short-circuit | Error | `Fallback <p>/<m> failed (<type> HTTP <code>); halting further fallbacks` |
+| All fallbacks exhausted | Error | `All N fallback(s) exhausted; returning primary error (<type> HTTP <code>)` |
+| Retry transition (rotated key) | Info | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>; rotated key=<name>)` |
+| Retry transition (same key) | Info | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>; same key=<name>)` |
+| Retry transition (keyless provider) | Info | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>)` |
+| Retries succeeded | Info | `Request to <p>/<m> succeeded after N retry attempt(s)` |
+| Retries exhausted | Error | `Retries exhausted for <p>/<m> after N attempt(s); last error: <type> HTTP <code>` |
+
+The failure context attached to each entry is intentionally categorical — only the error type (e.g. `rate_limit_error`) and HTTP status code. The upstream provider message is *never* included, since providers can echo back API keys, tokens, or user input. The key identifier surfaced in retry rotation notes is the user-set key **name**, not the secret value.
+
+When core emits at least one entry on a request, it also adds itself to the request log's `routing_engines_used` field (deduped — `core` appears at most once per request even if both the retry and fallback orchestrators were involved).
+
+---
+
 ## Real-world scenarios
 
 **Scenario 1: Rate limiting with key rotation**

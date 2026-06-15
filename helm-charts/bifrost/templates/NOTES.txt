@@ -1,10 +1,26 @@
 Bifrost has been installed!
 
-{{- if .Values.ingress.enabled }}
+{{- $isLegacy := true }}
+{{- range $k, $v := .Values.ingress }}
+{{- if and (kindIs "map" $v) (hasKey $v "enabled") }}{{- $isLegacy = false }}{{- end }}
+{{- end }}
+{{- if and .Values.ingress $isLegacy .Values.ingress.enabled }}
 
 1. Access Bifrost at:
 {{- range .Values.ingress.hosts }}
    http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+
+{{- else if and .Values.ingress (not $isLegacy) }}
+
+1. Access Bifrost at:
+{{- range (keys .Values.ingress | sortAlpha) }}
+{{- $ing := index $.Values.ingress . }}
+{{- if and (kindIs "map" $ing) $ing.enabled }}
+{{- range $ing.hosts }}
+   http{{ if $ing.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{- else if eq .Values.service.type "LoadBalancer" }}

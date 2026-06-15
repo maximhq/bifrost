@@ -51,6 +51,18 @@ type BifrostListModelsRequest struct {
 	// Unfiltered: If true, the response will include all models for the provider, regardless of the allowed models (internal bifrost use only, not sent to the provider)
 	Unfiltered bool `json:"-"`
 
+	// KeyID: If non-nil, scope the call to a single key (matched by Key.ID).
+	// Lets callers cache list-models output per-key for fine-grained
+	// invalidation. Internal bifrost use only; not sent to the provider.
+	//
+	// Matching runs against the already-filtered set of supported keys for the
+	// provider — keys that are disabled (Enabled == false) or fail validation
+	// are excluded before the lookup, so a KeyID referring to such a key
+	// produces the same "no key found" error as a KeyID that does not exist
+	// at all. Callers needing to distinguish those cases must check the raw
+	// account configuration themselves.
+	KeyID *string `json:"-"`
+
 	// ExtraParams: Additional provider-specific query parameters
 	// This allows for flexibility to pass any custom parameters that specific providers might support
 	ExtraParams map[string]interface{} `json:"-"`

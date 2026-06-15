@@ -143,6 +143,7 @@
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
+                  "providers/supported-providers/opencode",
                   "providers/supported-providers/openai",
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
@@ -229,7 +230,8 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers"
+                  "features/governance/required-headers",
+                  "features/governance/complexity-router"
                 ]
               },
               "features/telemetry",
@@ -328,6 +330,51 @@
             "icon": "shield",
             "pages": [
               "security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Edge",
+        "icon": "globe",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "edge/overview",
+              "edge/how-it-works"
+            ]
+          },
+          {
+            "group": "Governance & Control",
+            "icon": "shield-halved",
+            "pages": [
+              "edge/app-governance",
+              "edge/mcp-governance",
+              "edge/security"
+            ]
+          },
+          {
+            "group": "Admin controls",
+            "icon": "sliders",
+            "pages": [
+              "edge/admin-devices",
+              "edge/admin-approvals",
+              "edge/admin-configurations"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "icon": "cloud-arrow-up",
+            "pages": [
+              "edge/deployment-mdm"
+            ]
+          },
+          {
+            "group": "Reference",
+            "icon": "list",
+            "pages": [
+              "edge/supported-applications"
             ]
           }
         ]
@@ -585,6 +632,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.13",
+              "changelogs/v1.5.12",
               "changelogs/v1.5.11",
               "changelogs/v1.5.10",
               "changelogs/v1.5.9",
@@ -764,6 +813,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.9",
+              "changelogs/ent-v1.4.8",
               "changelogs/ent-v1.4.7",
               "changelogs/ent-v1.4.7-rc1",
               "changelogs/ent-v1.4.6",
@@ -827,6 +878,8 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.23",
+              "changelogs/helm-v2.1.22",
               "changelogs/helm-v2.1.21",
               "changelogs/helm-v2.1.20",
               "changelogs/helm-v2.1.19",

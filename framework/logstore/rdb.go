@@ -327,17 +327,10 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 			switch dialect {
 			case "postgres":
-				// Use @> containment operator to leverage GIN index on metadata::jsonb
-				// Preserve value type (number/boolean) for JSON containment
-				var jsonFragment string
-				if value == "true" || value == "false" {
-					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, value)
-				} else if f, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
-					// Reject NaN/Inf which would produce invalid JSON; normalize the number
-					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, strconv.FormatFloat(f, 'f', -1, 64))
-				} else {
-					jsonFragment = fmt.Sprintf(`{%q: %q}`, key, value)
-				}
+				// Use @> containment operator to leverage GIN index on metadata::jsonb.
+				// Metadata values always originate from HTTP headers and are stored as JSON
+				// strings — always match as a string to avoid type mismatch with jsonb.
+				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
 				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
 			default:
 				// SQLite: quote the member name so dots/hyphens stay part of the key
@@ -691,6 +684,7 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 		}
 	}
 
+	pagination.TotalCount = totalCount
 	return &SearchResult{
 		Logs:       logs,
 		Pagination: pagination,
@@ -864,6 +858,7 @@ func normalizeAggregateTimestamp(value any) string {
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
 		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
+		"canonical_model_name", "alias_model_family",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",

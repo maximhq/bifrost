@@ -20,6 +20,57 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 	return KnownProvidersNames.includes(provider.toLowerCase() as KnownProvider);
 };
 
+// ModelFamily matching Go's schemas.ModelFamily — 1st-tier family routing enum
+export type ModelFamily =
+	| "anthropic"
+	| "openai"
+	| "mistral"
+	| "cohere"
+	| "gemini"
+	| "gemma"
+	| "llama"
+	| "imagen"
+	| "veo"
+	| "nova"
+	| "titan";
+
+export const ModelFamilyValues: ModelFamily[] = [
+	"anthropic",
+	"openai",
+	"mistral",
+	"cohere",
+	"gemini",
+	"gemma",
+	"llama",
+	"imagen",
+	"veo",
+	"nova",
+	"titan",
+];
+
+// AliasConfig matching Go's schemas.AliasConfig.
+// Go embeds AzureAliasCfg/VertexAliasCfg/BedrockAliasCfg/ReplicateAliasCfg as
+// pointer structs which flatten on the wire — sub-config fields live at the
+// top level of the JSON object.
+export interface AliasConfig {
+	model_id: string;
+	model_name?: string;
+	model_family?: ModelFamily;
+	description?: string;
+	region?: EnvVar;
+	// Azure overrides
+	api_version?: string;
+	anthropic_version?: string;
+	endpoint?: EnvVar;
+	// Vertex overrides
+	project_id?: EnvVar;
+	project_number?: EnvVar;
+	// Bedrock overrides
+	inference_profile_arn?: EnvVar;
+	// Replicate overrides
+	use_deployments_endpoint?: boolean;
+}
+
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
 	endpoint: EnvVar;
@@ -134,7 +185,7 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
-	aliases?: Record<string, string>;
+	aliases?: Record<string, AliasConfig>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
@@ -382,6 +433,8 @@ export interface FrameworkConfig {
 	pricing_url: string;
 	pricing_sync_interval: number;
 	model_parameters_url: string;
+	mcp_library_url?: string;
+	mcp_library_sync_interval?: number;
 }
 
 // Auth config
@@ -389,7 +442,6 @@ export interface AuthConfig {
 	admin_username: EnvVar;
 	admin_password: EnvVar;
 	is_enabled: boolean;
-	disable_auth_on_inference?: boolean;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
@@ -462,6 +514,7 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 }

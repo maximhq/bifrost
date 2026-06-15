@@ -169,7 +169,13 @@ build_bifrost_http() {
   fi
 
   log_info "Building bifrost-http..."
-  cd "${TRANSPORTS_DIR}"
+  cd "${BIFROST_HTTP_DIR}"
+
+  # Ensure ui directory exists for //go:embed all:ui (load test does not need the real UI assets)
+  mkdir -p "${BIFROST_HTTP_DIR}/ui"
+  if [ ! -f "${BIFROST_HTTP_DIR}/ui/.gitkeep" ]; then
+    echo "placeholder" > "${BIFROST_HTTP_DIR}/ui/.gitkeep"
+  fi
 
   if go build -o ${REPO_ROOT}/tmp/bifrost-http .; then
     log_success "bifrost-http built successfully"
@@ -190,8 +196,9 @@ setup_mocker() {
     cd "${WORK_DIR}"
   else
     log_info "Cloning bifrost-benchmarking repository..."
-    cd "${WORK_DIR}"
+    cd "${REPO_ROOT}/.."
     git clone --depth 1 https://github.com/maximhq/bifrost-benchmarking.git
+    cd "${WORK_DIR}"
   fi
 
   log_success "Mocker setup complete"
@@ -242,7 +249,8 @@ create_config() {
         {
           "name": "mocker-key",
           "value": "Bearer mocker-key",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -252,14 +260,6 @@ create_config() {
       "concurrency_and_buffer_size": {
         "concurrency": 20000,
         "buffer_size": 40000
-      },
-      "custom_provider_config": {
-        "base_provider_type": "openai",
-        "allowed_requests": {
-          "list_models": false,
-          "chat_completion": true,
-          "chat_completion_stream": true
-        }
       }
     }
   }
@@ -848,3 +848,4 @@ main() {
 }
 
 main "$@"
+
