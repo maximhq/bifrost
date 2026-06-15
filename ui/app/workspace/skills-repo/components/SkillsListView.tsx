@@ -69,7 +69,6 @@ import {
   Plus,
   Search,
   Trash2,
-  ChevronsDown,
   ChevronDown,
   ArrowUpRight,
   BookOpenText,
@@ -78,10 +77,14 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { PAGE_SIZE, formatDateShort, useDebouncedValue } from "./helpers";
 
+const SKILLS_REPOSITORY_DOCS_URL =
+  "https://docs.getbifrost.ai/features/skills-repository";
+
 // ---------- MarketplacePopover ----------
 
 function MarketplacePopover() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const marketplaceBaseUrl = getApiBaseUrl();
 
   const items = [
@@ -102,6 +105,7 @@ function MarketplacePopover() {
       .writeText(text)
       .then(() => {
         setCopiedKey(key);
+        setOpen(false);
         toast.success("Copied to clipboard");
         setTimeout(() => setCopiedKey(null), 2000);
       })
@@ -111,7 +115,7 @@ function MarketplacePopover() {
   };
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm">
           <Package className="h-3.5 w-3.5" />
@@ -440,10 +444,12 @@ export function SkillsListView({
         </div>
         <div className="flex flex-col gap-1">
           <h1 className="text-muted-foreground text-xl font-medium">
-            Create and manage Agent Skills for AI coding assistants
+            Create, version, and share Agent Skills from Bifrost
           </h1>
           <div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
-            Build skills that extend the capabilities of Claude Code, Codex, and other AI harnesses. Register as a marketplace to distribute them.
+            Manage SKILL.md instructions and supporting files in one place,
+            publish immutable versions, and expose them as installable plugins
+            for Claude Code, Codex, and other skill-aware clients.
           </div>
           <div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
             <Button
@@ -451,10 +457,15 @@ export function SkillsListView({
               aria-label="Read more about skills (opens in new tab)"
               data-testid="skills-button-read-more"
               onClick={() => {
-                window.open("https://agentskills.io?utm_source=bfd", "_blank", "noopener,noreferrer");
+                window.open(
+                  `${SKILLS_REPOSITORY_DOCS_URL}?utm_source=bfd`,
+                  "_blank",
+                  "noopener,noreferrer",
+                );
               }}
             >
-              Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+              Read more{" "}
+              <ArrowUpRight className="text-muted-foreground h-3 w-3" />
             </Button>
             {hasCreateAccess && (
               <Button
@@ -476,7 +487,10 @@ export function SkillsListView({
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between mb-4">
         <div>
-          <h2 className="text-lg font-semibold">Skills Repository</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold">Skills Repository</h2>
+            <Badge aria-label="Skills Repository is in beta">Beta</Badge>
+          </div>
           <p className="text-muted-foreground text-sm">
             Manage Agent Skills for distribution to AI coding assistants
           </p>
@@ -707,11 +721,15 @@ export function SkillsListView({
                       }
                     }}
                   >
-                    <TableCell className="font-medium font-mono text-sm">
-                      {skill.name}
+                    <TableCell className="w-[240px] max-w-[240px] overflow-hidden font-medium font-mono text-sm">
+                      <div className="max-w-full truncate" title={skill.name}>
+                        {skill.name}
+                      </div>
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-sm max-w-[300px] truncate">
-                      {skill.description}
+                    <TableCell className="text-muted-foreground overflow-hidden text-sm">
+                      <div className="truncate" title={skill.description}>
+                        {skill.description}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge
