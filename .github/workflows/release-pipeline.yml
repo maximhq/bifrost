@@ -1633,6 +1633,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
@@ -1647,7 +1648,9 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1679,13 +1682,24 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Determine Docker tags
         id: tags
         run: |
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-amd64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-amd64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push AMD64 Docker image
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -1697,6 +1711,16 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/amd64
+
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror AMD64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
 
   # Docker build arm64
   docker-build-arm64:
@@ -1721,6 +1745,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
@@ -1735,7 +1760,9 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1767,13 +1794,24 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Determine Docker tags
         id: tags
         run: |
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-arm64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-arm64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push ARM64 Docker image
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -1786,11 +1824,24 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
 
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror ARM64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
+
   # Docker manifest
   docker-manifest:
     needs: [check-skip, detect-changes, docker-build-amd64, docker-build-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-amd64.result == 'success' && needs.docker-build-arm64.result == 'success'"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
@@ -1802,7 +1853,9 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             auth.docker.io:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             registry-1.docker.io:443
@@ -1815,6 +1868,13 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push multi-arch manifest
         run: |
@@ -1843,6 +1903,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
@@ -1857,7 +1918,9 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1891,13 +1954,24 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Determine Docker tags
         id: tags
         run: |
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-ubi9-amd64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-ubi9-amd64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 AMD64 Docker image
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -1911,6 +1985,16 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha,scope=docker-ubi9-amd64
           cache-to: type=gha,mode=max,scope=docker-ubi9-amd64
+
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror UBI9 AMD64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
 
   # Docker build UBI9 arm64
   docker-build-ubi9-arm64:
@@ -1935,6 +2019,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
@@ -1949,7 +2034,9 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1983,13 +2070,24 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Determine Docker tags
         id: tags
         run: |
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-ubi9-arm64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-ubi9-arm64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 ARM64 Docker image
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -2004,11 +2102,24 @@ jobs:
           cache-from: type=gha,scope=docker-ubi9-arm64
           cache-to: type=gha,mode=max,scope=docker-ubi9-arm64
 
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror UBI9 ARM64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
+
   # Docker UBI9 manifest — merges amd64 + arm64 into a single multi-arch tag
   docker-manifest-ubi9:
     needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
@@ -2020,7 +2131,9 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             auth.docker.io:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             registry-1.docker.io:443
@@ -2033,6 +2146,13 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push UBI9 multi-arch manifest
         run: |
