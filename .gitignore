@@ -9,6 +9,9 @@ private.*
 .venv
 bifrost-data
 test-coverage-local.sh
+.opencode
+.sisyphus
+graphify-out
 
 # Enterprise
 ui/app/enterprise

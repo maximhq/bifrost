@@ -1,0 +1,19 @@
+## Progress: Per-Virtual-Key Semantic Cache Configuration
+
+### Completed
+- [x] Step 1 — Add Database Table: `governance_virtual_key_semantic_cache_configs`
+  - Created `framework/configstore/tables/virtualkey_semantic_cache.go` with `TableVirtualKeySemanticCacheConfig` model
+  - Added migration `migrationAddVirtualKeySemanticCacheConfigTable` in `framework/configstore/migrations.go`
+  - Migration ID: `add_vk_semantic_cache_config_table`
+  - Committed: `177d13ba8`
+
+### Next Steps
+- [ ] Step 2 — Add ConfigStore CRUD methods to interface + RDB implementation
+- [ ] Step 3 — Extend governance in-memory store to cache VK semantic configs
+- [ ] Step 4 — Add HTTP API handlers for VK semantic cache config
+- [ ] Step 5 — Refactor semantic cache plugin for per-VK resolution
+- [ ] Step 6 — Handle Vector Store per-VK namespace
+- [ ] Step 7 — Update plugin initialization
+- [ ] Step 8 — Extend UI to manage VK semantic cache config
+- [ ] Step 9 — Tests
+- [ ] Step 10 — Documentation
