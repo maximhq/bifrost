@@ -231,6 +231,55 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// GigaChat key config schema
+export const gigachatKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["credentials", "access_token", "password", "mtls"]).optional(),
+		credentials: envVarSchema.optional(),
+		scope: z.string().optional(),
+		user: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		access_token: envVarSchema.optional(),
+		auth_url: z.string().optional(),
+		base_url: z.string().optional(),
+		cert_file: z.string().optional(),
+		key_file: z.string().optional(),
+		ca_bundle_file: z.string().optional(),
+	})
+	.superRefine((data, ctx) => {
+		const hasUser = isEnvVarSet(data.user);
+		const hasPassword = isEnvVarSet(data.password);
+		if (hasUser !== hasPassword) {
+			ctx.addIssue({
+				code: "custom",
+				message: "User and password must be set together",
+				path: hasUser ? ["password"] : ["user"],
+			});
+		}
+
+		const hasCertFile = isStringSet(data.cert_file);
+		const hasKeyFile = isStringSet(data.key_file);
+		if (hasCertFile !== hasKeyFile) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Cert file and key file must be set together",
+				path: hasCertFile ? ["key_file"] : ["cert_file"],
+			});
+		}
+	});
+
+type GigaChatKeyConfigSchema = z.infer<typeof gigachatKeyConfigSchema>;
+
+function isGigaChatAuthConfigured(config: GigaChatKeyConfigSchema | undefined): boolean {
+	if (!config) return false;
+	return isEnvVarSet(config.credentials) || isEnvVarSet(config.access_token) || (isEnvVarSet(config.user) && isEnvVarSet(config.password));
+}
+
+function isGigaChatMTLSConfigured(config: GigaChatKeyConfigSchema | undefined): boolean {
+	if (!config) return false;
+	return isStringSet(config.cert_file) && isStringSet(config.key_file);
+}
+
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
 export const modelFamilySchema = z.enum([
 	"anthropic",
@@ -320,7 +369,11 @@ export const modelProviderKeySchema = z
 			return;
 		}
 		if (data.gigachat_key_config) {
-			if (isGigaChatAuthConfigured(data.gigachat_key_config) || isGigaChatMTLSConfigured(data.gigachat_key_config) || isEnvVarSet(data.value)) {
+			if (
+				isGigaChatAuthConfigured(data.gigachat_key_config) ||
+				isGigaChatMTLSConfigured(data.gigachat_key_config) ||
+				isEnvVarSet(data.value)
+			) {
 				return;
 			}
 			const authIssuePath =
