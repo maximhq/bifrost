@@ -33,8 +33,8 @@ import {
   BookOpen,
   ChevronDown,
   ChevronRight,
-  ChevronsDown,
-  ChevronsUp,
+  ChevronsDownUp,
+  ChevronsUpDown,
   ArrowLeft,
   Copy,
   Download,
@@ -118,10 +118,12 @@ export function SkillHeader({
   sticky?: boolean;
 }) {
   const [showRawDialog, setShowRawDialog] = useState(false);
-  const { copy: copyRawSkillMd, copied: copiedRawSkillMd } = useCopyToClipboard({
-    successMessage: "Copied raw SKILL.md",
-    errorMessage: "Failed to copy raw SKILL.md",
-  });
+  const { copy: copyRawSkillMd, copied: copiedRawSkillMd } = useCopyToClipboard(
+    {
+      successMessage: "Copied raw SKILL.md",
+      errorMessage: "Failed to copy raw SKILL.md",
+    },
+  );
 
   return (
     <>
@@ -227,7 +229,11 @@ export function SkillHeader({
                   size="icon"
                   className="h-8 w-8 rounded-sm bg-background/70 text-muted-foreground hover:bg-background/90 hover:text-foreground"
                   onClick={() => copyRawSkillMd(composedSkillMd)}
-                  aria-label={copiedRawSkillMd ? "Raw SKILL.md copied" : "Copy raw SKILL.md"}
+                  aria-label={
+                    copiedRawSkillMd
+                      ? "Raw SKILL.md copied"
+                      : "Copy raw SKILL.md"
+                  }
                 >
                   {copiedRawSkillMd ? (
                     <Check className="h-4 w-4" />
@@ -382,7 +388,7 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
               <div className="min-w-0 p-4">
                 <Markdown
                   content={body || ""}
-                  className="max-w-full text-sm break-words [overflow-wrap:anywhere] [&_*]:max-w-full [&_*]:break-words [&_*]:[overflow-wrap:anywhere] [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:table-fixed"
+                  className="max-w-full text-sm break-words [&_*]:max-w-full [&_*]:break-words [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:table-fixed"
                 />
               </div>
             </ScrollArea>
@@ -447,7 +453,7 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
                   <div className="min-w-0 p-5">
                     <Markdown
                       content={body || ""}
-                      className="max-w-full text-sm break-words [overflow-wrap:anywhere] [&_*]:max-w-full [&_*]:break-words [&_*]:[overflow-wrap:anywhere] [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:table-fixed"
+                      className="max-w-full text-sm break-words [&_*]:max-w-full [&_*]:break-words [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:table-fixed"
                     />
                   </div>
                 </ScrollArea>
@@ -591,199 +597,201 @@ export function ReadOnlyFileTree({
   return (
     <FormSection title="Files">
       <TooltipProvider>
-      <Tree<FileTreeNodeData>
-        data={treeData}
-        levelsToExpandByDefault={1}
-        indentSize={28}
-        renderItem={({
-          item,
-          isExpanded,
-          hasChildren,
-          onToggle,
-          onExpandAll,
-          onCollapseAll,
-          isAllExpanded,
-          isAllCollapsed,
-        }) => {
-          const isFolder = item.type === "root" || item.type === "folder";
-          const isSkillMd = item.type === "skillmd";
-          const isFile = item.type === "file";
-          const isDownloadable = isSkillMd || isFile;
+        <Tree<FileTreeNodeData>
+          data={treeData}
+          levelsToExpandByDefault={1}
+          indentSize={28}
+          renderItem={({
+            item,
+            isExpanded,
+            hasChildren,
+            onToggle,
+            onExpandAll,
+            onCollapseAll,
+            isAllExpanded,
+            isAllCollapsed,
+          }) => {
+            const isFolder = item.type === "root" || item.type === "folder";
+            const isSkillMd = item.type === "skillmd";
+            const isFile = item.type === "file";
+            const isDownloadable = isSkillMd || isFile;
 
-          const fileDownloadUrl =
-            isFile && item.path
-              ? `${getApiBaseUrl()}/skills/serve/${encodeURIComponent(skillName)}/files/${item.path.split("/").map(encodeURIComponent).join("/")}`
-              : undefined;
+            const fileDownloadUrl =
+              isFile && item.path
+                ? `${getApiBaseUrl()}/skills/serve/${encodeURIComponent(skillName)}/files/${item.path.split("/").map(encodeURIComponent).join("/")}`
+                : undefined;
 
-          const handleClick = () => {
-            if (hasChildren) onToggle();
-            else if (isSkillMd) downloadTextAsFile(composedSkillMd, "SKILL.md");
-            else if (isFile && fileDownloadUrl) {
-              const a = document.createElement("a");
-              a.href = fileDownloadUrl;
-              a.download = item.name;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-            }
-          };
-
-          return (
-            <div
-              className={cn(
-                "group flex h-9 items-center gap-2 rounded-sm px-2 text-sm transition-colors",
-                (hasChildren || isDownloadable) &&
-                  "cursor-pointer hover:bg-muted/50",
-              )}
-              onClick={handleClick}
-              onKeyDown={(e) => {
-                if (
-                  (e.key === "Enter" || e.key === " ") &&
-                  (hasChildren || isDownloadable)
-                ) {
-                  e.preventDefault();
-                  handleClick();
-                }
-              }}
-              role={hasChildren || isDownloadable ? "button" : undefined}
-              tabIndex={hasChildren || isDownloadable ? 0 : undefined}
-              aria-label={
-                isDownloadable
-                  ? `Download ${item.name}`
-                  : isFolder
-                    ? `${isExpanded ? "Collapse" : "Expand"} ${item.name}`
-                    : item.name
+            const handleClick = () => {
+              if (hasChildren) onToggle();
+              else if (isSkillMd)
+                downloadTextAsFile(composedSkillMd, "SKILL.md");
+              else if (isFile && fileDownloadUrl) {
+                const a = document.createElement("a");
+                a.href = fileDownloadUrl;
+                a.download = item.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
               }
-            >
-              {hasChildren ? (
-                isExpanded ? (
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                )
-              ) : (
-                <span className="w-3.5 shrink-0" />
-              )}
+            };
 
-              {isDownloadable ? (
-                isSkillMd ? (
-                  <>
-                    <BookOpen className="h-4 w-4 shrink-0 text-muted-foreground group-hover:hidden" />
-                    <Download className="h-4 w-4 shrink-0 text-muted-foreground hidden group-hover:block" />
-                  </>
-                ) : (
-                  <>
-                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground group-hover:hidden" />
-                    <Download className="h-4 w-4 shrink-0 text-muted-foreground hidden group-hover:block" />
-                  </>
-                )
-              ) : isFolder ? (
-                isExpanded ? (
-                  <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
-                ) : (
-                  <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
-                )
-              ) : null}
-
-              <span
-                className={cn("font-mono text-xs", isFolder && "font-medium")}
+            return (
+              <div
+                className={cn(
+                  "group flex h-9 items-center gap-2 rounded-sm px-2 text-sm transition-colors",
+                  (hasChildren || isDownloadable) &&
+                    "cursor-pointer hover:bg-muted/50",
+                )}
+                onClick={handleClick}
+                onKeyDown={(e) => {
+                  if (
+                    (e.key === "Enter" || e.key === " ") &&
+                    (hasChildren || isDownloadable)
+                  ) {
+                    e.preventDefault();
+                    handleClick();
+                  }
+                }}
+                role={hasChildren || isDownloadable ? "button" : undefined}
+                tabIndex={hasChildren || isDownloadable ? 0 : undefined}
+                aria-label={
+                  isDownloadable
+                    ? `Download ${item.name}`
+                    : isFolder
+                      ? `${isExpanded ? "Collapse" : "Expand"} ${item.name}`
+                      : item.name
+                }
               >
-                {item.name}
-              </span>
-
-              {isFolder &&
-                !isExpanded &&
-                item.childCount != null &&
-                item.childCount > 0 && (
-                  <span className="text-[10px] text-muted-foreground">
-                    {item.childCount} item{item.childCount !== 1 ? "s" : ""}
-                  </span>
+                {hasChildren ? (
+                  isExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  )
+                ) : (
+                  <span className="w-3.5 shrink-0" />
                 )}
 
-              {isFile && (
-                <>
-                  {item.source_type && (
+                {isDownloadable ? (
+                  isSkillMd ? (
+                    <>
+                      <BookOpen className="h-4 w-4 shrink-0 text-muted-foreground group-hover:hidden" />
+                      <Download className="h-4 w-4 shrink-0 text-muted-foreground hidden group-hover:block" />
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-4 w-4 shrink-0 text-muted-foreground group-hover:hidden" />
+                      <Download className="h-4 w-4 shrink-0 text-muted-foreground hidden group-hover:block" />
+                    </>
+                  )
+                ) : isFolder ? (
+                  isExpanded ? (
+                    <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )
+                ) : null}
+
+                <span
+                  className={cn("font-mono text-xs", isFolder && "font-medium")}
+                >
+                  {item.name}
+                </span>
+
+                {isFolder &&
+                  !isExpanded &&
+                  item.childCount != null &&
+                  item.childCount > 0 && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {item.childCount} item{item.childCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
+
+                {isFile && (
+                  <>
+                    {item.source_type && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex h-5 shrink-0 items-center rounded-full border border-border/60 bg-transparent px-2 text-[10px] font-medium leading-none text-muted-foreground">
+                            {item.source_type}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent className="px-2 py-1 text-xs">
+                          Source
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                    {item.mime_type && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {item.mime_type}
+                      </span>
+                    )}
+                    {item.file_size_bytes != null &&
+                      item.file_size_bytes > 0 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {formatFileSize(item.file_size_bytes)}
+                        </span>
+                      )}
+                  </>
+                )}
+
+                {item.type === "root" && (
+                  <div
+                    className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="inline-flex h-5 shrink-0 items-center rounded-full border border-border/60 bg-transparent px-2 text-[10px] font-medium leading-none text-muted-foreground">
-                          {item.source_type}
-                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          aria-label="Expand all folders"
+                          onClick={onExpandAll}
+                          disabled={isAllExpanded}
+                        >
+                          <ChevronsUpDown className="h-3 w-3" />
+                        </Button>
                       </TooltipTrigger>
                       <TooltipContent className="px-2 py-1 text-xs">
-                        Source
+                        Expand all
                       </TooltipContent>
                     </Tooltip>
-                  )}
-                  {item.mime_type && (
-                    <span className="text-[10px] text-muted-foreground">
-                      {item.mime_type}
-                    </span>
-                  )}
-                  {item.file_size_bytes != null && item.file_size_bytes > 0 && (
-                    <span className="text-[10px] text-muted-foreground">
-                      {formatFileSize(item.file_size_bytes)}
-                    </span>
-                  )}
-                </>
-              )}
-
-              {item.type === "root" && (
-                <div
-                  className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => e.stopPropagation()}
-                >
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        aria-label="Expand all folders"
-                        onClick={onExpandAll}
-                        disabled={isAllExpanded}
-                      >
-                        <ChevronsDown className="h-3 w-3" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent className="px-2 py-1 text-xs">
-                      Expand all
-                    </TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        aria-label="Collapse all folders"
-                        onClick={onCollapseAll}
-                        disabled={isAllCollapsed}
-                      >
-                        <ChevronsUp className="h-3 w-3" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent className="px-2 py-1 text-xs">
-                      Collapse all
-                    </TooltipContent>
-                  </Tooltip>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-2"
-                    asChild
-                  >
-                    <a href={downloadUrl} download>
-                      <Download className="h-3 w-3" />
-                      <span className="text-[10px]">ZIP</span>
-                    </a>
-                  </Button>
-                </div>
-              )}
-            </div>
-          );
-        }}
-      />
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          aria-label="Collapse all folders"
+                          onClick={onCollapseAll}
+                          disabled={isAllCollapsed}
+                        >
+                          <ChevronsDownUp className="h-3 w-3" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent className="px-2 py-1 text-xs">
+                        Collapse all
+                      </TooltipContent>
+                    </Tooltip>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2"
+                      asChild
+                    >
+                      <a href={downloadUrl} download>
+                        <Download className="h-3 w-3" />
+                        <span className="text-[10px]">ZIP</span>
+                      </a>
+                    </Button>
+                  </div>
+                )}
+              </div>
+            );
+          }}
+        />
       </TooltipProvider>
     </FormSection>
   );

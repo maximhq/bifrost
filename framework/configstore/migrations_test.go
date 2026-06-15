@@ -1824,7 +1824,7 @@ func TestTriggerMigrationsAddsVKProviderConfigBlacklistColumnBeforeBackfill(t *t
 		VALUES ('vk-legacy-missing-blacklist', 'legacy-vk', 'vk-value', true, 'plain_text', ?, ?)`, now, now).Error
 	require.NoError(t, err)
 
-	err = triggerMigrations(ctx, db)
+	err = triggerMigrations(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	require.True(t, db.Migrator().HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"))

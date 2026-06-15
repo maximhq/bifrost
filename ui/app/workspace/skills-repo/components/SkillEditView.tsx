@@ -17,7 +17,7 @@ import { CodeEditor, type CompletionItem } from "@/components/ui/codeEditor";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { validateVersionBump } from "@/lib/validators/skills";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, Check, Copy, Eye, Loader2, Plus, Save, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, Copy, Eye, Loader2, Plus, Save, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { type SkillFormReturn, composeFrontmatter } from "./helpers";
 import { FormSection } from "./shared";
@@ -145,6 +145,13 @@ export function SkillEditView({
               {isCreate ? form.name || "<new-skill>" : skillName}
             </span>
           </div>
+        </div>
+
+        <div className="mb-6 flex gap-3 rounded-sm border border-amber-500/40 bg-amber-50/80 p-3 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-950/40 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p>
+            Files added to a skill can be downloaded from marketplace URLs without logging in. Anyone who can reach this Bifrost server can request them directly, so do not upload secrets, credentials, private code, or other sensitive files.
+          </p>
         </div>
 
         {/* Edit sections */}
