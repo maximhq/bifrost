@@ -49,6 +49,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Sidebar,
   SidebarContent,
@@ -770,6 +771,7 @@ export default function AppSidebar() {
     hasGovernanceLegacyAccess;
   const { data: coreConfig } = useGetCoreConfigQuery({});
   const isDbConnected = coreConfig?.is_db_connected ?? false;
+  const envLabel = coreConfig?.env_label ?? null;
 
   const items = useMemo(
     () => [
@@ -1575,6 +1577,25 @@ export default function AppSidebar() {
           />
         </div>
       </SidebarHeader>
+      {envLabel && (
+        <div className="mx-2 mb-1">
+          {/* Expanded: full label text */}
+          <div className="flex items-center justify-center rounded-sm bg-amber-400/20 px-2 py-1 group-data-[collapsible=icon]:hidden">
+            <span className="font-mono text-[10px] font-semibold tracking-widest text-amber-700 dark:text-amber-400">
+              {envLabel}
+            </span>
+          </div>
+          {/* Collapsed: dot indicator */}
+          <div className="hidden justify-center group-data-[collapsible=icon]:flex">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
+              </TooltipTrigger>
+              <TooltipContent side="right">{envLabel}</TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+      )}
       <div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
         <div className="relative">
           <Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />

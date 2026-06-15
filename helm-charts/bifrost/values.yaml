@@ -192,6 +192,7 @@ bifrost:
   host: 0.0.0.0
   logLevel: info
   logStyle: json
+  # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
 
   # Controls how config.json is reconciled with the database on startup.
   # "split" (default): existing merge behavior — file and DB rows coexist.
