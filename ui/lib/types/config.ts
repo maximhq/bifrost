@@ -517,6 +517,7 @@ export interface BifrostConfig {
 	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
+	env_label?: string;
 }
 
 export interface CompatConfig {

@@ -160,6 +160,7 @@ type ConfigData struct {
 	// empty = deny all, ["*"] = allow all. Setting it to 1 restores v1.4.x semantics:
 	// empty = allow all (equivalent to ["*"]).
 	Version       int                       `json:"version,omitempty"`
+	EnvLabel      string                    `json:"env_label,omitempty"`
 	Server        *ServerConfig             `json:"server,omitempty"`
 	SourceOfTruth string                    `json:"source_of_truth,omitempty"`
 	Client        *configstore.ClientConfig `json:"client"`
@@ -372,6 +373,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
 		Version           int                                   `json:"version,omitempty"`
+		EnvLabel          string                                `json:"env_label,omitempty"`
 		SourceOfTruth     string                                `json:"source_of_truth,omitempty"`
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Server            *ServerConfig                         `json:"server,omitempty"`
@@ -397,6 +399,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 
 	// Set simple fields
 	cd.Version = temp.Version
+	cd.EnvLabel = temp.EnvLabel
 	cd.SourceOfTruth = normalizeSourceOfTruth(temp.SourceOfTruth)
 	cd.Client = temp.Client
 	cd.Server = temp.Server
@@ -544,6 +547,10 @@ type Config struct {
 	// Optional event broadcaster for real-time updates (e.g., WebSocket).
 	// Set by HTTP server at startup; may be nil in non-HTTP usage.
 	EventBroadcaster schemas.EventBroadcaster
+
+	// EnvLabel is a short label (max 10 chars) displayed in the UI sidebar to identify the
+	// environment (e.g. "staging", "prod"). Set via config.json env_label or BIFROST_ENV_LABEL env var.
+	EnvLabel string
 
 	// StreamingDecompressThreshold overrides the default threshold (10MB) for
 	// switching from buffered to streaming request decompression. Set by
@@ -878,6 +885,19 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	initFrameworkConfig(ctx, config, &configData)
 	// 12. Encryption sync
 	syncEncryption(ctx, config)
+	// 12. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
+	truncateLabel := func(s string) string {
+		r := []rune(s)
+		if len(r) > 10 {
+			return string(r[:10])
+		}
+		return s
+	}
+	if label := strings.TrimSpace(configData.EnvLabel); label != "" {
+		config.EnvLabel = truncateLabel(label)
+	} else if label := strings.TrimSpace(os.Getenv("BIFROST_ENV_LABEL")); label != "" {
+		config.EnvLabel = truncateLabel(label)
+	}
 	// 13. WebSocket defaults
 	if configData.WebSocket != nil {
 		configData.WebSocket.CheckAndSetDefaults()
