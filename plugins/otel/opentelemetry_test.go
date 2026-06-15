@@ -21,7 +21,7 @@ func makeSpan(id, parentID, name string, kind schemas.SpanKind) *schemas.Span {
 	}
 }
 
-// TestConvertTraceToResourceSpan_PluginSpanFilter exercises the OTEL converter's end-to-end
+// TestConvertTraceToResourceSpan_PluginSpanFilter exercises the OpenTelemetry export's end-to-end
 // filtering behavior (the parts unique to this package; the filter/reparent logic itself is
 // covered by core/schemas/span_filter_test.go). It asserts that filtered plugin spans are
 // dropped from the exported ResourceSpan and that an exported child whose direct parent was
