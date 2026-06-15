@@ -849,6 +849,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 11. Encryption sync
 	syncEncryption(ctx, config)
 	// 12. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
+	// 12. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
 	truncateLabel := func(s string) string {
 		r := []rune(s)
 		if len(r) > 10 {
