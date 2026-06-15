@@ -2,6 +2,7 @@ package logging
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -12,17 +13,22 @@ const (
 	// maxBatchSize is the maximum number of entries to collect before flushing
 	maxBatchSize = 1000
 	// batchInterval is the maximum time to wait before flushing a partial batch
-	batchInterval = 2 * time.Second
-	// maxBatchBytes is the approximate byte-size ceiling for a batch (100 MB).
+	batchInterval = 5 * time.Second
+	// maxBatchBytes is the approximate byte-size ceiling for a batch (300 MB).
 	// When the cumulative estimated size of queued entries hits this limit the
 	// batch is flushed immediately, even if maxBatchSize hasn't been reached.
-	maxBatchBytes = 100 * 1024 * 1024
+	maxBatchBytes = 300 * 1024 * 1024
 	// writeQueueCapacity is the buffer size for the write queue channel
 	writeQueueCapacity = 10000
 	// maxDeferredUsageConcurrency limits concurrent deferred usage DB updates
 	maxDeferredUsageConcurrency = 5
-	// pendingLogTTL is how long a pending log entry can stay in memory before cleanup
-	pendingLogTTL = 5 * time.Minute
+	// pendingLogTTL is the maximum idle gap (time since the last chunk/activity)
+	// a pending log entry can sit in memory before cleanup reclaims it. It is an
+	// idle timeout, not a total-lifetime cap: actively-streaming requests refresh
+	// their LastActivity on every chunk (see PostLLMHook), so a long-running stream
+	// is never evicted mid-flight. Matches the 30-minute window used by
+	// cleanupOldProcessingLogs so the two reapers agree on what "stale" means.
+	pendingLogTTL = 15 * time.Minute
 	// cleanupDrainTimeout caps how long Cleanup spends draining the write queue
 	// itself. Matches the outer server shutdown budget at server.go:1596 so the
 	// logging plugin can fully drain in the worst case; remaining entries beyond
@@ -41,6 +47,12 @@ type PendingLogData struct {
 	RoutingEnginesUsed []string
 	InitialData        *InitialLogData
 	CreatedAt          time.Time // For cleanup of stale entries
+	// LastActivity is the unix-nano timestamp of the most recent PostLLMHook
+	// activity (e.g. each streaming chunk). cleanupStalePendingLogs evicts on
+	// idle time using this value, so long-running streams that keep producing
+	// chunks are not reaped before they finish. Atomic because the cleanup
+	// goroutine reads it concurrently with per-chunk PostLLMHook writes.
+	LastActivity atomic.Int64
 }
 
 // pendingInjectEntries wraps a slice of log entries so it can be used with sync.Map.
@@ -221,7 +233,15 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
 	p.pendingLogsEntries.Range(func(key, value any) bool {
 		if pending, ok := value.(*PendingLogData); ok {
-			if pending.CreatedAt.Before(cutoff) {
+			// Evict on idle time: use the last chunk/activity timestamp, falling
+			// back to CreatedAt for entries that never saw a PostLLMHook (e.g. a
+			// request abandoned before its first chunk). This keeps actively
+			// streaming requests alive past the TTL while still reaping dead ones.
+			lastActive := pending.CreatedAt
+			if nanos := pending.LastActivity.Load(); nanos > 0 {
+				lastActive = time.Unix(0, nanos)
+			}
+			if lastActive.Before(cutoff) {
 				p.pendingLogsEntries.Delete(key)
 			}
 		}

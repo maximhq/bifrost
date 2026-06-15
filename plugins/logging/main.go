@@ -741,6 +741,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		CreatedAt:          time.Now(),
 		Status:             "processing",
 	}
+	// Seed LastActivity so the first idle-eviction check has a baseline even if no
+	// PostLLMHook chunk has fired yet.
+	pending.LastActivity.Store(pending.CreatedAt.UnixNano())
 	p.pendingLogsEntries.Store(effectiveRequestID, pending)
 	// Call callback synchronously for immediate UI feedback (WebSocket "processing" notification).
 	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
@@ -859,6 +862,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	pending := pendingVal.(*PendingLogData)
+
+	// Refresh the idle clock on every PostLLMHook call (notably each streaming
+	// chunk) so a long-running stream is not evicted by cleanupStalePendingLogs
+	// before it finishes. Safe to mutate in place: pending is a pointer held in
+	// the sync.Map, and LastActivity is atomic.
+	pending.LastActivity.Store(time.Now().UnixNano())
 
 	// Should never happen, but just in case
 	// Fallback to request type from pending data if request type is not set
