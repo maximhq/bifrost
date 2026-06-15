@@ -217,6 +217,9 @@ type ConfigStore interface {
 	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
 	// so it is hidden from listings and never resurrected by the remote sync.
 	SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// DeleteMCPLibraryEntry removes a library row by ID, hard-deleting "custom"
+	// rows (freeing their slug for re-add) and tombstoning "remote" rows.
+	DeleteMCPLibraryEntry(ctx context.Context, id uint) error
 	// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must not
 	// overwrite or recreate: custom rows and soft-deleted (tombstoned) rows.
 	GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error)

@@ -1838,6 +1838,53 @@ func (s *RDBConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint)
 	return nil
 }
 
+// DeleteMCPLibraryEntry removes a library row by ID, branching on its source:
+//   - "custom" (org-internal) rows are hard-deleted so their unique slug is
+//     freed and the same server can be added again later. There is no remote
+//     sync that could resurrect a custom slug, so no tombstone is needed.
+//   - "remote" (synced) rows are tombstoned via SoftDeleteMCPLibraryEntry so the
+//     remote sync respects the user's removal instead of recreating the row.
+func (s *RDBConfigStore) DeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var entry tables.TableMCPLibrary
+		if err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "source").
+			Where("id = ? AND deleted_at IS NULL", id).
+			First(&entry).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		if entry.Source != "custom" {
+			result := tx.
+				Model(&tables.TableMCPLibrary{}).
+				Where("id = ?", id).
+				Update("deleted_at", time.Now())
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return ErrNotFound
+			}
+			return nil
+		}
+
+		result := tx.
+			Where("id = ?", id).
+			Delete(&tables.TableMCPLibrary{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // GetProtectedMCPLibrarySlugs returns the slugs the remote sync must skip:
 // custom rows (any source != "remote") and soft-deleted rows (deleted_at set).
 func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {

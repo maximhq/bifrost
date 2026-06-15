@@ -2012,12 +2012,12 @@ func (h *MCPHandler) deleteMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.ConfigStore.SoftDeleteMCPLibraryEntry(ctx, uint(id)); err != nil {
+	if err := h.store.ConfigStore.DeleteMCPLibraryEntry(ctx, uint(id)); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "MCP library entry not found")
 			return
 		}
-		logger.Error("failed to soft-delete MCP library entry %d: %v", id, err)
+		logger.Error("failed to delete MCP library entry %d: %v", id, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP library entry")
 		return
 	}

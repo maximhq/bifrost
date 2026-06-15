@@ -664,6 +664,10 @@ func (m *MockConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint
 	return nil
 }
 
+func (m *MockConfigStore) DeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	return nil
+}
+
 func (m *MockConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
 	return []string{}, nil
 }
