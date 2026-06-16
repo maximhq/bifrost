@@ -92,12 +92,13 @@ export const skillsApi = baseApi.injectEndpoints({
     // List versions for a skill (paginated)
     listSkillVersions: builder.query<
       ListSkillVersionsResponse,
-      { id: string; limit?: number; offset?: number; sort_by?: "version" | "created_at"; order?: "asc" | "desc" }
+      { id: string; limit?: number; offset?: number; search?: string; sort_by?: "version" | "created_at"; order?: "asc" | "desc" }
     >({
       query: ({ id, ...params }) => {
         const searchParams = new URLSearchParams();
         if (params?.limit != null) searchParams.set("limit", String(params.limit));
         if (params?.offset != null) searchParams.set("offset", String(params.offset));
+        if (params?.search) searchParams.set("search", params.search);
         if (params?.sort_by) searchParams.set("sort_by", params.sort_by);
         if (params?.order) searchParams.set("order", params.order);
         const qs = searchParams.toString();
