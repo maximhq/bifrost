@@ -38,8 +38,10 @@
   },
   "overrides": {
     "ast-v8-to-istanbul": "1.0.0",
+    "js-yaml": "4.2.0",
     "rollup": "4.60.4",
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.1",
+    "vite": "6.4.3"
   },
   "engines": {
     "node": ">=25.0.0"
