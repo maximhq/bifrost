@@ -105,6 +105,36 @@ func (m *MCPManager) RunWithPluginPipeline(
 		if tracer == nil {
 			return
 		}
+		if req != nil && req.RequestType.IsExecuteTool() {
+			clientName := req.ClientName
+			toolName := req.GetToolName()
+			requestType := req.RequestType
+			var latency int64
+			if finalResponse != nil {
+				if finalResponse.ExtraFields.ClientName != "" {
+					clientName = finalResponse.ExtraFields.ClientName
+				}
+				if finalResponse.ExtraFields.ToolName != "" {
+					toolName = finalResponse.ExtraFields.ToolName
+				}
+				if finalResponse.ExtraFields.MCPRequestType != "" {
+					requestType = finalResponse.ExtraFields.MCPRequestType
+				}
+				latency = finalResponse.ExtraFields.Latency
+			}
+			if clientName != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPClientName, clientName)
+			}
+			if toolName != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPToolName, toolName)
+			}
+			if requestType != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPRequestType, string(requestType))
+			}
+			if latency > 0 {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPLatencyMS, latency)
+			}
+		}
 		// Tool-call result captured via named returns — set just before EndSpan so the
 		// attribute lands on the open span before it's frozen.
 		if finalResponse != nil && req != nil && req.RequestType.IsExecuteTool() {

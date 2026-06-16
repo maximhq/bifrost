@@ -480,6 +480,10 @@ const (
 	// call sites and will be removed once dashboards migrate over.
 	// =====================================================================
 	AttrBifrostAgentMode           = "bifrost.agent.mode"
+	AttrBifrostMCPClientName       = "bifrost.mcp.client_name"
+	AttrBifrostMCPLatencyMS        = "bifrost.mcp.latency_ms"
+	AttrBifrostMCPRequestType      = "bifrost.mcp.request_type"
+	AttrBifrostMCPToolName         = "bifrost.mcp.tool_name"
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
 	AttrBifrostToolDescription     = "bifrost.tool.description"

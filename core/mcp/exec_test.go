@@ -85,3 +85,47 @@ func TestResetMCPRequestClearsToolDefinition(t *testing.T) {
 		t.Fatal("resetMCPRequest did not clear tool definition")
 	}
 }
+
+func TestRunWithPluginPipelinePopulatesMCPTraceMetadata(t *testing.T) {
+	ctx, tracer := contextWithAgentTrace()
+	manager := &MCPManager{logger: defaultLogger}
+	request := &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ClientName:  "brave",
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name: schemas.Ptr("brave-brave_web_search"),
+			},
+		},
+	}
+	response := &schemas.BifrostMCPResponse{
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "brave",
+			ToolName:       "brave_web_search",
+			Latency:        886,
+		},
+	}
+
+	got, bErr := manager.RunWithPluginPipeline(ctx, request, func(*schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		return response, nil
+	})
+	if bErr != nil {
+		t.Fatalf("RunWithPluginPipeline() error = %v", bErr)
+	}
+	if got != response {
+		t.Fatal("RunWithPluginPipeline() returned unexpected response")
+	}
+
+	want := map[string]any{
+		schemas.AttrBifrostMCPClientName:  "brave",
+		schemas.AttrBifrostMCPLatencyMS:   int64(886),
+		schemas.AttrBifrostMCPRequestType: string(schemas.MCPRequestTypeChatToolCall),
+		schemas.AttrBifrostMCPToolName:    "brave_web_search",
+	}
+	for key, value := range want {
+		if tracer.attrs[key] != value {
+			t.Errorf("%s = %#v, want %#v", key, tracer.attrs[key], value)
+		}
+	}
+}

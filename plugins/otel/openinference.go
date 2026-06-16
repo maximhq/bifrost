@@ -30,7 +30,7 @@ func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Sp
 	}
 
 	result = appendMappedAttribute(result, attrs, "user.id", schemas.AttrRequestUser)
-	result = appendMappedAttribute(result, attrs, "metadata", schemas.AttrRespMetadata)
+	result = appendOpenInferenceMetadata(result, attrs, kind)
 	result = appendOpenInferenceExceptionAttributes(result, span)
 
 	switch kind {
@@ -64,6 +64,35 @@ func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Sp
 	}
 
 	return appendOpenInferenceContent(result, attrs, kind)
+}
+
+func appendOpenInferenceMetadata(result []*KeyValue, attrs map[string]any, kind string) []*KeyValue {
+	if kind != "TOOL" {
+		return appendMappedAttribute(result, attrs, "metadata", schemas.AttrRespMetadata)
+	}
+
+	metadata := make(map[string]any)
+	if raw, ok := attrs[schemas.AttrRespMetadata].(string); ok {
+		_ = schemas.Unmarshal([]byte(raw), &metadata)
+	}
+	for target, source := range map[string]string{
+		"mcp.client_name":  schemas.AttrBifrostMCPClientName,
+		"mcp.latency_ms":   schemas.AttrBifrostMCPLatencyMS,
+		"mcp.request_type": schemas.AttrBifrostMCPRequestType,
+		"mcp.tool_name":    schemas.AttrBifrostMCPToolName,
+	} {
+		if value, ok := attrs[source]; ok && value != nil {
+			metadata[target] = value
+		}
+	}
+	if len(metadata) == 0 {
+		return result
+	}
+	data, err := schemas.MarshalSorted(metadata)
+	if err != nil {
+		return result
+	}
+	return append(result, kvStr("metadata", string(data)))
 }
 
 func appendOpenInferenceExceptionAttributes(result []*KeyValue, span *schemas.Span) []*KeyValue {
@@ -314,12 +343,50 @@ func appendOpenInferenceTools(result []*KeyValue, value any) []*KeyValue {
 		return result
 	}
 	for i, tool := range tools {
+		if name := openInferenceToolName(tool); name != "" {
+			result = append(result, kvStr(fmt.Sprintf("llm.tools.%d.tool.name", i), name))
+		}
+		if description := openInferenceToolDescription(tool); description != "" {
+			result = append(result, kvStr(fmt.Sprintf("llm.tools.%d.tool.description", i), description))
+		}
 		data, err := schemas.MarshalSorted(tool)
 		if err == nil {
 			result = append(result, kvStr(fmt.Sprintf("llm.tools.%d.tool.json_schema", i), string(data)))
 		}
 	}
 	return result
+}
+
+func openInferenceToolName(tool any) string {
+	toolMap, ok := tool.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if name, ok := toolMap["name"].(string); ok {
+		return name
+	}
+	if function, ok := toolMap["function"].(map[string]any); ok {
+		if name, ok := function["name"].(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
+func openInferenceToolDescription(tool any) string {
+	toolMap, ok := tool.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if description, ok := toolMap["description"].(string); ok {
+		return description
+	}
+	if function, ok := toolMap["function"].(map[string]any); ok {
+		if description, ok := function["description"].(string); ok {
+			return description
+		}
+	}
+	return ""
 }
 
 func contentMIMEType(value string) string {
