@@ -1026,6 +1026,13 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
+    # writer:
+    #   maxBatchSize: 1000
+    #   batchInterval: "5s"
+    #   maxBatchBytes: 314572800
+    #   writeQueueCapacity: 10000
+    #   deferredUsageConcurrency: 5
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []
