@@ -1646,6 +1646,7 @@ const (
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
 	RankingDimensionUser         RankingDimension = "user"
+	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 )
 
 var ValidRankingDimensions = map[RankingDimension]bool{
@@ -1653,6 +1654,7 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
 	RankingDimensionUser:         true,
+	RankingDimensionVirtualKey:   true,
 }
 
 type dimensionColumnDef struct {
@@ -1665,6 +1667,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
+	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 }
 
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {

@@ -209,6 +209,7 @@ export default function DashboardPage() {
 	const customerRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const virtualKeyRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
 	const allRefs = [
 		overviewRef,
@@ -219,6 +220,7 @@ export default function DashboardPage() {
 		customerRankingsRef,
 		buRankingsRef,
 		userRankingsRef,
+		virtualKeyRankingsRef,
 	];
 
 	const getDashboardData = useCallback((): DashboardData => {
@@ -240,6 +242,7 @@ export default function DashboardPage() {
 			customerRankingsData: null,
 			buRankingsData: null,
 			userRankingsData: null,
+			virtualKeyRankingsData: null,
 			mcpHistogramData: null,
 			mcpCostData: null,
 			mcpTopToolsData: null,
@@ -401,6 +404,7 @@ export default function DashboardPage() {
 			"dashboard-section-customer-rankings",
 			"dashboard-section-bu-rankings",
 			"dashboard-section-user-rankings",
+			"dashboard-section-virtual-key-rankings",
 		];
 		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
 	}, [handlePreloadData]);
@@ -511,6 +515,9 @@ export default function DashboardPage() {
 							</TabsTrigger>
 							<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
 								User Rankings
+							</TabsTrigger>
+							<TabsTrigger value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
+								Virtual Key Rankings
 							</TabsTrigger>
 							<TabsTrigger value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
 								Customer Rankings
@@ -658,6 +665,21 @@ export default function DashboardPage() {
 									dimensionLabel="User"
 									testIdPrefix="dashboard-user-rankings"
 									dataKey="userRankingsData"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Virtual Key Rankings Tab */}
+						<TabsContent value="virtual-key-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-virtual-key-rankings">
+								<DimensionRankingsTabView
+									ref={virtualKeyRankingsRef}
+									filters={filters}
+									active={activeTab === "virtual-key-rankings" || pdfMode}
+									dimension="virtual_key"
+									dimensionLabel="Virtual Key"
+									testIdPrefix="dashboard-virtual-key-rankings"
+									dataKey="virtualKeyRankingsData"
 								/>
 							</div>
 						</TabsContent>
