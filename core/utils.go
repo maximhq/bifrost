@@ -20,6 +20,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const (
+	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
+	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
+)
+
 // transientServerStatusCodes are upstream-side failures unrelated to the credential —
 // retried with the *same* key (a different credential gains nothing against a flaky
 // server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
@@ -142,10 +147,10 @@ func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.B
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
-		return newBifrostErrorFromMsg("could not auto resolve a provider for the request, please specify a provider explicitly")
+		return newBifrostErrorFromMsg(ProviderAutoResolveErrorMessage)
 	}
 	if isModelRequired(req.RequestType) && model == "" {
-		return newBifrostErrorFromMsg("could not auto resolve a model for the request, please specify a model explicitly")
+		return newBifrostErrorFromMsg(ModelAutoResolveErrorMessage)
 	}
 	return nil
 }
