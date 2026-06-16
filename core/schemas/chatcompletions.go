@@ -1438,12 +1438,17 @@ type ChatAssistantMessageAnnotationCitation struct {
 	Type       *string      `json:"type,omitempty"`
 }
 
-// ChatAssistantMessageToolCall represents a tool call in a message
+// ChatAssistantMessageToolCall represents a tool call in a message.
+// ExtraContent preserves provider-specific metadata (e.g. Gemini's
+// thought_signature for multi-turn continuation when extended thinking
+// is active). Stored as json.RawMessage so unknown nested fields are
+// forwarded verbatim through any proxy/gateway layer without loss.
 type ChatAssistantMessageToolCall struct {
-	Index    uint16                               `json:"index"`
-	Type     *string                              `json:"type,omitempty"`
-	ID       *string                              `json:"id,omitempty"`
-	Function ChatAssistantMessageToolCallFunction `json:"function"`
+	Index        uint16                               `json:"index"`
+	Type         *string                              `json:"type,omitempty"`
+	ID           *string                              `json:"id,omitempty"`
+	Function     ChatAssistantMessageToolCallFunction `json:"function"`
+	ExtraContent json.RawMessage                      `json:"extra_content,omitempty"`
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.
