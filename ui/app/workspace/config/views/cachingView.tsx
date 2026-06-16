@@ -278,7 +278,7 @@ export default function CachingView() {
 			</div>
 
 			{configError !== undefined && (
-				<div className="border-destructive/50 bg-destructive/10 rounded-lg border p-4">
+				<div className="border-destructive/50 bg-destructive/10 rounded-sm border p-4">
 					<p className="text-destructive text-sm font-medium">Failed to load configuration</p>
 					<p className="text-muted-foreground mt-1 text-sm">
 						{getErrorMessage(configError) || "An unexpected error occurred. Please try again."}
@@ -361,7 +361,7 @@ export default function CachingView() {
 								</div>
 
 								{validationError && (
-									<div className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border p-3 text-xs">
+									<div className="border-destructive/40 bg-destructive/10 text-destructive rounded-sm border p-3 text-xs">
 										{validationError}
 									</div>
 								)}
@@ -370,7 +370,7 @@ export default function CachingView() {
 								{mode === "semantic" && (
 									<>
 										{hasStructuralChange && (
-											<div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+											<div className="rounded-sm border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
 												<b>Heads up:</b> a vector store namespace can only hold vectors of <em>one</em> dimension. Whenever you change the
 												embedding <b>provider</b>, <b>model</b>, or <b>dimension</b>, make sure the <b>dimension</b> still matches what the
 												model produces, otherwise writes to the existing namespace will fail and reads will silently miss. The namespace is{" "}
@@ -592,7 +592,7 @@ export default function CachingView() {
 										</div>
 									</div>
 									<div className="space-y-2">
-										<div className="flex h-fit items-center justify-between space-x-2 rounded-lg border p-3">
+										<div className="flex h-fit items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
 												<Label className="text-sm font-medium">Exclude System Prompt</Label>
 												<p className="text-muted-foreground text-xs">Strip system messages from the cache key.</p>
@@ -611,7 +611,7 @@ export default function CachingView() {
 								<div className="space-y-4">
 									<h3 className="text-sm font-medium">Cache Key Composition</h3>
 									<div className="space-y-3">
-										<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+										<div className="flex items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
 												<Label className="text-sm font-medium">Cache by Model</Label>
 												<p className="text-muted-foreground text-xs">
@@ -625,7 +625,7 @@ export default function CachingView() {
 												size="md"
 											/>
 										</div>
-										<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+										<div className="flex items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
 												<Label className="text-sm font-medium">Cache by Provider</Label>
 												<p className="text-muted-foreground text-xs">

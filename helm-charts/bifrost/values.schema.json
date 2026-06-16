@@ -3362,6 +3362,33 @@
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
               "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
             },
+            "writer": {
+              "type": "object",
+              "description": "Async logging writer queue and batch tuning",
+              "properties": {
+                "maxBatchSize": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "batchInterval": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "maxBatchBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "writeQueueCapacity": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "deferredUsageConcurrency": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
             "objectStorageExcludeFields": {
               "type": "array",
               "items": {

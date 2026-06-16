@@ -1265,6 +1265,43 @@
             }
           ]
         },
+        "writer": {
+          "type": "object",
+          "description": "Async logging writer queue and batch tuning. Omitted fields use runtime defaults.",
+          "properties": {
+            "max_batch_size": {
+              "type": "integer",
+              "description": "Maximum number of log entries to batch before flushing (default: 1000)",
+              "minimum": 1,
+              "default": 1000
+            },
+            "batch_interval": {
+              "type": "string",
+              "description": "Maximum time to wait before flushing a partial batch as a Go duration string (default: 5s)",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+              "default": "5s"
+            },
+            "max_batch_bytes": {
+              "type": "integer",
+              "description": "Approximate byte-size ceiling for a batch before flushing (default: 314572800)",
+              "minimum": 1,
+              "default": 314572800
+            },
+            "write_queue_capacity": {
+              "type": "integer",
+              "description": "Buffered queue capacity for pending log writes (default: 10000)",
+              "minimum": 1,
+              "default": 10000
+            },
+            "deferred_usage_concurrency": {
+              "type": "integer",
+              "description": "Maximum concurrent deferred usage database updates (default: 5)",
+              "minimum": 1,
+              "default": 5
+            }
+          },
+          "additionalProperties": false
+        },
         "object_storage": {
           "type": "object",
           "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
