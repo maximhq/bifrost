@@ -129,12 +129,6 @@ export function FilePreview({
     return <FileSourceEditor file={file} skillName={skillName} onFileUpdate={onFileUpdate} />;
   }
 
-  // text and dataurl are editable when the content is text-like.
-  const canEdit =
-    mode === "edit" &&
-    (file.source_type === "text" || file.source_type === "dataurl") &&
-    kind === "text";
-
   // Text fetched from a URL/serve endpoint (for both view and edit modes).
   const [fetchedText, setFetchedText] = useState<string | null>(null);
   const [fetchState, setFetchState] = useState<"idle" | "loading" | "error">(
@@ -241,22 +235,6 @@ export function FilePreview({
     }
 
     const textContent = source.inlineText ?? fetchedText ?? "";
-
-    if (canEdit) {
-      // editValue is set once the user starts typing (controlled by FilePreviewPane).
-      // Before that it is undefined, so the textarea shows the fetched/inline content.
-      const value = editValue ?? textContent;
-      const handleChange = onEditChange ?? onContentChange;
-      return (
-        <Textarea
-          value={value}
-          onChange={(e) => handleChange?.(e.target.value)}
-          placeholder="File content..."
-          className="h-full w-full resize-none rounded-none border-0 font-mono text-xs focus-visible:ring-0"
-          aria-label={`Edit ${fileName}`}
-        />
-      );
-    }
 
     return (
       <ScrollArea className="h-full">
