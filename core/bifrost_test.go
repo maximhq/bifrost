@@ -2826,3 +2826,52 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 		}
 	})
 }
+
+// TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
+// passthrough flags are cleared only when an Anthropic-integration request resolves to a
+// provider that doesn't speak the Anthropic Messages API natively (e.g. Bedrock). This
+// guards the fix for Claude-via-Bedrock tool calls breaking when the model is routed to
+// Bedrock through a key alias (so the catalog-time guard never fires).
+func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
+	flagKeys := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyUseRawRequestBody,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyPassthroughOverridesPresent,
+	}
+
+	tests := []struct {
+		name            string
+		integrationType string
+		baseProvider    schemas.ModelProvider
+		wantCleared     bool
+	}{
+		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, true},
+		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, false},
+		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, false},
+		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, false},
+		{"non-anthropic integration to bedrock preserved", "openai", schemas.Bedrock, false},
+		{"no integration type to bedrock preserved", "", schemas.Bedrock, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.integrationType != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tt.integrationType)
+			}
+			for _, k := range flagKeys {
+				ctx.SetValue(k, true)
+			}
+
+			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
+
+			for _, k := range flagKeys {
+				got, _ := ctx.Value(k).(bool)
+				want := !tt.wantCleared // flags start true; cleared means false
+				if got != want {
+					t.Errorf("flag %v = %v, want %v", k, got, want)
+				}
+			}
+		})
+	}
+}
