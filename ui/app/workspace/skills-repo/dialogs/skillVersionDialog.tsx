@@ -40,10 +40,10 @@ export function SkillVersionsPopover({
 
 	// Reset the accumulator whenever the search term changes so a new query
 	// starts from page 0 instead of appending onto stale results.
-	useEffect(() => {
-		setOffset(0);
-		setAccumulated([]);
-	}, [debouncedSearch]);
+useEffect(() => {
+    setOffset(0);
+    setAccumulated([]);
+}, [debouncedSearch, skillId]);
 
 	// Append each fetched page. RTK Query replaces `data` per arg combo, so we
 	// accumulate here; dedupe by id guards against effect re-runs on the same page.
