@@ -547,6 +547,11 @@ func (p *OtelPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, r
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *OtelPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook is a no-op - tracing is handled via the Inject method.
 // The OTEL plugin receives completed traces from TracingMiddleware.
 func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
