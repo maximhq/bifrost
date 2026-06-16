@@ -1,2 +1,0 @@
-- fix: preserve extra_content on ChatAssistantMessageToolCall so provider-specific tool-call metadata (e.g. Gemini thought_signature) round-trips losslessly through the gateway (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
-- fix: surface Anthropic prompt-cache diagnostics (cache-diagnosis-2026-04-07 beta) via new CacheDiagnostics/CacheMissReason schema, reporting the first cache-prefix divergence point on chat and responses APIs
