@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea, ScrollBar } from "@/components/ui/scrollArea";
 import { Textarea } from "@/components/ui/textarea";
-import { Markdown } from "@/components/ui/markdown";
+import { lazy, Suspense, type ComponentProps } from "react";
 import { CodeEditor, type CompletionItem } from "@/components/ui/codeEditor";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { validateVersionBump } from "@/lib/validators/skills";
@@ -38,6 +38,9 @@ import { FormSection } from "../components/shared";
 import { FilePreviewPane } from "../components/filePreview";
 import { FileManagerSection } from "../components/fileManagerView";
 import { MetadataTableEditor } from "../components/metadataEditorTableView";
+
+const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
 
 export function SkillEditView({
   form,

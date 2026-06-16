@@ -2,11 +2,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Message, SerializedMessage } from "@/lib/message";
 import { InfoIcon, PencilIcon, XIcon } from "lucide-react";
-import { Markdown } from "@/components/ui/markdown";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
+
+const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
 
 /**
  * Renders the assistant message UI including role switcher, usage tooltip, edit/delete controls, and editable or view-only content.
