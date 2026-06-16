@@ -7,7 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ScrollArea, ScrollBar } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Markdown } from "@/components/ui/markdown";
+import { lazy, Suspense, type ComponentProps } from "react";
 import { Tree, type BaseNodeData, type TreeNode } from "@/components/ui/treeView";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { SkillFileEntry } from "@/lib/types/skills";
@@ -38,6 +38,9 @@ import {
 import { useState, useMemo } from "react";
 import { formatYamlRecord } from "./helpers";
 import { FilePreviewPane, getFileServeUrl } from "./filePreview";
+
+const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
 
 // Sentinel used as the "selected file" value for the SKILL.md body node.
 export const SKILLMD_KEY = "__skillmd__";
