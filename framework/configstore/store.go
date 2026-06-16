@@ -656,6 +656,10 @@ type ConfigStore interface {
 	// pool, whose connections carry no cached plans. SQLite is a no-op.
 	RefreshConnectionPool(ctx context.Context) error
 
+	// GetOAuth2SigningKey returns the signing key, creating and persisting one
+	// on first call. Always returns a usable key — never nil on a nil error.
+	GetOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error)
+
 	// Cleanup
 	Close(ctx context.Context) error
 }
