@@ -1,2 +1,0 @@
-- fix: update write kickoff based on last activity
-- chore: upgraded core to v1.5.20 and framework to v1.3.20
