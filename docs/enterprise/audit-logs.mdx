@@ -50,7 +50,7 @@ icon: "scroll"
 - Rate limit changes
 - Provider key updates
 - Guardrail configuration changes
-- SAML/OIDC settings updates
+- SCIM/OIDC settings updates
 
 ### Data Access Events
 - PII detection and handling
@@ -80,25 +80,10 @@ icon: "scroll"
 
 ```json
 {
-  "enterprise": {
-    "audit_logs": {
-      "enabled": true,
-      "retention": {
-        "duration": "365d",
-        "archive_after": "90d"
-      },
-      "capture": {
-        "authentication": true,
-        "authorization": true,
-        "configuration_changes": true,
-        "data_access": true,
-        "security_events": true
-      },
-      "immutability": {
-        "enabled": true,
-        "verification_method": "cryptographic_hash"
-      }
-    }
+  "audit_logs": {
+    "disabled": false,
+    "hmac_key": "env.AUDIT_HMAC_KEY",
+    "retention_days": 365
   }
 }
 ```
@@ -126,64 +111,13 @@ BIFROST_AUDIT_IMMUTABLE=true
 </Tab>
 </Tabs>
 
-### Advanced Configuration
+### Configuration Fields
 
-```json
-{  
-    "audit_logs": {
-      "enabled": true,     
-        "backup": {
-          "type": "s3",
-          "bucket": "bifrost-audit-logs",
-          "region": "us-west-2",
-          "encryption": "AES256"
-        }
-      },
-      "retention": {
-        "duration": "365d",
-        "archive_after": "90d",
-        "delete_after": "2555d",
-        "hot_storage_days": 30
-      },
-      "capture": {
-        "authentication": {
-          "enabled": true,
-          "include_failed_attempts": true,
-          "track_session_duration": true
-        },
-        "authorization": {
-          "enabled": true,
-          "log_allowed_access": false,
-          "log_denied_access": true
-        },
-        "configuration_changes": {
-          "enabled": true,
-          "track_before_after": true,
-          "exclude_fields": ["password", "api_key"]
-        },
-        "data_access": {
-          "enabled": true,
-          "log_pii_detection": true,
-          "log_sensitive_operations": true
-        },
-        "security_events": {
-          "enabled": true,
-          "severity_threshold": "medium"
-        }
-      },
-      "enrichment": {
-        "geo_location": true,
-        "user_agent_parsing": true,
-        "ip_reputation": true
-      },
-      "immutability": {
-        "enabled": true,
-        "verification_method": "cryptographic_hash",
-        "signing_key": "${AUDIT_LOG_SIGNING_KEY}"
-      }
-    }
-}
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `disabled` | boolean | When `true`, audit logging is turned off. Default: `false`. |
+| `hmac_key` | string | HMAC secret key used to sign audit events. Minimum 32 bytes. Supports `env.` prefix for environment variables (e.g. `env.AUDIT_HMAC_KEY`). |
+| `retention_days` | integer | Days to retain audit log entries. `0` disables retention-based cleanup. |
 
 ---
 

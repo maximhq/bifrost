@@ -1,5 +1,3 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
@@ -7,8 +5,8 @@ import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarCo
 import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ColumnDef } from "@tanstack/react-table";
+import { format } from "date-fns";
 import { ArrowUpDown, Trash2 } from "lucide-react";
-import moment from "moment";
 
 function getAssistantToolCallSummary(log?: LogEntry): string {
 	const toolCalls = log?.output_message?.tool_calls || [];
@@ -45,8 +43,16 @@ export function getRealtimeTurnMessages(log?: LogEntry): { tool?: string; user?:
 	const toolMessages = log?.input_history?.filter((message) => message.role === "tool") || [];
 	const userMessages = log?.input_history?.filter((message) => message.role === "user") || [];
 	return {
-		tool: toolMessages.map((m) => getMessageFromContent(m.content)).filter(Boolean).join("\n") || "",
-		user: userMessages.map((m) => getMessageFromContent(m.content)).filter(Boolean).join("\n") || "",
+		tool:
+			toolMessages
+				.map((m) => getMessageFromContent(m.content))
+				.filter(Boolean)
+				.join("\n") || "",
+		user:
+			userMessages
+				.map((m) => getMessageFromContent(m.content))
+				.filter(Boolean)
+				.join("\n") || "",
 		assistant: log?.output_message ? getMessageFromContent(log.output_message.content) : "",
 		assistantToolCall: getAssistantToolCallSummary(log),
 	};
@@ -122,29 +128,40 @@ export function LogMessageCell({ log, maxWidth = "max-w-[400px]" }: { log: LogEn
 	return (
 		<div className="flex items-center gap-1.5">
 			{isLargePayload && (
-				<span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" title="Large payload - streamed directly to provider">
+				<span
+					className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
+					title="Large payload - streamed directly to provider"
+				>
 					LP
 				</span>
 			)}
-			{realtimeMessages && (realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+			{realtimeMessages &&
+			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
 				<div className={cn(maxWidth, "font-mono text-sm font-normal leading-5")} title={input || "-"}>
 					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
 					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
-					{realtimeMessages.assistantToolCall ? <div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div> : null}
+					{realtimeMessages.assistantToolCall ? (
+						<div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div>
+					) : null}
 					{realtimeMessages.assistant ? <div className="truncate">Assistant: {realtimeMessages.assistant}</div> : null}
 				</div>
 			) : (
 				<div className={cn(maxWidth, "truncate font-mono text-sm font-normal")} title={input || "-"}>
-					{input || (isLargePayload
-					? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
-					: "-")}
+					{input ||
+						(isLargePayload
+							? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
+							: "-")}
 				</div>
 			)}
 		</div>
 	);
 }
 
-export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true): ColumnDef<LogEntry>[] => {
+export const createColumns = (
+	onDelete: (log: LogEntry) => void,
+	hasDeleteAccess = true,
+	metadataKeys: string[] = [],
+): ColumnDef<LogEntry>[] => {
 	const baseColumns: ColumnDef<LogEntry>[] = [
 		{
 			accessorKey: "status",
@@ -164,14 +181,18 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 230,
 			cell: ({ row }) => {
 				const timestamp = row.original.timestamp;
-				return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
+				const date = timestamp ? new Date(timestamp) : null;
+				const isValid = date && date.toString() !== "Invalid Date";
+				return <div className="truncate text-xs">{isValid ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "N/A"}</div>;
 			},
 		},
 		{
 			id: "request_type",
 			header: "Type",
+			size: 120,
 			cell: ({ row }) => {
 				return (
 					<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-xs`}>
@@ -183,11 +204,13 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		{
 			accessorKey: "input",
 			header: "Message",
+			size: 440,
 			cell: ({ row }) => <LogMessageCell log={row.original} />,
 		},
 		{
 			accessorKey: "provider",
 			header: "Provider",
+			size: 160,
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName;
 				return (
@@ -201,8 +224,8 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		{
 			accessorKey: "model",
 			header: "Model",
-			cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
-
+			size: 160,
+			cell: ({ row }) => <div className="truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
 		},
 		{
 			accessorKey: "latency",
@@ -212,10 +235,13 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 140,
 			cell: ({ row }) => {
 				const latency = row.original.latency;
 				return (
-					<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
+					<div className="pl-4 font-mono text-sm">
+						{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}
+					</div>
 				);
 			},
 		},
@@ -227,6 +253,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 220,
 			cell: ({ row }) => {
 				const tokenUsage = row.original.token_usage;
 				if (!tokenUsage) {
@@ -235,7 +262,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 
 				return (
 					<div className="pl-4 text-sm">
-						<div className="font-mono">
+						<div className="truncate font-mono">
 							{tokenUsage.total_tokens.toLocaleString()}{" "}
 							{tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null
 								? `(${tokenUsage.prompt_tokens.toLocaleString()}+${tokenUsage.completion_tokens.toLocaleString()})`
@@ -253,6 +280,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 120,
 			cell: ({ row }) => {
 				if (!row.original.cost) {
 					return <div className="pl-4 font-mono text-xs">N/A</div>;
@@ -267,17 +295,35 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		},
 	];
 
+	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
+		id: `metadata_${key}`,
+		header: key.charAt(0).toUpperCase() + key.slice(1),
+		size: 126,
+		cell: ({ row }) => {
+			const value = row.original.metadata?.[key];
+			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
+		},
+	}));
+
 	const actionsColumn: ColumnDef<LogEntry> = {
 		id: "actions",
+		size: 72,
 		cell: ({ row }) => {
 			const log = row.original;
 			return (
-				<Button variant="outline" size="icon" aria-label="Delete log" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
+				<Button
+					variant="outline"
+					size="icon"
+					aria-label="Delete log"
+					className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
+					onClick={() => onDelete(log)}
+					disabled={!hasDeleteAccess}
+				>
 					<Trash2 />
 				</Button>
 			);
 		},
 	};
 
-	return [...baseColumns, actionsColumn];
+	return [...baseColumns, ...metadataColumns, actionsColumn];
 };

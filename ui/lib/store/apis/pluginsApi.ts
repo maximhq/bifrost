@@ -9,13 +9,13 @@ export const pluginsApi = baseApi.injectEndpoints({
 			providesTags: ["Plugins"],
 			transformResponse: (response: PluginsResponse) => response.plugins || [],
 		}),
-		
+
 		// Get a single plugin
 		getPlugin: builder.query<Plugin, string>({
 			query: (name) => `/plugins/${name}`,
 			providesTags: (result, error, name) => [{ type: "Plugins", id: name }],
 		}),
-		
+
 		// Create new plugin
 		createPlugin: builder.mutation<Plugin, CreatePluginRequest>({
 			query: (data) => ({
@@ -30,12 +30,10 @@ export const pluginsApi = baseApi.injectEndpoints({
 					dispatch(
 						pluginsApi.util.updateQueryData("getPlugins", undefined, (draft) => {
 							draft.push(newPlugin);
-						})
+						}),
 					);
 					// Also update the individual plugin cache
-					dispatch(
-						pluginsApi.util.updateQueryData("getPlugin", newPlugin.name, () => newPlugin)
-					);
+					dispatch(pluginsApi.util.updateQueryData("getPlugin", newPlugin.name, () => newPlugin));
 				} catch {}
 			},
 		}),
@@ -57,12 +55,10 @@ export const pluginsApi = baseApi.injectEndpoints({
 							if (index !== -1) {
 								draft[index] = updatedPlugin;
 							}
-						})
+						}),
 					);
 					// Also update the individual plugin cache
-					dispatch(
-						pluginsApi.util.updateQueryData("getPlugin", arg.name, () => updatedPlugin)
-					);
+					dispatch(pluginsApi.util.updateQueryData("getPlugin", arg.name, () => updatedPlugin));
 				} catch {}
 			},
 		}),
@@ -82,7 +78,7 @@ export const pluginsApi = baseApi.injectEndpoints({
 							if (index !== -1) {
 								draft.splice(index, 1);
 							}
-						})
+						}),
 					);
 				} catch {}
 			},

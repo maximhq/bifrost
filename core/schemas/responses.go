@@ -1406,6 +1406,14 @@ type ResponsesTool struct {
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 
+	// Anthropic-native tool flags promoted to the neutral layer. All optional;
+	// ignored by providers that don't support them. Gated per ProviderFeatures
+	// in core/providers/anthropic/types.go.
+	DeferLoading        *bool                  `json:"defer_loading,omitempty"`         // Anthropic advanced-tool-use: defer loading of tool definition
+	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Anthropic advanced-tool-use: which callers can invoke this tool
+	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
+	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14
+
 	*ResponsesToolFunction
 	*ResponsesToolFileSearch
 	*ResponsesToolComputerUsePreview
@@ -1460,6 +1468,38 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 			return nil, ccErr
 		}
 		if data, err = sjson.SetRawBytes(data, "cache_control", ccBytes); err != nil {
+			return nil, err
+		}
+	}
+	// Anthropic-native tool flags promoted to the neutral layer. Must be
+	// emitted here (before the type-specific merge) so the wire format carries
+	// them to providers that gate features on these keys. Without this block
+	// MarshalJSON silently drops the fields despite their json tags.
+	if t.DeferLoading != nil {
+		if data, err = sjson.SetBytes(data, "defer_loading", *t.DeferLoading); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.AllowedCallers) > 0 {
+		callersBytes, callersErr := MarshalSorted(t.AllowedCallers)
+		if callersErr != nil {
+			return nil, callersErr
+		}
+		if data, err = sjson.SetRawBytes(data, "allowed_callers", callersBytes); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.InputExamples) > 0 {
+		examplesBytes, examplesErr := MarshalSorted(t.InputExamples)
+		if examplesErr != nil {
+			return nil, examplesErr
+		}
+		if data, err = sjson.SetRawBytes(data, "input_examples", examplesBytes); err != nil {
+			return nil, err
+		}
+	}
+	if t.EagerInputStreaming != nil {
+		if data, err = sjson.SetBytes(data, "eager_input_streaming", *t.EagerInputStreaming); err != nil {
 			return nil, err
 		}
 	}
@@ -1565,6 +1605,32 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.CacheControl = &cc
+	}
+	// Anthropic-native tool flags. Mirror the emit side in MarshalJSON above —
+	// without these reads, a round-trip silently drops the fields.
+	if v, ok := raw["defer_loading"].(bool); ok {
+		t.DeferLoading = Ptr(v)
+	}
+	if v, ok := raw["allowed_callers"]; ok {
+		bytes, err := MarshalSorted(v)
+		if err != nil {
+			return err
+		}
+		if err := Unmarshal(bytes, &t.AllowedCallers); err != nil {
+			return err
+		}
+	}
+	if v, ok := raw["input_examples"]; ok {
+		bytes, err := MarshalSorted(v)
+		if err != nil {
+			return err
+		}
+		if err := Unmarshal(bytes, &t.InputExamples); err != nil {
+			return err
+		}
+	}
+	if v, ok := raw["eager_input_streaming"].(bool); ok {
+		t.EagerInputStreaming = Ptr(v)
 	}
 
 	// Based on type, unmarshal into the appropriate embedded struct

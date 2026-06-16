@@ -32,6 +32,7 @@ export interface AllocationInfo {
   line: number
   bytes: number
   count: number
+  stack: string[]
 }
 
 // Single point in the metrics history
@@ -51,6 +52,7 @@ export interface PprofData {
   cpu: CPUStats
   runtime: RuntimeStats
   top_allocations: AllocationInfo[]
+  inuse_allocations: AllocationInfo[]
   history: HistoryPoint[]
 }
 

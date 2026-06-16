@@ -1,0 +1,262 @@
+---
+title: "Guardrails"
+description: "Configure guardrails providers and rules in Bifrost Helm deployments"
+icon: "shield-halved"
+---
+
+<Note>
+Guardrails are an **enterprise-only** feature. They require the enterprise Bifrost image.
+</Note>
+
+Guardrails are configured under `bifrost.guardrails` in your values file. The configuration has two parts:
+
+- **`providers`** — the backend that performs the check. Rules link to providers by `id`.
+- **`rules`** — CEL expressions that control when and where providers are invoked.
+
+---
+
+## Providers
+
+<Tabs>
+<Tab title="Regex">
+
+Runs entirely in-process with no external dependency. Patterns use RE2 syntax. Supports optional per-pattern flags: `i` (case-insensitive), `m` (multiline), `s` (dot-all).
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 1
+        provider_name: "regex"
+        policy_name: "block-secrets"
+        enabled: true
+        timeout: 5
+        config:
+          patterns:
+            - pattern: "sk-[A-Za-z0-9]{20,}"
+              description: "OpenAI API key"
+            - pattern: "AKIA[0-9A-Z]{16}"
+              description: "AWS access key"
+              flags: "i"
+            - pattern: "gh[ps]_[A-Za-z0-9]{36}"
+              description: "GitHub token"
+```
+
+</Tab>
+<Tab title="AWS Bedrock">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 2
+        provider_name: "bedrock"
+        policy_name: "content-filter"
+        enabled: true
+        timeout: 15
+        config:
+          guardrail_arn: "arn:aws:bedrock:us-east-1::guardrail/abc123"
+          guardrail_version: "DRAFT"          # or a published version number
+          region: "us-east-1"
+          access_key: "env.AWS_ACCESS_KEY_ID" # omit to use instance role
+          secret_key: "env.AWS_SECRET_ACCESS_KEY"
+```
+
+</Tab>
+<Tab title="Azure Content Safety">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 3
+        provider_name: "azure"
+        policy_name: "azure-content-safety"
+        enabled: true
+        timeout: 10
+        config:
+          endpoint: "https://your-resource.cognitiveservices.azure.com"
+          api_key: "env.AZURE_CONTENT_SAFETY_KEY"
+          analyze_enabled: true
+          analyze_severity_threshold: "medium"  # low | medium | high
+          jailbreak_shield_enabled: true
+          indirect_attack_shield_enabled: true
+          copyright_enabled: false
+          text_blocklist_enabled: false
+          blocklist_names: []
+```
+
+</Tab>
+<Tab title="Gray Swan">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 4
+        provider_name: "grayswan"
+        policy_name: "grayswan-jailbreak"
+        enabled: true
+        timeout: 15
+        config:
+          api_key: "env.GRAYSWAN_API_KEY"
+          violation_threshold: 0.7        # 0.0–1.0; higher = more permissive
+          reasoning_mode: "standard"      # standard | fast
+          policy_id: ""                   # optional: single policy ID
+          policy_ids: []                  # optional: multiple policy IDs
+          rules: {}                       # optional: inline rule map
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Rules
+
+Rules are CEL expressions that fire when their condition is met. Available CEL variables:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `model` | `string` | Model name from the request |
+| `provider` | `string` | Provider name (e.g. `"openai"`) |
+| `headers` | `map<string,string>` | HTTP request headers |
+| `params` | `map<string,string>` | Query parameters |
+| `customer` | `string` | Customer ID |
+| `team` | `string` | Team ID |
+| `user` | `string` | User ID |
+
+Rule fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique integer ID |
+| `name` | Yes | Human-readable name |
+| `description` | No | Optional description |
+| `enabled` | Yes | `true` to activate |
+| `cel_expression` | Yes | CEL boolean expression; `"true"` matches all requests |
+| `apply_to` | Yes | `"input"`, `"output"`, or `"both"` |
+| `sampling_rate` | No | `0`–`100`; percentage of requests to check (default: 100) |
+| `timeout` | No | Rule timeout in seconds |
+| `provider_config_ids` | No | Provider `id`s to invoke when this rule matches |
+
+```yaml
+bifrost:
+  guardrails:
+    rules:
+      - id: 101
+        name: "block-secrets-input"
+        description: "Block prompts containing API keys"
+        enabled: true
+        cel_expression: "true"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 10
+        provider_config_ids: [1]
+
+      - id: 102
+        name: "azure-output-gpt4o"
+        description: "Scan GPT-4o responses"
+        enabled: true
+        cel_expression: "model == 'gpt-4o'"
+        apply_to: "output"
+        sampling_rate: 100
+        timeout: 15
+        provider_config_ids: [3]
+
+      - id: 103
+        name: "grayswan-openai-input"
+        enabled: true
+        cel_expression: "provider == 'openai'"
+        apply_to: "input"
+        sampling_rate: 50
+        timeout: 20
+        provider_config_ids: [4]
+
+      - id: 104
+        name: "strict-team-check"
+        enabled: true
+        cel_expression: "team == 'team-platform'"
+        apply_to: "both"
+        sampling_rate: 100
+        timeout: 30
+        provider_config_ids: [1, 3]   # multiple providers run in parallel
+```
+
+---
+
+## Full example
+
+```yaml
+# guardrails-values.yaml
+image:
+  tag: "latest"
+
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "encryption-key"
+
+  guardrails:
+    providers:
+      - id: 1
+        provider_name: "regex"
+        policy_name: "block-secrets"
+        enabled: true
+        timeout: 5
+        config:
+          patterns:
+            - pattern: "sk-[A-Za-z0-9]{20,}"
+              description: "OpenAI API key"
+            - pattern: "AKIA[0-9A-Z]{16}"
+              description: "AWS access key"
+            - pattern: "gh[ps]_[A-Za-z0-9]{36}"
+              description: "GitHub token"
+
+      - id: 2
+        provider_name: "azure"
+        policy_name: "content-safety"
+        enabled: true
+        timeout: 10
+        config:
+          endpoint: "https://your-resource.cognitiveservices.azure.com"
+          api_key: "env.AZURE_CONTENT_SAFETY_KEY"
+          analyze_enabled: true
+          analyze_severity_threshold: "medium"
+          jailbreak_shield_enabled: true
+          indirect_attack_shield_enabled: false
+          copyright_enabled: false
+          text_blocklist_enabled: false
+
+    rules:
+      - id: 101
+        name: "block-secrets-input"
+        description: "Block prompts leaking credentials"
+        enabled: true
+        cel_expression: "true"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 10
+        provider_config_ids: [1]
+
+      - id: 102
+        name: "content-safety-both"
+        description: "Azure content safety on input and output"
+        enabled: true
+        cel_expression: "true"
+        apply_to: "both"
+        sampling_rate: 100
+        timeout: 15
+        provider_config_ids: [2]
+```
+
+```bash
+kubectl create secret generic azure-content-safety \
+  --from-literal=key='your-azure-content-safety-api-key'
+
+helm install bifrost bifrost/bifrost \
+  -f guardrails-values.yaml \
+  --set env[0].name=AZURE_CONTENT_SAFETY_KEY \
+  --set env[0].valueFrom.secretKeyRef.name=azure-content-safety \
+  --set env[0].valueFrom.secretKeyRef.key=key
+```

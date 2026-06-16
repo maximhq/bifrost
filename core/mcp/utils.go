@@ -487,6 +487,28 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// object schemas to always have a properties field, even if empty
 		properties = schemas.NewOrderedMap()
 	}
+
+	// Preserve MCP tool annotations if any are set.
+	// Clone bool pointers so Bifrost's copy is independent of the upstream mcp.Tool lifetime.
+	var annotations *schemas.MCPToolAnnotations
+	a := mcpTool.Annotations
+	if a.Title != "" || a.ReadOnlyHint != nil || a.DestructiveHint != nil || a.IdempotentHint != nil || a.OpenWorldHint != nil {
+		cloneBool := func(b *bool) *bool {
+			if b == nil {
+				return nil
+			}
+			v := *b
+			return &v
+		}
+		annotations = &schemas.MCPToolAnnotations{
+			Title:           a.Title,
+			ReadOnlyHint:    cloneBool(a.ReadOnlyHint),
+			DestructiveHint: cloneBool(a.DestructiveHint),
+			IdempotentHint:  cloneBool(a.IdempotentHint),
+			OpenWorldHint:   cloneBool(a.OpenWorldHint),
+		}
+	}
+
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
@@ -498,6 +520,7 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Required:   mcpTool.InputSchema.Required,
 			},
 		},
+		Annotations: annotations,
 	}
 }
 

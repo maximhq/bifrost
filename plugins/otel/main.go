@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"go.opentelemetry.io/otel/attribute"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
@@ -50,12 +51,34 @@ type Config struct {
 	TraceType    TraceType         `json:"trace_type"`
 	Protocol     Protocol          `json:"protocol"`
 	TLSCACert    string            `json:"tls_ca_cert"`
-	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set
+	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
 	// Metrics push configuration
 	MetricsEnabled      bool   `json:"metrics_enabled"`
 	MetricsEndpoint     string `json:"metrics_endpoint"`
 	MetricsPushInterval int    `json:"metrics_push_interval"` // in seconds, default 15
+}
+
+// UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
+// Specifically, Insecure defaults to true when the key is omitted so http://
+// collectors work out-of-the-box without forcing users to set it explicitly.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type alias Config
+	aux := struct {
+		Insecure *bool `json:"insecure"`
+		*alias
+	}{
+		alias: (*alias)(c),
+	}
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if aux.Insecure == nil {
+		c.Insecure = true
+	} else {
+		c.Insecure = *aux.Insecure
+	}
+	return nil
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -278,7 +301,6 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 }
 
 // Helper functions for type-safe attribute extraction from trace spans
-
 func getStringAttr(attrs map[string]any, key string) string {
 	if attrs == nil {
 		return ""
@@ -319,76 +341,77 @@ func getFloat64Attr(attrs map[string]any, key string) float64 {
 	return 0
 }
 
+// buildSpanAttrs extracts metric dimension attrs from a single attempt span.
+func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
+	attrs := span.Attributes
+	method := getStringAttr(attrs, "request.type")
+	if method == "" {
+		method = span.Name
+	}
+	return BuildBifrostAttributes(
+		getStringAttr(attrs, schemas.AttrProviderName),
+		getStringAttr(attrs, schemas.AttrRequestModel),
+		method,
+		getStringAttr(attrs, schemas.AttrVirtualKeyID),
+		getStringAttr(attrs, schemas.AttrVirtualKeyName),
+		getStringAttr(attrs, schemas.AttrSelectedKeyID),
+		getStringAttr(attrs, schemas.AttrSelectedKeyName),
+		getIntAttr(attrs, schemas.AttrNumberOfRetries),
+		getIntAttr(attrs, schemas.AttrFallbackIndex),
+		getStringAttr(attrs, schemas.AttrTeamID),
+		getStringAttr(attrs, schemas.AttrTeamName),
+		getStringAttr(attrs, schemas.AttrCustomerID),
+		getStringAttr(attrs, schemas.AttrCustomerName),
+	)
+}
+
 // recordMetricsFromTrace extracts metrics data from a completed trace and records them
 // via the OTEL metrics exporter. This is called from Inject after trace emission.
+//
+// Per-attempt metrics (upstream_requests, errors, success, latency) are recorded once
+// per llm.call/retry span so fallback attempts and failed retries are counted with
+// their own provider/model/fallback_index labels. Per-trace metrics (tokens, cost,
+// TTFT) are recorded once, keyed off the final (latest) attempt span.
 func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.Trace) {
 	if trace == nil || p.metricsExporter == nil {
 		return
 	}
 
-	// Prefer the last attempt span (LLM call or retry) so metrics reflect the final outcome.
-	var llmSpan *schemas.Span
+	var finalSpan *schemas.Span
 	for _, span := range trace.Spans {
 		if span.Kind != schemas.SpanKindLLMCall && span.Kind != schemas.SpanKindRetry {
 			continue
 		}
-		if llmSpan == nil || span.EndTime.After(llmSpan.EndTime) {
-			llmSpan = span
+
+		spanAttrs := buildSpanAttrs(span)
+
+		p.metricsExporter.RecordUpstreamRequest(ctx, spanAttrs...)
+
+		if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+			latencySeconds := span.EndTime.Sub(span.StartTime).Seconds()
+			p.metricsExporter.RecordUpstreamLatency(ctx, latencySeconds, spanAttrs...)
+		}
+
+		if span.Status == schemas.SpanStatusError {
+			p.metricsExporter.RecordErrorRequest(ctx, spanAttrs...)
+		} else {
+			p.metricsExporter.RecordSuccessRequest(ctx, spanAttrs...)
+		}
+
+		if finalSpan == nil || span.EndTime.After(finalSpan.EndTime) {
+			finalSpan = span
 		}
 	}
-	if llmSpan == nil {
-		llmSpan = trace.RootSpan
-	}
 
-	if llmSpan == nil {
+	if finalSpan == nil {
+		finalSpan = trace.RootSpan
+	}
+	if finalSpan == nil {
 		return
 	}
 
-	attrs := llmSpan.Attributes
-
-	// Extract all metric dimensions from span attributes
-	provider := getStringAttr(attrs, schemas.AttrProviderName)
-	model := getStringAttr(attrs, schemas.AttrRequestModel)
-	// Prefer request.type attribute to keep the method stable across retries
-	method := getStringAttr(attrs, "request.type")
-	if method == "" {
-		method = llmSpan.Name
-	}
-	virtualKeyID := getStringAttr(attrs, schemas.AttrVirtualKeyID)
-	virtualKeyName := getStringAttr(attrs, schemas.AttrVirtualKeyName)
-	selectedKeyID := getStringAttr(attrs, schemas.AttrSelectedKeyID)
-	selectedKeyName := getStringAttr(attrs, schemas.AttrSelectedKeyName)
-	numberOfRetries := getIntAttr(attrs, schemas.AttrNumberOfRetries)
-	fallbackIndex := getIntAttr(attrs, schemas.AttrFallbackIndex)
-	teamID := getStringAttr(attrs, schemas.AttrTeamID)
-	teamName := getStringAttr(attrs, schemas.AttrTeamName)
-	customerID := getStringAttr(attrs, schemas.AttrCustomerID)
-	customerName := getStringAttr(attrs, schemas.AttrCustomerName)
-
-	// Build common attributes for all metrics
-	otelAttrs := BuildBifrostAttributes(
-		provider, model, method,
-		virtualKeyID, virtualKeyName,
-		selectedKeyID, selectedKeyName,
-		numberOfRetries, fallbackIndex,
-		teamID, teamName, customerID, customerName,
-	)
-
-	// Record upstream request count
-	p.metricsExporter.RecordUpstreamRequest(ctx, otelAttrs...)
-
-	// Record latency (from span duration)
-	if !llmSpan.StartTime.IsZero() && !llmSpan.EndTime.IsZero() {
-		latencySeconds := llmSpan.EndTime.Sub(llmSpan.StartTime).Seconds()
-		p.metricsExporter.RecordUpstreamLatency(ctx, latencySeconds, otelAttrs...)
-	}
-
-	// Record success or error based on span status
-	if llmSpan.Status == schemas.SpanStatusError {
-		p.metricsExporter.RecordErrorRequest(ctx, otelAttrs...)
-	} else {
-		p.metricsExporter.RecordSuccessRequest(ctx, otelAttrs...)
-	}
+	attrs := finalSpan.Attributes
+	otelAttrs := buildSpanAttrs(finalSpan)
 
 	// Record token usage - try both naming conventions
 	inputTokens := getIntAttr(attrs, schemas.AttrPromptTokens)

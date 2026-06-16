@@ -345,59 +345,78 @@ Configure provider-level governance through Bifrost's configuration file for dec
   "governance": {
     "virtual_keys": [
       {
+        "id": "vk-dev-001",
         "name": "development-team-vk",
         "description": "Development team with multi-provider setup",
+        "is_active": true,
+        "rate_limit_id": "rl-vk-dev",
         "provider_configs": [
           {
+            "id": 1,
             "provider": "openai",
             "weight": 0.6,
             "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
-            "budget": {
-              "max_limit": 1000.00,
-              "reset_duration": "1M"
-            },
-            "rate_limit": {
-              "token_max_limit": 2000000,
-              "token_reset_duration": "1h",
-              "request_max_limit": 2000,
-              "request_reset_duration": "1h"
-            }
+            "rate_limit_id": "rl-pc-openai"
           },
           {
+            "id": 2,
             "provider": "anthropic",
             "weight": 0.4,
             "allowed_models": ["claude-3-opus", "claude-3-sonnet"],
-            "budget": {
-              "max_limit": 500.00,
-              "reset_duration": "1M"
-            },
-            "rate_limit": {
-              "token_max_limit": 1000000,
-              "token_reset_duration": "1h",
-              "request_max_limit": 1000,
-              "request_reset_duration": "1h"
-            }
+            "rate_limit_id": "rl-pc-anthropic"
           }
-        ],
-        "budget": {
-          "max_limit": 2000.00,
-          "reset_duration": "1M",
-          "calendar_aligned": true
-        },
-        "rate_limit": {
-          "token_max_limit": 5000000,
-          "token_reset_duration": "1h",
-          "request_max_limit": 3000,
-          "request_reset_duration": "1h"
-        },
-        "is_active": true
+        ]
+      }
+    ],
+    "budgets": [
+      {
+        "id": "budget-vk-dev",
+        "virtual_key_id": "vk-dev-001",
+        "max_limit": 2000.00,
+        "reset_duration": "1M",
+        "calendar_aligned": true
+      },
+      {
+        "id": "budget-pc-openai",
+        "provider_config_id": 1,
+        "max_limit": 1000.00,
+        "reset_duration": "1M"
+      },
+      {
+        "id": "budget-pc-anthropic",
+        "provider_config_id": 2,
+        "max_limit": 500.00,
+        "reset_duration": "1M"
+      }
+    ],
+    "rate_limits": [
+      {
+        "id": "rl-vk-dev",
+        "token_max_limit": 5000000,
+        "token_reset_duration": "1h",
+        "request_max_limit": 3000,
+        "request_reset_duration": "1h"
+      },
+      {
+        "id": "rl-pc-openai",
+        "token_max_limit": 2000000,
+        "token_reset_duration": "1h",
+        "request_max_limit": 2000,
+        "request_reset_duration": "1h"
+      },
+      {
+        "id": "rl-pc-anthropic",
+        "token_max_limit": 1000000,
+        "token_reset_duration": "1h",
+        "request_max_limit": 1000,
+        "request_reset_duration": "1h"
       }
     ]
   }
 }
 ```
 
-Optional `calendar_aligned` on each `budget` matches the HTTP API and [calendar-aligned behavior](#calendar-aligned-budgets).
+Budgets and rate limits live as **separate top-level arrays** inside `governance`. Virtual keys and provider configs reference them by id (`rate_limit_id`) or are referenced back (`virtual_key_id` / `provider_config_id` on each `budgets[]` entry). Optional `calendar_aligned` on each `budget` matches the HTTP API and [calendar-aligned behavior](#calendar-aligned-budgets).
 
 ### Advanced Configuration Examples
 
@@ -407,34 +426,21 @@ Optional `calendar_aligned` on each `budget` matches the HTTP API and [calendar-
   "governance": {
     "virtual_keys": [
       {
+        "id": "vk-cost-opt",
         "name": "cost-optimized-vk",
         "provider_configs": [
-          {
-            "provider": "openai-gpt-3.5",
-            "weight": 0.8,
-            "budget": {
-              "max_limit": 50.00,
-              "reset_duration": "1d"
-            },
-            "rate_limit": {
-              "request_max_limit": 1000,
-              "request_reset_duration": "1h"
-            }
-          },
-          {
-            "provider": "openai-gpt-4",
-            "weight": 0.2,
-            "budget": {
-              "max_limit": 200.00,
-              "reset_duration": "1d"
-            },
-            "rate_limit": {
-              "request_max_limit": 100,
-              "request_reset_duration": "1h"
-            }
-          }
+          {"id": 10, "provider": "openai-gpt-3.5", "weight": 0.8, "rate_limit_id": "rl-cheap"},
+          {"id": 11, "provider": "openai-gpt-4",   "weight": 0.2, "rate_limit_id": "rl-premium"}
         ]
       }
+    ],
+    "budgets": [
+      {"id": "b-cheap",   "provider_config_id": 10, "max_limit": 50.00,  "reset_duration": "1d"},
+      {"id": "b-premium", "provider_config_id": 11, "max_limit": 200.00, "reset_duration": "1d"}
+    ],
+    "rate_limits": [
+      {"id": "rl-cheap",   "request_max_limit": 1000, "request_reset_duration": "1h"},
+      {"id": "rl-premium", "request_max_limit": 100,  "request_reset_duration": "1h"}
     ]
   }
 }
@@ -446,52 +452,24 @@ Optional `calendar_aligned` on each `budget` matches the HTTP API and [calendar-
   "governance": {
     "virtual_keys": [
       {
+        "id": "vk-prod-hv",
         "name": "production-high-volume-vk",
         "provider_configs": [
-          {
-            "provider": "openai",
-            "weight": 0.5,
-            "budget": {
-              "max_limit": 5000.00,
-              "reset_duration": "1M"
-            },
-            "rate_limit": {
-              "token_max_limit": 10000000,
-              "token_reset_duration": "1h",
-              "request_max_limit": 10000,
-              "request_reset_duration": "1h"
-            }
-          },
-          {
-            "provider": "anthropic",
-            "weight": 0.3,
-            "budget": {
-              "max_limit": 3000.00,
-              "reset_duration": "1M"
-            },
-            "rate_limit": {
-              "token_max_limit": 6000000,
-              "token_reset_duration": "1h",
-              "request_max_limit": 6000,
-              "request_reset_duration": "1h"
-            }
-          },
-          {
-            "provider": "azure-openai",
-            "weight": 0.2,
-            "budget": {
-              "max_limit": 2000.00,
-              "reset_duration": "1M"
-            },
-            "rate_limit": {
-              "token_max_limit": 4000000,
-              "token_reset_duration": "1h",
-              "request_max_limit": 4000,
-              "request_reset_duration": "1h"
-            }
-          }
+          {"id": 20, "provider": "openai",       "weight": 0.5, "rate_limit_id": "rl-openai"},
+          {"id": 21, "provider": "anthropic",    "weight": 0.3, "rate_limit_id": "rl-anthropic"},
+          {"id": 22, "provider": "azure-openai", "weight": 0.2, "rate_limit_id": "rl-azure"}
         ]
       }
+    ],
+    "budgets": [
+      {"id": "b-openai",    "provider_config_id": 20, "max_limit": 5000.00, "reset_duration": "1M"},
+      {"id": "b-anthropic", "provider_config_id": 21, "max_limit": 3000.00, "reset_duration": "1M"},
+      {"id": "b-azure",     "provider_config_id": 22, "max_limit": 2000.00, "reset_duration": "1M"}
+    ],
+    "rate_limits": [
+      {"id": "rl-openai",    "token_max_limit": 10000000, "token_reset_duration": "1h", "request_max_limit": 10000, "request_reset_duration": "1h"},
+      {"id": "rl-anthropic", "token_max_limit": 6000000,  "token_reset_duration": "1h", "request_max_limit": 6000,  "request_reset_duration": "1h"},
+      {"id": "rl-azure",     "token_max_limit": 4000000,  "token_reset_duration": "1h", "request_max_limit": 4000,  "request_reset_duration": "1h"}
     ]
   }
 }
@@ -514,20 +492,23 @@ A virtual key configured with multiple providers and different budget allocation
 
 ```json
 {
-  "name": "marketing-team-vk",
-  "budget": { "max_limit": 100, "reset_duration": "1M" },
-  "provider_configs": [
-    {
-      "provider": "openai",
-      "weight": 0.7,
-      "budget": { "max_limit": 50, "reset_duration": "1M" }
-    },
-    {
-      "provider": "anthropic", 
-      "weight": 0.3,
-      "budget": { "max_limit": 30, "reset_duration": "1M" }
-    }
-  ]
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-mkt",
+        "name": "marketing-team-vk",
+        "provider_configs": [
+          {"id": 30, "provider": "openai",    "weight": 0.7},
+          {"id": 31, "provider": "anthropic", "weight": 0.3}
+        ]
+      }
+    ],
+    "budgets": [
+      {"id": "b-vk-mkt", "virtual_key_id": "vk-mkt",      "max_limit": 100, "reset_duration": "1M"},
+      {"id": "b-openai", "provider_config_id": 30,        "max_limit": 50,  "reset_duration": "1M"},
+      {"id": "b-anth",   "provider_config_id": 31,        "max_limit": 30,  "reset_duration": "1M"}
+    ]
+  }
 }
 ```
 
@@ -542,27 +523,22 @@ Different rate limits based on provider capabilities:
 
 ```json
 {
-  "name": "high-volume-vk",
-  "provider_configs": [
-    {
-      "provider": "openai",
-      "rate_limit": {
-        "request_max_limit": 1000,
-        "request_reset_duration": "1h",
-        "token_max_limit": 1000000,
-        "token_reset_duration": "1h"
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-hv",
+        "name": "high-volume-vk",
+        "provider_configs": [
+          {"id": 40, "provider": "openai",    "rate_limit_id": "rl-openai"},
+          {"id": 41, "provider": "anthropic", "rate_limit_id": "rl-anthropic"}
+        ]
       }
-    },
-    {
-      "provider": "anthropic",
-      "rate_limit": {
-        "request_max_limit": 500,
-        "request_reset_duration": "1h",
-        "token_max_limit": 500000,
-        "token_reset_duration": "1h"
-      }
-    }
-  ]
+    ],
+    "rate_limits": [
+      {"id": "rl-openai",    "request_max_limit": 1000, "request_reset_duration": "1h", "token_max_limit": 1000000, "token_reset_duration": "1h"},
+      {"id": "rl-anthropic", "request_max_limit": 500,  "request_reset_duration": "1h", "token_max_limit": 500000,  "token_reset_duration": "1h"}
+    ]
+  }
 }
 ```
 
@@ -577,25 +553,25 @@ Provider configurations with budget-based failover:
 
 ```json
 {
-  "name": "cost-optimized-vk",
-  "provider_configs": [
-    {
-      "provider": "openai-cheap",
-      "weight": 1.0,
-      "budget": { "max_limit": 10, "reset_duration": "1d" }
-    },
-    {
-      "provider": "openai-premium",
-      "weight": 0.0,
-      "budget": { "max_limit": 50, "reset_duration": "1d" },
-      "rate_limit": {
-        "request_max_limit": 100,
-        "request_reset_duration": "1h",
-        "token_max_limit": 50000,
-        "token_reset_duration": "1h"
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-cost",
+        "name": "cost-optimized-vk",
+        "provider_configs": [
+          {"id": 50, "provider": "openai-cheap",   "weight": 1.0},
+          {"id": 51, "provider": "openai-premium", "weight": 0.0, "rate_limit_id": "rl-premium"}
+        ]
       }
-    }
-  ]
+    ],
+    "budgets": [
+      {"id": "b-cheap",   "provider_config_id": 50, "max_limit": 10, "reset_duration": "1d"},
+      {"id": "b-premium", "provider_config_id": 51, "max_limit": 50, "reset_duration": "1d"}
+    ],
+    "rate_limits": [
+      {"id": "rl-premium", "request_max_limit": 100, "request_reset_duration": "1h", "token_max_limit": 50000, "token_reset_duration": "1h"}
+    ]
+  }
 }
 ```
 

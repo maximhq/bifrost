@@ -4,7 +4,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, BetaHeadersFormFragment, GovernanceFormFragment, OpenAIConfigFormFragment, ProxyFormFragment } from "../fragments";
+import {
+	ApiStructureFormFragment,
+	BetaHeadersFormFragment,
+	GovernanceFormFragment,
+	OpenAIConfigFormFragment,
+	ProxyFormFragment,
+} from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";

@@ -285,6 +285,14 @@ func (s *BifrostHTTPServer) getGovernancePluginName() string {
 	return governance.PluginName
 }
 
+// getPromptsPluginName returns the prompts plugin name from context or default
+func (s *BifrostHTTPServer) getPromptsPluginName() string {
+	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyPromptsPluginName).(string); ok && name != "" {
+		return name
+	}
+	return prompts.PluginName
+}
+
 // getGovernancePlugin safely retrieves the governance plugin with proper locking.
 // It acquires a read lock, finds the plugin, releases the lock, performs type assertion,
 // and returns the BaseGovernancePlugin implementation or an error.
@@ -1071,7 +1079,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		cacheHandler = handlers.NewCacheHandler(semanticCachePlugin)
 	}
 	var promptsReloader handlers.PromptCacheReloader
-	if promptsPlugin, err := lib.FindPluginAs[*prompts.Plugin](s.Config, prompts.PluginName); err == nil && promptsPlugin != nil {
+	if promptsPlugin, err := lib.FindPluginAs[handlers.PromptCacheReloader](s.Config, s.getPromptsPluginName()); err == nil && promptsPlugin != nil {
 		promptsReloader = promptsPlugin
 	}
 	// Websocket handler needs to go below UI handler

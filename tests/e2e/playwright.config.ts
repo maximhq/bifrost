@@ -103,7 +103,7 @@ export default defineConfig({
     timeout: 120000,
     env: {
       ...process.env,
-      NEXT_PUBLIC_DISABLE_PROFILER: '1',
+      BIFROST_DISABLE_PROFILER: '1',
     },
   },
 

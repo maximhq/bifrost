@@ -197,7 +197,7 @@
             "icon": "bolt",
             "pages": [
               "features/drop-in-replacement",
-              "features/fallbacks",
+              "features/retries-and-fallbacks",
               "features/litellm-compat",
               "features/keys-management",
               "features/async-inference",
@@ -239,6 +239,7 @@
               "enterprise/guardrails",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/user-provisioning",
               {
                 "group": "Advanced Governance",
                 "icon": "shield-check",
@@ -248,7 +249,6 @@
                 ]
               },
               "enterprise/mcp-with-fa",
-              "enterprise/vault-support",
               "enterprise/invpc-deployments",
               "enterprise/custom-plugins",
               "enterprise/audit-logs",
@@ -325,7 +325,9 @@
             "icon": "id-card",
             "pages": [
               "enterprise/setting-up-okta",
-              "enterprise/setting-up-entra"
+              "enterprise/setting-up-entra",
+              "enterprise/setting-up-zitadel",
+              "enterprise/setting-up-google-workspace"
             ]
           },
           {
@@ -336,16 +338,6 @@
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai"
-            ]
-          },
-          {
-            "group": "Secret Management (Vaults)",
-            "icon": "vault",
-            "pages": [
-              "integrations/vaults/hashicorp-vault",
-              "integrations/vaults/aws-secrets-manager",
-              "integrations/vaults/google-secret-manager",
-              "integrations/vaults/azure-key-vault"
             ]
           },
           {
@@ -397,11 +389,42 @@
           {
             "group": "Platform specific guides",
             "icon": "swatchbook",
+            "pages": ["deployment-guides/k8s", "deployment-guides/ecs", "deployment-guides/fly"]
+          },
+          {
+            "group": "Config as Code",
+            "icon": "code",
             "pages": [
-              "deployment-guides/k8s",
-              "deployment-guides/ecs",
-              "deployment-guides/helm",
-              "deployment-guides/fly"
+              {
+                "group": "Helm",
+                "icon": "helicopter-symbol",
+                "pages": [
+                  "deployment-guides/helm",
+                  "deployment-guides/helm/values",
+                  "deployment-guides/helm/client",
+                  "deployment-guides/helm/providers",
+                  "deployment-guides/helm/storage",
+                  "deployment-guides/helm/plugins",
+                  "deployment-guides/helm/governance",
+                  "deployment-guides/helm/guardrails",
+                  "deployment-guides/helm/cluster",
+                  "deployment-guides/helm/troubleshooting"
+                ]
+              },
+              {
+                "group": "config.json",
+                "icon": "file-code",
+                "pages": [
+                  "deployment-guides/config-json",
+                  "deployment-guides/config-json/schema-reference",
+                  "deployment-guides/config-json/client",
+                  "deployment-guides/config-json/providers",
+                  "deployment-guides/config-json/storage",
+                  "deployment-guides/config-json/plugins",
+                  "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/guardrails"
+                ]
+              }
             ]
           },
           {
@@ -489,8 +512,10 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.0-prerelease3",
               "changelogs/v1.5.0-prerelease2",
               "changelogs/v1.5.0-prerelease1",
+              "changelogs/v1.4.23",
               "changelogs/v1.4.22",
               "changelogs/v1.4.21",
               {
@@ -669,6 +694,10 @@
   },
   "redirects": [
     {
+      "source": "/features/fallbacks",
+      "destination": "/features/retries-and-fallbacks"
+    },
+    {
       "source": "/quickstart/gateway/cli-agents",
       "destination": "/cli-agents/overview"
     },
@@ -746,7 +775,7 @@
     },
     {
       "source": "/features/enterprise/scim",
-      "destination": "/enterprise/setting-up-okta"
+      "destination": "/enterprise/user-provisioning"
     },
     {
       "source": "/enterprise/intelligent-load-balancing",

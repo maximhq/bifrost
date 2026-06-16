@@ -93,11 +93,12 @@ type SessionSummaryResult struct {
 }
 
 type SearchStats struct {
-	TotalRequests  int64   `json:"total_requests"`
-	SuccessRate    float64 `json:"success_rate"`    // Percentage of successful requests
-	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
-	TotalTokens    int64   `json:"total_tokens"`    // Total tokens used
-	TotalCost      float64 `json:"total_cost"`      // Total cost in dollars
+	TotalRequests         int64   `json:"total_requests"`
+	SuccessRate           float64 `json:"success_rate"`             // Percentage of individual attempts that succeeded
+	UserFacingSuccessRate float64 `json:"user_facing_success_rate"` // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
+	AverageLatency        float64 `json:"average_latency"`          // Average latency in milliseconds
+	TotalTokens           int64   `json:"total_tokens"`             // Total tokens used
+	TotalCost             float64 `json:"total_cost"`               // Total cost in dollars
 }
 
 // Log represents a complete log entry for a request/response cycle
@@ -114,12 +115,17 @@ type Log struct {
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
 	SelectedKeyName         string    `gorm:"type:varchar(255)" json:"selected_key_name"`
+	AttemptTrail            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.KeyAttemptRecord
 	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
+	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
+	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
 	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_id" json:"user_id"`
+	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
 	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_id" json:"team_id"`
 	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
 	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_id" json:"customer_id"`
@@ -209,6 +215,8 @@ type Log struct {
 	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
+	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
@@ -488,6 +496,16 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if len(l.AttemptTrailParsed) > 0 {
+		if data, err := sonic.Marshal(l.AttemptTrailParsed); err != nil {
+			return err
+		} else {
+			l.AttemptTrail = string(data)
+		}
+	} else {
+		l.AttemptTrail = ""
+	}
+
 	if l.MetadataParsed != nil {
 		data, err := sonic.Marshal(l.MetadataParsed)
 		if err != nil {
@@ -702,6 +720,12 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.CacheDebugParsed = nil
+		}
+	}
+
+	if l.AttemptTrail != "" {
+		if err := sonic.Unmarshal([]byte(l.AttemptTrail), &l.AttemptTrailParsed); err != nil {
+			l.AttemptTrailParsed = nil
 		}
 	}
 

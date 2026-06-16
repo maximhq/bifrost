@@ -1,0 +1,237 @@
+---
+title: "Setting up Keycloak"
+description: "Step-by-step guide to configure a self-hosted Keycloak realm as your identity provider for Bifrost Enterprise SSO and user provisioning."
+icon: "lock"
+---
+
+## Overview
+
+This guide walks you through configuring [Keycloak](https://www.keycloak.org) as your identity provider for Bifrost Enterprise. Keycloak uses standard OIDC with JWKS-based JWT validation, and Bifrost uses the same client for both user login and Admin REST API access (via the Service Account of a confidential client).
+
+After completing this guide, users will sign in with their Keycloak credentials and admins can bulk-import users and groups via the Keycloak Admin REST API.
+
+## Prerequisites
+
+- A running Keycloak server (self-hosted or cloud) with admin access to a realm
+- Bifrost Enterprise deployed and accessible
+- The redirect URI for your Bifrost instance (e.g. `https://your-bifrost-domain.com/login`)
+- Bifrost [roles](./rbac) created for the roles you plan to map
+
+---
+
+## Step 1: Create a Client
+
+1. In the Keycloak Admin Console, select your realm and go to **Clients → Create client**.
+
+<Frame>
+  <img src="/media/user-provisioning/keycloak-create-client.png" alt="Creating a client in Keycloak" />
+</Frame>
+
+2. Configure the client:
+
+| Field | Value |
+| --- | --- |
+| **Client type** | OpenID Connect |
+| **Client ID** | `bifrost` (or your preferred identifier) |
+| **Name** | `Bifrost Enterprise` |
+
+3. On the **Capability config** step enable:
+   - **Client authentication** (makes it a confidential client)
+   - **Standard flow** (Authorization Code)
+   - **Service accounts roles** (required for Admin REST API access)
+
+<Frame>
+  <img src="/media/user-provisioning/keycloak-capability-config.png" alt="Keycloak client capability configuration" />
+</Frame>
+
+4. On the **Login settings** step set:
+
+| Field | Value |
+| --- | --- |
+| **Valid redirect URIs** | `https://your-bifrost-domain.com/login` |
+| **Valid post logout redirect URIs** | `https://your-bifrost-domain.com` |
+| **Web origins** | `https://your-bifrost-domain.com` |
+
+5. **Save** the client.
+
+---
+
+## Step 2: Copy the client credentials
+
+1. Open the client and go to the **Credentials** tab.
+2. Copy the **Client Secret**.
+
+<Frame>
+  <img src="/media/user-provisioning/keycloak-client-credentials.png" alt="Keycloak client credentials tab" />
+</Frame>
+
+---
+
+## Step 3: Configure role and group mappers
+
+Keycloak does not include realm roles or full group paths in tokens by default. Add two mappers on the client's dedicated scope.
+
+1. Open the client → **Client Scopes** tab → click the client's `-dedicated` scope.
+2. Click **Add mapper → By configuration**.
+
+### Group Membership mapper
+
+<Frame>
+  <img src="/media/user-provisioning/keycloak-group-mapper.png" alt="Group Membership mapper configuration" />
+</Frame>
+
+| Field | Value |
+| --- | --- |
+| **Mapper Type** | Group Membership |
+| **Name** | `groups` |
+| **Token Claim Name** | `groups` |
+| **Full group path** | **On** |
+| **Add to ID token** | **On** |
+| **Add to access token** | **On** |
+| **Add to userinfo** | **On** |
+
+<Note>
+  Bifrost uses full group paths for consistent matching across SSO and bulk provisioning flows — keep **Full group path** enabled.
+</Note>
+
+### Realm Roles mapper
+
+| Field | Value |
+| --- | --- |
+| **Mapper Type** | User Realm Role |
+| **Name** | `realm_roles` |
+| **Token Claim Name** | `realm_access.roles` |
+| **Claim JSON Type** | String |
+| **Multivalued** | **On** |
+| **Add to ID token** | **On** |
+| **Add to access token** | **On** |
+
+---
+
+## Step 4: Assign Admin REST API permissions
+
+The same client runs both authentication and provisioning. Grant it read access to the realm so it can list users and groups.
+
+1. Open the client → **Service accounts roles** tab.
+2. Click **Assign role** and select:
+   - `realm-management` → **view-users** (required)
+   - `realm-management` → **view-realm** (recommended, enables group and role listing)
+   - `realm-management` → **query-groups** (optional, for group filters)
+
+<Frame>
+  <img src="/media/user-provisioning/keycloak-service-account-roles.png" alt="Keycloak service account roles" />
+</Frame>
+
+---
+
+## Step 5: Create realm roles and groups
+
+Create the roles and groups you plan to map into Bifrost.
+
+1. **Realm → Realm roles → Create role** for each role (e.g. `bifrost-admin`, `bifrost-developer`, `bifrost-viewer`).
+2. **Realm → Groups → Create group** for each team you want to sync (e.g. `/platform`, `/data-science`).
+3. Assign users to the appropriate roles and groups under **Users → your user → Role mapping** / **Groups**.
+
+---
+
+## Step 6: Configure Bifrost
+
+### Using the Bifrost dashboard
+
+1. In Bifrost, go to **Governance → User Provisioning**.
+2. Select **Keycloak** as the SCIM Provider.
+3. Fill in the fields:
+
+| Field | Value |
+| --- | --- |
+| **Server URL** | `https://keycloak.company.com` (no `/realms/...` suffix) |
+| **Realm** | Your realm name (e.g. `master`, `bifrost-prod`) |
+| **Client ID** | Client ID from Step 1 |
+| **Client Secret** | Client Secret from Step 2 |
+| **Audience** | Optional — defaults to Client ID |
+| **Team IDs Field** | Leave as `groups` (default) or change if you used a different mapper name |
+
+4. Click **Verify** — Bifrost connects to Keycloak's JWKS and Admin REST API to confirm the client and service-account roles.
+5. Configure **Attribute → Role / Team / Business Unit** mappings if needed.
+6. Toggle **Enabled** and click **Save Configuration**.
+
+<Frame>
+  <img src="/media/user-provisioning/keycloak-bifrost-config.png" alt="Bifrost Keycloak configuration form" />
+</Frame>
+
+### Using `config.json`
+
+```json
+{
+  "scim_config": {
+    "enabled": true,
+    "provider": "keycloak",
+    "config": {
+      "serverUrl": "https://keycloak.company.com",
+      "realm": "bifrost-prod",
+      "clientId": "bifrost",
+      "clientSecret": "${KEYCLOAK_CLIENT_SECRET}",
+      "teamIdsField": "groups"
+    }
+  }
+}
+```
+
+### Configuration reference
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `serverUrl` | Yes | Base URL of the Keycloak server. Must be a valid URL (e.g. `https://keycloak.company.com`) and must **not** include `/realms/...`. |
+| `realm` | Yes | Realm name. |
+| `clientId` | Yes | Client ID created in Step 1. |
+| `clientSecret` | Yes | Client secret — required because the client is confidential. |
+| `audience` | No | Expected JWT audience. Defaults to `clientId`. |
+| `teamIdsField` | No | JWT claim for group IDs. Defaults to `groups`. |
+| `attributeRoleMappings` | No | Ordered list of attribute→role mappings. |
+| `attributeTeamMappings` | No | Attribute→team mappings (all matches apply). |
+| `attributeBusinessUnitMappings` | No | Attribute→business-unit mappings (all matches apply). |
+
+---
+
+## Testing the Integration
+
+1. Open the Bifrost dashboard in an incognito window.
+2. You'll be redirected to Keycloak's login page.
+3. Sign in with a Keycloak user that has one of the roles you mapped.
+4. Verify the user appears under **Governance → Users** with the expected role and teams.
+5. From **Governance → User Provisioning → Import Users**, verify the service account can list users.
+
+---
+
+## Troubleshooting
+
+### `serverUrl must not include /realms/{realm}`
+
+The `serverUrl` field is the base Keycloak URL. Set the realm in the separate **Realm** field. Example: `https://keycloak.company.com` + realm `bifrost-prod` — **not** `https://keycloak.company.com/realms/bifrost-prod`.
+
+### Users redirected back to login
+
+- Confirm the client's **Valid redirect URIs** exactly match your Bifrost login URL (trailing slash matters).
+- Verify the client is **Enabled** in Keycloak.
+
+### Roles not appearing in the token
+
+- Check that the **User Realm Role** mapper adds to both ID and Access tokens.
+- Use `Evaluate` on the client scope to preview the token a user would receive.
+
+### Service account cannot list users
+
+- Confirm `realm-management → view-users` is assigned under **Service accounts roles**.
+- If you enabled **Authorization** on the client, service account tokens may not work — disable Authorization (fine-grained authz) for this client.
+
+### `jwks keys not found`
+
+- Make sure the server URL is reachable from Bifrost. The JWKS endpoint is `{serverUrl}/realms/{realm}/protocol/openid-connect/certs`.
+
+---
+
+## Next Steps
+
+- [User Provisioning overview](./user-provisioning) — capabilities, attribute mappings, bulk import
+- [Role-Based Access Control](./rbac) — configure custom roles before mapping
+- [Audit Logs](./audit-logs) — track authentication events

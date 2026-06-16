@@ -1643,28 +1643,24 @@ func NewProviderAPIError(message string, err error, statusCode int, errorType *s
 	}
 }
 
-// ShouldSendBackRawRequest checks if the raw request should be captured.
-// Context overrides are intentionally restricted to asymmetric behavior: a context value can only
-// promote false→true and will not override a true config to false, avoiding accidental suppression.
-// Both full send-back mode and logging-only mode (store_raw_request_response) set
-// BifrostContextKeySendBackRawRequest=true in the request context so a single flag is checked here.
-// In logging-only mode the payload is stripped before the response reaches the client.
+// ShouldSendBackRawRequest checks if raw request bytes should be captured.
+// bifrost.go always writes BifrostContextKeyCaptureRawRequest before provider dispatch,
+// combining provider config, per-request overrides, and store_raw_request_response.
+// The default parameter is a fallback for callers outside the normal bifrost dispatch path.
 func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest bool) bool {
-	if sendBackRawRequest, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok && sendBackRawRequest {
-		return sendBackRawRequest
+	if capture, ok := ctx.Value(schemas.BifrostContextKeyCaptureRawRequest).(bool); ok {
+		return capture
 	}
 	return defaultSendBackRawRequest
 }
 
-// ShouldSendBackRawResponse checks if the raw response should be captured.
-// Context overrides are intentionally restricted to asymmetric behavior: a context value can only
-// promote false→true and will not override a true config to false, avoiding accidental suppression.
-// Both full send-back mode and logging-only mode (store_raw_request_response) set
-// BifrostContextKeySendBackRawResponse=true in the request context so a single flag is checked here.
-// In logging-only mode the payload is stripped before the response reaches the client.
+// ShouldSendBackRawResponse checks if raw response bytes should be captured.
+// bifrost.go always writes BifrostContextKeyCaptureRawResponse before provider dispatch,
+// combining provider config, per-request overrides, and store_raw_request_response.
+// The default parameter is a fallback for callers outside the normal bifrost dispatch path.
 func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse bool) bool {
-	if sendBackRawResponse, ok := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok && sendBackRawResponse {
-		return sendBackRawResponse
+	if capture, ok := ctx.Value(schemas.BifrostContextKeyCaptureRawResponse).(bool); ok {
+		return capture
 	}
 	return defaultSendBackRawResponse
 }
@@ -1706,13 +1702,14 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 }
 
 // BuildClientStreamChunk constructs a BifrostStreamChunk from post-hook results.
-// It never mutates the shared processedResponse or processedError objects — when in
-// logging-only mode (BifrostContextKeyRawRequestResponseForLogging) it shallow-copies
-// each inner response struct and the BifrostError, nils only the raw fields on those
-// copies, and returns them as the outgoing chunk. This is safe for concurrent PostLLMHook
-// goroutines that still hold references to the originals.
+// It never mutates the shared processedResponse or processedError objects — when raw fields
+// need to be stripped (captured for storage but not for send-back), it shallow-copies each
+// inner response struct and nils only the appropriate per-side field on those copies.
+// This is safe for concurrent PostLLMHook goroutines that still hold references to the originals.
 func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.BifrostResponse, processedError *schemas.BifrostError) *schemas.BifrostStreamChunk {
-	dropRaw, _ := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool)
+	dropReq, _ := ctx.Value(schemas.BifrostContextKeyDropRawRequestFromClient).(bool)
+	dropResp, _ := ctx.Value(schemas.BifrostContextKeyDropRawResponseFromClient).(bool)
+	drop := dropReq || dropResp
 	streamResponse := &schemas.BifrostStreamChunk{}
 	if processedResponse != nil {
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
@@ -1723,51 +1720,79 @@ func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.Bifr
 		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
 		// Strip raw fields from client-facing copies without mutating the shared objects
 		// that PostLLMHook goroutines may still be reading.
-		if dropRaw {
+		if drop {
 			if streamResponse.BifrostTextCompletionResponse != nil {
 				cp := *streamResponse.BifrostTextCompletionResponse
-				cp.ExtraFields.RawRequest = nil
-				cp.ExtraFields.RawResponse = nil
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
 				streamResponse.BifrostTextCompletionResponse = &cp
 			}
 			if streamResponse.BifrostChatResponse != nil {
 				cp := *streamResponse.BifrostChatResponse
-				cp.ExtraFields.RawRequest = nil
-				cp.ExtraFields.RawResponse = nil
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
 				streamResponse.BifrostChatResponse = &cp
 			}
 			if streamResponse.BifrostResponsesStreamResponse != nil {
 				cp := *streamResponse.BifrostResponsesStreamResponse
-				cp.ExtraFields.RawRequest = nil
-				cp.ExtraFields.RawResponse = nil
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
 				streamResponse.BifrostResponsesStreamResponse = &cp
 			}
 			if streamResponse.BifrostSpeechStreamResponse != nil {
 				cp := *streamResponse.BifrostSpeechStreamResponse
-				cp.ExtraFields.RawRequest = nil
-				cp.ExtraFields.RawResponse = nil
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
 				streamResponse.BifrostSpeechStreamResponse = &cp
 			}
 			if streamResponse.BifrostTranscriptionStreamResponse != nil {
 				cp := *streamResponse.BifrostTranscriptionStreamResponse
-				cp.ExtraFields.RawRequest = nil
-				cp.ExtraFields.RawResponse = nil
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
 				streamResponse.BifrostTranscriptionStreamResponse = &cp
 			}
 			if streamResponse.BifrostImageGenerationStreamResponse != nil {
 				cp := *streamResponse.BifrostImageGenerationStreamResponse
-				cp.ExtraFields.RawRequest = nil
-				cp.ExtraFields.RawResponse = nil
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
 				streamResponse.BifrostImageGenerationStreamResponse = &cp
 			}
 		}
 	}
 	if processedError != nil {
-		if dropRaw {
+		if drop {
 			// Strip raw fields from a client-facing copy without mutating the shared error object.
 			errCopy := *processedError
-			errCopy.ExtraFields.RawRequest = nil
-			errCopy.ExtraFields.RawResponse = nil
+			if dropReq {
+				errCopy.ExtraFields.RawRequest = nil
+			}
+			if dropResp {
+				errCopy.ExtraFields.RawResponse = nil
+			}
 			streamResponse.BifrostError = &errCopy
 		} else {
 			streamResponse.BifrostError = processedError
@@ -1861,6 +1886,41 @@ func ProcessAndSendBifrostError(
 			completeDeferredSpan(ctx, processedResponse, processedError)
 		}
 	}
+}
+
+// EnsureStreamFinalizerCalled invokes the post-hook span finalizer registered
+// on ctx, if any. Designed to be deferred as the last line of defence in a
+// provider's streaming goroutine (next to SetupStreamCancellation's cleanup):
+//
+//	defer providerUtils.EnsureStreamFinalizerCalled(ctx)
+//
+// On a normal stream end the finalizer is already invoked when the final chunk
+// is processed (via completeDeferredSpan). The registration wraps the closure
+// in sync.Once, so this safety-net call is a noop in that case. It only does
+// real work when the streaming goroutine exits without reaching the final-chunk
+// path — e.g. a panic mid-stream — which would otherwise leak the plugin
+// pipeline back-reference held by the finalizer closure.
+//
+// Panics inside the finalizer are recovered and logged so they never mask an
+// in-flight panic that triggered the defer.
+func EnsureStreamFinalizerCalled(ctx context.Context) {
+	// Install the recover first so any panic — including one triggered by
+	// accessing ctx itself — is caught. This matters because this helper is
+	// called from `defer`, so a panic here would mask the in-flight panic
+	// that invoked the defer.
+	defer func() {
+		if r := recover(); r != nil {
+			getLogger().Debug("recovered panic in deferred stream finalizer: %v", r)
+		}
+	}()
+	if ctx == nil {
+		return
+	}
+	finalizer, ok := ctx.Value(schemas.BifrostContextKeyPostHookSpanFinalizer).(func(context.Context))
+	if !ok || finalizer == nil {
+		return
+	}
+	finalizer(ctx)
 }
 
 // SetupStreamCancellation spawns a goroutine that closes the body stream when
@@ -2501,9 +2561,8 @@ func GetReasoningEffortFromBudgetTokens(
 	}
 }
 
-// GetBudgetTokensFromReasoningEffort converts OpenAI reasoning effort
-// into a reasoning token budget.
-// effort ∈ {"none", "minimal", "low", "medium", "high"}
+// GetBudgetTokensFromReasoningEffort converts reasoning effort into a reasoning token budget.
+// effort ∈ {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 func GetBudgetTokensFromReasoningEffort(
 	effort string,
 	minBudgetTokens int,
@@ -2533,6 +2592,10 @@ func GetBudgetTokensFromReasoningEffort(
 		ratio = 0.425
 	case "high":
 		ratio = 0.80
+	case "xhigh":
+		ratio = 0.92
+	case "max":
+		ratio = 1.0
 	default:
 		// Unknown effort → safe default
 		ratio = 0.425

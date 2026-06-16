@@ -1,5 +1,3 @@
-"use client";
-
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -47,7 +45,18 @@ interface TeamsTableProps {
 	onOffsetChange: (offset: number) => void;
 }
 
-export default function TeamsTable({ teams, totalCount, customers, virtualKeys, search, debouncedSearch, onSearchChange, offset, limit, onOffsetChange }: TeamsTableProps) {
+export default function TeamsTable({
+	teams,
+	totalCount,
+	customers,
+	virtualKeys,
+	search,
+	debouncedSearch,
+	onSearchChange,
+	offset,
+	limit,
+	onOffsetChange,
+}: TeamsTableProps) {
 	const [showTeamDialog, setShowTeamDialog] = useState(false);
 	const [editingTeam, setEditingTeam] = useState<Team | null>(null);
 
@@ -128,7 +137,7 @@ export default function TeamsTable({ teams, totalCount, customers, virtualKeys, 
 
 					<div className="flex items-center gap-3">
 						<div className="relative max-w-sm flex-1">
-							<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
 								aria-label="Search teams by name"
 								placeholder="Search by name..."
@@ -140,7 +149,7 @@ export default function TeamsTable({ teams, totalCount, customers, virtualKeys, 
 						</div>
 					</div>
 
-					<div className="rounded-sm border overflow-hidden" data-testid="teams-table">
+					<div className="overflow-hidden rounded-sm border" data-testid="teams-table">
 						<Table>
 							<TableHeader>
 								<TableRow>
@@ -160,232 +169,238 @@ export default function TeamsTable({ teams, totalCount, customers, virtualKeys, 
 										</TableCell>
 									</TableRow>
 								) : (
-								teams.map((team) => {
-									const vks = getVirtualKeysForTeam(team.id);
-									const customerName = getCustomerName(team.customer_id);
+									teams.map((team) => {
+										const vks = getVirtualKeysForTeam(team.id);
+										const customerName = getCustomerName(team.customer_id);
 
-									// Budget calculations
-									const isBudgetExhausted =
-										team.budget?.max_limit && team.budget.max_limit > 0 && team.budget.current_usage >= team.budget.max_limit;
-									const budgetPercentage =
-										team.budget?.max_limit && team.budget.max_limit > 0
-											? Math.min((team.budget.current_usage / team.budget.max_limit) * 100, 100)
-											: 0;
+										// Budget calculations
+										const isBudgetExhausted =
+											team.budget?.max_limit && team.budget.max_limit > 0 && team.budget.current_usage >= team.budget.max_limit;
+										const budgetPercentage =
+											team.budget?.max_limit && team.budget.max_limit > 0
+												? Math.min((team.budget.current_usage / team.budget.max_limit) * 100, 100)
+												: 0;
 
-									// Rate limit calculations
-									const isTokenLimitExhausted =
-										team.rate_limit?.token_max_limit &&
-										team.rate_limit.token_max_limit > 0 &&
-										team.rate_limit.token_current_usage >= team.rate_limit.token_max_limit;
-									const isRequestLimitExhausted =
-										team.rate_limit?.request_max_limit &&
-										team.rate_limit.request_max_limit > 0 &&
-										team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit;
-									const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
-									const tokenPercentage =
-										team.rate_limit?.token_max_limit && team.rate_limit.token_max_limit > 0
-											? Math.min((team.rate_limit.token_current_usage / team.rate_limit.token_max_limit) * 100, 100)
-											: 0;
-									const requestPercentage =
-										team.rate_limit?.request_max_limit && team.rate_limit.request_max_limit > 0
-											? Math.min((team.rate_limit.request_current_usage / team.rate_limit.request_max_limit) * 100, 100)
-											: 0;
+										// Rate limit calculations
+										const isTokenLimitExhausted =
+											team.rate_limit?.token_max_limit &&
+											team.rate_limit.token_max_limit > 0 &&
+											team.rate_limit.token_current_usage >= team.rate_limit.token_max_limit;
+										const isRequestLimitExhausted =
+											team.rate_limit?.request_max_limit &&
+											team.rate_limit.request_max_limit > 0 &&
+											team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit;
+										const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
+										const tokenPercentage =
+											team.rate_limit?.token_max_limit && team.rate_limit.token_max_limit > 0
+												? Math.min((team.rate_limit.token_current_usage / team.rate_limit.token_max_limit) * 100, 100)
+												: 0;
+										const requestPercentage =
+											team.rate_limit?.request_max_limit && team.rate_limit.request_max_limit > 0
+												? Math.min((team.rate_limit.request_current_usage / team.rate_limit.request_max_limit) * 100, 100)
+												: 0;
 
-									const isExhausted = isBudgetExhausted || isRateLimitExhausted;
+										const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
-									return (
-										<TableRow key={team.id} data-testid={`team-row-${team.name}`} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
-											<TableCell className="max-w-[200px] py-4">
-												<div className="flex flex-col gap-2">
-													<span className="truncate font-medium">{team.name}</span>
-													{isExhausted && (
-														<Badge variant="destructive" className="w-fit text-xs">
-															Limit Reached
-														</Badge>
-													)}
-												</div>
-											</TableCell>
-											<TableCell data-testid={`team-row-${team.name}-customer`}>
-												<div className="flex items-center gap-2">
-													<Badge variant={team.customer_id ? "secondary" : "outline"}>{customerName}</Badge>
-												</div>
-											</TableCell>
-											<TableCell className="min-w-[180px]">
-												{team.budget ? (
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<div className="space-y-2">
-																<div className="flex items-center justify-between gap-4">
-																	<span className="font-medium">{formatCurrency(team.budget.max_limit)}</span>
-																	<span className="text-muted-foreground text-xs">{formatResetDuration(team.budget.reset_duration)}</span>
-																</div>
-																<Progress
-																	value={budgetPercentage}
-																	className={cn(
-																		"bg-muted/70 dark:bg-muted/30 h-1.5",
-																		isBudgetExhausted
-																			? "[&>div]:bg-red-500/70"
-																			: budgetPercentage > 80
-																				? "[&>div]:bg-amber-500/70"
-																				: "[&>div]:bg-emerald-500/70",
-																	)}
-																/>
-															</div>
-														</TooltipTrigger>
-														<TooltipContent>
-															<p className="font-medium">
-																{formatCurrency(team.budget.current_usage)} / {formatCurrency(team.budget.max_limit)}
-															</p>
-															<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(team.budget.reset_duration)}</p>
-														</TooltipContent>
-													</Tooltip>
-												) : (
-													<span className="text-muted-foreground text-sm">-</span>
-												)}
-											</TableCell>
-											<TableCell className="min-w-[180px]">
-												{team.rate_limit ? (
-													<div className="space-y-2.5">
-														{team.rate_limit.token_max_limit && (
-															<Tooltip>
-																<TooltipTrigger asChild>
-																	<div className="space-y-1.5">
-																		<div className="flex items-center justify-between gap-4 text-xs">
-																			<span className="font-medium">{team.rate_limit.token_max_limit.toLocaleString()} tokens</span>
-																			<span className="text-muted-foreground">
-																				{formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
-																			</span>
-																		</div>
-																		<Progress
-																			value={tokenPercentage}
-																			className={cn(
-																				"bg-muted/70 dark:bg-muted/30 h-1",
-																				isTokenLimitExhausted
-																					? "[&>div]:bg-red-500/70"
-																					: tokenPercentage > 80
-																						? "[&>div]:bg-amber-500/70"
-																						: "[&>div]:bg-emerald-500/70",
-																			)}
-																		/>
-																	</div>
-																</TooltipTrigger>
-																<TooltipContent>
-																	<p className="font-medium">
-																		{team.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																		{team.rate_limit.token_max_limit.toLocaleString()} tokens
-																	</p>
-																	<p className="text-primary-foreground/80 text-xs">
-																		Resets {formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
-																	</p>
-																</TooltipContent>
-															</Tooltip>
-														)}
-														{team.rate_limit.request_max_limit && (
-															<Tooltip>
-																<TooltipTrigger asChild>
-																	<div className="space-y-1.5">
-																		<div className="flex items-center justify-between gap-4 text-xs">
-																			<span className="font-medium">{team.rate_limit.request_max_limit.toLocaleString()} req</span>
-																			<span className="text-muted-foreground">
-																				{formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
-																			</span>
-																		</div>
-																		<Progress
-																			value={requestPercentage}
-																			className={cn(
-																				"bg-muted/70 dark:bg-muted/30 h-1",
-																				isRequestLimitExhausted
-																					? "[&>div]:bg-red-500/70"
-																					: requestPercentage > 80
-																						? "[&>div]:bg-amber-500/70"
-																						: "[&>div]:bg-emerald-500/70",
-																			)}
-																		/>
-																	</div>
-																</TooltipTrigger>
-																<TooltipContent>
-																	<p className="font-medium">
-																		{team.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																		{team.rate_limit.request_max_limit.toLocaleString()} requests
-																	</p>
-																	<p className="text-primary-foreground/80 text-xs">
-																		Resets {formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
-																	</p>
-																</TooltipContent>
-															</Tooltip>
+										return (
+											<TableRow
+												key={team.id}
+												data-testid={`team-row-${team.name}`}
+												className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
+											>
+												<TableCell className="max-w-[200px] py-4">
+													<div className="flex flex-col gap-2">
+														<span className="truncate font-medium">{team.name}</span>
+														{isExhausted && (
+															<Badge variant="destructive" className="w-fit text-xs">
+																Limit Reached
+															</Badge>
 														)}
 													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">-</span>
-												)}
-											</TableCell>
-											<TableCell>
-												{vks.length > 0 ? (
+												</TableCell>
+												<TableCell data-testid={`team-row-${team.name}-customer`}>
 													<div className="flex items-center gap-2">
-														<Tooltip>
-															<TooltipTrigger>
-																<Badge variant="outline" className="text-xs">
-																	{vks.length} {vks.length === 1 ? "key" : "keys"}
-																</Badge>
-															</TooltipTrigger>
-															<TooltipContent>{vks.map((vk) => vk.name).join(", ")}</TooltipContent>
-														</Tooltip>
+														<Badge variant={team.customer_id ? "secondary" : "outline"}>{customerName}</Badge>
 													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">-</span>
-												)}
-											</TableCell>
-											<TableCell className="text-right">
-												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-													<Button
-														variant="ghost"
-														size="icon"
-														className="h-8 w-8"
-														onClick={() => handleEditTeam(team)}
-														disabled={!hasUpdateAccess}
-														aria-label={`Edit team ${team.name}`}
-														data-testid={`team-edit-btn-${team.name}`}
-													>
-														<Edit className="h-4 w-4" />
-													</Button>
-													<AlertDialog>
-														<AlertDialogTrigger asChild>
-															<Button
-																variant="ghost"
-																size="icon"
-																className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																disabled={!hasDeleteAccess}
-																aria-label={`Delete team ${team.name}`}
-																data-testid={`team-delete-btn-${team.name}`}
-															>
-																<Trash2 className="h-4 w-4" />
-															</Button>
-														</AlertDialogTrigger>
-														<AlertDialogContent>
-															<AlertDialogHeader>
-																<AlertDialogTitle>Delete Team</AlertDialogTitle>
-																<AlertDialogDescription>
-																	Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from
-																	this team. This action cannot be undone.
-																</AlertDialogDescription>
-															</AlertDialogHeader>
-															<AlertDialogFooter>
-																<AlertDialogCancel>Cancel</AlertDialogCancel>
-																<AlertDialogAction
-																	onClick={() => handleDelete(team.id)}
-																	disabled={isDeleting}
-																	className="bg-red-600 hover:bg-red-700"
+												</TableCell>
+												<TableCell className="min-w-[180px]">
+													{team.budget ? (
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<div className="space-y-2">
+																	<div className="flex items-center justify-between gap-4">
+																		<span className="font-medium">{formatCurrency(team.budget.max_limit)}</span>
+																		<span className="text-muted-foreground text-xs">{formatResetDuration(team.budget.reset_duration)}</span>
+																	</div>
+																	<Progress
+																		value={budgetPercentage}
+																		className={cn(
+																			"bg-muted/70 dark:bg-muted/30 h-1.5",
+																			isBudgetExhausted
+																				? "[&>div]:bg-red-500/70"
+																				: budgetPercentage > 80
+																					? "[&>div]:bg-amber-500/70"
+																					: "[&>div]:bg-emerald-500/70",
+																		)}
+																	/>
+																</div>
+															</TooltipTrigger>
+															<TooltipContent>
+																<p className="font-medium">
+																	{formatCurrency(team.budget.current_usage)} / {formatCurrency(team.budget.max_limit)}
+																</p>
+																<p className="text-primary-foreground/80 text-xs">
+																	Resets {formatResetDuration(team.budget.reset_duration)}
+																</p>
+															</TooltipContent>
+														</Tooltip>
+													) : (
+														<span className="text-muted-foreground text-sm">-</span>
+													)}
+												</TableCell>
+												<TableCell className="min-w-[180px]">
+													{team.rate_limit ? (
+														<div className="space-y-2.5">
+															{team.rate_limit.token_max_limit && (
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<div className="space-y-1.5">
+																			<div className="flex items-center justify-between gap-4 text-xs">
+																				<span className="font-medium">{team.rate_limit.token_max_limit.toLocaleString()} tokens</span>
+																				<span className="text-muted-foreground">
+																					{formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
+																				</span>
+																			</div>
+																			<Progress
+																				value={tokenPercentage}
+																				className={cn(
+																					"bg-muted/70 dark:bg-muted/30 h-1",
+																					isTokenLimitExhausted
+																						? "[&>div]:bg-red-500/70"
+																						: tokenPercentage > 80
+																							? "[&>div]:bg-amber-500/70"
+																							: "[&>div]:bg-emerald-500/70",
+																				)}
+																			/>
+																		</div>
+																	</TooltipTrigger>
+																	<TooltipContent>
+																		<p className="font-medium">
+																			{team.rate_limit.token_current_usage.toLocaleString()} /{" "}
+																			{team.rate_limit.token_max_limit.toLocaleString()} tokens
+																		</p>
+																		<p className="text-primary-foreground/80 text-xs">
+																			Resets {formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															)}
+															{team.rate_limit.request_max_limit && (
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<div className="space-y-1.5">
+																			<div className="flex items-center justify-between gap-4 text-xs">
+																				<span className="font-medium">{team.rate_limit.request_max_limit.toLocaleString()} req</span>
+																				<span className="text-muted-foreground">
+																					{formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
+																				</span>
+																			</div>
+																			<Progress
+																				value={requestPercentage}
+																				className={cn(
+																					"bg-muted/70 dark:bg-muted/30 h-1",
+																					isRequestLimitExhausted
+																						? "[&>div]:bg-red-500/70"
+																						: requestPercentage > 80
+																							? "[&>div]:bg-amber-500/70"
+																							: "[&>div]:bg-emerald-500/70",
+																				)}
+																			/>
+																		</div>
+																	</TooltipTrigger>
+																	<TooltipContent>
+																		<p className="font-medium">
+																			{team.rate_limit.request_current_usage.toLocaleString()} /{" "}
+																			{team.rate_limit.request_max_limit.toLocaleString()} requests
+																		</p>
+																		<p className="text-primary-foreground/80 text-xs">
+																			Resets {formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															)}
+														</div>
+													) : (
+														<span className="text-muted-foreground text-sm">-</span>
+													)}
+												</TableCell>
+												<TableCell>
+													{vks.length > 0 ? (
+														<div className="flex items-center gap-2">
+															<Tooltip>
+																<TooltipTrigger>
+																	<Badge variant="outline" className="text-xs">
+																		{vks.length} {vks.length === 1 ? "key" : "keys"}
+																	</Badge>
+																</TooltipTrigger>
+																<TooltipContent>{vks.map((vk) => vk.name).join(", ")}</TooltipContent>
+															</Tooltip>
+														</div>
+													) : (
+														<span className="text-muted-foreground text-sm">-</span>
+													)}
+												</TableCell>
+												<TableCell className="text-right">
+													<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+														<Button
+															variant="ghost"
+															size="icon"
+															className="h-8 w-8"
+															onClick={() => handleEditTeam(team)}
+															disabled={!hasUpdateAccess}
+															aria-label={`Edit team ${team.name}`}
+															data-testid={`team-edit-btn-${team.name}`}
+														>
+															<Edit className="h-4 w-4" />
+														</Button>
+														<AlertDialog>
+															<AlertDialogTrigger asChild>
+																<Button
+																	variant="ghost"
+																	size="icon"
+																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+																	disabled={!hasDeleteAccess}
+																	aria-label={`Delete team ${team.name}`}
+																	data-testid={`team-delete-btn-${team.name}`}
 																>
-																	{isDeleting ? "Deleting..." : "Delete"}
-																</AlertDialogAction>
-															</AlertDialogFooter>
-														</AlertDialogContent>
-													</AlertDialog>
-												</div>
-											</TableCell>
-										</TableRow>
-									);
-								})
+																	<Trash2 className="h-4 w-4" />
+																</Button>
+															</AlertDialogTrigger>
+															<AlertDialogContent>
+																<AlertDialogHeader>
+																	<AlertDialogTitle>Delete Team</AlertDialogTitle>
+																	<AlertDialogDescription>
+																		Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from
+																		this team. This action cannot be undone.
+																	</AlertDialogDescription>
+																</AlertDialogHeader>
+																<AlertDialogFooter>
+																	<AlertDialogCancel>Cancel</AlertDialogCancel>
+																	<AlertDialogAction
+																		onClick={() => handleDelete(team.id)}
+																		disabled={isDeleting}
+																		className="bg-red-600 hover:bg-red-700"
+																	>
+																		{isDeleting ? "Deleting..." : "Delete"}
+																	</AlertDialogAction>
+																</AlertDialogFooter>
+															</AlertDialogContent>
+														</AlertDialog>
+													</div>
+												</TableCell>
+											</TableRow>
+										);
+									})
 								)}
 							</TableBody>
 						</Table>

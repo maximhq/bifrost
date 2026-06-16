@@ -1,0 +1,276 @@
+---
+title: "Client Configuration"
+description: "Configure the Bifrost client in config.json — connection pool, logging, CORS, header filtering, compat shims, and MCP settings"
+icon: "gear"
+---
+
+The `client` block controls how Bifrost manages its internal worker pool, request logging, authentication enforcement, header policies, SDK compatibility shims, and MCP agent behaviour.
+
+---
+
+## Connection Pool
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `initial_pool_size` | integer | `300` | Pre-allocated worker goroutines per provider queue |
+| `drop_excess_requests` | boolean | `false` | Drop requests when queue is full instead of waiting (returns HTTP 429) |
+
+A larger pool reduces latency spikes under burst load at the cost of higher baseline memory. `500–1000` is a common starting point for production workloads with multiple providers.
+
+```json
+{
+  "client": {
+    "initial_pool_size": 1000,
+    "drop_excess_requests": true
+  }
+}
+```
+
+---
+
+## Request & Response Logging
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enable_logging` | boolean | — | Log all LLM requests and responses |
+| `disable_content_logging` | boolean | `false` | Strip message content from logs (keeps metadata only) |
+| `log_retention_days` | integer | `365` | Days to retain log entries in the store |
+| `logging_headers` | array of strings | `[]` | HTTP request headers to capture in log metadata |
+
+Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where message content must not be persisted.
+
+```json
+{
+  "client": {
+    "enable_logging": true,
+    "disable_content_logging": true,
+    "log_retention_days": 90,
+    "logging_headers": ["x-request-id", "x-user-id"]
+  }
+}
+```
+
+---
+
+## Security & CORS
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `allowed_origins` | array | `["*"]` | CORS allowed origins (use URIs or `"*"`) |
+| `allow_direct_keys` | boolean | `false` | Allow callers to pass provider keys directly in requests |
+| `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes |
+| `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB |
+| `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
+| `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |
+
+```json
+{
+  "client": {
+    "allowed_origins": [
+      "https://app.yourcompany.com",
+      "https://admin.yourcompany.com"
+    ],
+    "allow_direct_keys": false,
+    "enforce_auth_on_inference": true,
+    "max_request_body_size_mb": 50,
+    "whitelisted_routes": ["/health", "/metrics"]
+  }
+}
+```
+
+---
+
+## Header Filtering
+
+Controls which `x-bf-eh-*` extra headers are forwarded to upstream LLM providers.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `header_filter_config.allowlist` | array of strings | `[]` | Only these headers are forwarded (whitelist mode) |
+| `header_filter_config.denylist` | array of strings | `[]` | These headers are always blocked |
+| `required_headers` | array of strings | `[]` | Headers that must be present on every request (rejected with 400 if missing) |
+
+When both `allowlist` and `denylist` are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode — only listed headers are forwarded.
+
+```json
+{
+  "client": {
+    "header_filter_config": {
+      "allowlist": [
+        "x-bf-eh-anthropic-version",
+        "x-bf-eh-openai-beta"
+      ],
+      "denylist": []
+    },
+    "required_headers": ["x-request-id"]
+  }
+}
+```
+
+---
+
+## Compat Shims
+
+Compatibility flags that let Bifrost silently adapt request/response shapes for SDK integrations.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `compat.convert_text_to_chat` | boolean | `false` | Wrap legacy `/v1/completions` text requests as chat messages |
+| `compat.convert_chat_to_responses` | boolean | `false` | Translate chat completions to Responses API format |
+| `compat.should_drop_params` | boolean | `false` | Silently drop unsupported parameters instead of erroring |
+| `compat.should_convert_params` | boolean | `false` | Auto-convert parameter values across provider schemas |
+
+```json
+{
+  "client": {
+    "compat": {
+      "should_drop_params": true,
+      "convert_text_to_chat": true
+    }
+  }
+}
+```
+
+---
+
+## MCP Agent Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mcp_agent_depth` | integer | `10` | Maximum tool-call recursion depth for MCP agent mode |
+| `mcp_tool_execution_timeout` | integer | `30` | Timeout per MCP tool execution in seconds |
+| `mcp_code_mode_binding_level` | string | — | Code mode binding level: `"server"` or `"tool"` |
+| `mcp_tool_sync_interval` | integer | `10` | Global tool sync interval in minutes (`0` = disabled) |
+| `mcp_disable_auto_tool_inject` | boolean | `false` | When `true`, MCP tools are not automatically injected into requests |
+
+```json
+{
+  "client": {
+    "mcp_agent_depth": 15,
+    "mcp_tool_execution_timeout": 60,
+    "mcp_tool_sync_interval": 10
+  }
+}
+```
+
+---
+
+## Async Jobs
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `async_job_result_ttl` | integer | `3600` | TTL (seconds) for async job results |
+| `disable_db_pings_in_health` | boolean | `false` | Exclude database connectivity from `/health` endpoint checks |
+
+---
+
+## Prometheus Labels
+
+Add custom labels to every Prometheus metric emitted by Bifrost:
+
+```json
+{
+  "client": {
+    "prometheus_labels": ["environment=production", "region=us-east-1"]
+  }
+}
+```
+
+---
+
+## Authentication
+
+`governance.auth_config` protects the Bifrost dashboard and management API with username/password auth.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `is_enabled` | boolean | `false` | Enable username/password auth |
+| `admin_username` | string | — | Admin username |
+| `admin_password` | string | — | Admin password (use `env.` reference) |
+| `disable_auth_on_inference` | boolean | `false` | Skip auth check on `/v1/*` inference routes |
+
+```json
+{
+  "governance": {
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "disable_auth_on_inference": false
+    }
+  }
+}
+```
+
+<Note>
+A top-level `auth_config` is also accepted for backwards compatibility, but `governance.auth_config` is the preferred location.
+</Note>
+
+---
+
+## Encryption Key
+
+```json
+{
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY"
+}
+```
+
+| Notes |
+|-------|
+| Accepts any string; Bifrost derives a 32-byte AES-256 key using Argon2id |
+| Can also be set via the `BIFROST_ENCRYPTION_KEY` environment variable |
+| Once set and the database is populated, the key cannot be changed without clearing the database |
+| Omitting the key stores data in plain text — not recommended for production |
+
+---
+
+## Full Example
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "governance": {
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "disable_auth_on_inference": false
+    }
+  },
+
+  "client": {
+    "initial_pool_size": 1000,
+    "drop_excess_requests": true,
+
+    "enable_logging": true,
+    "disable_content_logging": false,
+    "log_retention_days": 90,
+    "logging_headers": ["x-request-id", "x-user-id"],
+
+    "allowed_origins": ["https://app.yourcompany.com"],
+    "allow_direct_keys": false,
+    "enforce_auth_on_inference": true,
+    "max_request_body_size_mb": 100,
+
+    "header_filter_config": {
+      "allowlist": [],
+      "denylist": []
+    },
+    "required_headers": [],
+
+    "compat": {
+      "should_drop_params": false
+    },
+
+    "prometheus_labels": ["environment=production"],
+
+    "mcp_agent_depth": 10,
+    "mcp_tool_execution_timeout": 30,
+
+    "async_job_result_ttl": 3600
+  }
+}
+```

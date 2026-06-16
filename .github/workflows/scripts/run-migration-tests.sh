@@ -1410,7 +1410,6 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_client SET enable_litellm_fallbacks = false WHERE id = 1;" >> "$output_file"
   fi
 
-  # governance_model_pricing flex tier columns (added in v1.4.22)
   if column_exists_postgres "governance_model_pricing" "input_cost_per_token_flex"; then
     echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 1;" >> "$output_file"
     echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 2;" >> "$output_file"
@@ -2038,6 +2037,22 @@ append_dynamic_columns_sqlite() {
     if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_read_input_token_cost_above_272k_tokens_priority"; then
       echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # -------------------------------------------------------------------------
+    # v1.4.22 columns - governance_model_pricing flex tier pricing
+    # -------------------------------------------------------------------------
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_flex"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_flex"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_flex = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_flex = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_read_input_token_cost_flex"; then
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_flex = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_flex = NULL WHERE id = 2;" >> "$output_file"
     fi
   fi
 

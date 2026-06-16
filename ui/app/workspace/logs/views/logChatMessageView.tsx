@@ -1,21 +1,21 @@
-import { ChatMessage, ContentBlock } from "@/lib/types/logs"
-import { cleanJson, isJson } from "@/lib/utils/validation"
-import AudioPlayer from "./audioPlayer"
-import CollapsibleBox from "./collapsibleBox"
-import { CodeEditor } from "@/components/ui/codeEditor"
+import { CodeEditor } from "@/components/ui/codeEditor";
+import { ChatMessage, ContentBlock } from "@/lib/types/logs";
+import { cleanJson, isJson } from "@/lib/utils/validation";
+import AudioPlayer from "./audioPlayer";
+import CollapsibleBox from "./collapsibleBox";
 
 interface LogChatMessageViewProps {
-	message: ChatMessage
-	audioFormat?: string // Optional audio format from request params
+	message: ChatMessage;
+	audioFormat?: string; // Optional audio format from request params
 }
 
-function ContentBlockView({ block, index }: { block: ContentBlock; index: number }) {
-	const blockType = block.type.replaceAll("_", " ")
+function ContentBlockView({ block }: { block: ContentBlock; index: number }) {
+	const blockType = block.type.replaceAll("_", " ");
 
 	// Handle text content
 	if (block.text) {
 		if (isJson(block.text)) {
-			const jsonContent = JSON.stringify(cleanJson(block.text), null, 2)
+			const jsonContent = JSON.stringify(cleanJson(block.text), null, 2);
 			return (
 				<CollapsibleBox title={blockType} onCopy={() => jsonContent} collapsedHeight={100}>
 					<CodeEditor
@@ -29,18 +29,20 @@ function ContentBlockView({ block, index }: { block: ContentBlock; index: number
 						options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 					/>
 				</CollapsibleBox>
-			)
+			);
 		}
 		return (
 			<CollapsibleBox title={blockType} onCopy={() => block.text || ""} collapsedHeight={100}>
-				<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{block.text}</div>
+				<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+					{block.text}
+				</div>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle image content
 	if (block.image_url) {
-		const jsonContent = JSON.stringify(block.image_url, null, 2)
+		const jsonContent = JSON.stringify(block.image_url, null, 2);
 		return (
 			<CollapsibleBox title={blockType} onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
@@ -54,12 +56,12 @@ function ContentBlockView({ block, index }: { block: ContentBlock; index: number
 					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 				/>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle audio content
 	if (block.input_audio) {
-		const jsonContent = JSON.stringify(block.input_audio, null, 2)
+		const jsonContent = JSON.stringify(block.input_audio, null, 2);
 		return (
 			<CollapsibleBox title={blockType} onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
@@ -73,10 +75,10 @@ function ContentBlockView({ block, index }: { block: ContentBlock; index: number
 					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 				/>
 			</CollapsibleBox>
-		)
+		);
 	}
 
-	return null
+	return null;
 }
 
 export default function LogChatMessageView({ message, audioFormat }: LogChatMessageViewProps) {
@@ -132,7 +134,9 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 						</CollapsibleBox>
 					) : (
 						<CollapsibleBox title="Refusal" onCopy={() => message.refusal || ""} collapsedHeight={100}>
-							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap text-red-800">{message.refusal}</div>
+							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap text-red-800">
+								{message.refusal}
+							</div>
 						</CollapsibleBox>
 					)}
 				</>
@@ -144,7 +148,11 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 					{typeof message.content === "string" ? (
 						<>
 							{isJson(message.content) ? (
-								<CollapsibleBox title="Content" onCopy={() => JSON.stringify(cleanJson(message.content as string), null, 2)} collapsedHeight={100}>
+								<CollapsibleBox
+									title="Content"
+									onCopy={() => JSON.stringify(cleanJson(message.content as string), null, 2)}
+									collapsedHeight={100}
+								>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
@@ -158,7 +166,9 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 								</CollapsibleBox>
 							) : (
 								<CollapsibleBox title="Content" onCopy={() => (message.content as string) || ""} collapsedHeight={100}>
-									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{message.content}</div>
+									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+										{message.content}
+									</div>
 								</CollapsibleBox>
 							)}
 						</>
@@ -173,7 +183,7 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 			{message.tool_calls && message.tool_calls.length > 0 && (
 				<>
 					{message.tool_calls.map((toolCall, index) => {
-						const jsonContent = JSON.stringify(toolCall, null, 2)
+						const jsonContent = JSON.stringify(toolCall, null, 2);
 						return (
 							<CollapsibleBox key={index} title={`Tool Call #${index + 1}`} onCopy={() => jsonContent} collapsedHeight={100}>
 								<CodeEditor
@@ -187,7 +197,7 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 								/>
 							</CollapsibleBox>
-						)
+						);
 					})}
 				</>
 			)}
@@ -236,5 +246,5 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 				</CollapsibleBox>
 			)}
 		</div>
-	)
+	);
 }

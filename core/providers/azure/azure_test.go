@@ -78,8 +78,10 @@ func TestAzure(t *testing.T) {
 			VideoRemix:                 false,
 			VideoList:                  false,
 			VideoDelete:                false,
-			InterleavedThinking:        true,
-			PassthroughAPI:             true,
+			InterleavedThinking:          true,
+			PassthroughAPI:               true,
+			EagerInputStreaming:          true, // fine-grained-tool-streaming-2025-05-14 (Beta on Azure Foundry)
+			ServerToolsViaOpenAIEndpoint: true, // web_search / web_fetch / code_execution on Azure per Table 20
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}

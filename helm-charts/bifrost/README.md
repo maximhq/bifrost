@@ -4,11 +4,16 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.18-rc.1
+**Latest Version:** 2.1.1
 
 ## Changelog
 
-### v2.0.18-rc.1 (prerelease)
+### v2.1.1
+
+- Made `bifrost.governance.virtualKeys[].value` optional — template no longer fails when the field is omitted, allowing the backend to auto-generate the virtual key value
+- When `value` is absent, the rendered `config.json` omits the field entirely (consistent with other optional VK fields)
+
+### v2.1.0-prerelease2 (prerelease)
 
 - Synced helm `values.schema.json` with transport `config.schema.json` — fixed virtual key and budget drift:
   - Removed `required: [mcp_client_id]` constraint on `virtualKeys[].mcp_configs[]` items — canonical schema accepts either `mcp_client_id` (DB form) or `mcp_client_name` (config-file form, resolved to ID at startup)
@@ -469,6 +474,43 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80
 ```
 
+### Referencing Secrets in MCP Headers
+
+`bifrost.mcp.clientConfigs[].headers` is a free-form `map<string, string>`
+whose values can contain auth tokens. The chart does not wrap this map with
+a bespoke `secretRef` — a per-header dict would explode the values surface.
+Instead, use the standard pattern:
+
+1. Write `env.MY_HEADER_VAR` as the header value in `values.yaml`:
+   ```yaml
+   bifrost:
+     mcp:
+       clientConfigs:
+         - name: "my-mcp"
+           connectionType: "http"
+           headers:
+             Authorization: "env.MY_MCP_AUTH"
+   ```
+2. Inject the env var into the pod via the chart's top-level `envFrom:` or
+   `env:` pass-through — e.g., in `values.yaml`:
+   ```yaml
+   envFrom:
+     - secretRef:
+         name: my-mcp-auth-secret
+   # OR:
+   env:
+     - name: MY_MCP_AUTH
+       valueFrom:
+         secretKeyRef:
+           name: my-mcp-auth-secret
+           key: authorization
+   ```
+
+For `bifrost.mcp.clientConfigs[].connectionString` itself, prefer the
+chart-native `secretRef` (`name` + `connectionStringKey`) instead — the
+chart will inject `BIFROST_MCP_<NAME>_CONNECTION_STRING` and rewrite the
+config automatically.
+
 ## Example Configurations
 
 The chart includes pre-configured examples in `values-examples/`:
@@ -632,7 +674,7 @@ bifrost:
       config:
         service_name: "bifrost"
         collector_url: "http://otel-collector:4317"
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
 ```
 

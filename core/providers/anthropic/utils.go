@@ -14,6 +14,77 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// anthropicToolTypePrefixToFeature maps Anthropic server-tool type prefixes
+// to the corresponding ProviderFeatureSupport flag. Mirrors the structure of
+// betaHeaderPrefixToFeature (defined later in this file) so tool-type gating
+// and beta-header gating share the same shape.
+//
+// Prefix-based so future version bumps (e.g. web_search_20261231) flow
+// through without a code change. Exact-match types (currently just
+// "mcp_toolset") are handled separately.
+var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
+	"web_search_":       func(f ProviderFeatureSupport) bool { return f.WebSearch },
+	"web_fetch_":        func(f ProviderFeatureSupport) bool { return f.WebFetch },
+	"code_execution_":   func(f ProviderFeatureSupport) bool { return f.CodeExecution },
+	"computer_":         func(f ProviderFeatureSupport) bool { return f.ComputerUse },
+	"bash_":             func(f ProviderFeatureSupport) bool { return f.Bash },
+	"memory_":           func(f ProviderFeatureSupport) bool { return f.Memory },
+	"text_editor_":      func(f ProviderFeatureSupport) bool { return f.TextEditor },
+	"tool_search_tool_": func(f ProviderFeatureSupport) bool { return f.ToolSearch },
+}
+
+// isAnthropicServerToolSupported returns whether the given Anthropic server-tool
+// type string is supported by the provider's ProviderFeatureSupport. Unknown
+// types return true (forward-compat: let the provider reject if truly invalid
+// rather than Bifrost dropping a tool Anthropic has just added).
+func isAnthropicServerToolSupported(toolType string, features ProviderFeatureSupport) bool {
+	// Exact-match types first.
+	if toolType == "mcp_toolset" {
+		return features.MCP
+	}
+	// Prefix match for versioned types.
+	for prefix, check := range anthropicToolTypePrefixToFeature {
+		if strings.HasPrefix(toolType, prefix) {
+			return check(features)
+		}
+	}
+	return true
+}
+
+// ValidateChatToolsForProvider is the chat-path mirror of
+// ValidateToolsForProvider. It partitions []schemas.ChatTool into a keep-set
+// (function/custom tools + server tools supported on the target provider)
+// and a dropped-set (server-tool Type strings the provider doesn't support
+// per ProviderFeatures).
+//
+// Does NOT mutate its input. Callers decide the policy (silent strip vs
+// fail-fast). The Bedrock ChatCompletion path uses silent strip so the
+// request still reaches the provider without the unsupported tool; the model
+// responds with a prose completion instead of tool use.
+//
+// Unknown providers keep all tools (safe default for custom providers),
+// matching ValidateToolsForProvider.
+func ValidateChatToolsForProvider(tools []schemas.ChatTool, provider schemas.ModelProvider) (keep []schemas.ChatTool, dropped []string) {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return tools, nil
+	}
+	for _, tool := range tools {
+		// Function/custom tools are universal — always keep.
+		if tool.Function != nil || tool.Custom != nil {
+			keep = append(keep, tool)
+			continue
+		}
+		t := string(tool.Type)
+		if isAnthropicServerToolSupported(t, features) {
+			keep = append(keep, tool)
+		} else {
+			dropped = append(dropped, t)
+		}
+	}
+	return keep, dropped
+}
+
 // ValidateToolsForProvider checks if all tools in the request are supported by the given provider.
 // Returns an error for the first unsupported tool found.
 func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) error {
@@ -90,6 +161,448 @@ var (
 	}
 )
 
+// stripUnsupportedAnthropicFields removes request-level and tool-level fields
+// that the target Anthropic-family provider does not support, according to the
+// ProviderFeatures map (types.go). Tool-type validation (fail-closed) is handled
+// separately by ValidateToolsForProvider; this helper handles request-level
+// fields (strip silently, since they're additive enhancements).
+//
+// Mutates req in place. Safe to call multiple times.
+func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider schemas.ModelProvider, model string) {
+	if req == nil {
+		return
+	}
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		// Unknown provider — safe default: don't strip anything.
+		return
+	}
+
+	// Request-level fields gated by ProviderFeatures flags.
+	if req.Container != nil {
+		// Skills form (object with skills[]) is beta-gated; bare string id is universal.
+		// Intent signal: non-empty skills = caller explicitly wants skills; empty
+		// skills:[] = likely caller oversight we can silently correct.
+		hasSkills := req.Container.ContainerObject != nil && len(req.Container.ContainerObject.Skills) > 0
+		// Strip an explicit empty or non-empty skills array on Skills=false
+		// providers. omitempty already handles this at serialize time for empty
+		// arrays, but we clear it explicitly so hasSkills-based decisions below
+		// and raw-path parity both stay correct.
+		if !features.Skills && req.Container.ContainerObject != nil && req.Container.ContainerObject.Skills != nil {
+			req.Container.ContainerObject.Skills = nil
+		}
+		switch {
+		case hasSkills && !features.Skills:
+			// Caller wanted non-empty skills but provider doesn't support them.
+			req.Container = nil
+		case !hasSkills && !features.ContainerBasic:
+			req.Container = nil
+		}
+	}
+	if len(req.MCPServers) > 0 && !features.MCP {
+		req.MCPServers = nil
+	}
+	// Speed is both provider-gated (FastMode flag) and model-gated
+	// (Opus 4.6 only per SupportsFastMode). Strip if either gate fails —
+	// Anthropic's API rejects speed:"fast" on non-Opus-4.6 models with a 400.
+	if req.Speed != nil && (!features.FastMode || !SupportsFastMode(model)) {
+		req.Speed = nil
+	}
+	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil && !features.TaskBudgets {
+		req.OutputConfig.TaskBudget = nil
+		// Clean up an empty OutputConfig so it doesn't serialize as {}
+		if req.OutputConfig.Format == nil && req.OutputConfig.Effort == nil {
+			req.OutputConfig = nil
+		}
+	}
+	if req.InferenceGeo != nil && !features.InferenceGeo {
+		req.InferenceGeo = nil
+	}
+	// cache_control.scope — strip on providers without PromptCachingScope
+	// support at every slot scope can live: top-level request, tools, system
+	// blocks, and message content blocks. Vertex additionally uses the
+	// marshal-time SetStripCacheControlScope mechanism (vertex/utils.go:104,
+	// types.go MarshalJSON); after this strip runs, that marshal-time pass
+	// becomes a safe no-op for Vertex (nothing left to strip).
+	if !features.PromptCachingScope {
+		// Top-level.
+		if req.CacheControl != nil && req.CacheControl.Scope != nil {
+			req.CacheControl.Scope = nil
+			// If scope was the only meaningful field, drop the whole CacheControl
+			// so we don't serialize an empty object.
+			if req.CacheControl.TTL == nil && req.CacheControl.Type == "" {
+				req.CacheControl = nil
+			}
+		}
+		// Per-tool cache_control.scope.
+		for i := range req.Tools {
+			if req.Tools[i].CacheControl != nil && req.Tools[i].CacheControl.Scope != nil {
+				req.Tools[i].CacheControl.Scope = nil
+				// Drop the parent if scope was the only meaningful field.
+				if req.Tools[i].CacheControl.TTL == nil && req.Tools[i].CacheControl.Type == "" {
+					req.Tools[i].CacheControl = nil
+				}
+			}
+		}
+		// System block scopes.
+		if req.System != nil {
+			for i := range req.System.ContentBlocks {
+				if req.System.ContentBlocks[i].CacheControl != nil && req.System.ContentBlocks[i].CacheControl.Scope != nil {
+					req.System.ContentBlocks[i].CacheControl.Scope = nil
+					if req.System.ContentBlocks[i].CacheControl.TTL == nil && req.System.ContentBlocks[i].CacheControl.Type == "" {
+						req.System.ContentBlocks[i].CacheControl = nil
+					}
+				}
+			}
+		}
+		// Message block scopes.
+		for mi := range req.Messages {
+			for ci := range req.Messages[mi].Content.ContentBlocks {
+				cc := req.Messages[mi].Content.ContentBlocks[ci].CacheControl
+				if cc != nil && cc.Scope != nil {
+					cc.Scope = nil
+					if cc.TTL == nil && cc.Type == "" {
+						req.Messages[mi].Content.ContentBlocks[ci].CacheControl = nil
+					}
+				}
+			}
+		}
+	}
+	if req.ContextManagement != nil {
+		// Gate edits by their type — compaction vs context-editing flags.
+		kept := make([]ContextManagementEdit, 0, len(req.ContextManagement.Edits))
+		for _, edit := range req.ContextManagement.Edits {
+			switch edit.Type {
+			case ContextManagementEditTypeCompact:
+				if features.Compaction {
+					kept = append(kept, edit)
+				}
+			case ContextManagementEditTypeClearToolUses, ContextManagementEditTypeClearThinking:
+				if features.ContextEditing {
+					kept = append(kept, edit)
+				}
+			default:
+				// Unknown edit type — keep and let upstream reject.
+				kept = append(kept, edit)
+			}
+		}
+		if len(kept) == 0 {
+			req.ContextManagement = nil
+		} else {
+			req.ContextManagement.Edits = kept
+		}
+	}
+
+	// Tool-level flags — strip per-tool without dropping the tool itself.
+	for i := range req.Tools {
+		tool := &req.Tools[i]
+		if tool.DeferLoading != nil && !features.AdvancedToolUse {
+			tool.DeferLoading = nil
+		}
+		if len(tool.AllowedCallers) > 0 && !features.AdvancedToolUse {
+			tool.AllowedCallers = nil
+		}
+		// InputExamples has its own feature flag (InputExamples) because
+		// Bedrock supports the tool-examples-2025-10-29 header standalone —
+		// without the full advanced-tool-use-2025-11-20 bundle. On Anthropic
+		// and Azure, the bundle flag (AdvancedToolUse) is also set, so either
+		// gate would work there.
+		if len(tool.InputExamples) > 0 && !features.InputExamples {
+			tool.InputExamples = nil
+		}
+		if tool.EagerInputStreaming != nil && !features.EagerInputStreaming {
+			tool.EagerInputStreaming = nil
+		}
+		if tool.Strict != nil && !features.StructuredOutputs {
+			tool.Strict = nil
+		}
+	}
+}
+
+// stripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
+// StripUnsupportedAnthropicFields. It mutates the request body bytes using
+// sjson/gjson (preserving key order for prompt caching) so the raw-body
+// passthrough path has behavioural parity with the typed conversion path.
+//
+// Scope: every field the typed helper handles.
+//   - top-level: speed (provider + model gated), container (.skills gated by
+//     features.Skills, bare string by features.ContainerBasic), mcp_servers,
+//     inference_geo, cache_control.scope, output_config.task_budget,
+//     context_management.edits[] (gated per edit type).
+//   - nested: tool.CacheControl.Scope, system block scopes, message block
+//     scopes (all stripped when !features.PromptCachingScope).
+//   - per-tool: defer_loading, allowed_callers (AdvancedToolUse bundle),
+//     input_examples (narrow InputExamples flag), eager_input_streaming
+//     (EagerInputStreaming), strict (StructuredOutputs).
+//
+// Unknown providers: safe default — no stripping (parity with the typed helper).
+// Unknown edit types in context_management: left in place for the provider
+// to reject (parity with the typed helper).
+func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+	if len(jsonBody) == 0 {
+		return jsonBody, nil
+	}
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return jsonBody, nil
+	}
+
+	// Fall back to body-embedded model when caller didn't pass one.
+	if model == "" {
+		if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
+			model = modelResult.String()
+		}
+	}
+
+	var err error
+
+	// speed — provider AND model gate
+	if providerUtils.JSONFieldExists(jsonBody, "speed") {
+		if !features.FastMode || !SupportsFastMode(model) {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "speed")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw speed: %w", err)
+			}
+		}
+	}
+
+	// inference_geo
+	if !features.InferenceGeo && providerUtils.JSONFieldExists(jsonBody, "inference_geo") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "inference_geo")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw inference_geo: %w", err)
+		}
+	}
+
+	// mcp_servers
+	if !features.MCP && providerUtils.JSONFieldExists(jsonBody, "mcp_servers") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "mcp_servers")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw mcp_servers: %w", err)
+		}
+	}
+
+	// container — two variants: bare string id (ContainerBasic), or object
+	// {id, skills[]} where skills require Skills flag.
+	// Distinguishes three states: no skills field (bare form), skills:[] (empty
+	// array — caller oversight, silently strip), skills:[…] (non-empty — caller
+	// explicitly wants skills). Mirrors the typed path's hybrid decision.
+	if containerResult := providerUtils.GetJSONField(jsonBody, "container"); containerResult.Exists() {
+		hasSkillsField, hasNonEmptySkills := false, false
+		if containerResult.IsObject() {
+			if skills := containerResult.Get("skills"); skills.Exists() {
+				hasSkillsField = true
+				if skills.IsArray() && len(skills.Array()) > 0 {
+					hasNonEmptySkills = true
+				}
+			}
+		}
+		// Always strip the skills key on Skills=false providers — critical on
+		// the raw path since bytes flow directly to the provider and an
+		// explicit empty array would still be rejected as unknown field.
+		if !features.Skills && hasSkillsField {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "container.skills")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw container.skills: %w", err)
+			}
+		}
+		drop := false
+		switch {
+		case hasNonEmptySkills:
+			drop = !features.Skills
+		default:
+			drop = !features.ContainerBasic
+		}
+		if drop {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "container")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw container: %w", err)
+			}
+		}
+	}
+
+	// output_config.task_budget
+	if !features.TaskBudgets && providerUtils.JSONFieldExists(jsonBody, "output_config.task_budget") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.task_budget")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw output_config.task_budget: %w", err)
+		}
+		// Drop an empty parent so we don't serialize output_config:{} (matches
+		// typed-path behavior at lines 129-134).
+		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw output_config: %w", err)
+			}
+		}
+	}
+
+	// top-level cache_control.scope
+	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control.scope")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw cache_control.scope: %w", err)
+		}
+		// Drop an empty parent so we don't serialize cache_control:{} (matches
+		// typed-path behavior at lines 147-153).
+		if cc := providerUtils.GetJSONField(jsonBody, "cache_control"); cc.IsObject() && len(cc.Map()) == 0 {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw cache_control: %w", err)
+			}
+		}
+	}
+
+	// context_management.edits[] — gate per edit.type.
+	if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
+		edits := editsResult.Array()
+		// Collect indices to drop (iterate forwards, delete in reverse).
+		dropIndices := []int{}
+		for i, edit := range edits {
+			editType := edit.Get("type").String()
+			keep := true
+			switch editType {
+			case string(ContextManagementEditTypeCompact):
+				keep = features.Compaction
+			case string(ContextManagementEditTypeClearToolUses), string(ContextManagementEditTypeClearThinking):
+				keep = features.ContextEditing
+			}
+			if !keep {
+				dropIndices = append(dropIndices, i)
+			}
+		}
+		if len(dropIndices) == len(edits) && len(edits) > 0 {
+			// All edits unsupported — drop the whole context_management.
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw context_management: %w", err)
+			}
+		} else {
+			for i := len(dropIndices) - 1; i >= 0; i-- {
+				path := fmt.Sprintf("context_management.edits.%d", dropIndices[i])
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+				if err != nil {
+					return nil, fmt.Errorf("strip raw context_management.edits[%d]: %w", dropIndices[i], err)
+				}
+			}
+		}
+	}
+
+	// per-tool flags + nested scope
+	if toolsResult := providerUtils.GetJSONField(jsonBody, "tools"); toolsResult.Exists() && toolsResult.IsArray() {
+		for i := range toolsResult.Array() {
+			base := fmt.Sprintf("tools.%d", i)
+			if !features.AdvancedToolUse {
+				if providerUtils.JSONFieldExists(jsonBody, base+".defer_loading") {
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".defer_loading")
+					if err != nil {
+						return nil, fmt.Errorf("strip raw %s.defer_loading: %w", base, err)
+					}
+				}
+				if providerUtils.JSONFieldExists(jsonBody, base+".allowed_callers") {
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".allowed_callers")
+					if err != nil {
+						return nil, fmt.Errorf("strip raw %s.allowed_callers: %w", base, err)
+					}
+				}
+			}
+			if !features.InputExamples && providerUtils.JSONFieldExists(jsonBody, base+".input_examples") {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".input_examples")
+				if err != nil {
+					return nil, fmt.Errorf("strip raw %s.input_examples: %w", base, err)
+				}
+			}
+			if !features.EagerInputStreaming && providerUtils.JSONFieldExists(jsonBody, base+".eager_input_streaming") {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".eager_input_streaming")
+				if err != nil {
+					return nil, fmt.Errorf("strip raw %s.eager_input_streaming: %w", base, err)
+				}
+			}
+			if !features.StructuredOutputs && providerUtils.JSONFieldExists(jsonBody, base+".strict") {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".strict")
+				if err != nil {
+					return nil, fmt.Errorf("strip raw %s.strict: %w", base, err)
+				}
+			}
+			if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, base+".cache_control.scope") {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".cache_control.scope")
+				if err != nil {
+					return nil, fmt.Errorf("strip raw %s.cache_control.scope: %w", base, err)
+				}
+				// Drop the parent if cache_control is now an empty object, so
+				// we don't forward a malformed `cache_control: {}` marker.
+				if ccResult := providerUtils.GetJSONField(jsonBody, base+".cache_control"); ccResult.Exists() && ccResult.IsObject() && len(ccResult.Map()) == 0 {
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".cache_control")
+					if err != nil {
+						return nil, fmt.Errorf("strip raw %s.cache_control empty parent: %w", base, err)
+					}
+				}
+			}
+		}
+	}
+
+	// Nested scope on system blocks (system can be a string OR array of blocks).
+	if !features.PromptCachingScope {
+		if systemResult := providerUtils.GetJSONField(jsonBody, "system"); systemResult.Exists() && systemResult.IsArray() {
+			for i := range systemResult.Array() {
+				path := fmt.Sprintf("system.%d.cache_control.scope", i)
+				if providerUtils.JSONFieldExists(jsonBody, path) {
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+					if err != nil {
+						return nil, fmt.Errorf("strip raw system[%d].cache_control.scope: %w", i, err)
+					}
+					parentPath := fmt.Sprintf("system.%d.cache_control", i)
+					if ccResult := providerUtils.GetJSONField(jsonBody, parentPath); ccResult.Exists() && ccResult.IsObject() && len(ccResult.Map()) == 0 {
+						jsonBody, err = providerUtils.DeleteJSONField(jsonBody, parentPath)
+						if err != nil {
+							return nil, fmt.Errorf("strip raw system[%d].cache_control empty parent: %w", i, err)
+						}
+					}
+				}
+			}
+		}
+		// Nested scope on messages[].content[] blocks.
+		if messagesResult := providerUtils.GetJSONField(jsonBody, "messages"); messagesResult.Exists() && messagesResult.IsArray() {
+			messages := messagesResult.Array()
+			for mi := range messages {
+				contentResult := providerUtils.GetJSONField(jsonBody, fmt.Sprintf("messages.%d.content", mi))
+				if !contentResult.Exists() || !contentResult.IsArray() {
+					continue
+				}
+				for ci := range contentResult.Array() {
+					path := fmt.Sprintf("messages.%d.content.%d.cache_control.scope", mi, ci)
+					if providerUtils.JSONFieldExists(jsonBody, path) {
+						jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+						if err != nil {
+							return nil, fmt.Errorf("strip raw messages[%d].content[%d].cache_control.scope: %w", mi, ci, err)
+						}
+						parentPath := fmt.Sprintf("messages.%d.content.%d.cache_control", mi, ci)
+						if ccResult := providerUtils.GetJSONField(jsonBody, parentPath); ccResult.Exists() && ccResult.IsObject() && len(ccResult.Map()) == 0 {
+							jsonBody, err = providerUtils.DeleteJSONField(jsonBody, parentPath)
+							if err != nil {
+								return nil, fmt.Errorf("strip raw messages[%d].content[%d].cache_control empty parent: %w", mi, ci, err)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return jsonBody, nil
+}
+
+// IsOpus47 returns true if the model is Claude Opus 4.7 or a later generation where:
+//   - Extended thinking (budget_tokens) is removed — only adaptive thinking is supported.
+//   - temperature, top_p, and top_k are not supported (setting them returns a 400).
+func IsOpus47(model string) bool {
+	model = strings.ToLower(model)
+	if !strings.Contains(model, "opus") {
+		return false
+	}
+	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7")
+}
+
 // SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
 // Currently supported on Claude Opus 4.5 and Opus 4.6.
 func SupportsNativeEffort(model string) bool {
@@ -101,12 +614,33 @@ func SupportsNativeEffort(model string) bool {
 		strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
 }
 
-// SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
-// Currently only supported on Claude Opus 4.6.
-func SupportsAdaptiveThinking(model string) bool {
+// SupportsFastMode returns true if the model supports speed:"fast" (research
+// preview). Per Anthropic's fast-mode docs, only Opus 4.6 supports it;
+// requests carrying speed:"fast" to any other model are rejected with 400.
+// Beta header: fast-mode-2026-02-01.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
+func SupportsFastMode(model string) bool {
 	model = strings.ToLower(model)
-	return strings.Contains(model, "opus") &&
-		(strings.Contains(model, "4-6") || strings.Contains(model, "4.6"))
+	if !strings.Contains(model, "opus") {
+		return false
+	}
+	return strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
+}
+
+// SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
+// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, and Claude Opus 4.7+.
+// On Opus 4.7+ adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
+// coexists with the deprecated budget_tokens-based extended thinking.
+func SupportsAdaptiveThinking(model string) bool {
+	if IsOpus47(model) {
+		return true
+	}
+	model = strings.ToLower(model)
+	if !strings.Contains(model, "4-6") && !strings.Contains(model, "4.6") {
+		return false
+	}
+	return strings.Contains(model, "opus") || strings.Contains(model, "sonnet")
 }
 
 // MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.
@@ -114,15 +648,6 @@ func SupportsAdaptiveThinking(model string) bool {
 func MapBifrostEffortToAnthropic(effort string) string {
 	if effort == "minimal" {
 		return "low"
-	}
-	return effort
-}
-
-// MapAnthropicEffortToBifrost maps an Anthropic effort level to a Bifrost effort level.
-// Anthropic supports "max" (Opus 4.6+) which is not in Bifrost's enum; it maps to "high".
-func MapAnthropicEffortToBifrost(effort string) string {
-	if effort == "max" {
-		return "high"
 	}
 	return effort
 }
@@ -183,6 +708,26 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
+		// Sanitize raw-body fields the target provider does not support.
+		// Behavioural parity with StripUnsupportedAnthropicFields on the typed path.
+		// Feature gating keyed to schemas.Anthropic (not providerName) to match
+		// the typed path below which also hardcodes schemas.Anthropic — ensures
+		// custom Anthropic aliases get identical feature lookup in both modes.
+		jsonBody, err = stripUnsupportedFieldsFromRawBody(jsonBody, schemas.Anthropic, "")
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+		// Auto-inject matching anthropic-beta headers for fields the sanitizer
+		// preserved (speed, task_budget, cache_control.scope, input_examples,
+		// defer_loading, allowed_callers, eager_input_streaming, mcp_servers,
+		// structured outputs, etc). Without this, raw-body callers who supply
+		// gated fields but not headers would 400 upstream. Single source of
+		// truth: probe-unmarshal into the typed struct and reuse the typed
+		// path's header walker.
+		var probe AnthropicMessageRequest
+		if err := schemas.Unmarshal(jsonBody, &probe); err == nil {
+			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
+		}
 		// Remove excluded fields
 		for _, field := range excludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
@@ -235,6 +780,13 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 			}
 		}
 	}
+
+	// delete fallbacks field
+	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+	}
+
 	return jsonBody, nil
 }
 
@@ -265,15 +817,48 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 					headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
 				}
 			}
-			// Check for advanced-tool-use features
+			// Check for advanced-tool-use features. defer_loading and
+			// allowed_callers are only available as part of the bundle
+			// header; input_examples additionally has a standalone header
+			// (tool-examples-2025-10-29) used on Bedrock where the bundle is
+			// not accepted.
 			if tool.DeferLoading != nil && *tool.DeferLoading {
-				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				if !hasProvider || features.AdvancedToolUse {
+					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				}
 			}
 			if len(tool.InputExamples) > 0 {
-				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				if !hasProvider || features.AdvancedToolUse {
+					// Bundle header covers input_examples transitively.
+					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				} else if features.InputExamples {
+					// Narrow standalone header (e.g. Bedrock).
+					headers = appendUniqueHeader(headers, AnthropicToolExamplesBetaHeader)
+				}
 			}
 			if len(tool.AllowedCallers) > 0 {
-				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				if !hasProvider || features.AdvancedToolUse {
+					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				}
+			}
+			// input_examples has both bundle coverage AND a standalone header.
+			// Prefer the bundle header when the provider accepts the bundle
+			// (covers input_examples transitively); fall back to the narrow
+			// standalone header (Bedrock) when only InputExamples is set.
+			if len(tool.InputExamples) > 0 {
+				if !hasProvider || features.AdvancedToolUse {
+					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				} else if features.InputExamples {
+					headers = appendUniqueHeader(headers, AnthropicToolExamplesBetaHeader)
+				}
+			}
+			// Check for fine-grained tool streaming (eager_input_streaming).
+			// Beta fine-grained-tool-streaming-2025-05-14 — required for
+			// input_json_delta streaming on custom tools.
+			if tool.EagerInputStreaming != nil && *tool.EagerInputStreaming {
+				if !hasProvider || features.EagerInputStreaming {
+					headers = appendUniqueHeader(headers, AnthropicEagerInputStreamingBetaHeader)
+				}
 			}
 			// Check for cache control with scope
 			if !hasCachingScope && tool.CacheControl != nil && tool.CacheControl.Scope != nil {
@@ -282,6 +867,14 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 					hasCachingScope = true
 				}
 			}
+		}
+	}
+	// Check for cache control with scope at the top level of the request
+	// (mirrors the tool/system/message checks below).
+	if !hasCachingScope && req.CacheControl != nil && req.CacheControl.Scope != nil {
+		if !hasProvider || features.PromptCachingScope {
+			headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+			hasCachingScope = true
 		}
 	}
 	// Check for compaction
@@ -311,10 +904,18 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicInterleavedThinkingBetaHeader)
 		}
 	}
-	// Check for fast mode
+	// Check for fast mode. Only add the beta header when both the provider
+	// supports fast mode AND the model does (Opus 4.6 only per
+	// SupportsFastMode); otherwise sending the header guarantees a 400.
 	if req.Speed != nil && *req.Speed == "fast" {
-		if !hasProvider || features.FastMode {
+		if (!hasProvider || features.FastMode) && SupportsFastMode(req.Model) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
+		}
+	}
+	// Check for task budget
+	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil {
+		if !hasProvider || features.TaskBudgets {
+			headers = appendUniqueHeader(headers, AnthropicTaskBudgetsBetaHeader)
 		}
 	}
 	// Check for output format (structured outputs)
@@ -393,11 +994,14 @@ var betaHeaderPrefixKnown = []string{
 	"context-management-",
 	"files-api-",
 	AnthropicAdvancedToolUseBetaHeaderPrefix,
+	AnthropicToolExamplesBetaHeaderPrefix,
 	AnthropicInterleavedThinkingBetaHeaderPrefix,
 	AnthropicSkillsBetaHeaderPrefix,
 	AnthropicContext1MBetaHeaderPrefix,
 	AnthropicFastModeBetaHeaderPrefix,
 	AnthropicRedactThinkingBetaHeaderPrefix,
+	AnthropicTaskBudgetsBetaHeaderPrefix,
+	AnthropicEagerInputStreamingBetaHeaderPrefix,
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -587,11 +1191,14 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	"context-management-":                        func(f ProviderFeatureSupport) bool { return f.ContextEditing },
 	"files-api-":                                 func(f ProviderFeatureSupport) bool { return f.FilesAPI },
 	AnthropicAdvancedToolUseBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
+	AnthropicToolExamplesBetaHeaderPrefix:        func(f ProviderFeatureSupport) bool { return f.InputExamples },
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },
 	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },
 	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode },
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
+	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
+	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -1080,7 +1687,7 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	imageBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeImage,
 		CacheControl: block.CacheControl,
-		Source:       &AnthropicSource{},
+		Source:       &AnthropicBlockSource{SourceObj: &AnthropicSource{}},
 	}
 
 	if block.ImageURLStruct == nil {
@@ -1091,8 +1698,8 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	sanitizedURL, err := schemas.SanitizeImageURL(block.ImageURLStruct.URL)
 	if err != nil {
 		// Best-effort: treat as a regular URL without sanitization
-		imageBlock.Source.Type = "url"
-		imageBlock.Source.URL = &block.ImageURLStruct.URL
+		imageBlock.Source.SourceObj.Type = "url"
+		imageBlock.Source.SourceObj.URL = &block.ImageURLStruct.URL
 		return imageBlock
 	}
 	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
@@ -1113,18 +1720,18 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 
 	// Convert to Anthropic source format
 	if formattedImgContent.Type == schemas.ImageContentTypeURL {
-		imageBlock.Source.Type = "url"
-		imageBlock.Source.URL = &formattedImgContent.URL
+		imageBlock.Source.SourceObj.Type = "url"
+		imageBlock.Source.SourceObj.URL = &formattedImgContent.URL
 	} else {
 		if formattedImgContent.MediaType != "" {
-			imageBlock.Source.MediaType = &formattedImgContent.MediaType
+			imageBlock.Source.SourceObj.MediaType = &formattedImgContent.MediaType
 		}
-		imageBlock.Source.Type = "base64"
+		imageBlock.Source.SourceObj.Type = "base64"
 		// Use the base64 data without the data URL prefix
 		if urlTypeInfo.DataURLWithoutPrefix != nil {
-			imageBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+			imageBlock.Source.SourceObj.Data = urlTypeInfo.DataURLWithoutPrefix
 		} else {
-			imageBlock.Source.Data = &formattedImgContent.URL
+			imageBlock.Source.SourceObj.Data = &formattedImgContent.URL
 		}
 	}
 
@@ -1136,7 +1743,7 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	documentBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeDocument,
 		CacheControl: block.CacheControl,
-		Source:       &AnthropicSource{},
+		Source:       &AnthropicBlockSource{SourceObj: &AnthropicSource{}},
 	}
 
 	if block.Citations != nil {
@@ -1156,8 +1763,8 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 
 	// Handle file URL
 	if file.FileURL != nil && *file.FileURL != "" {
-		documentBlock.Source.Type = "url"
-		documentBlock.Source.URL = file.FileURL
+		documentBlock.Source.SourceObj.Type = "url"
+		documentBlock.Source.SourceObj.URL = file.FileURL
 		return documentBlock
 	}
 
@@ -1167,8 +1774,8 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 
 		// Check if it's plain text based on file type
 		if file.FileType != nil && (*file.FileType == "text/plain" || *file.FileType == "txt") {
-			documentBlock.Source.Type = "text"
-			documentBlock.Source.Data = &fileData
+			documentBlock.Source.SourceObj.Type = "text"
+			documentBlock.Source.SourceObj.Data = &fileData
 			return documentBlock
 		}
 
@@ -1177,30 +1784,30 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 
 			if urlTypeInfo.DataURLWithoutPrefix != nil {
 				// It's a data URL, extract the base64 content
-				documentBlock.Source.Type = "base64"
-				documentBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+				documentBlock.Source.SourceObj.Type = "base64"
+				documentBlock.Source.SourceObj.Data = urlTypeInfo.DataURLWithoutPrefix
 
 				// Set media type from data URL or file type
 				if urlTypeInfo.MediaType != nil {
-					documentBlock.Source.MediaType = urlTypeInfo.MediaType
+					documentBlock.Source.SourceObj.MediaType = urlTypeInfo.MediaType
 				} else if file.FileType != nil {
-					documentBlock.Source.MediaType = file.FileType
+					documentBlock.Source.SourceObj.MediaType = file.FileType
 				}
 				return documentBlock
 			}
 		}
 
 		// Default to base64 for binary files
-		documentBlock.Source.Type = "base64"
-		documentBlock.Source.Data = &fileData
+		documentBlock.Source.SourceObj.Type = "base64"
+		documentBlock.Source.SourceObj.Data = &fileData
 
 		// Set media type
 		if file.FileType != nil {
-			documentBlock.Source.MediaType = file.FileType
+			documentBlock.Source.SourceObj.MediaType = file.FileType
 		} else {
 			// Default to PDF if not specified
 			mediaType := "application/pdf"
-			documentBlock.Source.MediaType = &mediaType
+			documentBlock.Source.SourceObj.MediaType = &mediaType
 		}
 		return documentBlock
 	}
@@ -1213,7 +1820,7 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	documentBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeDocument,
 		CacheControl: cacheControl,
-		Source:       &AnthropicSource{},
+		Source:       &AnthropicBlockSource{SourceObj: &AnthropicSource{}},
 	}
 
 	if citations != nil {
@@ -1235,9 +1842,9 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 
 		// Check if it's plain text based on file type
 		if fileBlock.FileType != nil && (*fileBlock.FileType == "text/plain" || *fileBlock.FileType == "txt") {
-			documentBlock.Source.Type = "text"
-			documentBlock.Source.Data = &fileData
-			documentBlock.Source.MediaType = schemas.Ptr("text/plain")
+			documentBlock.Source.SourceObj.Type = "text"
+			documentBlock.Source.SourceObj.Data = &fileData
+			documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
 			return documentBlock
 		}
 
@@ -1247,38 +1854,38 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 
 			if urlTypeInfo.DataURLWithoutPrefix != nil {
 				// It's a data URL, extract the base64 content
-				documentBlock.Source.Type = "base64"
-				documentBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+				documentBlock.Source.SourceObj.Type = "base64"
+				documentBlock.Source.SourceObj.Data = urlTypeInfo.DataURLWithoutPrefix
 
 				// Set media type from data URL or file type
 				if urlTypeInfo.MediaType != nil {
-					documentBlock.Source.MediaType = urlTypeInfo.MediaType
+					documentBlock.Source.SourceObj.MediaType = urlTypeInfo.MediaType
 				} else if fileBlock.FileType != nil {
-					documentBlock.Source.MediaType = fileBlock.FileType
+					documentBlock.Source.SourceObj.MediaType = fileBlock.FileType
 				}
 				return documentBlock
 			}
 		}
 
 		// Default to base64 for binary files (raw base64 without prefix)
-		documentBlock.Source.Type = "base64"
-		documentBlock.Source.Data = &fileData
+		documentBlock.Source.SourceObj.Type = "base64"
+		documentBlock.Source.SourceObj.Data = &fileData
 
 		// Set media type
 		if fileBlock.FileType != nil {
-			documentBlock.Source.MediaType = fileBlock.FileType
+			documentBlock.Source.SourceObj.MediaType = fileBlock.FileType
 		} else {
 			// Default to PDF if not specified
 			mediaType := "application/pdf"
-			documentBlock.Source.MediaType = &mediaType
+			documentBlock.Source.SourceObj.MediaType = &mediaType
 		}
 		return documentBlock
 	}
 
 	// Handle file URL
 	if fileBlock.FileURL != nil && *fileBlock.FileURL != "" {
-		documentBlock.Source.Type = "url"
-		documentBlock.Source.URL = fileBlock.FileURL
+		documentBlock.Source.SourceObj.Type = "url"
+		documentBlock.Source.SourceObj.URL = fileBlock.FileURL
 		return documentBlock
 	}
 
@@ -1295,22 +1902,24 @@ func (block AnthropicContentBlock) ToBifrostContentImageBlock() schemas.ChatCont
 }
 
 func getImageURLFromBlock(block AnthropicContentBlock) string {
-	if block.Source == nil {
+	// Image blocks always carry object-form sources (never string form).
+	if block.Source == nil || block.Source.SourceObj == nil {
 		return ""
 	}
+	src := block.Source.SourceObj
 
 	// Handle base64 data - convert to data URL
-	if block.Source.Data != nil {
+	if src.Data != nil {
 		mime := "image/png"
-		if block.Source.MediaType != nil && *block.Source.MediaType != "" {
-			mime = *block.Source.MediaType
+		if src.MediaType != nil && *src.MediaType != "" {
+			mime = *src.MediaType
 		}
-		return "data:" + mime + ";base64," + *block.Source.Data
+		return "data:" + mime + ";base64," + *src.Data
 	}
 
 	// Handle regular URLs
-	if block.Source.URL != nil {
-		return *block.Source.URL
+	if src.URL != nil {
+		return *src.URL
 	}
 
 	return ""

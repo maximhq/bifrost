@@ -879,6 +879,30 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		}
 	}
 
+	// Deep copy Annotations if present
+	if original.Annotations != nil {
+		copyAnnotations := &MCPToolAnnotations{
+			Title: original.Annotations.Title,
+		}
+		if original.Annotations.ReadOnlyHint != nil {
+			v := *original.Annotations.ReadOnlyHint
+			copyAnnotations.ReadOnlyHint = &v
+		}
+		if original.Annotations.DestructiveHint != nil {
+			v := *original.Annotations.DestructiveHint
+			copyAnnotations.DestructiveHint = &v
+		}
+		if original.Annotations.IdempotentHint != nil {
+			v := *original.Annotations.IdempotentHint
+			copyAnnotations.IdempotentHint = &v
+		}
+		if original.Annotations.OpenWorldHint != nil {
+			v := *original.Annotations.OpenWorldHint
+			copyAnnotations.OpenWorldHint = &v
+		}
+		copyTool.Annotations = copyAnnotations
+	}
+
 	// Deep copy Custom if present
 	if original.Custom != nil {
 		copyTool.Custom = &ChatToolCustom{}

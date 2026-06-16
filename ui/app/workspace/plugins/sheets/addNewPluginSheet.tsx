@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -106,7 +104,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 			if (data.hasConfig && data.config) {
 				try {
 					parsedConfig = JSON.parse(data.config);
-				} catch (error) {
+				} catch {
 					toast.error("Invalid JSON configuration");
 					return;
 				}
@@ -122,21 +120,21 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 					},
 				}).unwrap();
 				toast.success("Plugin updated successfully");
-		} else {
-			// Create new plugin
-			await createPlugin({
-				name: data.name,
-				path: data.path,
-				enabled: true,
-				config: parsedConfig,
-			}).unwrap();
-			toast.success("Plugin created successfully");
-			// Notify parent with the config name to select it
-			onCreate?.(data.name);
-		}
+			} else {
+				// Create new plugin
+				await createPlugin({
+					name: data.name,
+					path: data.path,
+					enabled: true,
+					config: parsedConfig,
+				}).unwrap();
+				toast.success("Plugin created successfully");
+				// Notify parent with the config name to select it
+				onCreate?.(data.name);
+			}
 
-		form.reset();
-		onClose();
+			form.reset();
+			onClose();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -152,7 +150,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 	return (
 		<Sheet open={open} onOpenChange={handleClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8">
-				<SheetHeader className="p-0 flex flex-col items-start">
+				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
 					<SheetDescription>
 						{isEditMode

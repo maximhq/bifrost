@@ -1,0 +1,246 @@
+---
+title: "Setting up Zitadel"
+description: "Step-by-step guide to configure Zitadel (cloud or self-hosted) as your identity provider for Bifrost Enterprise SSO and user provisioning."
+icon: "cloud"
+---
+
+## Overview
+
+This guide walks you through configuring [Zitadel](https://zitadel.com) as your identity provider for Bifrost Enterprise. Zitadel uses standard OIDC with JWKS-based JWT validation, plus a separate **service account** for user provisioning (Zitadel web applications cannot perform the `client_credentials` grant — a dedicated service account is required for directory-level reads).
+
+After completing this guide users will sign in to Bifrost with their Zitadel credentials, and admins can bulk-import users and teams from the Zitadel Management API.
+
+## Prerequisites
+
+- A Zitadel instance (cloud at `*.zitadel.cloud` or self-hosted) with admin access
+- An existing Zitadel **Project** in the organization you want to connect
+- Bifrost Enterprise deployed and accessible
+- The redirect URI for your Bifrost instance (e.g. `https://your-bifrost-domain.com/login`)
+- Bifrost [roles](./rbac) created for the roles you plan to map (Admin, Developer, Viewer, or custom)
+
+---
+
+## Step 1: Create a Web Application
+
+The Web Application is what end users log in through.
+
+1. Open the Zitadel Console and choose **Projects → your project → New Application**.
+  
+<Frame>
+  <img src="/media/user-provisioning/zitadel-create-app.png" alt="Creating a new application in Zitadel" />
+</Frame>
+
+
+2. Configure the application:
+
+| Field | Value |
+| --- | --- |
+| **Type** | Web |
+| **Authentication method** | PKCE (recommended) or Basic |
+| **Redirect URI** | `https://your-bifrost-domain.com/login` |
+| **Post logout URI** | `https://your-bifrost-domain.com` |
+
+3. After creating the app, note the **Client ID** from the application detail page.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-client-id.png" alt="Zitadel application Client ID" />
+</Frame>
+
+4. If you chose a confidential authentication method, also copy the **Client Secret** (shown once).
+
+---
+
+## Step 2: Enable role claims on the project (Optional)
+
+<Note>
+  In Bifrost, you can map any attribute to role. If you decide to map Zitadel project roles, then follow step 2 and step 3. 
+</Note>
+
+Zitadel only emits role claims in access tokens when the project is configured to assert them.
+
+1. Open **Projects → your project → General**.
+2. Enable **Assert Roles on Authentication**.
+3. Enable **Check Authorization on Authentication** if you want to enforce that every user has at least one project role.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-assert-roles.png" alt="Assert Roles on Authentication toggle in Zitadel" />
+</Frame>
+
+4. Note the **Project ID** — you'll need it for the Bifrost config so Bifrost can resolve the correct project roles.
+
+<Note>
+  Without **Assert Roles on Authentication**, the token will not contain role claims and every user will fall back to the default role (Viewer, or Admin for the first signin).
+</Note>
+
+---
+
+## Step 3: Create project roles (Optional)
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-project-roles.png" alt="Create project roles in Zitadel" />
+</Frame>
+
+
+1. In the same project, open the **Roles** tab and create a role for each Bifrost role you plan to map. Common pattern:
+2. Authorize users to the relevant roles via **Users → Roles**.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-user-role-assignment.png" alt="Create project roles in Zitadel" />
+</Frame>
+
+
+---
+
+## Step 4: Create a service account for provisioning
+
+Web apps in Zitadel cannot use the `client_credentials` grant. Bifrost needs a dedicated service account to list users via the Management API.
+
+1. Navigate to **Users → Service Accounts → New**.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-service-account-create.png" alt="Creating a service account in Zitadel" />
+</Frame>
+
+2. Name it (e.g. `bifrost-provisioning`) and create it.
+3. Open the service account → **Actions → Generate Client Secret**.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-service-account-key.png" alt="Creating a service account in Zitadel" />
+</Frame>
+
+4. **Copy the Client ID and Client Secret immediately** — the secret is shown only once.
+
+<Warning>
+  Store the service account Client Secret in your password manager. It cannot be retrieved after this screen.
+</Warning>
+
+5. Grant the service account **IAM_USER_READ** (or **Org Owner** if you want broader visibility):
+   - Organization → **Managers → Add Manager** → select the service account → role `IAM_USER_READ`.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-service-account-role.png" alt="Assigning IAM_USER_READ to the service account" />
+</Frame>
+
+---
+
+## Step 5: App token settings
+
+1. Change **Auth Token Type** to JWT.
+2. Enable roles and profile info in ID token.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-token-settings.png" alt="Assigning IAM_USER_READ to the service account" />
+</Frame>
+
+
+## Step 6: Configure Bifrost
+
+### Using the Bifrost dashboard
+
+
+1. In Bifrost, go to **Governance → User Provisioning**.
+2. Select **Zitadel** as the SCIM Provider.
+3. Fill in the fields:
+
+| Field | Value |
+| --- | --- |
+| **Domain** | Your Zitadel host, e.g. `my-instance.zitadel.cloud` or `auth.company.com` (no scheme, no path) |
+| **Project ID** | The project ID from Step 2 |
+| **Client ID** | Web Application Client ID from Step 1 |
+| **Client Secret** | Web Application Client Secret from Step 1 (optional for PKCE) |
+| **Audience** | Optional access-token audience override |
+| **Service Account Client ID** | From Step 4 |
+| **Service Account Client Secret** | From Step 4 |
+
+4. Click **Verify** — Bifrost connects to Zitadel's JWKS and service account token endpoints to confirm the credentials.
+5. Configure **Attribute → Role / Team / Business Unit** mappings if you need to translate project roles or metadata into Bifrost roles.
+6. Toggle **Enabled** and click **Save Configuration**.
+
+<Frame>
+  <img src="/media/user-provisioning/zitadel-form.png" alt="Creating a service account in Zitadel" />
+</Frame>
+
+### Using `config.json`
+
+```json
+{
+  "scim_config": {
+    "enabled": true,
+    "provider": "zitadel",
+    "config": {
+      "domain": "my-instance.zitadel.cloud",
+      "projectId": "123456789012345678",
+      "clientId": "123456789012345678@my-project",
+      "clientSecret": "${ZITADEL_CLIENT_SECRET}",
+      "serviceAccountClientId": "987654321098765432@my-project",
+      "serviceAccountClientSecret": "${ZITADEL_SA_CLIENT_SECRET}",
+      "teamIdsField": "groups"
+    }
+  }
+}
+```
+
+### Custom attribute mapping
+
+You can also map any custom attributes to any entity (role, team or business unit). Make sure these are configured to send back to Bifrost in token configuration.
+
+<Frame>
+  <img
+    src="/media/user-provisioning/custom-attribute-mapping.png"
+    alt="Attribute Mappings configuration in Bifrost"
+  />
+</Frame>
+
+### Configuration reference
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `domain` | Yes | Zitadel instance host (no scheme). Examples: `my-instance.zitadel.cloud`, `auth.company.com`. |
+| `clientId` | Yes | Client ID of the Web Application used for user login. |
+| `clientSecret` | Yes | Web Application secret. Omit for PKCE-only flows. |
+| `projectId` | Yes | Required to resolve project-scoped role claims and sync role grants. |
+| `audience` | No | Override the expected JWT `aud` claim. |
+| `serviceAccountClientId` | Yes | Service account used to list users via the Management API. |
+| `serviceAccountClientSecret` | Yes | Service account secret (shown once in Zitadel). |
+| `attributeRoleMappings` | Yes | Ordered list of attribute→role mappings. |
+| `attributeTeamMappings` | No | Attribute→team mappings (all matches apply). |
+| `attributeBusinessUnitMappings` | No | Attribute→business-unit mappings (all matches apply). |
+
+---
+
+## Testing the Integration
+  
+1. Open the Bifrost dashboard in an incognito window.
+2. You'll be redirected to Zitadel. Sign in with a user who has a project authorization.
+3. On successful login you return to Bifrost and appear in **Governance → Users** with the correct role.
+4. From **Governance → User Provisioning → Import Users**, verify you can preview and import additional users via the service account.
+
+---
+
+## Troubleshooting
+
+### `role claims missing in token`
+
+- Enable **Assert Roles on Authentication** on the project (Step 2).
+- Ensure the user has an active authorization for the project.
+
+### `invalid audience` when validating the JWT
+
+- Check the `audience` field in the Bifrost config. It must match the `aud` claim issued by Zitadel. Leaving it empty uses the default (the project's resource owner).
+
+### Service account cannot list users
+
+- Confirm the service account has **IAM_USER_READ** or **Org Owner** role in the organization.
+- Regenerate the client secret if you've lost it — the original secret cannot be retrieved.
+
+### Redirect URI mismatch
+
+- Zitadel requires an exact string match. Check for trailing slashes and `http` vs `https`.
+
+---
+
+## Next Steps
+
+- [User Provisioning overview](./user-provisioning) — capabilities, attribute mappings, bulk import
+- [Role-Based Access Control](./rbac) — configure custom roles before mapping
+- [Audit Logs](./audit-logs) — track authentication events

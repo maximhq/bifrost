@@ -169,7 +169,8 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "openai",
             "weight": 0.5,
-            "allowed_models": ["gpt-4o-mini"]
+            "allowed_models": ["gpt-4o-mini"],
+            "key_ids": ["openai-primary"]
           },
           {
             "provider": "anthropic",
@@ -178,11 +179,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           }
         ],
         "team_id": "team-eng-001",
-        "budget_id": "budget-eng-vk",
-        "rate_limit_id": "rate-limit-eng-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "rate_limit_id": "rate-limit-eng-vk"
       },
       {
         "id": "vk-002",
@@ -202,16 +199,13 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
             "allowed_models": ["claude-3-opus-20240229"]
           }
         ],
-        "customer_id": "customer-acme-corp",
-        "budget_id": "budget-exec-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "customer_id": "customer-acme-corp"
       }
     ],
     "budgets": [
       {
         "id": "budget-eng-vk",
+        "virtual_key_id": "vk-001",
         "max_limit": 100.00,
         "reset_duration": "1M",
         "current_usage": 0.0,
@@ -219,6 +213,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
       },
       {
         "id": "budget-exec-vk",
+        "virtual_key_id": "vk-002",
         "max_limit": 500.00,
         "reset_duration": "1M",
         "current_usage": 0.0,

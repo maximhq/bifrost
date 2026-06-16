@@ -131,49 +131,6 @@ func applySerializedLogUpdates(
 	}
 }
 
-// applySerializedStreamingLogUpdates copies serialized streaming fields from a
-// temporary log entry into the GORM update map, respecting content-logging
-// gates.
-func applySerializedStreamingLogUpdates(
-	updates map[string]interface{},
-	entry *logstore.Log,
-	streamResponse *streaming.ProcessedStreamResponse,
-	cacheDebug *schemas.BifrostCacheDebug,
-	contentLoggingEnabled bool,
-) {
-	if streamResponse.Data.TokenUsage != nil {
-		updates["token_usage"] = entry.TokenUsage
-		updates["prompt_tokens"] = streamResponse.Data.TokenUsage.PromptTokens
-		updates["completion_tokens"] = streamResponse.Data.TokenUsage.CompletionTokens
-		updates["total_tokens"] = streamResponse.Data.TokenUsage.TotalTokens
-		updates["cached_read_tokens"] = entry.CachedReadTokens
-	}
-
-	if !contentLoggingEnabled {
-		return
-	}
-
-	if streamResponse.Data.TranscriptionOutput != nil {
-		updates["transcription_output"] = entry.TranscriptionOutput
-	}
-	if streamResponse.Data.AudioOutput != nil {
-		updates["speech_output"] = entry.SpeechOutput
-	}
-	if streamResponse.Data.ImageGenerationOutput != nil {
-		updates["image_generation_output"] = entry.ImageGenerationOutput
-	}
-	if cacheDebug != nil {
-		updates["cache_debug"] = entry.CacheDebug
-	}
-	if streamResponse.Data.OutputMessage != nil {
-		updates["output_message"] = entry.OutputMessage
-		updates["content_summary"] = entry.ContentSummary
-	}
-	if streamResponse.Data.OutputMessages != nil {
-		updates["responses_output"] = entry.ResponsesOutput
-	}
-}
-
 // updateLogEntry updates an existing log entry using GORM
 func (p *LoggerPlugin) updateLogEntry(
 	ctx context.Context,
@@ -191,8 +148,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	data *UpdateLogData,
 ) error {
 	updates := make(map[string]interface{})
-	updates["selected_key_id"] = selectedKeyID
-	updates["selected_key_name"] = selectedKeyName
+	if selectedKeyID != "" {
+		updates["selected_key_id"] = selectedKeyID
+	}
+	if selectedKeyName != "" {
+		updates["selected_key_name"] = selectedKeyName
+	}
 	if latency != 0 {
 		updates["latency"] = float64(latency)
 	}
@@ -348,174 +309,6 @@ func (p *LoggerPlugin) updateLogEntry(
 	return p.store.Update(ctx, requestID, updates)
 }
 
-// updateStreamingLogEntry handles streaming updates using GORM
-func (p *LoggerPlugin) updateStreamingLogEntry(
-	ctx context.Context,
-	requestID string,
-	selectedKeyID string,
-	selectedKeyName string,
-	virtualKeyID string,
-	virtualKeyName string,
-	routingRuleID string,
-	routingRuleName string,
-	numberOfRetries int,
-	cacheDebug *schemas.BifrostCacheDebug,
-	routingEngineLogs string,
-	streamResponse *streaming.ProcessedStreamResponse,
-	isFinalChunk bool,
-	isLargePayloadRequest bool,
-	isLargePayloadResponse bool,
-) error {
-	p.logger.Debug("[logging] updating streaming log entry %s", requestID)
-	updates := make(map[string]interface{})
-	updates["selected_key_id"] = selectedKeyID
-	updates["selected_key_name"] = selectedKeyName
-	if virtualKeyID != "" {
-		updates["virtual_key_id"] = virtualKeyID
-	}
-	if virtualKeyName != "" {
-		updates["virtual_key_name"] = virtualKeyName
-	}
-	if routingRuleID != "" {
-		updates["routing_rule_id"] = routingRuleID
-	}
-	if routingRuleName != "" {
-		updates["routing_rule_name"] = routingRuleName
-	}
-	if numberOfRetries != 0 {
-		updates["number_of_retries"] = numberOfRetries
-	}
-	if routingEngineLogs != "" {
-		updates["routing_engine_logs"] = routingEngineLogs
-	}
-	// Handle error case first
-	if streamResponse.Data.ErrorDetails != nil {
-		tempEntry := &logstore.Log{}
-		tempEntry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
-		if err := tempEntry.SerializeFields(); err != nil {
-			return fmt.Errorf("failed to serialize error details: %w", err)
-		}
-		errorUpdates := map[string]interface{}{
-			"status":        "error",
-			"latency":       float64(streamResponse.Data.Latency),
-			"error_details": tempEntry.ErrorDetails,
-		}
-		if isLargePayloadRequest {
-			errorUpdates["is_large_payload_request"] = true
-		}
-		if isLargePayloadResponse {
-			errorUpdates["is_large_payload_response"] = true
-		}
-		return p.store.Update(ctx, requestID, errorUpdates)
-	}
-
-	// Always mark as streaming and update timestamp
-	updates["stream"] = true
-
-	tempEntry := &logstore.Log{}
-	updates["latency"] = float64(streamResponse.Data.Latency)
-
-	// Update model and alias from resolved/requested model pair.
-	tempEntry2 := &logstore.Log{}
-	applyModelAlias(tempEntry2, streamResponse.RequestedModel, streamResponse.ResolvedModel)
-	if tempEntry2.Model != "" {
-		updates["model"] = tempEntry2.Model
-	}
-	updates["alias"] = tempEntry2.Alias
-
-	needsSerialization := false
-
-	// Update token usage if provided
-	if streamResponse.Data.TokenUsage != nil {
-		tempEntry.TokenUsageParsed = streamResponse.Data.TokenUsage
-		needsSerialization = true
-	}
-
-	// Handle cost from pricing plugin
-	if streamResponse.Data.Cost != nil {
-		updates["cost"] = *streamResponse.Data.Cost
-	}
-	// Handle finish reason - if present, mark as complete
-	if isFinalChunk {
-		updates["status"] = "success"
-	}
-
-	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
-	if contentLoggingEnabled {
-		// Handle transcription output from stream updates
-		if streamResponse.Data.TranscriptionOutput != nil {
-			tempEntry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
-			needsSerialization = true
-		}
-		// Handle speech output from stream updates
-		if streamResponse.Data.AudioOutput != nil {
-			tempEntry.SpeechOutputParsed = streamResponse.Data.AudioOutput
-			needsSerialization = true
-		}
-		// Handle image generation output from stream updates
-		if streamResponse.Data.ImageGenerationOutput != nil {
-			tempEntry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
-			needsSerialization = true
-		}
-		// Handle cache debug
-		if cacheDebug != nil {
-			tempEntry.CacheDebugParsed = cacheDebug
-			needsSerialization = true
-		}
-		// Create content summary
-		if streamResponse.Data.OutputMessage != nil {
-			tempEntry.OutputMessageParsed = streamResponse.Data.OutputMessage
-			needsSerialization = true
-		}
-		// Handle responses output from stream updates
-		if streamResponse.Data.OutputMessages != nil {
-			tempEntry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
-			needsSerialization = true
-		}
-		// Handle raw request from stream updates
-		if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
-			if isLargePayloadRequest {
-				// Large payload preview is already a string — skip sonic.Marshal to avoid
-				// double-encoding a pre-truncated preview string.
-				if str, ok := (*streamResponse.RawRequest).(string); ok {
-					updates["raw_request"] = str
-				}
-			} else {
-				rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
-				if err != nil {
-					p.logger.Error("failed to marshal raw request: %v", err)
-				} else {
-					updates["raw_request"] = string(rawRequestBytes)
-				}
-			}
-		}
-		// Handle raw response from stream updates
-		if streamResponse.Data.RawResponse != nil {
-			updates["raw_response"] = *streamResponse.Data.RawResponse
-		}
-	}
-
-	if needsSerialization {
-		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize streaming log update fields: %v", err)
-		} else {
-			applySerializedStreamingLogUpdates(updates, tempEntry, streamResponse, cacheDebug, contentLoggingEnabled)
-		}
-	}
-	// Persist large payload flags for dashboard tagging
-	if isLargePayloadRequest {
-		updates["is_large_payload_request"] = true
-	}
-	if isLargePayloadResponse {
-		updates["is_large_payload_response"] = true
-	}
-	// Only perform update if there's something to update
-	if len(updates) > 0 {
-		return p.store.Update(ctx, requestID, updates)
-	}
-	return nil
-}
-
 // makePostWriteCallback creates a callback function for use after the batch writer commits.
 // It receives the already-inserted entry directly (no DB re-read needed).
 func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(entry *logstore.Log) {
@@ -537,7 +330,8 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 }
 
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
-func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse) {
+// shouldStoreRaw gates whether raw request/response bytes are written to the entry.
+func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool) {
 	if streamResponse.Data == nil {
 		return
 	}
@@ -551,7 +345,10 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		}
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
-		return
+	} else {
+		entry.Status = "success"
+		latF := float64(streamResponse.Data.Latency)
+		entry.Latency = &latF
 	}
 
 	entry.Status = "success"
@@ -599,16 +396,18 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if streamResponse.Data.OutputMessages != nil {
 			entry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
 		}
-		// Raw request
-		if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
-			rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
-			if err == nil {
-				entry.RawRequest = string(rawRequestBytes)
+		if shouldStoreRaw {
+			// Raw request
+			if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
+				rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
+				if err == nil {
+					entry.RawRequest = string(rawRequestBytes)
+				}
 			}
-		}
-		// Raw response
-		if streamResponse.Data.RawResponse != nil {
-			entry.RawResponse = *streamResponse.Data.RawResponse
+			// Raw response
+			if streamResponse.Data.RawResponse != nil {
+				entry.RawResponse = *streamResponse.Data.RawResponse
+			}
 		}
 	}
 }
@@ -622,7 +421,8 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 }
 
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
-func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
+// shouldStoreRaw gates whether raw request/response bytes are written to the entry.
+func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
 	if result == nil {
 		return
 	}
@@ -670,16 +470,18 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	// Extract raw request/response and output content
 	extraFields := result.GetExtraFields()
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
-		if extraFields.RawRequest != nil {
-			rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest)
-			if err == nil {
-				entry.RawRequest = string(rawRequestBytes)
+		if shouldStoreRaw {
+			if extraFields.RawRequest != nil {
+				rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest)
+				if err == nil {
+					entry.RawRequest = string(rawRequestBytes)
+				}
 			}
-		}
-		if extraFields.RawResponse != nil {
-			rawRespBytes, err := sonic.Marshal(extraFields.RawResponse)
-			if err == nil {
-				entry.RawResponse = string(rawRespBytes)
+			if extraFields.RawResponse != nil {
+				rawRespBytes, err := sonic.Marshal(extraFields.RawResponse)
+				if err == nil {
+					entry.RawResponse = string(rawRespBytes)
+				}
 			}
 		}
 		if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
@@ -739,7 +541,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	}
 }
 
-func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
+func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
 	if result == nil || result.ResponsesResponse == nil {
 		return
 	}
@@ -761,8 +563,8 @@ func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *s
 	}
 
 	extraFields := result.GetExtraFields()
-	applyRealtimeRawRequestBackfill(entry, extraFields.RawRequest, contentLoggingEnabled)
-	if contentLoggingEnabled && extraFields.RawResponse != nil {
+	applyRealtimeRawRequestBackfill(entry, extraFields.RawRequest, contentLoggingEnabled, shouldStoreRaw)
+	if shouldStoreRaw && contentLoggingEnabled && extraFields.RawResponse != nil {
 		switch raw := extraFields.RawResponse.(type) {
 		case string:
 			entry.RawResponse = strings.TrimSpace(raw)
@@ -779,22 +581,28 @@ func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *s
 // InputHistoryParsed from any embedded realtime user/transcript events.
 // Used by both success and error paths so realtime turns that fail mid-stream
 // still surface their input transcript in logs.
-func applyRealtimeRawRequestBackfill(entry *logstore.Log, rawRequest any, contentLoggingEnabled bool) {
+// shouldStoreRaw gates whether entry.RawRequest is populated; InputHistoryParsed
+// (parsed content) is always extracted when contentLoggingEnabled regardless.
+func applyRealtimeRawRequestBackfill(entry *logstore.Log, rawRequest any, contentLoggingEnabled bool, shouldStoreRaw bool) {
 	if !contentLoggingEnabled || rawRequest == nil {
 		return
 	}
+	var rawStr string
 	switch raw := rawRequest.(type) {
 	case string:
-		entry.RawRequest = strings.TrimSpace(raw)
+		rawStr = strings.TrimSpace(raw)
 	default:
 		if rawRequestBytes, err := sonic.Marshal(rawRequest); err == nil {
-			entry.RawRequest = string(rawRequestBytes)
+			rawStr = string(rawRequestBytes)
 		}
 	}
-	if strings.TrimSpace(entry.RawRequest) == "" {
+	if rawStr == "" {
 		return
 	}
-	if inputHistory := extractRealtimeInputHistoryFromRawRequest(entry.RawRequest); len(inputHistory) > 0 {
+	if shouldStoreRaw {
+		entry.RawRequest = rawStr
+	}
+	if inputHistory := extractRealtimeInputHistoryFromRawRequest(rawStr); len(inputHistory) > 0 {
 		entry.InputHistoryParsed = mergeRealtimeInputHistory(entry.InputHistoryParsed, inputHistory)
 	}
 }

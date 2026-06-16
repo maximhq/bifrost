@@ -462,6 +462,61 @@ result.ResolvedModel  // actual model identifier used by the provider
 
 ---
 
+## Breaking Change 12: `selected_key_id` Cleared on Terminal Retry Failures
+
+With the introduction of multi-key retry rotation, `selected_key_id` (and `selected_key_name`) in the request context are **cleared when all retry attempts fail**. Previously, these fields always reflected the key that was selected for the request, even on error.
+
+The `attempt_trail` is now the authoritative record of every key tried and why each attempt failed.
+
+### What changed
+
+| Field | Before | After |
+|---|---|---|
+| `selected_key_id` | Always set, even on error | Empty string when all retries exhausted |
+| `selected_key_name` | Always set, even on error | Empty string when all retries exhausted |
+| `attempt_trail` | Not present | Array of `{ key_id, key_name, fail_reason }` per attempt |
+
+### Impact on logging and telemetry plugins
+
+The built-in **logging plugin** writes `selected_key_id` and `selected_key_name` directly to each log record. For multi-key requests that exhaust all retries, both fields will be empty in the stored log entry. The `attempt_trail` column captures the full per-attempt key history and is the correct field to use for failure attribution.
+
+The built-in **telemetry plugin** emits `selected_key_id` and `selected_key_name` as span attributes. For exhausted-retry failures these attributes will be empty strings on the error span. The `attempt_trail` span attribute contains the full rotation history.
+
+If you run a custom plugin or downstream log consumer that filters or groups by `selected_key_id` to track which key caused a failure, you must update it to handle the empty-string case and read from `attempt_trail` when attribution is needed.
+
+### How to update
+
+**If you read `selected_key_id` from plugin context to attribute failed requests:**
+
+**Before:**
+```go
+keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+// keyID was always populated, even on error
+```
+
+**After:**
+```go
+// Populated on success (or for single-key / pinned / sticky flows on error):
+keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+
+// For full attribution across all retry attempts (including failures):
+if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok {
+    for _, record := range trail {
+        // record.KeyID, record.KeyName, record.FailReason
+    }
+}
+```
+
+**If you consume `selected_key_id` from the logging REST API:**
+
+The `selected_key_id` field on a `LogEntry` may now be an empty string when the request failed after exhausting all retries. Use `attempt_trail` for the full per-attempt key history.
+
+<Note>
+Single-key, pinned (`x-bf-key-id` / `x-bf-key-name`), and session-sticky requests are unaffected — they never rotate keys, so `selected_key_id` remains populated on failure for those flows.
+</Note>
+
+---
+
 ## Opting Out: `version: 1` Compatibility Mode
 
 If you are not ready to adopt the new deny-by-default semantics, you can add a single field to `config.json` to restore v1.4.x behavior for all allow-list fields loaded from that file:
@@ -547,6 +602,10 @@ Replace `ExtraFields.ModelRequested` with `ExtraFields.OriginalModelRequested` (
 
 <Step title="Update Go SDK references to StreamAccumulatorResult.Model">
 Replace `.Model` with `.RequestedModel` (and optionally `.ResolvedModel`) on any `StreamAccumulatorResult` usage.
+</Step>
+
+<Step title="Handle empty selected_key_id on terminal retry failures">
+If your code reads `selected_key_id` / `selected_key_name` from the request context or log entries to attribute failed requests, add a null/empty check and fall back to `attempt_trail` for the full per-attempt key history.
 </Step>
 </Steps>
 

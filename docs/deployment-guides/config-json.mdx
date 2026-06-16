@@ -1,0 +1,313 @@
+---
+title: "Quick Start"
+description: "Configure Bifrost using a config.json file — GitOps-friendly, no-UI deployments, and multinode OSS setups"
+icon: "file-code"
+---
+
+<Note>
+**Full schema reference:** [`https://www.getbifrost.ai/schema`](https://www.getbifrost.ai/schema)
+</Note>
+
+`config.json` lets you configure every aspect of Bifrost through a single declarative file. It is the right choice for GitOps workflows, CI/CD pipelines, headless deployments, and multinode OSS setups where a central configuration file is shared across all replicas.
+
+---
+
+## Two Configuration Modes
+
+Bifrost supports **two mutually exclusive modes**. You cannot run both at the same time.
+
+| Mode | When | Behaviour |
+|------|------|-----------|
+| **Web UI / database** | No `config.json`, or `config.json` with `config_store` enabled | Full UI available, configuration stored in SQLite or PostgreSQL |
+| **File-based (`config.json`)** | `config.json` present, `config_store` disabled | UI disabled, all config loaded from file at startup, restart required for changes |
+
+<Note>
+See [Setting Up](/quickstart/gateway/setting-up#two-configuration-modes) for a full explanation of both modes and how `config_store` bootstrapping works.
+</Note>
+
+---
+
+## Minimal Working Example
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "client": {
+    "drop_excess_requests": false,
+    "enable_logging": true
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "config_store": {
+    "enabled": false
+  }
+}
+```
+
+Save this as `config.json` in your app directory and start Bifrost:
+
+```bash
+# NPX
+npx -y @maximhq/bifrost -app-dir ./data
+
+# Docker
+docker run -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -e OPENAI_API_KEY=sk-... \
+  -e BIFROST_ENCRYPTION_KEY=your-32-byte-key \
+  maximhq/bifrost
+```
+
+Make your first call:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+---
+
+## Environment Variable References
+
+Never put secrets directly in `config.json`. Use the `env.` prefix to reference any environment variable:
+
+```json
+{
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "primary",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+Set the actual values through your deployment platform — shell environment, Docker `-e`, Kubernetes Secrets mounted as env vars, or a `.env` file.
+
+---
+
+## Schema Validation
+
+Add `$schema` to every `config.json` for IDE autocomplete and inline validation:
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema"
+}
+```
+
+Editors (VS Code, JetBrains, Neovim with LSP) will show completions and flag invalid fields as you type.
+
+---
+
+## Production Example
+
+A production-ready file with PostgreSQL storage, multi-provider setup, governance, and common plugins:
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "client": {
+    "initial_pool_size": 500,
+    "drop_excess_requests": true,
+    "enable_logging": true,
+    "log_retention_days": 90,
+    "enforce_auth_on_inference": true,
+    "allow_direct_keys": false,
+    "allowed_origins": ["https://app.yourcompany.com"]
+  },
+
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 120,
+        "max_retries": 3
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-primary",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    }
+  },
+
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    }
+  }
+}
+```
+
+---
+
+## Example Configs
+
+Ready-to-use reference configurations from the [examples/configs](https://github.com/maximhq/bifrost/tree/main/examples/configs) directory on GitHub:
+
+<AccordionGroup>
+
+<Accordion title="Minimal / File-only">
+
+| Example | Description |
+|---------|-------------|
+| [noconfigstorenologstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/noconfigstorenologstore/config.json) | Bare-minimum file-only mode — no database, no UI, providers loaded from file |
+| [partial](https://github.com/maximhq/bifrost/blob/main/examples/configs/partial/config.json) | SQLite config store with a minimal provider setup |
+| [v1compat](https://github.com/maximhq/bifrost/blob/main/examples/configs/v1compat/config.json) | `"version": 1` for v1.4.x array semantics (empty = allow all) |
+
+</Accordion>
+
+<Accordion title="Storage">
+
+| Example | Description |
+|---------|-------------|
+| [withconfigstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/withconfigstore/config.json) | SQLite config store (Web UI enabled) |
+| [withconfigstorelogsstorepostgres](https://github.com/maximhq/bifrost/blob/main/examples/configs/withconfigstorelogsstorepostgres/config.json) | PostgreSQL for both config store and logs store |
+| [withlogstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/withlogstore/config.json) | SQLite logs store |
+| [withobjectstorages3](https://github.com/maximhq/bifrost/blob/main/examples/configs/withobjectstorages3/config.json) | S3 object storage offload for logs |
+| [withobjectstoragegcs](https://github.com/maximhq/bifrost/blob/main/examples/configs/withobjectstoragegcs/config.json) | GCS object storage offload for logs |
+| [withvectorstoreweaviate](https://github.com/maximhq/bifrost/blob/main/examples/configs/withvectorstoreweaviate/config.json) | Weaviate vector store (with [docker-compose](https://github.com/maximhq/bifrost/blob/main/examples/configs/withvectorstoreweaviate/docker-compose.yml)) |
+
+</Accordion>
+
+<Accordion title="Semantic Cache">
+
+| Example | Description |
+|---------|-------------|
+| [withsemanticcache](https://github.com/maximhq/bifrost/blob/main/examples/configs/withsemanticcache/config.json) | Semantic cache backed by Weaviate |
+| [withsemanticcachevalkey](https://github.com/maximhq/bifrost/blob/main/examples/configs/withsemanticcachevalkey/config.json) | Semantic cache backed by Valkey / Redis |
+
+</Accordion>
+
+<Accordion title="Governance">
+
+| Example | Description |
+|---------|-------------|
+| [withauth](https://github.com/maximhq/bifrost/blob/main/examples/configs/withauth/config.json) | Admin username/password auth (`governance.auth_config`) |
+| [withvirtualkeys](https://github.com/maximhq/bifrost/blob/main/examples/configs/withvirtualkeys/config.json) | Virtual keys with provider/model allowlists |
+| [withteamscustomers](https://github.com/maximhq/bifrost/blob/main/examples/configs/withteamscustomers/config.json) | Teams and customers with budgets and rate limits |
+| [withroutingrules](https://github.com/maximhq/bifrost/blob/main/examples/configs/withroutingrules/config.json) | CEL-based routing rules for dynamic provider/model selection |
+| [withpricingoverridesnostore](https://github.com/maximhq/bifrost/blob/main/examples/configs/withpricingoverridesnostore/config.json) | Pricing overrides in file-only mode |
+| [withpricingoverridessqlite](https://github.com/maximhq/bifrost/blob/main/examples/configs/withpricingoverridessqlite/config.json) | Pricing overrides with SQLite config store |
+
+</Accordion>
+
+<Accordion title="Observability">
+
+| Example | Description |
+|---------|-------------|
+| [withobservability](https://github.com/maximhq/bifrost/blob/main/examples/configs/withobservability/config.json) | Prometheus metrics (telemetry always active, custom labels via `client.prometheus_labels`) |
+| [withprompushgateway](https://github.com/maximhq/bifrost/blob/main/examples/configs/withprompushgateway/config.json) | Prometheus Push Gateway for multi-instance deployments |
+| [withotel](https://github.com/maximhq/bifrost/blob/main/examples/configs/withotel/config.json) | OpenTelemetry traces and metrics |
+
+</Accordion>
+
+<Accordion title="Plugins & Advanced">
+
+| Example | Description |
+|---------|-------------|
+| [withdynamicplugin](https://github.com/maximhq/bifrost/blob/main/examples/configs/withdynamicplugin/config.json) | Loading a custom `.so` plugin at startup |
+| [withcompat](https://github.com/maximhq/bifrost/blob/main/examples/configs/withcompat/config.json) | SDK compatibility shims (`should_drop_params`, `convert_text_to_chat`) |
+| [withframework](https://github.com/maximhq/bifrost/blob/main/examples/configs/withframework/config.json) | Custom model pricing catalog URL and sync interval |
+| [withlargepayload](https://github.com/maximhq/bifrost/blob/main/examples/configs/withlargepayload/config.json) | Large payload optimization (streaming without full materialisation) |
+| [withwebsocket](https://github.com/maximhq/bifrost/blob/main/examples/configs/withwebsocket/config.json) | WebSocket / Realtime API connection pool tuning |
+| [withpostgresmcpclientsinconfig](https://github.com/maximhq/bifrost/blob/main/examples/configs/withpostgresmcpclientsinconfig/config.json) | MCP client definitions seeded from config.json with PostgreSQL store |
+| [encryptionmigration](https://github.com/maximhq/bifrost/blob/main/examples/configs/encryptionmigration/config.json) | Migrating to a new encryption key |
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Configuration Guides
+
+<CardGroup cols={2}>
+  <Card title="Schema Reference" icon="brackets-curly" href="/deployment-guides/config-json/schema-reference">
+    Every top-level key, its type, default, and where it is documented
+  </Card>
+  <Card title="Client Configuration" icon="gear" href="/deployment-guides/config-json/client">
+    Pool size, logging, CORS, header filtering, compat shims, MCP settings
+  </Card>
+  <Card title="Provider Setup" icon="plug" href="/deployment-guides/config-json/providers">
+    OpenAI, Anthropic, Azure, Bedrock, Vertex, Groq, self-hosted
+  </Card>
+  <Card title="Storage" icon="database" href="/deployment-guides/config-json/storage">
+    config_store, logs_store, vector_store — SQLite, PostgreSQL, object storage
+  </Card>
+  <Card title="Plugins" icon="puzzle-piece" href="/deployment-guides/config-json/plugins">
+    Semantic cache, OTel, Maxim, Datadog, custom plugins
+  </Card>
+  <Card title="Governance" icon="shield-check" href="/deployment-guides/config-json/governance">
+    Virtual keys, budgets, rate limits, routing rules, admin auth
+  </Card>
+  <Card title="Guardrails" icon="shield-halved" href="/deployment-guides/config-json/guardrails">
+    Content moderation providers and CEL-based rules (enterprise)
+  </Card>
+</CardGroup>
+
+---
+
+## Next Steps
+
+1. Configure [provider keys](/providers/supported-providers/overview)
+2. Enable [plugins](/plugins/getting-started)
+3. Set up [observability](/features/observability/default)
+4. Configure [governance](/features/governance/virtual-keys)
+5. Deploy [multiple nodes](/deployment-guides/how-to/multinode) with a shared `config.json`

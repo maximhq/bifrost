@@ -1,14 +1,13 @@
-"use client";
-
-import { CodeEditor } from "@/components/ui/codeEditor";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { PricingFieldSelector } from "./pricingFieldSelector";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { getProviderLabel, RequestTypeLabels } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	useCreatePricingOverrideMutation,
@@ -17,8 +16,6 @@ import {
 	useUpdatePricingOverrideMutation,
 } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { getProviderLabel, RequestTypeLabels } from "@/lib/constants/logs";
 import { ModelProvider, RequestType } from "@/lib/types/config";
 import {
 	CreatePricingOverrideRequest,
@@ -31,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown, Save, X } from "lucide-react";
 import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { PricingFieldSelector } from "./pricingFieldSelector";
 
 export const REQUEST_TYPE_GROUPS = [
 	{
@@ -163,9 +161,19 @@ export const PRICING_FIELDS = [
 	},
 	{ key: "cache_read_input_token_cost_priority", label: "Cache read / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "cache_read_input_token_cost_flex", label: "Cache read / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_read_input_token_cost_above_200k_tokens_priority", label: "Cache read / token (>200k, priority)", group: "chat", requestTypeGroups: ["chat"] },
+	{
+		key: "cache_read_input_token_cost_above_200k_tokens_priority",
+		label: "Cache read / token (>200k, priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
 	{ key: "cache_read_input_token_cost_above_272k_tokens", label: "Cache read / token (>272k)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_read_input_token_cost_above_272k_tokens_priority", label: "Cache read / token (>272k, priority)", group: "chat", requestTypeGroups: ["chat"] },
+	{
+		key: "cache_read_input_token_cost_above_272k_tokens_priority",
+		label: "Cache read / token (>272k, priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
 	{ key: "search_context_cost_per_query", label: "Search context / query", group: "chat", requestTypeGroups: ["chat", "rerank"] },
 	{ key: "code_interpreter_cost_per_session", label: "Code interpreter / session", group: "chat", requestTypeGroups: ["chat"] },
 	// Audio fields

@@ -402,6 +402,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx)
 
 		// read binary audio chunks from the stream
 		// 4KB buffer for reading chunks

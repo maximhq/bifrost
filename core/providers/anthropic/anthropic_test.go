@@ -72,7 +72,9 @@ func TestAnthropic(t *testing.T) {
 			PassthroughAPI:        true,
 			Compaction:          true,
 			InterleavedThinking: true,
-			FastMode:            false, // Enable when test API key has Opus 4.6 access
+			FastMode:                     false, // Enable when test API key has Opus 4.6 access
+			EagerInputStreaming:          true,  // fine-grained-tool-streaming-2025-05-14 (GA on Anthropic)
+			ServerToolsViaOpenAIEndpoint: true,  // web_search / web_fetch / code_execution via /v1/chat/completions
 		},
 	}
 

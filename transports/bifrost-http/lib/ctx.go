@@ -107,6 +107,11 @@ func ParseSessionIDFromBaggage(header string) string {
 // 8. Session Stickiness Headers:
 //   - x-bf-session-id: Session identifier for key binding (reuse same key across requests)
 //   - x-bf-session-ttl: Per-request TTL override (duration string e.g. "30m" or seconds integer)
+//
+// 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
+//   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
+//   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
+//   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -423,10 +428,23 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			mcpExtraHeaders[keyStr] = append(mcpExtraHeaders[keyStr], string(value))
 			return true
 		}
-		// Send back raw response header
+		// Raw capture headers — all three support "true"/"false" to fully override the
+		// provider-level config for this request.
+		if keyStr == "x-bf-send-back-raw-request" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, b)
+			}
+			return true
+		}
 		if keyStr == "x-bf-send-back-raw-response" {
-			if valueStr := string(value); valueStr == "true" {
-				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, b)
+			}
+			return true
+		}
+		if keyStr == "x-bf-store-raw-request-response" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, b)
 			}
 			return true
 		}

@@ -13,9 +13,12 @@ export const SCOPE_ORDER = ["virtual_key", "team", "customer", "global"] as cons
 
 // ─── Layout constants (LR: W = horizontal, H = vertical) ──────────────────
 
-export const SRC_W = 260; export const SRC_H = 80;
-export const COND_W = 310; export const COND_H = 76;
-export const RULE_W = 220; export const RULE_H = 106;
+export const SRC_W = 260;
+export const SRC_H = 80;
+export const COND_W = 310;
+export const COND_H = 76;
+export const RULE_W = 220;
+export const RULE_H = 106;
 /** Baseline horizontal spacing intent (Dagre uses ranksep for rank-to-rank gaps). */
 export const H_GAP = 280;
 /** Baseline vertical spacing intent (Dagre uses nodesep within a rank). */

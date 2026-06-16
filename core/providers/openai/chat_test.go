@@ -2,11 +2,13 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
@@ -75,6 +77,32 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	// Verify the Function pointer is a different object (deep copy)
 	if result.ChatParameters.Tools[0].Function == bifrostReq.Params.Tools[0].Function {
 		t.Error("expected Function pointer to be a copy, not the original")
+	}
+}
+
+func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			N: schemas.Ptr(2),
+		},
+	}
+
+	out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+	if out == nil {
+		t.Fatal("expected request")
+	}
+	if out.N == nil || *out.N != 2 {
+		t.Fatalf("expected n=2, got %#v", out.N)
 	}
 }
 
@@ -303,6 +331,68 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	}
 	if got, ok := assistantMessage["reasoning_content"].(string); !ok || got != reasoning {
 		t.Fatalf("expected reasoning_content %q in assistant payload, got %#v", reasoning, assistantMessage["reasoning_content"])
+	}
+}
+
+// TestToOpenAIChatRequest_AnnotationsNotInWirePayload verifies that MCPToolAnnotations
+// (stored on ChatTool with json:"-") are never included in the JSON body sent to OpenAI.
+func TestToOpenAIChatRequest_AnnotationsNotInWirePayload(t *testing.T) {
+	readOnly := true
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "read_file",
+						Description: schemas.Ptr("Read a file"),
+						Parameters: &schemas.ToolFunctionParameters{
+							Type: "object",
+							Properties: schemas.NewOrderedMapFromPairs(
+								schemas.KV("path", map[string]interface{}{"type": "string"}),
+							),
+							Required: []string{"path"},
+						},
+					},
+					Annotations: &schemas.MCPToolAnnotations{
+						Title:        "File Reader",
+						ReadOnlyHint: &readOnly,
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+
+	wireBody, err := json.Marshal(result)
+	require.NoError(t, err)
+	s := string(wireBody)
+
+	// Annotations must be absent from the wire payload
+	if strings.Contains(s, "annotations") {
+		t.Errorf("annotations field leaked into OpenAI wire payload: %s", s)
+	}
+	if strings.Contains(s, "readOnlyHint") {
+		t.Errorf("readOnlyHint leaked into OpenAI wire payload: %s", s)
+	}
+	if strings.Contains(s, "File Reader") {
+		t.Errorf("annotation title leaked into OpenAI wire payload: %s", s)
+	}
+
+	// The function definition must still be intact
+	if !strings.Contains(s, "read_file") {
+		t.Errorf("function name missing from OpenAI wire payload: %s", s)
 	}
 }
 

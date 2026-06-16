@@ -103,7 +103,7 @@ func TestPreLLMHook_UseLatestVersion(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -129,7 +129,7 @@ func TestPreLLMHook_UseSpecificVersion(t *testing.T) {
 	prompt := makePrompt("p1", &vLatest)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionNumber: 2, versionSpecified: true},
+		&staticResolver{promptID: "p1", versionNumber: 2},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &vLatest, 2: &vOld}},
 	)
@@ -149,7 +149,7 @@ func TestPreLLMHook_VersionNotFound(t *testing.T) {
 	log := NewMockLogger()
 
 	p := newTestPluginWithLogger(
-		&staticResolver{promptID: "p1", versionNumber: 99, versionSpecified: true},
+		&staticResolver{promptID: "p1", versionNumber: 99},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 		log,
@@ -167,7 +167,7 @@ func TestPreLLMHook_VersionBelongsToDifferentPrompt(t *testing.T) {
 	log := NewMockLogger()
 
 	p := newTestPluginWithLogger(
-		&staticResolver{promptID: "p1", versionNumber: 1, versionSpecified: true},
+		&staticResolver{promptID: "p1", versionNumber: 1},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p2": {1: &v}},
 		log,
@@ -184,7 +184,7 @@ func TestPreLLMHook_NoLatestVersion(t *testing.T) {
 	log := NewMockLogger()
 
 	p := newTestPluginWithLogger(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		nil,
 		log,
@@ -201,7 +201,7 @@ func TestPreLLMHook_EmptyTemplate(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -220,7 +220,7 @@ func TestPreLLMHook_MultipleTemplateMessages(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -266,7 +266,7 @@ func TestPreLLMHook_MessageJSON_FallbackPath(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -286,7 +286,7 @@ func TestPreLLMHook_ResponsesRequest(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -318,7 +318,7 @@ func TestPreLLMHook_PromptSystemMsg_PlusUserInputSystemMsg(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -355,7 +355,7 @@ func TestPreLLMHook_PromptWithToolCallMessages_PlusUserMessage(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -404,7 +404,7 @@ func TestPreLLMHook_MultipleSystemMessages_InPromptTemplate(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -488,9 +488,9 @@ func TestHTTPTransportPreHook_WhitespaceOnlyNotSet(t *testing.T) {
 func TestHTTPTransportPreHook_CaseInsensitiveHeaders(t *testing.T) {
 	p := newTestPlugin(nil, nil, nil)
 	ctx := bfCtx()
-	// "Bf-Prompt-Id" is a title-case variant of the canonical "bf-prompt-id".
+	// "X-Bf-Prompt-Id" is a title-case variant of the canonical "x-bf-prompt-id".
 	req := &schemas.HTTPRequest{
-		Headers: map[string]string{"Bf-Prompt-Id": "upper-case"},
+		Headers: map[string]string{"X-Bf-Prompt-Id": "upper-case"},
 	}
 
 	_, _ = p.HTTPTransportPreHook(ctx, req)
@@ -635,14 +635,13 @@ func TestParsePromptVersionNumber(t *testing.T) {
 				ctx.SetValue(PromptVersionKey, tt.value)
 			}
 
-			num, specified, err := parsePromptVersionNumber(ctx)
+			num, err := parseNumberFromContext(ctx, PromptVersionKey)
 
 			if tt.want.wantErr {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.want.specified, specified)
 			assert.Equal(t, tt.want.num, num)
 		})
 	}
@@ -725,138 +724,6 @@ func TestChatMessagesFromVersionMessages_InvalidJSON(t *testing.T) {
 }
 
 // ============================================================
-// loadCache + PreLLMHook integration (store → cache → injection)
-// ============================================================
-
-// ============================================================
-// includesStreamInModelParams
-// ============================================================
-
-func TestIncludesStreamInModelParams(t *testing.T) {
-	tests := []struct {
-		name   string
-		params tables.ModelParams
-		want   bool
-	}{
-		{"bool true", tables.ModelParams{"stream": true}, true},
-		{"bool false", tables.ModelParams{"stream": false}, false},
-		{"string true", tables.ModelParams{"stream": "true"}, true},
-		{"string yes", tables.ModelParams{"stream": "yes"}, true},
-		{"string 1", tables.ModelParams{"stream": "1"}, true},
-		{"string false", tables.ModelParams{"stream": "false"}, false},
-		{"string 0", tables.ModelParams{"stream": "0"}, false},
-		{"absent key", tables.ModelParams{"temperature": 0.7}, true},
-		{"empty params", tables.ModelParams{}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, includesStreamInModelParams(tt.params))
-		})
-	}
-}
-
-// ============================================================
-// HTTPTransportPreHook — stream routing via version ModelParams
-// ============================================================
-
-// TestHTTPTransportPreHook_StreamTrue_SetsStreamContext verifies that when the
-// resolved version has stream:true in ModelParams, the hook marks the bifrost
-// context so that the inference handler opens an SSE response.
-func TestHTTPTransportPreHook_StreamTrue_SetsStreamContext(t *testing.T) {
-	v := makeVersionWithParams(1, "p1", true, tables.ModelParams{"stream": true})
-	prompt := makePrompt("p1", &v)
-
-	p := newTestPlugin(
-		nil,
-		map[string]*tables.TablePrompt{"p1": &prompt},
-		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
-	)
-
-	ctx := bfCtx()
-	req := &schemas.HTTPRequest{Headers: map[string]string{PromptIDHeader: "p1"}}
-
-	_, err := p.HTTPTransportPreHook(ctx, req)
-	require.NoError(t, err)
-
-	streamVal, _ := ctx.Value(schemas.BifrostContextKeyPromptStreamRequest).(bool)
-	assert.True(t, streamVal, "expected BifrostContextKeyPromptStreamRequest=true when version has stream:true")
-}
-
-// TestHTTPTransportPreHook_StreamFalse_NoStreamContext verifies that stream:false
-// in ModelParams does NOT set the stream context key.
-func TestHTTPTransportPreHook_StreamFalse_NoStreamContext(t *testing.T) {
-	v := makeVersionWithParams(1, "p1", true, tables.ModelParams{"stream": false})
-	prompt := makePrompt("p1", &v)
-
-	p := newTestPlugin(
-		nil,
-		map[string]*tables.TablePrompt{"p1": &prompt},
-		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
-	)
-
-	ctx := bfCtx()
-	req := &schemas.HTTPRequest{Headers: map[string]string{PromptIDHeader: "p1"}}
-
-	_, err := p.HTTPTransportPreHook(ctx, req)
-	require.NoError(t, err)
-
-	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyPromptStreamRequest),
-		"expected BifrostContextKeyPromptStreamRequest not set when version has stream:false")
-}
-
-// TestHTTPTransportPreHook_NoStreamParam_NoStreamContext verifies that when no
-// "stream" key is present in ModelParams, the stream context key is not set.
-func TestHTTPTransportPreHook_NoStreamParam_NoStreamContext(t *testing.T) {
-	v := makeVersionWithParams(1, "p1", true, tables.ModelParams{"temperature": float64(0.7)})
-	prompt := makePrompt("p1", &v)
-
-	p := newTestPlugin(
-		nil,
-		map[string]*tables.TablePrompt{"p1": &prompt},
-		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
-	)
-
-	ctx := bfCtx()
-	req := &schemas.HTTPRequest{Headers: map[string]string{PromptIDHeader: "p1"}}
-
-	_, err := p.HTTPTransportPreHook(ctx, req)
-	require.NoError(t, err)
-
-	assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyPromptStreamRequest),
-		"expected BifrostContextKeyPromptStreamRequest to default to true when no stream key in params")
-}
-
-// TestHTTPTransportPreHook_SpecificVersion_StreamTrue_SetsStreamContext verifies
-// that when a specific (non-latest) version is requested via header and that
-// version has stream:true, the stream context key is set — even if the latest
-// version has stream:false.
-func TestHTTPTransportPreHook_SpecificVersion_StreamTrue_SetsStreamContext(t *testing.T) {
-	vLatest := makeVersionWithParams(1, "p1", true, tables.ModelParams{"stream": false})
-	vOld := makeVersionWithParams(2, "p1", false, tables.ModelParams{"stream": true})
-	prompt := makePrompt("p1", &vLatest)
-
-	p := newTestPlugin(
-		nil,
-		map[string]*tables.TablePrompt{"p1": &prompt},
-		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &vLatest, 2: &vOld}},
-	)
-
-	ctx := bfCtx()
-	req := &schemas.HTTPRequest{
-		Headers: map[string]string{
-			PromptIDHeader:      "p1",
-			PromptVersionHeader: "2",
-		},
-	}
-
-	_, err := p.HTTPTransportPreHook(ctx, req)
-	require.NoError(t, err)
-
-	streamVal, _ := ctx.Value(schemas.BifrostContextKeyPromptStreamRequest).(bool)
-	assert.True(t, streamVal, "expected stream=true from explicitly requested version with stream:true")
-}
-
-// ============================================================
 // PreLLMHook — model params merge and override
 // ============================================================
 
@@ -871,7 +738,7 @@ func TestPreLLMHook_VersionParamsApplied_WhenRequestHasNoParams(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -894,7 +761,7 @@ func TestPreLLMHook_RequestParamsOverrideVersionParams(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -924,7 +791,7 @@ func TestPreLLMHook_RequestParamsPartialOverride(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -960,7 +827,7 @@ func TestPreLLMHook_ModelInVersionParams_DoesNotOverrideRequestModel(t *testing.
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)
@@ -995,7 +862,7 @@ func TestLoadCacheAndPreLLMHook_EndToEnd(t *testing.T) {
 	p := newPluginWithStore(ms)
 	require.NoError(t, p.loadCache(context.Background()))
 
-	p.resolver = &staticResolver{promptID: "p1", versionSpecified: false}
+	p.resolver = &staticResolver{promptID: "p1"}
 
 	out, _, err := p.PreLLMHook(bfCtx(), chatRequest(userMsg("user msg")))
 	require.NoError(t, err)
@@ -1026,7 +893,7 @@ func TestLoadCacheAndPreLLMHook_SpecificVersion(t *testing.T) {
 	p := newPluginWithStore(ms)
 	require.NoError(t, p.loadCache(context.Background()))
 
-	p.resolver = &staticResolver{promptID: "p1", versionNumber: 2, versionSpecified: true}
+	p.resolver = &staticResolver{promptID: "p1", versionNumber: 2}
 
 	out, _, err := p.PreLLMHook(bfCtx(), chatRequest(userMsg("question")))
 	require.NoError(t, err)
@@ -1045,7 +912,7 @@ func TestPreLLMHook_AssistantMessage_UIFormat(t *testing.T) {
 	prompt := makePrompt("p1", &v)
 
 	p := newTestPlugin(
-		&staticResolver{promptID: "p1", versionSpecified: false},
+		&staticResolver{promptID: "p1"},
 		map[string]*tables.TablePrompt{"p1": &prompt},
 		map[string]map[int]*tables.TablePromptVersion{"p1": {1: &v}},
 	)

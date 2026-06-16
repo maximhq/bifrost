@@ -1,19 +1,22 @@
-"use client";
-
 import { LogDetailSheet } from "@/app/workspace/logs/sheets/logDetailsSheet";
 import { SessionDetailsSheet } from "@/app/workspace/logs/sheets/sessionDetailsSheet";
 import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
+import { LogsHeaderView } from "@/app/workspace/logs/views/logsHeaderView";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
+import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
+import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import {
 	getErrorMessage,
 	useDeleteLogsMutation,
+	useGetAvailableFilterDataQuery,
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
@@ -30,8 +33,10 @@ import type {
 	Pagination,
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
+import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
+import NumberFlow from "@number-flow/react";
+import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash, Info } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -295,7 +300,7 @@ export default function LogsPage() {
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
-				missing_cost_only: newFilters.missing_cost_only ?? filters.missing_cost_only ?? false,
+				missing_cost_only: newFilters.missing_cost_only ?? false,
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
 				offset: 0,
 			});
@@ -481,6 +486,11 @@ export default function LogsPage() {
 						const newSuccessCount = log.status === "success" ? successCount + 1 : successCount;
 						newStats.success_rate = (newSuccessCount / newStats.total_requests) * 100;
 
+						// Update user-facing success rate (same approximation as success_rate)
+						const userSuccessCount = ((prevStats.user_facing_success_rate ?? 0) / 100) * prevStats.total_requests;
+						const newUserSuccessCount = log.status === "success" ? userSuccessCount + 1 : userSuccessCount;
+						newStats.user_facing_success_rate = (newUserSuccessCount / newStats.total_requests) * 100;
+
 						// Update average latency
 						if (log.latency) {
 							const totalLatency = prevStats.average_latency * prevStats.total_requests;
@@ -622,7 +632,6 @@ export default function LogsPage() {
 
 	const fetchStats = useCallback(async () => {
 		setFetchingStats(true);
-
 		try {
 			const result = await triggerGetStats({ filters });
 
@@ -750,7 +759,7 @@ export default function LogsPage() {
 		if (filters.objects?.length && !filters.objects.includes(log.object)) {
 			return false;
 		}
-		if (filters.selected_key_ids?.length && !filters.selected_key_ids.includes(log.selected_key_id)) {
+		if (filters.selected_key_ids?.length && log.selected_key_id && !filters.selected_key_ids.includes(log.selected_key_id)) {
 			return false;
 		}
 		if (filters.virtual_key_ids?.length) {
@@ -814,34 +823,85 @@ export default function LogsPage() {
 		() => [
 			{
 				title: "Total Requests",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats?.total_requests.toLocaleString() || "-",
+				value: <NumberFlow value={stats?.total_requests ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <BarChart className="size-4" />,
 			},
 			{
 				title: "Success Rate",
-				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${stats.success_rate.toFixed(2)}%` : "-",
+				value: <NumberFlow value={stats?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />,
 				icon: <CheckCircle className="size-4" />,
+				description:
+					"Success rate as perceived by the system. Each fallback counts as a separate attempt. Retries on the same request are counted as one attempt.",
+			},
+			{
+				title: "User Success Rate",
+				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${(stats.user_facing_success_rate ?? 0).toFixed(2)}%` : "-",
+				icon: <CheckCircle className="size-4" />,
+				description: "Success rate as perceived by the end user. It includes fallback chains as one request.",
 			},
 			{
 				title: "Avg Latency",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `${stats.average_latency.toFixed(2)}ms` : "-",
+				value: (
+					<NumberFlow value={stats?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
+				),
 				icon: <Clock className="size-4" />,
 			},
 			{
 				title: "Total Tokens",
-				value: fetchingStats ? <Skeleton className="h-8 w-24" /> : stats?.total_tokens.toLocaleString() || "-",
+				value: <NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
 			{
 				title: "Total Cost",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `$${(stats.total_cost ?? 0).toFixed(4)}` : "-",
+				value: <NumberFlow value={stats?.total_cost ?? 0} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />,
 				icon: <DollarSign className="size-4" />,
 			},
 		],
-		[stats, fetchingStats],
+		[stats],
 	);
 
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
+	const { data: filterData } = useGetAvailableFilterDataQuery();
+
+	// Get metadata keys from filterdata API so columns always show even with no data on current page
+	const metadataKeys = useMemo(() => {
+		if (!filterData?.metadata_keys) return [];
+		return Object.keys(filterData.metadata_keys).sort();
+	}, [filterData?.metadata_keys]);
+
+	const columns = useMemo(
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys),
+		[handleDelete, hasDeleteAccess, metadataKeys],
+	);
+
+	const columnIds = useMemo(
+		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
+		[columns],
+	);
+
+	const COLUMN_LABELS: Record<string, string> = useMemo(
+		() => ({
+			timestamp: "Time",
+			request_type: "Type",
+			input: "Message",
+			provider: "Provider",
+			model: "Model",
+			latency: "Latency",
+			tokens: "Tokens",
+			cost: "Cost",
+		}),
+		[],
+	);
+
+	const {
+		entries: columnEntries,
+		columnOrder,
+		columnVisibility,
+		columnPinning,
+		toggleVisibility: toggleColumnVisibility,
+		togglePin: toggleColumnPin,
+		reorder: reorderColumns,
+		reset: resetColumns,
+	} = useColumnConfig({ columnIds, paramName: "cols" });
 
 	// Navigation for log detail sheet
 	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
@@ -899,20 +959,57 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card h-[calc(100dvh-3.3rem)] max-h-[calc(100dvh-1.5rem)] bg-white">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
 			{initialLoading ? (
 				<FullPageLoader />
 			) : showEmptyState ? (
 				<EmptyState isSocketConnected={isSocketConnected} error={error} />
 			) : (
-				<div className="mx-auto flex h-full w-full flex-col">
-					<div className="flex h-full flex-col gap-2 overflow-hidden">
-						<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-5">
+				<div className="bg-background flex h-full w-full grow gap-3">
+					{/* Sidebar Filters */}
+					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
+
+					{/* Main Content */}
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
+						<div className="shrink-0">
+							<LogsHeaderView
+								filters={filters}
+								onFiltersChange={setFilters}
+								liveEnabled={liveEnabled}
+								onLiveToggle={handleLiveToggle}
+								fetchLogs={fetchLogs}
+								fetchStats={fetchStats}
+								columnEntries={columnEntries}
+								columnLabels={COLUMN_LABELS}
+								onToggleColumnVisibility={toggleColumnVisibility}
+								onResetColumns={resetColumns}
+							/>
+						</div>
+						<div className="grid shrink-0 grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
-									<CardContent className="flex items-center justify-between px-4">
+									<CardContent
+										className={`flex items-center justify-between px-4 transition-opacity duration-200 ${fetchingStats ? "opacity-50" : "opacity-100"}`}
+									>
 										<div className="w-full min-w-0">
-											<div className="text-muted-foreground text-xs">{card.title}</div>
+											<div className="text-muted-foreground flex items-center gap-1 text-xs">
+												{card.title}
+												{"description" in card && card.description && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<button
+																type="button"
+																aria-label={`${card.title} info`}
+																data-testid={`logs-metric-info-${card.title.toLowerCase().replace(/\s+/g, "-")}`}
+																className="inline-flex items-center"
+															>
+																<Info className="size-3 cursor-help" />
+															</button>
+														</TooltipTrigger>
+														<TooltipContent className="max-w-72 text-left text-xs text-wrap">{card.description}</TooltipContent>
+													</Tooltip>
+												)}
+											</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
 										</div>
 									</CardContent>
@@ -947,9 +1044,7 @@ export default function LogsPage() {
 								data={logs}
 								totalItems={totalItems}
 								loading={fetchingLogs}
-								filters={filters}
 								pagination={pagination}
-								onFiltersChange={setFilters}
 								onPaginationChange={setPagination}
 								onRowClick={(row, columnId) => {
 									if (columnId === "actions") return;
@@ -958,10 +1053,14 @@ export default function LogsPage() {
 									setSessionHighlightedLogId(null);
 								}}
 								liveEnabled={liveEnabled}
-								onLiveToggle={handleLiveToggle}
 								isSocketConnected={isSocketConnected}
-								fetchLogs={fetchLogs}
-								fetchStats={fetchStats}
+								columnEntries={columnEntries}
+								columnOrder={columnOrder}
+								columnVisibility={columnVisibility}
+								columnPinning={columnPinning}
+								onToggleColumnVisibility={toggleColumnVisibility}
+								onTogglePin={toggleColumnPin}
+								onReorderColumns={reorderColumns}
 							/>
 						</div>
 					</div>

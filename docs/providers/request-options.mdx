@@ -16,7 +16,9 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeySessionID` | `x-bf-session-id` | `string` | Session ID for key stickiness (requires KV store) |
 | `BifrostContextKeySessionTTL` | `x-bf-session-ttl` | `time.Duration` | Session-to-key cache TTL (duration string or seconds) |
 | `BifrostContextKeyRequestID` | `x-request-id` | `string` | Custom request ID for tracking |
-| `BifrostContextKeySendBackRawResponse` | `x-bf-send-back-raw-response` | `bool` | Include raw provider response |
+| `BifrostContextKeySendBackRawRequest` | `x-bf-send-back-raw-request` | `bool` | Include raw provider request in the response |
+| `BifrostContextKeySendBackRawResponse` | `x-bf-send-back-raw-response` | `bool` | Include raw provider response in the response |
+| `BifrostContextKeyStoreRawRequestResponse` | `x-bf-store-raw-request-response` | `bool` | Persist raw request/response in log records |
 | `BifrostContextKeyPassthroughExtraParams` | `x-bf-passthrough-extra-params` | `bool` | Enable passthrough for extra parameters |
 | `BifrostContextKeyExtraHeaders` | `x-bf-eh-*` | `map[string][]string` | Custom headers forwarded to provider |
 | `BifrostContextKeyDirectKey` | `-` | `schemas.Key` | Direct key credentials (Go SDK only) |
@@ -269,14 +271,69 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 </Tab>
 </Tabs>
 
+### Send Back Raw Request
+
+**Context Key:** `BifrostContextKeySendBackRawRequest`  
+**Header:** `x-bf-send-back-raw-request`  
+**Type:** `bool` (header values: `"true"` or `"false"`)  
+**Required:** No
+
+Include the exact JSON body sent to the provider alongside Bifrost's standardized response. Accepts `"true"` or `"false"` — either value fully overrides the provider-level `send_back_raw_request` config for this request.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-send-back-raw-request: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+
+// Access raw request
+if response.ChatResponse != nil {
+    rawReq := response.ChatResponse.ExtraFields.RawRequest
+}
+```
+</Tab>
+</Tabs>
+
+The raw request appears in `extra_fields.raw_request`:
+
+```json
+{
+    "choices": [...],
+    "usage": {...},
+    "extra_fields": {
+        "provider": "openai",
+        "raw_request": {
+            // Exact JSON sent to the provider
+        }
+    }
+}
+```
+
 ### Send Back Raw Response
 
 **Context Key:** `BifrostContextKeySendBackRawResponse`  
 **Header:** `x-bf-send-back-raw-response`  
-**Type:** `bool` (header value: `"true"`)  
+**Type:** `bool` (header values: `"true"` or `"false"`)  
 **Required:** No
 
-Include the original provider response alongside Bifrost's standardized response format.
+Include the original provider response alongside Bifrost's standardized response format. Accepts `"true"` or `"false"` — either value fully overrides the provider-level `send_back_raw_response` config for this request.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -323,6 +380,51 @@ The raw response appears in `extra_fields.raw_response`:
     }
 }
 ```
+
+### Store Raw Request/Response
+
+**Context Key:** `BifrostContextKeyStoreRawRequestResponse`  
+**Header:** `x-bf-store-raw-request-response`  
+**Type:** `bool` (header values: `"true"` or `"false"`)  
+**Required:** No
+
+Persist the raw provider request and response in the log record. Accepts `"true"` or `"false"` — either value fully overrides the provider-level `store_raw_request_response` config for this request.
+
+This is orthogonal to the send-back flags: enabling this does not affect whether raw data appears in the API response, and enabling send-back does not automatically store raw data in logs. Use this when you want observability into provider payloads without necessarily exposing them to the caller, or combine it with `x-bf-send-back-raw-*` to do both.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-store-raw-request-response: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyStoreRawRequestResponse, true)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+// Raw data is persisted in the log record.
+// ExtraFields.RawRequest/RawResponse are nil unless send-back flags are also enabled.
+```
+</Tab>
+</Tabs>
+
+<Note>
+`x-bf-store-raw-request-response` only has effect when the logging plugin is active — raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
+
+`x-bf-store-raw-request-response` and `x-bf-send-back-raw-*` are orthogonal — you can enable any combination. Enabling store does not send data back to the caller; enabling send-back does not persist data in logs. Enable both to do both.
+</Note>
 
 ### Passthrough Extra Parameters
 

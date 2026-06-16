@@ -1,4 +1,0 @@
-- feat: add MCP client discovered tools and tool name mapping migration
-- fix: exception handling in async log store jobs
-- refactor: model catalog Init API to use SetShouldSyncGate method
-- refactor: rename DefaultPricingSyncInterval to DefaultSyncInterval

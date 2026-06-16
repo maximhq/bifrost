@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -194,10 +195,20 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //	// Explicit allowedModels without prefix
 //	mc.IsModelAllowedForProvider("openai", "gpt-4o", []string{"gpt-4o"})
 //	// Returns: true (direct match)
-func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels schemas.WhiteList) bool {
+func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels schemas.WhiteList) bool {
+	isCustomProvider := false
+	hasListModelsEndpointDisabled := false
+	if providerConfig != nil {
+		isCustomProvider = providerConfig.CustomProviderConfig != nil
+		hasListModelsEndpointDisabled = !providerConfig.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)
+	}
+
 	// Case 1: ["*"] = allow all models; use catalog to determine support
 	// Empty allowedModels = deny all (fail-safe deny-by-default)
 	if allowedModels.IsUnrestricted() {
+		if isCustomProvider && hasListModelsEndpointDisabled {
+			return true
+		}
 		supportedProviders := mc.GetProvidersForModel(model)
 		return slices.Contains(supportedProviders, provider)
 	}

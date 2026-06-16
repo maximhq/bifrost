@@ -1,0 +1,941 @@
+---
+title: "Provider Setup"
+description: "Configure LLM providers in the Bifrost Helm chart — API keys, cloud-native auth, and self-hosted endpoints"
+icon: "plug"
+---
+
+All providers are configured under `bifrost.providers` in your values file. Each provider entry contains a `keys` list where each key has a `name`, `value`, `weight`, and optional provider-specific config.
+
+**Two ways to supply credentials:**
+
+- **Direct value** — `value: "sk-..."` (fine for dev; avoid in production)
+- **Kubernetes Secret + env var** — store the key in a Secret, inject as an env var, and reference it with `value: "env.VAR_NAME"`
+
+The `providerSecrets` block handles the Secret → env var injection automatically:
+
+```yaml
+bifrost:
+  providers:
+    openai:
+      keys:
+        - name: "primary"
+          value: "env.OPENAI_API_KEY"   # resolved at runtime
+          weight: 1
+
+  providerSecrets:
+    openai:
+      existingSecret: "my-openai-secret"
+      key: "api-key"
+      envVar: "OPENAI_API_KEY"          # injected into the pod
+```
+
+---
+
+<Tabs>
+
+<Tab title="OpenAI">
+
+### OpenAI
+
+Supports multiple keys with weighted load balancing. The key with `use_for_batch_api: true` is eligible for the Batch API.
+
+**Step 1 — Create secret**
+
+```bash
+kubectl create secret generic openai-credentials \
+  --from-literal=api-key-1='sk-your-primary-key' \
+  --from-literal=api-key-2='sk-your-secondary-key' \
+  --from-literal=api-key-batch='sk-your-batch-key'
+```
+
+**Step 2 — Values file**
+
+```yaml
+# openai-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    openai:
+      keys:
+        - name: "openai-primary"
+          value: "env.OPENAI_KEY_1"
+          weight: 2               # 50% of traffic
+          models: ["*"]
+        - name: "openai-secondary"
+          value: "env.OPENAI_KEY_2"
+          weight: 1               # 25%
+          models: ["gpt-4o-mini"] # restrict to cheaper model
+        - name: "openai-batch"
+          value: "env.OPENAI_KEY_BATCH"
+          weight: 1               # 25%
+          models: ["*"]
+          use_for_batch_api: true
+
+  providerSecrets:
+    openai-key-1:
+      existingSecret: "openai-credentials"
+      key: "api-key-1"
+      envVar: "OPENAI_KEY_1"
+    openai-key-2:
+      existingSecret: "openai-credentials"
+      key: "api-key-2"
+      envVar: "OPENAI_KEY_2"
+    openai-key-batch:
+      existingSecret: "openai-credentials"
+      key: "api-key-batch"
+      envVar: "OPENAI_KEY_BATCH"
+```
+
+**Step 3 — Install**
+
+```bash
+helm install bifrost bifrost/bifrost -f openai-values.yaml
+```
+
+**Optional — per-provider network config**
+
+```yaml
+bifrost:
+  providers:
+    openai:
+      keys:
+        - name: "primary"
+          value: "env.OPENAI_KEY_1"
+          weight: 1
+      network_config:
+        default_request_timeout_in_seconds: 120
+        max_retries: 3
+        retry_backoff_initial_ms: 500
+        retry_backoff_max_ms: 5000
+        max_conns_per_host: 5000
+```
+
+</Tab>
+
+<Tab title="Anthropic">
+
+### Anthropic
+
+```bash
+kubectl create secret generic anthropic-credentials \
+  --from-literal=api-key-1='sk-ant-your-primary-key' \
+  --from-literal=api-key-2='sk-ant-your-secondary-key'
+```
+
+```yaml
+# anthropic-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    anthropic:
+      keys:
+        - name: "anthropic-primary"
+          value: "env.ANTHROPIC_KEY_1"
+          weight: 1
+          models: ["*"]
+        - name: "anthropic-secondary"
+          value: "env.ANTHROPIC_KEY_2"
+          weight: 1
+          models: ["*"]
+
+  providerSecrets:
+    anthropic-key-1:
+      existingSecret: "anthropic-credentials"
+      key: "api-key-1"
+      envVar: "ANTHROPIC_KEY_1"
+    anthropic-key-2:
+      existingSecret: "anthropic-credentials"
+      key: "api-key-2"
+      envVar: "ANTHROPIC_KEY_2"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f anthropic-values.yaml
+```
+
+**Override Anthropic beta headers** (optional):
+
+```yaml
+bifrost:
+  providers:
+    anthropic:
+      keys:
+        - name: "primary"
+          value: "env.ANTHROPIC_KEY_1"
+          weight: 1
+      network_config:
+        beta_header_overrides:
+          redact-thinking-: true
+```
+
+</Tab>
+
+<Tab title="Azure OpenAI">
+
+### Azure OpenAI
+
+Azure requires `azure_key_config` on every key with `endpoint`, `api_version`, and a `deployments` map (logical model name → Azure deployment name).
+
+Two auth modes are supported:
+
+<Tabs>
+<Tab title="API Key">
+
+**Step 1 — Create secret**
+
+```bash
+kubectl create secret generic azure-credentials \
+  --from-literal=api-key='your-azure-openai-api-key' \
+  --from-literal=endpoint='https://your-resource.openai.azure.com'
+```
+
+**Step 2 — Values file**
+
+```yaml
+# azure-apikey-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    azure:
+      keys:
+        - name: "azure-primary"
+          value: "env.AZURE_API_KEY"
+          weight: 1
+          models: ["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"]
+          azure_key_config:
+            endpoint: "env.AZURE_ENDPOINT"
+            api_version: "2024-10-21"
+            deployments:
+              gpt-4o: "gpt-4o-prod"
+              gpt-4o-mini: "gpt-4o-mini-prod"
+              text-embedding-3-small: "embeddings-prod"
+
+  providerSecrets:
+    azure-api-key:
+      existingSecret: "azure-credentials"
+      key: "api-key"
+      envVar: "AZURE_API_KEY"
+    azure-endpoint:
+      existingSecret: "azure-credentials"
+      key: "endpoint"
+      envVar: "AZURE_ENDPOINT"
+```
+
+**Step 3 — Install**
+
+```bash
+helm install bifrost bifrost/bifrost -f azure-apikey-values.yaml
+```
+
+</Tab>
+<Tab title="Managed Identity / Workload Identity">
+
+When `value` is empty, Bifrost uses `DefaultAzureCredential` — which automatically resolves credentials from:
+- AKS Workload Identity (recommended for production)
+- Azure VM managed identity
+- `az login` (developer machines)
+
+**Step 1 — Annotate the service account** (AKS Workload Identity)
+
+```bash
+# Associate the Kubernetes service account with your Azure managed identity
+kubectl annotate serviceaccount bifrost \
+  azure.workload.identity/client-id="<MANAGED_IDENTITY_CLIENT_ID>"
+```
+
+```yaml
+serviceAccount:
+  annotations:
+    azure.workload.identity/client-id: "<MANAGED_IDENTITY_CLIENT_ID>"
+```
+
+**Step 2 — Values file**
+
+```bash
+kubectl create secret generic azure-config \
+  --from-literal=endpoint='https://your-resource.openai.azure.com'
+```
+
+```yaml
+# azure-msi-values.yaml
+image:
+  tag: "v1.4.11"
+
+serviceAccount:
+  annotations:
+    azure.workload.identity/client-id: "<MANAGED_IDENTITY_CLIENT_ID>"
+
+bifrost:
+  providers:
+    azure:
+      keys:
+        - name: "azure-workload-identity"
+          value: ""                          # empty = DefaultAzureCredential
+          weight: 1
+          models: ["gpt-4o"]
+          azure_key_config:
+            endpoint: "env.AZURE_ENDPOINT"
+            api_version: "2024-10-21"
+            deployments:
+              gpt-4o: "gpt-4o-prod"
+
+  providerSecrets:
+    azure-endpoint:
+      existingSecret: "azure-config"
+      key: "endpoint"
+      envVar: "AZURE_ENDPOINT"
+```
+
+**Step 3 — Install**
+
+```bash
+helm install bifrost bifrost/bifrost -f azure-msi-values.yaml
+```
+
+</Tab>
+</Tabs>
+
+**Multi-region failover** (two deployments, different regions):
+
+```yaml
+bifrost:
+  providers:
+    azure:
+      keys:
+        - name: "eastus"
+          value: "env.AZURE_KEY_EAST"
+          weight: 1
+          azure_key_config:
+            endpoint: "env.AZURE_ENDPOINT_EAST"
+            api_version: "2024-10-21"
+            deployments:
+              gpt-4o: "gpt-4o-eastus"
+        - name: "westus"
+          value: "env.AZURE_KEY_WEST"
+          weight: 1
+          azure_key_config:
+            endpoint: "env.AZURE_ENDPOINT_WEST"
+            api_version: "2024-10-21"
+            deployments:
+              gpt-4o: "gpt-4o-westus"
+```
+
+</Tab>
+
+<Tab title="AWS Bedrock">
+
+### AWS Bedrock
+
+Bedrock requires `bedrock_key_config` with at minimum a `region`. Three auth modes:
+
+<Tabs>
+<Tab title="Static Credentials">
+
+```bash
+kubectl create secret generic aws-credentials \
+  --from-literal=access-key-id='AKIAIOSFODNN7EXAMPLE' \
+  --from-literal=secret-access-key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+```
+
+```yaml
+# bedrock-static-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    bedrock:
+      keys:
+        - name: "bedrock-static"
+          value: ""
+          weight: 1
+          models: ["*"]
+          bedrock_key_config:
+            region: "us-east-1"
+            access_key: "env.AWS_ACCESS_KEY_ID"
+            secret_key: "env.AWS_SECRET_ACCESS_KEY"
+            deployments:
+              # Logical name -> Bedrock inference profile
+              anthropic.claude-3-5-sonnet: "us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+
+  providerSecrets:
+    aws-access-key:
+      existingSecret: "aws-credentials"
+      key: "access-key-id"
+      envVar: "AWS_ACCESS_KEY_ID"
+    aws-secret-key:
+      existingSecret: "aws-credentials"
+      key: "secret-access-key"
+      envVar: "AWS_SECRET_ACCESS_KEY"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f bedrock-static-values.yaml
+```
+
+</Tab>
+<Tab title="IRSA / EKS Pod Identity">
+
+When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain — IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
+
+**Step 1 — Annotate the service account with the IAM role**
+
+```bash
+kubectl annotate serviceaccount bifrost \
+  eks.amazonaws.com/role-arn="arn:aws:iam::123456789012:role/BifrostBedrockRole"
+```
+
+```yaml
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/BifrostBedrockRole"
+```
+
+**Step 2 — Values file**
+
+```yaml
+# bedrock-irsa-values.yaml
+image:
+  tag: "v1.4.11"
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/BifrostBedrockRole"
+
+bifrost:
+  providers:
+    bedrock:
+      keys:
+        - name: "bedrock-irsa"
+          value: ""
+          weight: 1
+          models: ["*"]
+          bedrock_key_config:
+            region: "us-east-1"
+            # No access_key / secret_key — SDK uses IRSA token automatically
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f bedrock-irsa-values.yaml
+```
+
+</Tab>
+<Tab title="STS AssumeRole">
+
+Assumes a cross-account role on top of the default credential chain.
+
+```yaml
+# bedrock-assumerole-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    bedrock:
+      keys:
+        - name: "bedrock-assumerole"
+          value: ""
+          weight: 1
+          models: ["*"]
+          bedrock_key_config:
+            region: "us-west-2"
+            # Source identity from pod's default chain, then assume this role
+            role_arn: "env.AWS_ROLE_ARN"
+            external_id: "env.AWS_EXTERNAL_ID"
+            session_name: "bifrost-session"
+```
+
+```bash
+kubectl create secret generic aws-role-config \
+  --from-literal=role-arn='arn:aws:iam::999999999999:role/CrossAccountBedrockRole' \
+  --from-literal=external-id='your-external-id'
+```
+
+```yaml
+  providerSecrets:
+    aws-role-arn:
+      existingSecret: "aws-role-config"
+      key: "role-arn"
+      envVar: "AWS_ROLE_ARN"
+    aws-external-id:
+      existingSecret: "aws-role-config"
+      key: "external-id"
+      envVar: "AWS_EXTERNAL_ID"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f bedrock-assumerole-values.yaml
+```
+
+</Tab>
+</Tabs>
+
+**Batch API — S3 configuration**
+
+```yaml
+bedrock_key_config:
+  region: "us-east-1"
+  access_key: "env.AWS_ACCESS_KEY_ID"
+  secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  batch_s3_config:
+    buckets:
+      - bucket_name: "my-bedrock-batch-bucket"
+        prefix: "batch/"
+        is_default: true
+```
+
+</Tab>
+
+<Tab title="Google Vertex AI">
+
+### Google Vertex AI
+
+Vertex requires `vertex_key_config` with `project_id` and `region`. Two auth modes:
+
+<Tabs>
+<Tab title="Service Account Key">
+
+```bash
+# Base64-encode the service account JSON
+SA_JSON=$(cat service-account-key.json | base64 -w 0)
+
+kubectl create secret generic gcp-credentials \
+  --from-literal=service-account-json="${SA_JSON}"
+```
+
+```yaml
+# vertex-sa-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    vertex:
+      keys:
+        - name: "vertex-sa-key"
+          value: ""
+          weight: 1
+          models: ["*"]
+          vertex_key_config:
+            project_id: "env.VERTEX_PROJECT_ID"
+            region: "us-central1"
+            auth_credentials: "env.VERTEX_AUTH_CREDENTIALS"
+
+  providerSecrets:
+    vertex-project-id:
+      existingSecret: "gcp-credentials"
+      key: "project-id"
+      envVar: "VERTEX_PROJECT_ID"
+    vertex-sa:
+      existingSecret: "gcp-credentials"
+      key: "service-account-json"
+      envVar: "VERTEX_AUTH_CREDENTIALS"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f vertex-sa-values.yaml
+```
+
+</Tab>
+<Tab title="GKE Workload Identity / ADC">
+
+When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` — which resolves to:
+- GKE Workload Identity (recommended)
+- GCE metadata server (on Compute Engine / Cloud Run)
+- `GOOGLE_APPLICATION_CREDENTIALS` path
+- `gcloud auth application-default login` (developer machines)
+
+**Step 1 — Annotate the service account** (GKE Workload Identity)
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding \
+  bifrost-sa@my-project.iam.gserviceaccount.com \
+  --role roles/iam.workloadIdentityUser \
+  --member "serviceAccount:my-project.svc.id.goog[default/bifrost]"
+```
+
+```yaml
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: "bifrost-sa@my-project.iam.gserviceaccount.com"
+```
+
+**Step 2 — Values file**
+
+```yaml
+# vertex-wli-values.yaml
+image:
+  tag: "v1.4.11"
+
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: "bifrost-sa@my-project.iam.gserviceaccount.com"
+
+bifrost:
+  providers:
+    vertex:
+      keys:
+        - name: "vertex-workload-identity"
+          value: ""
+          weight: 1
+          models: ["*"]
+          vertex_key_config:
+            project_id: "my-gcp-project"
+            region: "us-central1"
+            # auth_credentials intentionally omitted → ADC lookup
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f vertex-wli-values.yaml
+```
+
+</Tab>
+</Tabs>
+
+</Tab>
+
+<Tab title="Groq / Mistral / Gemini / Others">
+
+### Standard API-Key Providers
+
+These providers follow the same simple pattern — one or more keys with weights.
+
+<Tabs>
+<Tab title="Groq">
+
+```bash
+kubectl create secret generic groq-credentials \
+  --from-literal=api-key='gsk_your_groq_api_key'
+```
+
+```yaml
+bifrost:
+  providers:
+    groq:
+      keys:
+        - name: "groq-primary"
+          value: "env.GROQ_API_KEY"
+          weight: 1
+          models: ["*"]
+
+  providerSecrets:
+    groq-key:
+      existingSecret: "groq-credentials"
+      key: "api-key"
+      envVar: "GROQ_API_KEY"
+```
+
+</Tab>
+<Tab title="Gemini">
+
+```bash
+kubectl create secret generic gemini-credentials \
+  --from-literal=api-key='your-gemini-api-key'
+```
+
+```yaml
+bifrost:
+  providers:
+    gemini:
+      keys:
+        - name: "gemini-main"
+          value: "env.GEMINI_API_KEY"
+          weight: 1
+          models: ["*"]
+
+  providerSecrets:
+    gemini-key:
+      existingSecret: "gemini-credentials"
+      key: "api-key"
+      envVar: "GEMINI_API_KEY"
+```
+
+</Tab>
+<Tab title="Mistral">
+
+```bash
+kubectl create secret generic mistral-credentials \
+  --from-literal=api-key='your-mistral-api-key'
+```
+
+```yaml
+bifrost:
+  providers:
+    mistral:
+      keys:
+        - name: "mistral-main"
+          value: "env.MISTRAL_API_KEY"
+          weight: 1
+          models: ["*"]
+
+  providerSecrets:
+    mistral-key:
+      existingSecret: "mistral-credentials"
+      key: "api-key"
+      envVar: "MISTRAL_API_KEY"
+```
+
+</Tab>
+<Tab title="Cohere / Perplexity / xAI / Others">
+
+All standard API-key providers follow the same pattern. Replace the provider name and env var name accordingly:
+
+```yaml
+bifrost:
+  providers:
+    cohere:
+      keys:
+        - name: "cohere-main"
+          value: "env.COHERE_API_KEY"
+          weight: 1
+    perplexity:
+      keys:
+        - name: "perplexity-main"
+          value: "env.PERPLEXITY_API_KEY"
+          weight: 1
+    xai:
+      keys:
+        - name: "xai-main"
+          value: "env.XAI_API_KEY"
+          weight: 1
+    cerebras:
+      keys:
+        - name: "cerebras-main"
+          value: "env.CEREBRAS_API_KEY"
+          weight: 1
+    openrouter:
+      keys:
+        - name: "openrouter-main"
+          value: "env.OPENROUTER_API_KEY"
+          weight: 1
+    nebius:
+      keys:
+        - name: "nebius-main"
+          value: "env.NEBIUS_API_KEY"
+          weight: 1
+```
+
+</Tab>
+</Tabs>
+
+**Install command (any of the above)**
+
+```bash
+helm install bifrost bifrost/bifrost \
+  --set image.tag=v1.4.11 \
+  -f provider-values.yaml
+```
+
+</Tab>
+
+<Tab title="Self-Hosted">
+
+### Self-Hosted Providers
+
+Self-hosted providers point to a URL you operate. No API key is typically required (`value: ""`).
+
+<Tabs>
+<Tab title="Ollama">
+
+```yaml
+# ollama-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    ollama:
+      keys:
+        - name: "ollama-local"
+          value: ""
+          weight: 1
+          models: ["*"]
+          ollama_key_config:
+            url: "http://ollama.default.svc.cluster.local:11434"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f ollama-values.yaml
+```
+
+Using an env var for the URL (useful across environments):
+
+```bash
+kubectl create secret generic ollama-config \
+  --from-literal=url='http://ollama.default.svc.cluster.local:11434'
+```
+
+```yaml
+          ollama_key_config:
+            url: "env.OLLAMA_URL"
+
+  providerSecrets:
+    ollama-url:
+      existingSecret: "ollama-config"
+      key: "url"
+      envVar: "OLLAMA_URL"
+```
+
+</Tab>
+<Tab title="vLLM">
+
+vLLM instances are model-specific — one key per served model.
+
+```yaml
+# vllm-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    vllm:
+      keys:
+        - name: "vllm-llama3-70b"
+          value: ""
+          weight: 1
+          models: ["llama-3-70b"]
+          vllm_key_config:
+            url: "http://vllm.default.svc.cluster.local:8000"
+            model_name: "meta-llama/Meta-Llama-3-70B-Instruct"
+        - name: "vllm-mistral"
+          value: ""
+          weight: 1
+          models: ["mistral-7b"]
+          vllm_key_config:
+            url: "http://vllm-mistral.default.svc.cluster.local:8000"
+            model_name: "mistralai/Mistral-7B-Instruct-v0.3"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f vllm-values.yaml
+```
+
+</Tab>
+<Tab title="SGLang">
+
+```yaml
+# sgl-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    sgl:
+      keys:
+        - name: "sgl-main"
+          value: ""
+          weight: 1
+          models: ["*"]
+          sgl_key_config:
+            url: "http://sgl-router.default.svc.cluster.local:30000"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f sgl-values.yaml
+```
+
+</Tab>
+<Tab title="HuggingFace / Replicate">
+
+These providers use `aliases` to map logical model names to provider-specific IDs.
+
+```yaml
+bifrost:
+  providers:
+    huggingface:
+      keys:
+        - name: "hf-main"
+          value: "env.HF_API_KEY"
+          weight: 1
+          models: ["llama-3", "mixtral"]
+          aliases:
+            llama-3: "meta-llama/Meta-Llama-3-8B-Instruct"
+            mixtral: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+
+    replicate:
+      keys:
+        - name: "replicate-main"
+          value: "env.REPLICATE_API_KEY"
+          weight: 1
+          models: ["llama-3"]
+          aliases:
+            llama-3: "meta/meta-llama-3-70b-instruct"
+          replicate_key_config:
+            use_deployments_endpoint: false
+```
+
+</Tab>
+</Tabs>
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Multi-Provider Example
+
+Combine providers in a single values file:
+
+```yaml
+# multi-provider-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  providers:
+    openai:
+      keys:
+        - name: "openai-primary"
+          value: "env.OPENAI_API_KEY"
+          weight: 2
+          models: ["*"]
+    anthropic:
+      keys:
+        - name: "anthropic-primary"
+          value: "env.ANTHROPIC_API_KEY"
+          weight: 1
+          models: ["*"]
+    groq:
+      keys:
+        - name: "groq-primary"
+          value: "env.GROQ_API_KEY"
+          weight: 1
+          models: ["*"]
+
+  providerSecrets:
+    openai-key:
+      existingSecret: "provider-keys"
+      key: "openai"
+      envVar: "OPENAI_API_KEY"
+    anthropic-key:
+      existingSecret: "provider-keys"
+      key: "anthropic"
+      envVar: "ANTHROPIC_API_KEY"
+    groq-key:
+      existingSecret: "provider-keys"
+      key: "groq"
+      envVar: "GROQ_API_KEY"
+
+  plugins:
+    logging:
+      enabled: true
+    governance:
+      enabled: true
+```
+
+```bash
+# Create a single secret with all provider keys
+kubectl create secret generic provider-keys \
+  --from-literal=openai='sk-your-openai-key' \
+  --from-literal=anthropic='sk-ant-your-anthropic-key' \
+  --from-literal=groq='gsk_your-groq-key'
+
+helm install bifrost bifrost/bifrost -f multi-provider-values.yaml
+```

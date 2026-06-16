@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -51,7 +49,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
-	const { data: providerGovernanceData, isLoading: isLoadingGovernance } = useGetProviderGovernanceQuery(undefined, {
+	const { data: providerGovernanceData } = useGetProviderGovernanceQuery(undefined, {
 		skip: !hasViewAccess,
 		pollingInterval: 5000,
 	});
@@ -119,11 +117,11 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 			let rateLimitPayload:
 				| {
-					token_max_limit?: number | null;
-					token_reset_duration?: string | null;
-					request_max_limit?: number | null;
-					request_reset_duration?: string | null;
-				}
+						token_max_limit?: number | null;
+						token_reset_duration?: string | null;
+						request_max_limit?: number | null;
+						request_reset_duration?: string | null;
+				  }
 				| undefined;
 			if (hasRateLimit) {
 				rateLimitPayload = {

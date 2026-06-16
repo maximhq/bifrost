@@ -1302,11 +1302,11 @@ type BedrockInvokeStreamChunkEvent struct {
 func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 	var events []BedrockEncodedEvent
 
-	if event.InvokeModelRawChunk != nil {
+	for _, rawChunk := range event.InvokeModelRawChunks {
 		events = append(events, BedrockEncodedEvent{
 			EventType: "chunk",
 			Payload: BedrockInvokeStreamChunkEvent{
-				Bytes: event.InvokeModelRawChunk,
+				Bytes: rawChunk,
 			},
 		})
 	}
@@ -1500,20 +1500,30 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						if summaryValue, ok := schemas.SafeExtractStringPointer(request.ExtraParams["reasoning_summary"]); ok {
 							summary = summaryValue
 						}
-						// Check for native output_config.effort first
+						var (
+							effortStr string
+							found     bool
+						)
+						// Check for native output_config.effort first.
+						// output_config may be preserved as OrderedMap by the merge path.
 						if outputConfig, ok := request.AdditionalModelRequestFields.Get("output_config"); ok {
-							if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
-								if effortStr, ok := schemas.SafeExtractString(outputConfigMap["effort"]); ok {
-									var maxTokens *int
-									if budgetTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
-										maxTokens = schemas.Ptr(budgetTokens)
-									}
-									bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
-										Effort:    schemas.Ptr(effortStr),
-										MaxTokens: maxTokens,
-										Summary:   summary,
-									}
+							if outputConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(outputConfig); ok && outputConfigOrderedMap != nil {
+								if effortValue, exists := outputConfigOrderedMap.Get("effort"); exists {
+									effortStr, found = schemas.SafeExtractString(effortValue)
 								}
+							} else if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
+								effortStr, found = schemas.SafeExtractString(outputConfigMap["effort"])
+							}
+						}
+						if found {
+							var maxTokens *int
+							if budgetTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
+								maxTokens = schemas.Ptr(budgetTokens)
+							}
+							bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+								Effort:    schemas.Ptr(effortStr),
+								MaxTokens: maxTokens,
+								Summary:   summary,
 							}
 						} else if maxTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
 							// Fallback: convert budget_tokens to effort
@@ -1673,6 +1683,8 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 	}
 
+	var responsesStructuredOutputTool *BedrockTool
+
 	// Map basic parameters to inference config
 	if bifrostReq.Params != nil {
 		inferenceConfig := &BedrockInferenceConfig{}
@@ -1770,9 +1782,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 								"type": "adaptive",
 							})
-							bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
-								"effort": effort,
-							})
+							setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 						} else {
 							// Opus 4.5 and older Anthropic models: budget_tokens thinking
 							modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
@@ -1829,19 +1839,17 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		if bifrostReq.Params.Text != nil {
 			if bifrostReq.Params.Text.Format != nil {
-				responseFormatTool := convertTextFormatToTool(ctx, bifrostReq.Params.Text)
-				// append to bedrockTools
+				responseFormatTool, anthropicOutputFormat := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
+				if anthropicOutputFormat != nil {
+					if bedrockReq.AdditionalModelRequestFields == nil {
+						bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+					}
+					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
+				}
+				// Defer synthetic tool injection until after normal tool/tool_choice conversion
+				// so the structured-output tool is not overwritten by the later pass.
 				if responseFormatTool != nil {
-					if bedrockReq.ToolConfig == nil {
-						bedrockReq.ToolConfig = &BedrockToolConfig{}
-					}
-					bedrockReq.ToolConfig.Tools = append(bedrockReq.ToolConfig.Tools, *responseFormatTool)
-					// Force the model to use this specific tool (same as ChatCompletion)
-					bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
-						Tool: &BedrockToolChoiceTool{
-							Name: responseFormatTool.ToolSpec.Name,
-						},
-					}
+					responsesStructuredOutputTool = responseFormatTool
 				}
 			}
 		}
@@ -1855,7 +1863,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
 				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
 					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-					bedrockReq.AdditionalModelRequestFields = orderedFields
+					bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
+						bedrockReq.AdditionalModelRequestFields,
+						orderedFields,
+					)
 				}
 			}
 
@@ -1956,6 +1967,20 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				bedrockReq.ToolConfig = &BedrockToolConfig{}
 			}
 			bedrockReq.ToolConfig.ToolChoice = bedrockToolChoice
+		}
+	}
+
+	// If text.format was converted to a synthetic tool, inject it after the normal
+	// tool/tool_choice pass so it is not overwritten by the above conversion.
+	if responsesStructuredOutputTool != nil {
+		if bedrockReq.ToolConfig == nil {
+			bedrockReq.ToolConfig = &BedrockToolConfig{}
+		}
+		bedrockReq.ToolConfig.Tools = append([]BedrockTool{*responsesStructuredOutputTool}, bedrockReq.ToolConfig.Tools...)
+		bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
+			Tool: &BedrockToolChoiceTool{
+				Name: responsesStructuredOutputTool.ToolSpec.Name,
+			},
 		}
 	}
 
@@ -2565,6 +2590,18 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil {
 								resultContent = append(resultContent, tryParseJSONIntoContentBlock(*block.Text))
+							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
+								block.ResponsesInputMessageContentBlockImage != nil &&
+								block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+								imageSource, err := convertImageToBedrockSource(*block.ResponsesInputMessageContentBlockImage.ImageURL)
+								if err != nil {
+									// Bedrock only supports base64 data URIs for images. If conversion
+									// fails (e.g. remote URL), the image is dropped from the tool result
+									// which silently degrades the model's ability to see tool output.
+									_ = fmt.Errorf("bedrock: converting tool result image: %w", err)
+								} else {
+									resultContent = append(resultContent, BedrockContentBlock{Image: imageSource})
+								}
 							}
 						}
 					}

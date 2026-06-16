@@ -171,7 +171,7 @@ func Init(
 	}
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
-	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
+	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -282,7 +282,7 @@ func InitFromStore(
 		defaultDepth := DefaultRoutingChainMaxDepth
 		routingChainMaxDepth = &defaultDepth
 	}
-	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
+	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
 	if err != nil {
@@ -675,8 +675,14 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
 		// and provider-prefixed allowed_models entries
 		isProviderAllowed := false
-		if p.modelCatalog != nil {
-			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(config.Provider), modelStr, config.AllowedModels)
+		if p.modelCatalog != nil && p.inMemoryStore != nil {
+			provider := schemas.ModelProvider(config.Provider)
+			providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[provider]
+			providerConfigPtr := &providerConfig
+			if !ok {
+				providerConfigPtr = nil
+			}
+			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(provider, modelStr, providerConfigPtr, config.AllowedModels)
 		} else {
 			// Fallback when model catalog is not available: simple string matching
 			// ["*"] = allow all models; [] = deny all models
@@ -1261,7 +1267,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
@@ -1305,7 +1311,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil && virtualKey != "" {
 		// filter models which are not supported on this virtual key
@@ -1362,7 +1368,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
 	// Create request context for evaluation (MCP requests don't have provider/model)
 	evaluationRequest := &EvaluationRequest{
@@ -1429,7 +1435,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
 	// When user auth is present, skip VK usage tracking to avoid double-counting
 	if userID != "" {

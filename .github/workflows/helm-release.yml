@@ -5,21 +5,31 @@ on:
     branches:
       - main
     paths:
-      - 'helm-charts/bifrost/**'
-      - '.github/workflows/helm-release.yml'
+      - "helm-charts/bifrost/**"
+      - ".github/workflows/helm-release.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write  
+  contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            get.helm.sh:443
+            github.com:443
+            maximhq.github.io:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            uploads.github.com:443
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -36,6 +46,11 @@ jobs:
         with:
           version: v4.0.0
 
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.2"
+
       - name: Run chart-testing (lint)
         run: |
           helm lint helm-charts/bifrost
@@ -49,6 +64,11 @@ jobs:
         run: |
           chmod +x .github/workflows/scripts/validate-helm-config-fields.sh
           .github/workflows/scripts/validate-helm-config-fields.sh
+
+      - name: Validate Go ↔ config.schema.json ↔ helm-chart sync (schemasync)
+        run: |
+          chmod +x .github/workflows/scripts/validate-schema-sync.sh
+          .github/workflows/scripts/validate-schema-sync.sh
 
       - name: Get chart version
         id: chart-version
@@ -98,12 +118,12 @@ jobs:
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e # v4.0.0
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.5.0'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./helm-charts
           destination_dir: helm-charts
           keep_files: false
           enable_jekyll: false
-          user_name: 'github-actions[bot]'
-          user_email: 'github-actions[bot]@users.noreply.github.com'
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"

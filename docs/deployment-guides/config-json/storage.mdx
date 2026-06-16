@@ -1,0 +1,540 @@
+---
+title: "Storage"
+description: "Configure Bifrost storage backends in config.json — config_store, logs_store, vector_store, and object storage for logs"
+icon: "database"
+---
+
+Bifrost persists two types of data — **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store. A **vector store** is required for semantic caching.
+
+| Store | Purpose | Backends |
+|-------|---------|---------|
+| `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
+| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL + optional S3/GCS offload |
+| `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
+
+<Note>
+If you use PostgreSQL for any store, the target database must be **UTF8 encoded**. See [PostgreSQL UTF8 Requirement](/quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
+---
+
+## config_store
+
+<Note>
+When `config_store` is disabled (or absent), all configuration is loaded from `config.json` at startup only — the Web UI is disabled and changes require a restart. See [Two Configuration Modes](/deployment-guides/config-json#two-configuration-modes).
+</Note>
+
+<Tabs>
+
+<Tab title="SQLite">
+
+### SQLite (Default)
+
+Simplest setup — no external database required. Bifrost stores configuration in a local SQLite file.
+
+```json
+{
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `config.path` | Path to the SQLite file (relative to app-dir, or absolute) |
+
+</Tab>
+
+<Tab title="PostgreSQL">
+
+### PostgreSQL
+
+Production-grade storage suitable for high-availability and high-throughput deployments.
+
+```json
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "max_idle_conns": 5,
+      "max_open_conns": 50
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `host` | — | PostgreSQL host (supports `env.` prefix) |
+| `port` | — | PostgreSQL port (as string) |
+| `user` | — | Database user (supports `env.` prefix) |
+| `password` | — | Database password (supports `env.` prefix). Leave empty for IAM role auth. |
+| `db_name` | — | Database name |
+| `ssl_mode` | — | `"disable"`, `"require"`, `"verify-ca"`, `"verify-full"` |
+| `max_idle_conns` | `5` | Maximum idle connections in the pool |
+| `max_open_conns` | `50` | Maximum open connections to the database |
+
+</Tab>
+
+<Tab title="Disabled">
+
+### Disabled (file-only mode)
+
+Use this when you want Bifrost to read all configuration from `config.json` only — no database, no Web UI.
+
+```json
+{
+  "config_store": {
+    "enabled": false
+  }
+}
+```
+
+This is the recommended setup for [multinode OSS deployments](/deployment-guides/how-to/multinode) where a shared `config.json` is the single source of truth.
+
+</Tab>
+
+</Tabs>
+
+---
+
+## logs_store
+
+<Tabs>
+
+<Tab title="SQLite">
+
+### SQLite
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./logs.db"
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="PostgreSQL">
+
+### PostgreSQL
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "max_idle_conns": 10,
+      "max_open_conns": 100
+    }
+  }
+}
+```
+
+For high log volumes, increase `max_open_conns`:
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "max_idle_conns": 10,
+      "max_open_conns": 200
+    },
+    "retention_days": 90
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Disabled">
+
+```json
+{
+  "logs_store": {
+    "enabled": false
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### Log Retention
+
+Set `retention_days` to automatically purge old log entries. `0` disables retention-based cleanup.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": { "...": "..." },
+    "retention_days": 90
+  }
+}
+```
+
+### Object Storage for Logs
+
+Offload large request/response payloads from the database to S3 or GCS. The database retains only lightweight index records; payloads are fetched on demand.
+
+<Tabs>
+<Tab title="AWS S3">
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": { "...": "..." },
+    "object_storage": {
+      "type": "s3",
+      "bucket": "env.S3_BUCKET",
+      "prefix": "bifrost",
+      "compress": true,
+      "region": "us-east-1",
+      "access_key_id": "env.S3_ACCESS_KEY_ID",
+      "secret_access_key": "env.S3_SECRET_ACCESS_KEY"
+    }
+  }
+}
+```
+
+**IAM role (instance profile / IRSA)** — omit `access_key_id` and `secret_access_key`:
+
+```json
+{
+  "object_storage": {
+    "type": "s3",
+    "bucket": "bifrost-logs",
+    "region": "us-east-1",
+    "compress": true,
+    "role_arn": "arn:aws:iam::123456789012:role/BifrostS3Role"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `bucket` | S3 bucket name (supports `env.` prefix) |
+| `prefix` | Key prefix for stored objects (default: `"bifrost"`) |
+| `compress` | Enable gzip compression (default: `false`) |
+| `region` | AWS region |
+| `access_key_id` | AWS access key ID (omit for default credential chain) |
+| `secret_access_key` | AWS secret access key |
+| `session_token` | STS temporary credentials session token |
+| `role_arn` | IAM role ARN for STS AssumeRole |
+| `endpoint` | Custom endpoint for MinIO / Cloudflare R2 |
+| `force_path_style` | Use path-style URLs (required for MinIO, default: `false`) |
+
+</Tab>
+<Tab title="Google Cloud Storage">
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": { "...": "..." },
+    "object_storage": {
+      "type": "gcs",
+      "bucket": "bifrost-logs",
+      "prefix": "bifrost",
+      "compress": true,
+      "project_id": "env.GCP_PROJECT_ID",
+      "credentials_json": "env.GCS_CREDENTIALS_JSON"
+    }
+  }
+}
+```
+
+Omit `credentials_json` to use Application Default Credentials (Workload Identity, GCE metadata, `gcloud auth`).
+
+| Field | Description |
+|-------|-------------|
+| `project_id` | GCP project ID (supports `env.` prefix) |
+| `credentials_json` | Service account JSON or path — omit for ADC |
+
+</Tab>
+<Tab title="MinIO (Self-Hosted)">
+
+```json
+{
+  "object_storage": {
+    "type": "s3",
+    "bucket": "bifrost-logs",
+    "prefix": "bifrost",
+    "compress": false,
+    "region": "us-east-1",
+    "endpoint": "http://minio.internal:9000",
+    "access_key_id": "env.MINIO_ACCESS_KEY",
+    "secret_access_key": "env.MINIO_SECRET_KEY",
+    "force_path_style": true
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## vector_store
+
+A vector store is required for [semantic caching](/features/semantic-caching). Choose from Weaviate, Redis/Valkey, Qdrant, or Pinecone.
+
+<Tabs>
+
+<Tab title="Weaviate">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "http",
+      "host": "localhost:8080",
+      "api_key": "env.WEAVIATE_API_KEY",
+      "grpc_config": {
+        "host": "localhost:50051",
+        "secured": false
+      }
+    }
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `scheme` | Yes | `"http"` or `"https"` |
+| `host` | Yes | Weaviate server host and port |
+| `api_key` | No | Weaviate API key (supports `env.` prefix) |
+| `grpc_config.host` | No | gRPC host for faster vector operations |
+| `grpc_config.secured` | No | Use TLS for gRPC connection |
+
+</Tab>
+
+<Tab title="Redis / Valkey">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "env.REDIS_ADDR",
+      "password": "env.REDIS_PASSWORD",
+      "db": 0,
+      "use_tls": false
+    }
+  }
+}
+```
+
+**AWS MemoryDB (cluster mode):**
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "env.MEMORYDB_ENDPOINT",
+      "password": "env.MEMORYDB_PASSWORD",
+      "use_tls": true,
+      "cluster_mode": true
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `addr` | — | Redis/Valkey address `host:port` (supports `env.` prefix) |
+| `password` | — | Redis AUTH password (supports `env.` prefix) |
+| `db` | `0` | Redis database number |
+| `use_tls` | `false` | Enable TLS |
+| `cluster_mode` | `false` | Enable cluster mode (required for MemoryDB; `db` must be `0`) |
+| `pool_size` | — | Maximum socket connections |
+
+</Tab>
+
+<Tab title="Qdrant">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "qdrant",
+    "config": {
+      "host": "env.QDRANT_HOST",
+      "port": 6334,
+      "api_key": "env.QDRANT_API_KEY",
+      "use_tls": false
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `host` | — | Qdrant server host (supports `env.` prefix) |
+| `port` | `6334` | gRPC port |
+| `api_key` | — | API key (supports `env.` prefix) |
+| `use_tls` | `false` | Enable TLS |
+
+</Tab>
+
+<Tab title="Pinecone">
+
+Pinecone is external-only.
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "pinecone",
+    "config": {
+      "api_key": "env.PINECONE_API_KEY",
+      "index_host": "env.PINECONE_INDEX_HOST"
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `api_key` | Pinecone API key (supports `env.` prefix) |
+| `index_host` | Index host from Pinecone console (e.g. `your-index.svc.us-east1-gcp.pinecone.io`) |
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Mixed Backend Example
+
+Run the config store on PostgreSQL (for UI) while keeping logs on SQLite (simpler, cheaper for append-heavy workloads):
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    }
+  },
+
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./logs.db"
+    }
+  }
+}
+```
+
+---
+
+## Full Storage Example
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "max_idle_conns": 5,
+      "max_open_conns": 50
+    }
+  },
+
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "max_idle_conns": 10,
+      "max_open_conns": 100
+    },
+    "retention_days": 90,
+    "object_storage": {
+      "type": "s3",
+      "bucket": "env.S3_BUCKET",
+      "region": "us-east-1",
+      "compress": true,
+      "access_key_id": "env.S3_ACCESS_KEY_ID",
+      "secret_access_key": "env.S3_SECRET_ACCESS_KEY"
+    }
+  },
+
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "http",
+      "host": "weaviate:8080"
+    }
+  }
+}
+```

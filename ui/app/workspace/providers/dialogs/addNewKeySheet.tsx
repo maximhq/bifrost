@@ -29,11 +29,7 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyId, provid
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent
-				className="custom-scrollbar p-8"
-				data-testid="key-form"
-				onInteractOutside={(e) => e.preventDefault()}
-			>
+			<SheetContent className="custom-scrollbar p-8" data-testid="key-form" onInteractOutside={(e) => e.preventDefault()}>
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">

@@ -1,0 +1,291 @@
+---
+title: "Guardrails"
+description: "Configure content moderation and policy enforcement in config.json using guardrails_config"
+icon: "shield-halved"
+---
+
+<Note>
+Guardrails are an **enterprise-only** feature and require the enterprise Bifrost image.
+</Note>
+
+Guardrails are configured under `guardrails_config` in `config.json`. The configuration has two parts:
+
+- **`guardrail_providers`** — the backend that performs the check. Rules link to providers by `id`.
+- **`guardrail_rules`** — CEL expressions that control when and where providers are invoked.
+
+---
+
+## Providers
+
+<Tabs>
+<Tab title="Regex">
+
+Runs entirely in-process with no external dependency. Patterns use RE2 syntax. Supports optional per-pattern flags: `i` (case-insensitive), `m` (multiline), `s` (dot-all).
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 1,
+        "provider_name": "regex",
+        "policy_name": "block-secrets",
+        "enabled": true,
+        "timeout": 5,
+        "config": {
+          "patterns": [
+            { "pattern": "sk-[A-Za-z0-9]{20,}", "description": "OpenAI API key" },
+            { "pattern": "AKIA[0-9A-Z]{16}", "description": "AWS access key" },
+            { "pattern": "gh[ps]_[A-Za-z0-9]{36}", "description": "GitHub token", "flags": "i" }
+          ],
+          "mode": "block"
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="AWS Bedrock">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 2,
+        "provider_name": "bedrock",
+        "policy_name": "content-filter",
+        "enabled": true,
+        "timeout": 15,
+        "config": {
+          "guardrail_arn": "arn:aws:bedrock:us-east-1::guardrail/abc123",
+          "guardrail_version": "DRAFT",
+          "region": "us-east-1",
+          "access_key": "env.AWS_ACCESS_KEY_ID",
+          "secret_key": "env.AWS_SECRET_ACCESS_KEY"
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Azure Content Safety">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 3,
+        "provider_name": "azure",
+        "policy_name": "azure-content-safety",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "endpoint": "https://your-resource.cognitiveservices.azure.com",
+          "api_key": "env.AZURE_CONTENT_SAFETY_KEY",
+          "analyze_enabled": true,
+          "analyze_severity_threshold": "medium",
+          "jailbreak_shield_enabled": true,
+          "indirect_attack_shield_enabled": true,
+          "copyright_enabled": false,
+          "text_blocklist_enabled": false,
+          "blocklist_names": []
+        }
+      }
+    ]
+  }
+}
+```
+
+`analyze_severity_threshold` accepts `"low"`, `"medium"`, or `"high"`.
+
+</Tab>
+<Tab title="Gray Swan">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 4,
+        "provider_name": "grayswan",
+        "policy_name": "grayswan-jailbreak",
+        "enabled": true,
+        "timeout": 15,
+        "config": {
+          "api_key": "env.GRAYSWAN_API_KEY",
+          "violation_threshold": 0.7,
+          "reasoning_mode": "standard",
+          "policy_id": "",
+          "policy_ids": [],
+          "rules": {}
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Provider Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique integer ID — referenced by rules via `provider_config_ids` |
+| `provider_name` | Yes | Backend: `"regex"`, `"bedrock"`, `"azure"`, `"grayswan"` |
+| `policy_name` | Yes | Human-readable policy label |
+| `enabled` | Yes | `true` to activate |
+| `timeout` | No | Execution timeout in seconds |
+| `config` | No | Provider-specific configuration object |
+
+---
+
+## Rules
+
+Rules are CEL expressions that fire when their condition matches. Available CEL variables:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `model` | `string` | Model name from the request |
+| `provider` | `string` | Provider name (e.g. `"openai"`) |
+| `headers` | `map<string,string>` | HTTP request headers |
+| `params` | `map<string,string>` | Query parameters |
+| `customer` | `string` | Customer ID |
+| `team` | `string` | Team ID |
+| `user` | `string` | User ID |
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_rules": [
+      {
+        "id": 101,
+        "name": "block-secrets-input",
+        "description": "Block prompts containing credentials",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 10,
+        "provider_config_ids": [1]
+      },
+      {
+        "id": 102,
+        "name": "content-safety-gpt4o-output",
+        "enabled": true,
+        "cel_expression": "model == 'gpt-4o'",
+        "apply_to": "output",
+        "sampling_rate": 100,
+        "timeout": 15,
+        "provider_config_ids": [3]
+      },
+      {
+        "id": 103,
+        "name": "grayswan-openai-partial",
+        "enabled": true,
+        "cel_expression": "provider == 'openai'",
+        "apply_to": "input",
+        "sampling_rate": 50,
+        "timeout": 20,
+        "provider_config_ids": [4]
+      }
+    ]
+  }
+}
+```
+
+### Rule Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique integer ID |
+| `name` | Yes | Human-readable name |
+| `description` | No | Optional description |
+| `enabled` | Yes | `true` to activate |
+| `cel_expression` | Yes | CEL boolean expression. `"true"` matches every request |
+| `apply_to` | Yes | `"input"`, `"output"`, or `"both"` |
+| `sampling_rate` | No | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | Rule timeout in seconds |
+| `provider_config_ids` | No | `id` values of providers to invoke when this rule matches. Multiple providers run in parallel |
+
+---
+
+## Full Example
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "providers": {
+    "openai": {
+      "keys": [{ "name": "primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1.0 }]
+    }
+  },
+
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 1,
+        "provider_name": "regex",
+        "policy_name": "block-secrets",
+        "enabled": true,
+        "timeout": 5,
+        "config": {
+          "patterns": [
+            { "pattern": "sk-[A-Za-z0-9]{20,}", "description": "OpenAI API key" },
+            { "pattern": "AKIA[0-9A-Z]{16}", "description": "AWS access key" }
+          ],
+          "mode": "block"
+        }
+      },
+      {
+        "id": 2,
+        "provider_name": "azure",
+        "policy_name": "content-safety",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "endpoint": "https://your-resource.cognitiveservices.azure.com",
+          "api_key": "env.AZURE_CONTENT_SAFETY_KEY",
+          "analyze_enabled": true,
+          "analyze_severity_threshold": "medium",
+          "jailbreak_shield_enabled": true,
+          "indirect_attack_shield_enabled": false
+        }
+      }
+    ],
+    "guardrail_rules": [
+      {
+        "id": 101,
+        "name": "block-secrets-input",
+        "description": "Block prompts leaking credentials",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 10,
+        "provider_config_ids": [1]
+      },
+      {
+        "id": 102,
+        "name": "content-safety-both",
+        "description": "Azure content safety on all traffic",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "both",
+        "sampling_rate": 100,
+        "timeout": 15,
+        "provider_config_ids": [2]
+      }
+    ]
+  }
+}
+```

@@ -84,6 +84,7 @@ type PrometheusPlugin struct {
 	CostTotal                      *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
+	KeyRotationEventsTotal         *prometheus.CounterVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -289,6 +290,17 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
+	// bifrostKeyRotationEventsTotal counts individual retry/rotation events from the attempt trail.
+	// One observation is emitted per failed attempt (where fail_reason is non-nil), not per request.
+	// Use this to track rate-limit pressure and network-error frequency per provider/key.
+	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_key_rotation_events_total",
+			Help: "Number of key retry/rotation events, broken down by provider, key, and failure reason. One increment per failed attempt.",
+		},
+		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
+	)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -309,6 +321,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CostTotal:                      bifrostCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
+		KeyRotationEventsTotal:         bifrostKeyRotationEventsTotal,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -388,6 +401,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
 	// Get routing engines array and join into comma-separated string
 	routingEngines := []string{}
 	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok {
@@ -462,6 +476,16 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		cost := 0.0
 		if p.pricingManager != nil && result != nil {
 			cost = p.pricingManager.CalculateCost(result, pricingScopes)
+		}
+
+		// Emit one counter increment per failed attempt in the trail (fail_reason != nil).
+		// This decouples per-attempt retry visibility from the per-request metrics above.
+		for _, record := range attemptTrail {
+			if record.FailReason != nil {
+				p.KeyRotationEventsTotal.WithLabelValues(
+					string(provider), originalModel, record.KeyID, record.KeyName, *record.FailReason,
+				).Inc()
+			}
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()

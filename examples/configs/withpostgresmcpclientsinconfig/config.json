@@ -40,18 +40,16 @@
   "mcp": {
     "client_configs": [
       {
-        "id": "weather-mcp-server",
         "name": "WeatherService",
         "connection_type": "http",
-        "http_url": "http://localhost:8080/mcp",
-        "is_enabled": true
+        "client_id": "weather-mcp-server",
+        "connection_string": "http://localhost:8080/mcp"
       },
       {
-        "id": "calendar-mcp-server",
         "name": "CalendarService",
         "connection_type": "http",
-        "http_url": "http://localhost:8081/mcp",
-        "is_enabled": true
+        "client_id": "calendar-mcp-server",
+        "connection_string": "http://localhost:8081/mcp"
       }
     ]
   },
@@ -88,8 +86,12 @@
           {
             "provider": "openai",
             "weight": 1.0,
-            "allowed_models": ["*"],
-            "key_ids": ["*"]
+            "allowed_models": [
+              "*"
+            ],
+            "key_ids": [
+              "*"
+            ]
           }
         ]
       },
@@ -111,8 +113,12 @@
           {
             "provider": "openai",
             "weight": 1.0,
-            "allowed_models": ["*"],
-            "key_ids": ["*"]
+            "allowed_models": [
+              "*"
+            ],
+            "key_ids": [
+              "*"
+            ]
           }
         ]
       }
@@ -134,7 +140,9 @@
           "name": "openai-primary",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": ["*"]
+          "models": [
+            "*"
+          ]
         }
       ]
     }

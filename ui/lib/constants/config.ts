@@ -194,5 +194,5 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	],
 };
 
-export const IS_ENTERPRISE = process.env.NEXT_PUBLIC_IS_ENTERPRISE === "true";
-export const TRIAL_EXPIRY = parseTrialExpiry(process.env.NEXT_PUBLIC_ENTERPRISE_TRIAL_EXPIRY);
+export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";
+export const TRIAL_EXPIRY = parseTrialExpiry(process.env.BIFROST_ENTERPRISE_TRIAL_EXPIRY);

@@ -65,8 +65,8 @@ Base Labels:
 - `routing_engines_used`: Comma-separated routing engines used ("routing-rule", "governance", "loadbalancing")
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
-- `selected_key_id`: Selected key ID
-- `selected_key_name`: Selected key name
+- `selected_key_id`: ID of the key that successfully served the request (`null` on final errors)
+- `selected_key_name`: Name of the key that successfully served the request (`null` on final errors)
 - `number_of_retries`: Number of retries
 - `fallback_index`: Fallback index (0 for first attempt, 1 for second attempt, etc.)
 - custom labels: Custom labels configured in the Bifrost configuration

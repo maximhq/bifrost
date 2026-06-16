@@ -278,6 +278,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
+	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -409,7 +410,9 @@ func GetErrorMessage(err *schemas.BifrostError) string {
 	if err == nil {
 		return ""
 	}
-	if err.StatusCode != nil {
+	if err.Error != nil && err.Error.Message != "" {
+		return err.Error.Message
+	} else if err.StatusCode != nil {
 		switch *err.StatusCode {
 		case 401:
 			return "unauthorized"
@@ -435,8 +438,6 @@ func GetErrorMessage(err *schemas.BifrostError) string {
 			}
 			return fmt.Sprintf("HTTP %d error", *err.StatusCode)
 		}
-	} else if err.Error != nil && err.Error.Message != "" {
-		return err.Error.Message
 	} else if err.Type != nil {
 		return *err.Type
 	} else {

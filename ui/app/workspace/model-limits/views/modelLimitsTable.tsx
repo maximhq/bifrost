@@ -1,5 +1,3 @@
-"use client";
-
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -37,7 +35,10 @@ const formatResetDuration = (duration: string) => {
 };
 
 const toTestIdPart = (value: string) =>
-	value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+	value
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-|-$/g, "");
 
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
@@ -50,13 +51,22 @@ interface ModelLimitsTableProps {
 	onOffsetChange: (offset: number) => void;
 }
 
-export default function ModelLimitsTable({ modelConfigs, totalCount, search, debouncedSearch, onSearchChange, offset, limit, onOffsetChange }: ModelLimitsTableProps) {
+export default function ModelLimitsTable({
+	modelConfigs,
+	totalCount,
+	search,
+	debouncedSearch,
+	onSearchChange,
+	offset,
+	limit,
+	onOffsetChange,
+}: ModelLimitsTableProps) {
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
 	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
 
 	// Derive editingModelConfig from props so it stays in sync with RTK cache updates
 	const editingModelConfig = useMemo(
-		() => (editingModelConfigId ? modelConfigs.find((mc) => mc.id === editingModelConfigId) ?? null : null),
+		() => (editingModelConfigId ? (modelConfigs.find((mc) => mc.id === editingModelConfigId) ?? null) : null),
 		[editingModelConfigId, modelConfigs],
 	);
 
@@ -128,7 +138,7 @@ export default function ModelLimitsTable({ modelConfigs, totalCount, search, deb
 				{/* Toolbar: Search */}
 				<div className="flex items-center gap-3">
 					<div className="relative max-w-sm flex-1">
-						<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search model limits by model name"
 							placeholder="Search by model name..."
@@ -142,23 +152,23 @@ export default function ModelLimitsTable({ modelConfigs, totalCount, search, deb
 
 				<div className="rounded-sm border" data-testid="model-limits-table">
 					<Table>
-							<TableHeader>
-								<TableRow className="hover:bg-transparent">
-									<TableHead className="font-medium">Model</TableHead>
-									<TableHead className="font-medium">Provider</TableHead>
-									<TableHead className="font-medium">Budget</TableHead>
-									<TableHead className="font-medium">Rate Limit</TableHead>
-									<TableHead className="w-[100px]"></TableHead>
+						<TableHeader>
+							<TableRow className="hover:bg-transparent">
+								<TableHead className="font-medium">Model</TableHead>
+								<TableHead className="font-medium">Provider</TableHead>
+								<TableHead className="font-medium">Budget</TableHead>
+								<TableHead className="font-medium">Rate Limit</TableHead>
+								<TableHead className="w-[100px]"></TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
+							{modelConfigs.length === 0 ? (
+								<TableRow>
+									<TableCell colSpan={5} className="h-24 text-center">
+										<span className="text-muted-foreground text-sm">No matching model limits found.</span>
+									</TableCell>
 								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{modelConfigs.length === 0 ? (
-									<TableRow>
-										<TableCell colSpan={5} className="h-24 text-center">
-											<span className="text-muted-foreground text-sm">No matching model limits found.</span>
-										</TableCell>
-									</TableRow>
-								) : (
+							) : (
 								modelConfigs.map((config) => {
 									const isBudgetExhausted =
 										config.budget?.max_limit && config.budget.max_limit > 0 && config.budget.current_usage >= config.budget.max_limit;
@@ -186,7 +196,11 @@ export default function ModelLimitsTable({ modelConfigs, totalCount, search, deb
 											: 0;
 
 									return (
-										<TableRow key={config.id} data-testid={`model-limit-row-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
+										<TableRow
+											key={config.id}
+											data-testid={`model-limit-row-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+											className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
+										>
 											<TableCell className="max-w-[280px] py-4">
 												<div className="flex flex-col gap-2">
 													<span className="truncate font-mono text-sm font-medium">{config.model_name}</span>
@@ -327,7 +341,7 @@ export default function ModelLimitsTable({ modelConfigs, totalCount, search, deb
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
-												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
 													<Button
 														variant="ghost"
 														size="icon"
@@ -379,9 +393,9 @@ export default function ModelLimitsTable({ modelConfigs, totalCount, search, deb
 										</TableRow>
 									);
 								})
-								)}
-							</TableBody>
-						</Table>
+							)}
+						</TableBody>
+					</Table>
 				</div>
 
 				{/* Pagination */}

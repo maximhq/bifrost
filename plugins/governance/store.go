@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/routing"
 	"gorm.io/gorm"
 )
 
@@ -283,6 +284,9 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		}
 		clone := *team
 		refreshTeamAssociations(&clone)
+		// Reset to 0 — will be recomputed from live VKs below to stay accurate
+		// after creates/updates/deletes that don't trigger a full ReloadTeam.
+		clone.VirtualKeyCount = 0
 		teams[key.(string)] = &clone
 		return true // continue iteration
 	})
@@ -313,6 +317,27 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		return true // continue iteration
 	})
 
+	for _, vk := range virtualKeys {
+		if vk == nil {
+			continue
+		}
+		if vk.TeamID != nil {
+			if team, exists := teams[*vk.TeamID]; exists && team != nil {
+				vk.Team = team
+				team.VirtualKeyCount++
+			}
+		}
+		if vk.CustomerID != nil {
+			if customer, exists := customers[*vk.CustomerID]; exists && customer != nil {
+				vk.Customer = customer
+
+				nestedVK := *vk
+				nestedVK.Customer = nil
+				customer.VirtualKeys = append(customer.VirtualKeys, nestedVK)
+			}
+		}
+	}
+
 	for _, team := range teams {
 		if team == nil {
 			continue
@@ -324,26 +349,6 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 				nestedTeam := *team
 				nestedTeam.Customer = nil
 				customer.Teams = append(customer.Teams, nestedTeam)
-			}
-		}
-	}
-
-	for _, vk := range virtualKeys {
-		if vk == nil {
-			continue
-		}
-		if vk.TeamID != nil {
-			if team, exists := teams[*vk.TeamID]; exists && team != nil {
-				vk.Team = team
-			}
-		}
-		if vk.CustomerID != nil {
-			if customer, exists := customers[*vk.CustomerID]; exists && customer != nil {
-				vk.Customer = customer
-
-				nestedVK := *vk
-				nestedVK.Customer = nil
-				customer.VirtualKeys = append(customer.VirtualKeys, nestedVK)
 			}
 		}
 	}
@@ -3451,10 +3456,10 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(rule *configstoreTables.TableR
 	}
 
 	// Normalize header and param keys to lowercase so CEL expressions match normalized map keys
-	expr = normalizeMapKeysInCEL(expr)
+	expr = routing.NormalizeMapKeysInCEL(expr)
 
 	// Validate expression format
-	if err := validateCELExpression(expr); err != nil {
+	if err := routing.ValidateCELExpression(expr); err != nil {
 		return nil, fmt.Errorf("invalid CEL expression: %w", err)
 	}
 

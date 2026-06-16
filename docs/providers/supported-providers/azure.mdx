@@ -37,6 +37,544 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 **Azure-specific**: Batch operations and Text Completions are not supported by Azure OpenAI Service. Responses API uses preview API version and is available for both OpenAI and Anthropic models.
 </Note>
 
+---
+
+## Setup & Configuration
+
+Azure requires an endpoint URL, deployment mappings, and authentication configuration. Four authentication methods are supported.
+
+<Note>
+The `aliases` field (mapping model names to Azure deployment IDs) requires **v1.5.0-prerelease2 or later**. On v1.4.x, use `deployments` inside `azure_key_config` instead — see the [v1.5.0 Migration Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases) for details.
+</Note>
+
+### 1. Managed Identity
+
+Leave `value` and all Entra ID fields empty. Bifrost calls `azidentity.NewDefaultAzureCredential(nil)`, which auto-detects the system-assigned or user-assigned managed identity on Azure VMs, App Service, AKS, and Azure Container Instances. No credentials need to be stored or rotated.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"Default Credential"**
+4. Set **Endpoint**: Your Azure OpenAI resource URL (e.g., `https://your-org.openai.azure.com`)
+5. Set **API Version** (Optional): e.g., `2024-10-21`
+6. Configure **Aliases**: Map model names to deployment IDs (e.g., `gpt-4o` → `my-gpt4o-deployment`)
+7. Save
+
+Ensure a managed identity with Cognitive Services permissions is attached to the Azure resource running Bifrost.
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "azure"}'
+
+# Step 2: Create a key (Managed Identity — leave value empty)
+curl -X POST http://localhost:8080/api/providers/azure/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "azure-managed-identity",
+    "value": "",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "gpt-4o": "my-gpt4o-deployment",
+      "gpt-4o-mini": "my-mini-deployment"
+    },
+    "azure_key_config": {
+      "endpoint": "env.AZURE_ENDPOINT",
+      "api_version": "2024-10-21"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, two differences apply:
+- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Replace the top-level `aliases` with `"deployments"` inside `azure_key_config`:
+```json
+"azure_key_config": {
+  "endpoint": "env.AZURE_ENDPOINT",
+  "api_version": "2024-10-21",
+  "deployments": {
+    "gpt-4o": "my-gpt4o-deployment"
+  }
+}
+```
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-managed-identity",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "gpt-4o": "my-gpt4o-deployment",
+            "gpt-4o-mini": "my-mini-deployment"
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "api_version": "2024-10-21"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
+</Note>
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Azure:
+        return []schemas.Key{
+            {
+                Value:  schemas.EnvVar{}, // Leave empty — Bifrost uses the managed identity
+                Models: []string{"*"},
+                Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "gpt-4o":      "my-gpt4o-deployment",
+                    "gpt-4o-mini": "my-mini-deployment",
+                },
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint:   *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
+                    APIVersion: schemas.NewEnvVar("2024-10-21"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 2. Default Credential Chain (DefaultAzureCredential)
+
+Leave `value` and all Entra ID fields empty. Bifrost calls `azidentity.NewDefaultAzureCredential(nil)` — the same function as the Managed Identity section — which tries credential sources in this order:
+
+1. Environment variables (`AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` + `AZURE_TENANT_ID`, or certificate/username variants)
+2. Workload Identity (AKS with Workload Identity Federation)
+3. Managed Identity (Azure VMs, App Service, AKS, Container Instances)
+4. Azure CLI (`az login`)
+5. Azure Developer CLI (`azd auth login`)
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"Default Credential"**
+4. Set **Endpoint**: Your Azure OpenAI resource URL (e.g., `https://your-org.openai.azure.com`)
+5. Set **API Version** (Optional): e.g., `2024-10-21`
+6. Configure **Aliases**: Map model names to deployment IDs
+7. Save
+
+Ensure the appropriate credentials are available in the environment where Bifrost runs — set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` env vars, or run `az login`.
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "azure"}'
+
+# Step 2: Create a key (Default Credential Chain — leave value empty)
+curl -X POST http://localhost:8080/api/providers/azure/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "azure-default-chain",
+    "value": "",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "gpt-4o": "my-gpt4o-deployment"
+    },
+    "azure_key_config": {
+      "endpoint": "env.AZURE_ENDPOINT",
+      "api_version": "2024-10-21"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, two differences apply:
+- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Replace the top-level `aliases` with `"deployments"` inside `azure_key_config`.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-default-chain",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "gpt-4o": "my-gpt4o-deployment"
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "api_version": "2024-10-21"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
+</Note>
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Azure:
+        return []schemas.Key{
+            {
+                Value:  schemas.EnvVar{}, // Leave empty — Bifrost uses DefaultAzureCredential
+                Models: []string{"*"},
+                Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "gpt-4o": "my-gpt4o-deployment",
+                },
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint:   *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
+                    APIVersion: schemas.NewEnvVar("2024-10-21"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 3. Azure Entra ID (Service Principal)
+
+Set `client_id`, `client_secret`, and `tenant_id` to authenticate with a Service Principal. This takes priority over API key and managed identity.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"Entra ID (Service Principal)"**
+4. Set **Client ID**: Your Azure Entra ID client ID
+5. Set **Client Secret**: Your Azure Entra ID client secret
+6. Set **Tenant ID**: Your Azure Entra ID tenant ID
+7. Set **Endpoint**: Your Azure OpenAI resource URL
+8. Set **API Version** (Optional): e.g., `2024-08-01-preview`
+9. Configure **Aliases**: Map model names to deployment IDs
+10. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "azure"}'
+
+# Step 2: Create a key (Service Principal)
+curl -X POST http://localhost:8080/api/providers/azure/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "azure-entra-key",
+    "value": "",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "gpt-4o": "my-gpt4o-deployment",
+      "gpt-4o-mini": "my-mini-deployment",
+      "claude-3-5-sonnet": "my-claude-deployment"
+    },
+    "azure_key_config": {
+      "endpoint": "env.AZURE_ENDPOINT",
+      "client_id": "env.AZURE_CLIENT_ID",
+      "client_secret": "env.AZURE_CLIENT_SECRET",
+      "tenant_id": "env.AZURE_TENANT_ID",
+      "scopes": ["https://cognitiveservices.azure.com/.default"],
+      "api_version": "2024-08-01-preview"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, two differences apply:
+- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Move the model mappings from `aliases` into `azure_key_config.deployments`.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-entra-key",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "gpt-4o": "my-gpt4o-deployment",
+            "gpt-4o-mini": "my-mini-deployment",
+            "claude-3-5-sonnet": "my-claude-deployment"
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "client_id": "env.AZURE_CLIENT_ID",
+            "client_secret": "env.AZURE_CLIENT_SECRET",
+            "tenant_id": "env.AZURE_TENANT_ID",
+            "scopes": ["https://cognitiveservices.azure.com/.default"],
+            "api_version": "2024-08-01-preview"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
+</Note>
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Azure:
+        return []schemas.Key{
+            {
+                Value:  schemas.EnvVar{}, // Leave empty for Service Principal auth
+                Models: []string{"*"},
+                Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "gpt-4o":            "my-gpt4o-deployment",
+                    "gpt-4o-mini":       "my-mini-deployment",
+                    "claude-3-5-sonnet": "my-claude-deployment",
+                },
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint:     *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
+                    ClientID:     schemas.NewEnvVar(os.Getenv("AZURE_CLIENT_ID")),
+                    ClientSecret: schemas.NewEnvVar(os.Getenv("AZURE_CLIENT_SECRET")),
+                    TenantID:     schemas.NewEnvVar(os.Getenv("AZURE_TENANT_ID")),
+                    Scopes:       []string{"https://cognitiveservices.azure.com/.default"},
+                    APIVersion:   schemas.NewEnvVar("2024-08-01-preview"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+**Required Azure roles:**
+- OpenAI models: `Cognitive Services OpenAI User`
+- Anthropic models: `Cognitive Services AI Services User`
+
+### 4. Direct Authentication (API Key)
+
+Provide the Azure API key in the `value` field. Use this for simple setups without managed identity or Service Principal.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"API Key"**
+4. Set **API Key**: Your Azure API key
+5. Set **Endpoint**: Your Azure OpenAI resource URL
+6. Set **API Version** (Optional): e.g., `2024-10-21`
+7. Configure **Aliases**: Map model names to deployment IDs
+8. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "azure"}'
+
+# Step 2: Create a key (API Key auth)
+curl -X POST http://localhost:8080/api/providers/azure/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "azure-api-key",
+    "value": "env.AZURE_API_KEY",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "gpt-4o": "my-gpt4o-deployment",
+      "gpt-4o-mini": "my-mini-deployment"
+    },
+    "azure_key_config": {
+      "endpoint": "env.AZURE_ENDPOINT",
+      "api_version": "2024-10-21"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, two differences apply:
+- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Move the model mappings from `aliases` into `azure_key_config.deployments`.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-api-key",
+          "value": "env.AZURE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "gpt-4o": "my-gpt4o-deployment",
+            "gpt-4o-mini": "my-mini-deployment"
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "api_version": "2024-10-21"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
+</Note>
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Azure:
+        return []schemas.Key{
+            {
+                Value:  *schemas.NewEnvVar("env.AZURE_OPENAI_KEY"),
+                Models: []string{"*"},
+                Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "gpt-4o":      "my-gpt4o-deployment",
+                    "gpt-4o-mini": "my-mini-deployment",
+                },
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint:   *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
+                    APIVersion: schemas.NewEnvVar("2024-10-21"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+**Authentication precedence:** (1) Entra ID if `client_id`, `client_secret`, and `tenant_id` are all set; (2) API key if `value` is non-empty; (3) DefaultAzureCredential (managed identity) if neither is provided.
+</Note>
+
+**`azure_key_config` fields:**
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `endpoint` | Yes | — | Azure OpenAI resource endpoint URL |
+| `api_version` | No | `2024-10-21` | Azure API version |
+| `client_id` | No | — | Entra ID client ID (Service Principal auth) |
+| `client_secret` | No | — | Entra ID client secret (Service Principal auth) |
+| `tenant_id` | No | — | Entra ID tenant ID (Service Principal auth) |
+| `scopes` | No | `["https://cognitiveservices.azure.com/.default"]` | OAuth scopes for token requests |
+
+**Key-level fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `aliases` | No | Map model names to Azure deployment IDs (v1.5.0-prerelease2+) |
+| `value` | No | Azure API key (leave empty for Entra ID or managed identity) |
+| `models` | Yes | Models this key can serve; use `["*"]` to allow all |
+
+---
+
 ## Beta Headers
 
 For Anthropic models on Azure, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request. Azure supports most Anthropic beta features.
@@ -577,17 +1115,4 @@ Azure routes video generation to OpenAI's Sora models via the Azure OpenAI-compa
 
 ## Setup & Configuration
 
-Azure requires endpoint URLs, deployment mappings, and API version configuration. For detailed instructions on setting up Azure authentication, see the quickstart guides:
-
-<Tabs>
-<Tab title="Gateway">
-
-See **[Provider-Specific Authentication - Azure](../../quickstart/gateway/provider-configuration#azure)** in the Gateway Quickstart for configuration steps using Web UI, API, or config.json.
-
-</Tab>
-<Tab title="Go SDK">
-
-See **[Provider-Specific Authentication - Azure](../../quickstart/go-sdk/provider-configuration#azure)** in the Go SDK Quickstart for programmatic configuration examples.
-
-</Tab>
-</Tabs>
+See the [Setup & Configuration](#setup--configuration) section at the top of this page for authentication instructions and full configuration examples.

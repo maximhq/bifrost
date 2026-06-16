@@ -1,5 +1,3 @@
-"use client";
-
 import type { TokenHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -105,21 +103,27 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar isAnimationActive={false}							dataKey="uncached_prompt_tokens"
+						<Bar
+							isAnimationActive={false}
+							dataKey="uncached_prompt_tokens"
 							stackId="tokens"
 							fill={CHART_COLORS.promptTokens}
 							fillOpacity={0.9}
 							radius={[0, 0, 0, 0]}
 							barSize={30}
 						/>
-						<Bar isAnimationActive={false}							dataKey="completion_tokens"
+						<Bar
+							isAnimationActive={false}
+							dataKey="completion_tokens"
 							stackId="tokens"
 							fill={CHART_COLORS.completionTokens}
 							fillOpacity={0.9}
 							radius={[0, 0, 0, 0]}
 							barSize={30}
 						/>
-						<Bar isAnimationActive={false}							dataKey="cached_read_tokens"
+						<Bar
+							isAnimationActive={false}
+							dataKey="cached_read_tokens"
 							stackId="tokens"
 							fill={CHART_COLORS.cachedReadTokens}
 							fillOpacity={0.9}
@@ -150,21 +154,27 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} />
-						<Area isAnimationActive={false}							type="monotone"
+						<Area
+							isAnimationActive={false}
+							type="monotone"
 							dataKey="uncached_prompt_tokens"
 							stackId="1"
 							stroke={CHART_COLORS.promptTokens}
 							fill={CHART_COLORS.promptTokens}
 							fillOpacity={0.7}
 						/>
-						<Area isAnimationActive={false}							type="monotone"
+						<Area
+							isAnimationActive={false}
+							type="monotone"
 							dataKey="completion_tokens"
 							stackId="1"
 							stroke={CHART_COLORS.completionTokens}
 							fill={CHART_COLORS.completionTokens}
 							fillOpacity={0.7}
 						/>
-						<Area isAnimationActive={false}							type="monotone"
+						<Area
+							isAnimationActive={false}
+							type="monotone"
 							dataKey="cached_read_tokens"
 							stackId="1"
 							stroke={CHART_COLORS.cachedReadTokens}

@@ -76,7 +76,7 @@ func (l *MockLogger) Warned() bool {
 }
 
 // ============================================================
-// mockStore — satisfies promptStore with controllable responses.
+// mockStore — satisfies InMemoryStore with controllable responses.
 // ============================================================
 
 type mockStore struct {
@@ -113,14 +113,13 @@ func (s *versionsErrStore) GetAllPromptVersions(_ context.Context) ([]tables.Tab
 // ============================================================
 
 type staticResolver struct {
-	promptID         string
-	versionNumber    int
-	versionSpecified bool
-	err              error
+	promptID      string
+	versionNumber int
+	err           error
 }
 
-func (r *staticResolver) Resolve(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) (string, int, bool, error) {
-	return r.promptID, r.versionNumber, r.versionSpecified, r.err
+func (r *staticResolver) Resolve(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) (string, int, error) {
+	return r.promptID, r.versionNumber, r.err
 }
 
 // ============================================================
@@ -129,7 +128,7 @@ func (r *staticResolver) Resolve(_ *schemas.BifrostContext, _ *schemas.BifrostRe
 
 // newPluginWithStore builds a Plugin whose store is set but maps are empty.
 // Use only for loadCache tests.
-func newPluginWithStore(s promptStore) *Plugin {
+func newPluginWithStore(s InMemoryStore) *Plugin {
 	return &Plugin{
 		store:                     s,
 		logger:                    NewMockLogger(),

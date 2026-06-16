@@ -20,7 +20,10 @@ type TableTeam struct {
 	Customer    *TableCustomer    `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
 	Budget      *TableBudget      `gorm:"foreignKey:BudgetID" json:"budget,omitempty"`
 	RateLimit   *TableRateLimit   `gorm:"foreignKey:RateLimitID" json:"rate_limit,omitempty"`
-	VirtualKeys []TableVirtualKey `gorm:"foreignKey:TeamID" json:"virtual_keys"`
+	VirtualKeys []TableVirtualKey `gorm:"foreignKey:TeamID" json:"virtual_keys,omitempty"`
+
+	// Computed (not a DB column) — populated via correlated subquery in query layer, hence no migration
+	VirtualKeyCount int64 `gorm:"->;-:migration" json:"virtual_key_count"`
 
 	Profile       *string                `gorm:"type:text" json:"-"`
 	ParsedProfile map[string]interface{} `gorm:"-" json:"profile"`

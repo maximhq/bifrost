@@ -1,4 +1,4 @@
-import { Building2, Users } from "lucide-react";
+import { Building2 } from "lucide-react";
 import ContactUsView from "../views/contactUsView";
 
 export function BusinessUnitsView() {

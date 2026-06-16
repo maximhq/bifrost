@@ -1,0 +1,202 @@
+---
+title: "Schema Reference"
+description: "All top-level keys available in config.json, their types, and where each is documented"
+icon: "brackets-curly"
+---
+
+<Note>
+The live schema is published at [`https://www.getbifrost.ai/schema`](https://www.getbifrost.ai/schema). Add `"$schema": "https://www.getbifrost.ai/schema"` to your `config.json` for IDE autocomplete and inline validation.
+</Note>
+
+This page is a concise reference for every top-level key in `config.json`. Click the **Guide** links for full field-by-field documentation.
+
+---
+
+## Top-Level Keys
+
+| Key | Type | Description | Guide |
+|-----|------|-------------|-------|
+| `$schema` | string | Schema URL for IDE validation. Set to `"https://www.getbifrost.ai/schema"` | — |
+| `encryption_key` | string | AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix. Also read from `BIFROST_ENCRYPTION_KEY` env var | [Client](/deployment-guides/config-json/client#encryption-key) |
+| `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
+| `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
+| `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams | [Governance](/deployment-guides/config-json/governance) |
+| `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
+| `config_store` | object | Configuration database backend — SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
+| `logs_store` | object | Request/response log database — SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
+| `vector_store` | object | Vector database for semantic cache — Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
+| `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
+| `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
+| `mcp` | object | MCP server and tool configuration | — |
+| `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
+| `auth_config` | object | **Deprecated** — use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
+
+---
+
+## `version`
+
+Controls how empty arrays in allow-list fields (`models`, `allowed_models`, `key_ids`, `tools_to_execute`) are interpreted:
+
+| Value | Behaviour |
+|-------|-----------|
+| `2` *(default, v1.5.0+)* | Empty array = **deny all**; `["*"]` = allow all |
+| `1` *(v1.4.x compat)* | Empty array = **allow all** |
+
+Omitting `version` uses v2 semantics. Set `"version": 1` only if you are migrating from v1.4.x and need the old behaviour temporarily.
+
+---
+
+## `client`
+
+Controls the worker pool, logging pipeline, security, and SDK shims. All fields are optional.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `initial_pool_size` | integer | `300` | Pre-allocated goroutines per provider queue |
+| `drop_excess_requests` | boolean | `false` | Return HTTP 429 when queue is full |
+| `enable_logging` | boolean | `true`* | Persist request/response logs (`*` auto-enabled when `logs_store` is set) |
+| `disable_content_logging` | boolean | `false` | Strip message content from logs |
+| `log_retention_days` | integer | `365` | Days to retain log entries |
+| `logging_headers` | array | `[]` | HTTP headers to capture in log metadata |
+| `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |
+| `allow_direct_keys` | boolean | `false` | Allow callers to pass provider API keys directly |
+| `allowed_origins` | array | `["*"]` | CORS allowed origins |
+| `max_request_body_size_mb` | integer | `100` | Maximum request body in MB |
+| `whitelisted_routes` | array | `[]` | Routes that bypass auth middleware |
+| `allowed_headers` | array | `[]` | Additional headers permitted for CORS/WebSocket |
+| `required_headers` | array | `[]` | Headers that must be present on every request |
+| `header_filter_config` | object | — | `allowlist` / `denylist` for `x-bf-eh-*` forwarded headers |
+| `prometheus_labels` | array | `[]` | Custom labels for all Prometheus metrics |
+| `compat` | object | — | SDK compatibility shims (`should_drop_params`, `convert_text_to_chat`, etc.) |
+| `mcp_agent_depth` | integer | `10` | Max tool-call recursion depth |
+| `mcp_tool_execution_timeout` | integer | `30` | Per-tool execution timeout in seconds |
+| `mcp_tool_sync_interval` | integer | `10` | Tool sync interval in minutes (`0` = disabled) |
+| `mcp_disable_auto_tool_inject` | boolean | `false` | Disable automatic MCP tool injection |
+| `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |
+| `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
+| `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
+
+Full documentation: [Client Configuration](/deployment-guides/config-json/client).
+
+---
+
+## `providers`
+
+Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
+
+Supported provider keys: `openai`, `anthropic`, `azure`, `bedrock`, `vertex`, `gemini`, `mistral`, `groq`, `cohere`, `perplexity`, `xai`, `cerebras`, `openrouter`, `nebius`, `fireworks`, `parasail`, `huggingface`, `replicate`, `ollama`, `vllm`, `sgl`, `elevenlabs`, `runway`.
+
+Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
+
+---
+
+## `governance`
+
+Seeds governance resources at startup. All sub-keys are optional arrays.
+
+| Sub-key | Description |
+|---------|-------------|
+| `auth_config` | Admin username/password auth for the dashboard |
+| `virtual_keys` | Scoped API tokens with provider/model allowlists |
+| `budgets` | Spend caps in USD over a rolling window |
+| `rate_limits` | Request and token rate limits |
+| `customers` | Customer entities (attach budgets/rate limits) |
+| `teams` | Team entities (attach to customers, budgets, rate limits) |
+| `routing_rules` | CEL-based dynamic provider/model routing |
+| `pricing_overrides` | Scoped per-model pricing overrides |
+| `model_configs` | Per-model rate limit and budget configurations |
+
+Full documentation: [Governance](/deployment-guides/config-json/governance).
+
+---
+
+## `guardrails_config`
+
+Enterprise-only. Two sub-keys: `guardrail_providers` (array) and `guardrail_rules` (array).
+
+Full documentation: [Guardrails](/deployment-guides/config-json/guardrails).
+
+---
+
+## `config_store`, `logs_store`, `vector_store`
+
+Storage backends. Each has `enabled` (boolean), `type` (string), and `config` (object).
+
+| Store | Types |
+|-------|-------|
+| `config_store` | `"sqlite"`, `"postgres"` |
+| `logs_store` | `"sqlite"`, `"postgres"` (+ optional `object_storage`) |
+| `vector_store` | `"weaviate"`, `"redis"`, `"qdrant"`, `"pinecone"` (`"redis"` also covers Valkey-compatible endpoints) |
+
+Full documentation: [Storage](/deployment-guides/config-json/storage).
+
+---
+
+## `framework`
+
+Controls model pricing catalog sync:
+
+```json
+{
+  "framework": {
+    "pricing": {
+      "pricing_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+      "pricing_sync_interval": 86400
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `pricing.pricing_url` | LiteLLM catalog | URL of a model pricing JSON file |
+| `pricing.pricing_sync_interval` | `86400` | Sync interval in seconds (minimum: `3600`) |
+
+---
+
+## `websocket`
+
+Optional tuning for the WebSocket gateway (Responses API WebSocket mode, Realtime API). WebSocket is always enabled.
+
+```json
+{
+  "websocket": {
+    "max_connections_per_user": 100,
+    "transcript_buffer_size": 100,
+    "pool": {
+      "max_idle_per_key": 50,
+      "max_total_connections": 1000,
+      "idle_timeout_seconds": 600,
+      "max_connection_lifetime_seconds": 7200
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_connections_per_user` | `100` | Max concurrent WebSocket connections per user |
+| `transcript_buffer_size` | `100` | Transcript entries buffered for Realtime API mid-session fallback |
+| `pool.max_idle_per_key` | `50` | Max idle upstream connections per provider/key |
+| `pool.max_total_connections` | `1000` | Max total idle upstream connections |
+| `pool.idle_timeout_seconds` | `600` | Evict idle connections after this many seconds |
+| `pool.max_connection_lifetime_seconds` | `7200` | Max lifetime of any upstream connection |
+
+---
+
+## Minimal Valid Config
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "providers": {
+    "openai": {
+      "keys": [
+        { "name": "primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1.0 }
+      ]
+    }
+  },
+  "config_store": { "enabled": false }
+}
+```

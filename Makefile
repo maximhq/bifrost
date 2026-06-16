@@ -23,7 +23,17 @@ CYAN=\033[0;36m
 NC=\033[0m # No Color
 ECHO := printf '%b\n'
 
-.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+# nvm requires bash-compatible shell semantics; /bin/sh is dash on some Linux distros.
+SHELL := /bin/bash
+
+# Ensures the Node version pinned in .nvmrc is active before any npm/node call.
+# nvm is a shell function, so each recipe that needs it must inline this snippet
+# via `$(USE_NODE); <your command>`.
+USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
+	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
+	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
+
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
 
@@ -61,16 +71,25 @@ cleanup-enterprise: ## Clean up enterprise directories if present
 	@$(ECHO) "$(GREEN)Enterprise cleaned up$(NC)"
 
 install-ui: cleanup-enterprise
-	@which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
-	@which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@$(ECHO) "$(GREEN)Node.js and npm are installed$(NC)"
-	@cd ui && npm ci
-	@which next > /dev/null || ($(ECHO) "$(YELLOW)Installing nextjs...$(NC)" && npm install -g next)
+	@$(USE_NODE); \
+	 which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1); \
+	 which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1); \
+	 $(ECHO) "$(GREEN)Node.js $$(node -v) and npm $$(npm -v) are installed$(NC)"; \
+	 if [ ! -d "ui/node_modules" ] || [ "ui/package.json" -nt "ui/node_modules/.package-lock.json" ] || [ "ui/package-lock.json" -nt "ui/node_modules/.package-lock.json" ]; then \
+	   $(ECHO) "$(YELLOW)Dependencies changed, running npm ci...$(NC)"; \
+	   cd ui && npm ci; \
+	 else \
+	   $(ECHO) "$(GREEN)UI dependencies up to date, skipping install$(NC)"; \
+	 fi
 	@$(ECHO) "$(GREEN)UI deps are in sync$(NC)"
 
 install-air: ## Install air for hot reloading (if not already installed)
 	@which air > /dev/null || ($(ECHO) "$(YELLOW)Installing air for hot reloading...$(NC)" && go install github.com/air-verse/air@latest)
 	@$(ECHO) "$(GREEN)Air is ready$(NC)"
+
+install-pulse: ## Install pulse for hot reloading (if not already installed)
+	@which pulse > /dev/null || ($(ECHO) "$(YELLOW)Installing pulse for hot reloading...$(NC)" && go install github.com/Pratham-Mishra04/pulse@latest)
+	@$(ECHO) "$(GREEN)Pulse is ready$(NC)"
 
 install-delve: ## Install delve for debugging (if not already installed)
 	@which dlv > /dev/null || ($(ECHO) "$(YELLOW)Installing delve for debugging...$(NC)" && go install github.com/go-delve/delve/cmd/dlv@latest)
@@ -86,6 +105,7 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 			$(ECHO) "$(GREEN)junit-viewer is already installed$(NC)"; \
 		else \
 			$(ECHO) "$(YELLOW)Installing junit-viewer for HTML reports...$(NC)"; \
+			$(USE_NODE); \
 			if npm install -g junit-viewer 2>&1; then \
 				$(ECHO) "$(GREEN)junit-viewer installed successfully$(NC)"; \
 			else \
@@ -114,9 +134,9 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	fi
 	@$(ECHO) ""
 	@$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"
-	@if [ -n "$(DISABLE_PROFILER)" ]; then \
+	@$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		cd ui && NEXT_PUBLIC_DISABLE_PROFILER=1 npm run dev & \
+		cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev & \
 	else \
 		cd ui && npm run dev & \
 	fi
@@ -147,10 +167,59 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
 	fi
 
+dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment using pulse for hot reloading
+	@$(ECHO) "$(GREEN)Starting Bifrost complete development environment (pulse)...$(NC)"
+	@$(ECHO) "$(YELLOW)This will start:$(NC)"
+	@$(ECHO) "  1. UI development server (localhost:3000)"
+	@$(ECHO) "  2. API server with UI proxy (localhost:$(PORT))"
+	@$(ECHO) "$(CYAN)Access everything at: http://localhost:$(PORT)$(NC)"
+	@if [ -n "$(DEBUG)" ]; then \
+		$(ECHO) "$(CYAN)  3. Debugger (delve) listening on port 2345$(NC)"; \
+	fi
+	@if [ ! -d "transports/bifrost-http/ui" ]; then \
+		$(ECHO) "$(YELLOW)Creating transports/bifrost-http/ui directory...$(NC)"; \
+		mkdir -p transports/bifrost-http/ui; \
+		touch transports/bifrost-http/ui/.tmp; \
+	fi
+	@$(ECHO) ""
+	@$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"
+	@$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
+		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
+		cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev & \
+	else \
+		cd ui && npm run dev & \
+	fi
+	@sleep 3
+	@$(ECHO) "$(YELLOW)Starting API server with UI proxy...$(NC)"
+	@$(MAKE) setup-workspace >/dev/null
+	@if [ -f .env ]; then \
+		$(ECHO) "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	if [ -n "$(DEBUG)" ]; then \
+		$(ECHO) "$(CYAN)Starting with pulse + delve debugger on port 2345...$(NC)"; \
+		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
+		BIFROST_UI_DEV=true pulse -- \
+			-host "$(HOST)" \
+			-port "$(PORT)" \
+			-log-style "$(LOG_STYLE)" \
+			-log-level "$(LOG_LEVEL)" \
+			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
+	else \
+		BIFROST_UI_DEV=true pulse -- \
+			-host "$(HOST)" \
+			-port "$(PORT)" \
+			-log-style "$(LOG_STYLE)" \
+			-log-level "$(LOG_LEVEL)" \
+			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
+	fi
+
 build-ui: install-ui ## Build ui
 	@$(ECHO) "$(GREEN)Building ui...$(NC)"
 	@rm -rf ui/.next
-	@cd ui && npm run build && npm run copy-build
+	@$(USE_NODE); cd ui && npm run build && npm run copy-build
 
 build: build-ui ## Build bifrost-http binary
 	@if [ -n "$(LOCAL)" ]; then \
@@ -828,7 +897,8 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 
 setup-mcp-tests: ## Build all MCP test servers in examples/mcps/ (Go and TypeScript)
 	@$(ECHO) "$(GREEN)Building MCP test servers...$(NC)"
-	@FAILED=0; \
+	@$(USE_NODE); \
+	FAILED=0; \
 	for mcp_dir in examples/mcps/*/; do \
 		if [ -d "$$mcp_dir" ]; then \
 			mcp_name=$$(basename $$mcp_dir); \
@@ -1200,6 +1270,7 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		done; \
 	fi; \
 	TEST_FAILED=0; \
+	$(USE_NODE); \
 	if ! which npm > /dev/null 2>&1; then \
 		$(ECHO) "$(RED)Error: npm not found$(NC)"; \
 		$(ECHO) "$(YELLOW)Install Node.js: https://nodejs.org/$(NC)"; \
@@ -1258,7 +1329,7 @@ install-playwright: ## Install Playwright test dependencies
 	@$(ECHO) "$(GREEN)Installing Playwright dependencies...$(NC)"
 	@which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@cd tests/e2e && npm ci
+	@$(USE_NODE); cd tests/e2e && npm ci
 	@cd tests/e2e && if npx playwright install --list 2>/dev/null | grep -q "chromium"; then \
 		$(ECHO) "$(CYAN)Chromium is already installed, skipping download$(NC)"; \
 	else \

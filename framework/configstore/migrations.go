@@ -359,6 +359,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRoutingChainMaxDepthColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPromptVariablesColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
 		return err
 	}
@@ -390,6 +393,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddFlexTierPricingColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationNormalizeOtelTraceType(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -5466,6 +5472,50 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
+// migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
+func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_prompt_variables_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				if err := migrator.AddColumn(&tables.TablePromptSession{}, "VariablesJSON"); err != nil {
+					return fmt.Errorf("failed to add variables_json column to prompt_sessions: %w", err)
+				}
+			}
+
+			if !migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				if err := migrator.AddColumn(&tables.TablePromptVersion{}, "VariablesJSON"); err != nil {
+					return fmt.Errorf("failed to add variables_json column to prompt_versions: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				if err := migrator.DropColumn(&tables.TablePromptSession{}, "variables_json"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				if err := migrator.DropColumn(&tables.TablePromptVersion{}, "variables_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_variables_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddKeyBlacklistedModelsJSONColumn adds blacklisted_models_json to config_keys
 // for per-key model deny lists (JSON array of model ids, default []).
 func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB) error {
@@ -6445,6 +6495,51 @@ func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB) error
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_model_pricing_unique_index migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationNormalizeOtelTraceType rewrites the legacy OTEL plugin trace_type value "otel" to "genai_extension".
+// No-op if the plugin row is missing or trace_type is already correct.
+func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "normalize_otel_trace_type",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var plugin tables.TablePlugin
+			err := tx.Where("name = ?", "otel").First(&plugin).Error
+			if err != nil {
+				if err == gorm.ErrRecordNotFound {
+					return nil
+				}
+				return fmt.Errorf("failed to load otel plugin row: %w", err)
+			}
+
+			cfgMap, ok := plugin.Config.(map[string]any)
+			if !ok || len(cfgMap) == 0 {
+				return nil
+			}
+			if tt, _ := cfgMap["trace_type"].(string); tt != "otel" {
+				return nil
+			}
+
+			cfgMap["trace_type"] = "genai_extension"
+			plugin.Config = cfgMap
+			plugin.ConfigJSON = ""
+			plugin.EncryptionStatus = tables.EncryptionStatusPlainText
+
+			if err := tx.Save(&plugin).Error; err != nil {
+				return fmt.Errorf("failed to save normalized otel config: %w", err)
+			}
+			log.Printf("[Migration] Normalized otel trace_type 'otel' to 'genai_extension'")
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running normalize_otel_trace_type migration: %s", err.Error())
+
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
@@ -80,12 +81,12 @@ func (e *AsyncJobExecutor) RetrieveJob(ctx context.Context, jobID string, vkValu
 }
 
 // SubmitJob creates a pending job, starts background execution, and returns the job record.
-// contextValues carries the original request's BifrostContext user values (virtual key, tracing
-// headers, etc.) so they can be restored on the background execution context.
-func (e *AsyncJobExecutor) SubmitJob(virtualKeyValue *string, resultTTL int, operation AsyncOperation, operationType schemas.RequestType, contextValues map[any]any) (*AsyncJob, error) {
+func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultTTL int, operation AsyncOperation, operationType schemas.RequestType) (*AsyncJob, error) {
 	if resultTTL <= 0 {
 		resultTTL = DefaultAsyncJobResultTTL
 	}
+
+	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 
 	var virtualKeyID *string
 	if virtualKeyValue != nil {
@@ -111,7 +112,7 @@ func (e *AsyncJobExecutor) SubmitJob(virtualKeyValue *string, resultTTL int, ope
 		return nil, fmt.Errorf("failed to create async job: %w", err)
 	}
 
-	go e.executeJob(job.ID, job.ResultTTL, operation, contextValues)
+	go e.executeJob(job.ID, job.ResultTTL, operation, bifrostCtx.GetUserValues())
 
 	return job, nil
 }
@@ -124,6 +125,11 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 	for k, v := range contextValues {
 		ctx.SetValue(k, v)
 	}
+
+	// Clear trace context inherited from the original HTTP request.
+	ctx.ClearValue(schemas.BifrostContextKeyTraceID)
+	ctx.ClearValue(schemas.BifrostContextKeyParentSpanID)
+	ctx.ClearValue(schemas.BifrostContextKeySpanID)
 
 	markFailed := func(msg string) {
 		now := time.Now().UTC()
@@ -290,4 +296,14 @@ func (c *AsyncJobCleaner) cleanupExpiredJobs(ctx context.Context) {
 	} else if staleDeleted > 0 {
 		c.logger.Warn("async job cleanup: deleted %d stale processing jobs (stuck > %dh)", staleDeleted, asyncJobStaleProcessingHours)
 	}
+}
+
+// getVirtualKeyFromContext extracts the virtual key value from context.
+// Returns nil if no VK is present (e.g., direct key mode or no governance).
+func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
+	vkValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if vkValue == "" {
+		return nil
+	}
+	return &vkValue
 }

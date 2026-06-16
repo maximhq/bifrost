@@ -1,5 +1,3 @@
-"use client";
-
 import FormFooter from "@/components/formFooter";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -202,13 +200,16 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 
 				// Detect rate limit changes using had/has pattern
 				const hadRateLimit = !!team.rate_limit;
-				const hasRateLimit = (tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) || (requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
+				const hasRateLimit =
+					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
+					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
 				if (hasRateLimit) {
 					updateData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
 						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
+						request_reset_duration:
+							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {} as UpdateTeamRequest["rate_limit"];
@@ -233,12 +234,16 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 				}
 
 				// Add rate limit if enabled (token or request limits)
-				if ((tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) || (requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)) {
+				if (
+					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
+					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)
+				) {
 					createData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
 						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
+						request_reset_duration:
+							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				}
 
@@ -360,8 +365,8 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 													: formData.budgetResetDuration === "1Y"
 														? "year"
 														: "period"}
-										. The usage reset to $0.00 cannot be undone, but calendar alignment can be turned off later.
-										This will take effect when you save.
+										. The usage reset to $0.00 cannot be undone, but calendar alignment can be turned off later. This will take effect when
+										you save.
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>

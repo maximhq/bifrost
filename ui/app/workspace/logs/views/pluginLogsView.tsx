@@ -1,8 +1,6 @@
-"use client";
-
 import { PluginLogEntry } from "@/lib/types/logs";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import moment from "moment";
+import { format } from "date-fns";
 import { useState } from "react";
 
 const levelColors: Record<string, string> = {
@@ -50,7 +48,15 @@ function PluginSection({ name, entries }: { name: string; entries: PluginLogEntr
 
 	return (
 		<div className="rounded-md border">
-			<button data-testid={`plugin-logs-toggle-${name}`} onClick={() => setIsOpen(!isOpen)} className="hover:bg-muted/50 flex w-full items-center gap-2 px-4 py-2 text-left text-sm">
+			<button
+				type="button"
+				data-testid={`plugin-logs-toggle-${name
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/(^-|-$)/g, "")}`}
+				onClick={() => setIsOpen(!isOpen)}
+				className="hover:bg-muted/50 flex w-full items-center gap-2 px-4 py-2 text-left text-sm"
+			>
 				{isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
 				<span className="font-medium">{name}</span>
 				<span className="text-muted-foreground text-xs">({entries.length})</span>
@@ -59,7 +65,7 @@ function PluginSection({ name, entries }: { name: string; entries: PluginLogEntr
 				<div className="custom-scrollbar max-h-[300px] overflow-y-auto border-t">
 					{sorted.map((entry, idx) => (
 						<div key={idx} className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0">
-							<span className="text-muted-foreground shrink-0">{moment(entry.timestamp).format("HH:mm:ss.SSS")}</span>
+							<span className="text-muted-foreground shrink-0">{format(new Date(entry.timestamp), "HH:mm:ss.SSS")}</span>
 							<span
 								className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${levelColors[entry.level] || levelColors.info}`}
 							>

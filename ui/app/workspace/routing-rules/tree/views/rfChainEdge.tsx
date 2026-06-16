@@ -1,5 +1,3 @@
-"use client";
-
 import { BaseEdge, type EdgeProps } from "@xyflow/react";
 import { memo, useMemo } from "react";
 
@@ -21,24 +19,26 @@ export type RfChainEdgeData = {
  * condition node's left handle.
  */
 function buildChainPath(
-	sx: number, sy: number,
-	tx: number, ty: number,
+	sx: number,
+	sy: number,
+	tx: number,
+	ty: number,
 ): { path: string; labelX: number; labelY: number; angleDeg: number } {
 	// Offset scales with horizontal distance so the loop expands when nodes
 	// are far apart, but stays legible when they are close.
 	const hDist = Math.abs(sx - tx);
 	const offset = Math.max(80, hDist * 0.25);
 
-	const cp1x = sx + offset;   // always to the right of the source
+	const cp1x = sx + offset; // always to the right of the source
 	const cp1y = sy;
-	const cp2x = tx - offset;   // always to the left of the target
+	const cp2x = tx - offset; // always to the left of the target
 	const cp2y = ty;
 
 	const path = `M${sx},${sy} C${cp1x},${cp1y} ${cp2x},${cp2y} ${tx},${ty}`;
 
 	// Midpoint of cubic Bézier at t = 0.5
-	const labelX = sx / 8 + 3 * cp1x / 8 + 3 * cp2x / 8 + tx / 8;
-	const labelY = sy / 8 + 3 * cp1y / 8 + 3 * cp2y / 8 + ty / 8;
+	const labelX = sx / 8 + (3 * cp1x) / 8 + (3 * cp2x) / 8 + tx / 8;
+	const labelY = sy / 8 + (3 * cp1y) / 8 + (3 * cp2y) / 8 + ty / 8;
 
 	// Tangent direction at t = 0.5 for the mid-edge arrow orientation
 	const dx = 0.75 * (cp1x - sx) + 1.5 * (cp2x - cp1x) + 0.75 * (tx - cp2x);
@@ -48,21 +48,9 @@ function buildChainPath(
 	return { path, labelX, labelY, angleDeg };
 }
 
-function RfChainEdgeImpl({
-	id,
-	sourceX,
-	sourceY,
-	targetX,
-	targetY,
-	style,
-	interactionWidth,
-	data,
-}: EdgeProps) {
+function RfChainEdgeImpl({ id, sourceX, sourceY, targetX, targetY, style, interactionWidth, data }: EdgeProps) {
 	const weak = (data as RfChainEdgeData | undefined)?.chainWeak === true;
-	const strokeColor =
-		typeof style?.stroke === "string" && style.stroke.length > 0
-			? style.stroke
-			: "var(--foreground)";
+	const strokeColor = typeof style?.stroke === "string" && style.stroke.length > 0 ? style.stroke : "var(--foreground)";
 
 	const { path, labelX, labelY, angleDeg } = useMemo(
 		() => buildChainPath(sourceX, sourceY, targetX, targetY),
@@ -71,17 +59,8 @@ function RfChainEdgeImpl({
 
 	return (
 		<>
-			<BaseEdge
-				id={id}
-				path={path}
-				style={style}
-				interactionWidth={interactionWidth ?? 12}
-			/>
-			<g
-				transform={`translate(${labelX}, ${labelY}) rotate(${angleDeg})`}
-				className="pointer-events-none"
-				aria-hidden
-			>
+			<BaseEdge id={id} path={path} style={style} interactionWidth={interactionWidth ?? 12} />
+			<g transform={`translate(${labelX}, ${labelY}) rotate(${angleDeg})`} className="pointer-events-none" aria-hidden>
 				{weak ? (
 					<polyline
 						points="-6,-4 6,0 -6,4"

@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
@@ -352,12 +353,14 @@ func applyOutputFieldsToEntry(
 	selectedKeyID, selectedKeyName string,
 	virtualKeyID, virtualKeyName string,
 	routingRuleID, routingRuleName string,
+	selectedPromptID, selectedPromptName, selectedPromptVersion string,
 	teamID, teamName string,
 	customerID, customerName string,
-	userID string,
+	userID, userName string,
 	businessUnitID, businessUnitName string,
 	numberOfRetries int,
 	latency int64,
+	attemptTrail []schemas.KeyAttemptRecord,
 ) {
 	entry.SelectedKeyID = selectedKeyID
 	entry.SelectedKeyName = selectedKeyName
@@ -372,6 +375,15 @@ func applyOutputFieldsToEntry(
 	}
 	if routingRuleName != "" {
 		entry.RoutingRuleName = &routingRuleName
+	}
+	if selectedPromptID != "" {
+		entry.SelectedPromptID = &selectedPromptID
+	}
+	if selectedPromptName != "" {
+		entry.SelectedPromptName = &selectedPromptName
+	}
+	if selectedPromptVersion != "" {
+		entry.SelectedPromptVersion = &selectedPromptVersion
 	}
 	if teamID != "" {
 		entry.TeamID = &teamID
@@ -388,6 +400,9 @@ func applyOutputFieldsToEntry(
 	if userID != "" {
 		entry.UserID = &userID
 	}
+	if userName != "" {
+		entry.UserName = &userName
+	}
 	if businessUnitID != "" {
 		entry.BusinessUnitID = &businessUnitID
 	}
@@ -400,5 +415,8 @@ func applyOutputFieldsToEntry(
 	if latency != 0 {
 		latF := float64(latency)
 		entry.Latency = &latF
+	}
+	if len(attemptTrail) > 0 {
+		entry.AttemptTrailParsed = attemptTrail
 	}
 }

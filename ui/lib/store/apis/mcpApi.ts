@@ -1,4 +1,12 @@
-import { CreateMCPClientRequest, GetMCPClientsParams, GetMCPClientsResponse, MCPClient, OAuthFlowResponse, OAuthStatusResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
+import {
+	CreateMCPClientRequest,
+	GetMCPClientsParams,
+	GetMCPClientsResponse,
+	MCPClient,
+	OAuthFlowResponse,
+	OAuthStatusResponse,
+	UpdateMCPClientRequest,
+} from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
@@ -63,7 +71,8 @@ export const mcpApi = baseApi.injectEndpoints({
 									if (data.is_code_mode_client !== undefined) draft.clients[index].config.is_code_mode_client = data.is_code_mode_client;
 									if (data.headers !== undefined) draft.clients[index].config.headers = data.headers;
 									if (data.tools_to_execute !== undefined) draft.clients[index].config.tools_to_execute = data.tools_to_execute;
-									if (data.tools_to_auto_execute !== undefined) draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
+									if (data.tools_to_auto_execute !== undefined)
+										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.tool_pricing !== undefined) draft.clients[index].config.tool_pricing = data.tool_pricing;
 									if (data.tool_sync_interval !== undefined) draft.clients[index].config.tool_sync_interval = data.tool_sync_interval;

@@ -1,5 +1,3 @@
-"use client";
-
 import type { MCPHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -95,8 +93,24 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar isAnimationActive={false} dataKey="success" stackId="requests" fill={CHART_COLORS.success} fillOpacity={0.9} radius={[0, 0, 0, 0]} barSize={30} />
-						<Bar isAnimationActive={false} dataKey="error" stackId="requests" fill={CHART_COLORS.error} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
+						<Bar
+							isAnimationActive={false}
+							dataKey="success"
+							stackId="requests"
+							fill={CHART_COLORS.success}
+							fillOpacity={0.9}
+							radius={[0, 0, 0, 0]}
+							barSize={30}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="error"
+							stackId="requests"
+							fill={CHART_COLORS.error}
+							fillOpacity={0.9}
+							radius={[2, 2, 0, 0]}
+							barSize={30}
+						/>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -130,7 +144,15 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 							fill={CHART_COLORS.success}
 							fillOpacity={0.7}
 						/>
-						<Area isAnimationActive={false} type="monotone" dataKey="error" stackId="1" stroke={CHART_COLORS.error} fill={CHART_COLORS.error} fillOpacity={0.7} />
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="error"
+							stackId="1"
+							stroke={CHART_COLORS.error}
+							fill={CHART_COLORS.error}
+							fillOpacity={0.7}
+						/>
 					</AreaChart>
 				)}
 			</ResponsiveContainer>

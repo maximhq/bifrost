@@ -1,40 +1,40 @@
-import { ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs"
-import { isJson, cleanJson } from "@/lib/utils/validation"
-import CollapsibleBox from "./collapsibleBox"
 import { CodeEditor } from "@/components/ui/codeEditor";
+import { ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { cleanJson, isJson } from "@/lib/utils/validation";
+import CollapsibleBox from "./collapsibleBox";
 
 interface LogResponsesMessageViewProps {
-	messages: ResponsesMessage[]
+	messages: ResponsesMessage[];
 }
 
-function ContentBlockView({ block, index }: { block: ResponsesMessageContentBlock; index: number }) {
+function ContentBlockView({ block }: { block: ResponsesMessageContentBlock; index: number }) {
 	const getBlockTitle = (type: string) => {
 		switch (type) {
 			case "input_text":
-				return "Input Text"
+				return "Input Text";
 			case "input_image":
-				return "Input Image"
+				return "Input Image";
 			case "input_file":
-				return "Input File"
+				return "Input File";
 			case "input_audio":
-				return "Input Audio"
+				return "Input Audio";
 			case "output_text":
-				return "Output Text"
+				return "Output Text";
 			case "reasoning_text":
-				return "Reasoning Text"
+				return "Reasoning Text";
 			case "refusal":
-				return "Refusal"
+				return "Refusal";
 			default:
-				return type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())
+				return type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 		}
-	}
+	};
 
-	const blockTitle = getBlockTitle(block.type)
+	const blockTitle = getBlockTitle(block.type);
 
 	// Handle text content
 	if (block.text) {
 		if (isJson(block.text)) {
-			const jsonContent = JSON.stringify(cleanJson(block.text), null, 2)
+			const jsonContent = JSON.stringify(cleanJson(block.text), null, 2);
 			return (
 				<CollapsibleBox title={blockTitle} onCopy={() => jsonContent} collapsedHeight={100}>
 					<CodeEditor
@@ -48,13 +48,13 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 						options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 					/>
 				</CollapsibleBox>
-			)
+			);
 		}
 		return (
 			<CollapsibleBox title={blockTitle} onCopy={() => block.text || ""} collapsedHeight={100}>
 				<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs whitespace-pre-wrap">{block.text}</div>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle image content
@@ -66,7 +66,7 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 			},
 			null,
 			2,
-		)
+		);
 		return (
 			<CollapsibleBox title={blockTitle} onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
@@ -80,7 +80,7 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 				/>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle file content
@@ -94,7 +94,7 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 			},
 			null,
 			2,
-		)
+		);
 		return (
 			<CollapsibleBox title={blockTitle} onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
@@ -108,12 +108,12 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 				/>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle audio content
 	if (block.input_audio) {
-		const jsonContent = JSON.stringify(block.input_audio, null, 2)
+		const jsonContent = JSON.stringify(block.input_audio, null, 2);
 		return (
 			<CollapsibleBox title={blockTitle} onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
@@ -127,7 +127,7 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 				/>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle refusal content
@@ -136,12 +136,12 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 			<CollapsibleBox title={blockTitle} onCopy={() => block.refusal || ""} collapsedHeight={100}>
 				<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs text-red-800">{block.refusal}</div>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle annotations
 	if (block.annotations && block.annotations.length > 0) {
-		const jsonContent = JSON.stringify(block.annotations, null, 2)
+		const jsonContent = JSON.stringify(block.annotations, null, 2);
 		return (
 			<CollapsibleBox title="Annotations" onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
@@ -155,12 +155,12 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 				/>
 			</CollapsibleBox>
-		)
+		);
 	}
 
 	// Handle log probabilities
 	if (block.logprobs && block.logprobs.length > 0) {
-		const jsonContent = JSON.stringify(block.logprobs, null, 2)
+		const jsonContent = JSON.stringify(block.logprobs, null, 2);
 		return (
 			<CollapsibleBox title="Log Probabilities" onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
@@ -174,10 +174,10 @@ function ContentBlockView({ block, index }: { block: ResponsesMessageContentBloc
 					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 				/>
 			</CollapsibleBox>
-		)
+		);
 	}
 
-	return null
+	return null;
 }
 
 function MessageView({ message, index }: { message: ResponsesMessage; index: number }) {
@@ -185,45 +185,45 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 		if (message.type) {
 			switch (message.type) {
 				case "reasoning":
-					return "Reasoning"
+					return "Reasoning";
 				case "message":
-					return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)} Message` : "Message"
+					return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)} Message` : "Message";
 				case "function_call":
-					return `Function Call: ${message.name || "Unknown"}`
+					return `Function Call: ${message.name || "Unknown"}`;
 				case "function_call_output":
-					return "Function Call Output"
+					return "Function Call Output";
 				case "file_search_call":
-					return "File Search"
+					return "File Search";
 				case "web_search_call":
-					return "Web Search"
+					return "Web Search";
 				case "computer_call":
-					return "Computer Action"
+					return "Computer Action";
 				case "computer_call_output":
-					return "Computer Action Output"
+					return "Computer Action Output";
 				case "code_interpreter_call":
-					return "Code Interpreter"
+					return "Code Interpreter";
 				case "mcp_call":
-					return "MCP Tool Call"
+					return "MCP Tool Call";
 				case "custom_tool_call":
-					return "Custom Tool Call"
+					return "Custom Tool Call";
 				case "custom_tool_call_output":
-					return "Custom Tool Output"
+					return "Custom Tool Output";
 				case "image_generation_call":
-					return "Image Generation"
+					return "Image Generation";
 				case "refusal":
-					return "Refusal"
+					return "Refusal";
 				default:
-					return message.type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())
+					return message.type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 			}
 		}
-		return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)}` : "Message"
-	}
+		return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)}` : "Message";
+	};
 
 	if (message.type == "reasoning" && (!message.summary || message.summary.length === 0) && !message.encrypted_content && !message.content) {
-		return null
+		return null;
 	}
 
-	const messageTitle = getMessageTitle()
+	const messageTitle = getMessageTitle();
 
 	return (
 		<div key={`message-${index}`} className="flex w-full flex-col gap-2">
@@ -236,13 +236,10 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 					{message.summary.every((item) => item.type === "summary_text") ? (
 						// Display as readable text when all items are summary_text
 						message.summary.map((reasoningContent, idx) => (
-							<CollapsibleBox
-								key={idx}
-								title={`Summary #${idx + 1}`}
-								onCopy={() => reasoningContent.text || ""}
-								collapsedHeight={100}
-							>
-								<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs whitespace-pre-wrap">{reasoningContent.text}</div>
+							<CollapsibleBox key={idx} title={`Summary #${idx + 1}`} onCopy={() => reasoningContent.text || ""} collapsedHeight={100}>
+								<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs whitespace-pre-wrap">
+									{reasoningContent.text}
+								</div>
 							</CollapsibleBox>
 						))
 					) : (
@@ -266,7 +263,9 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 			{/* Handle encrypted reasoning content */}
 			{message.type === "reasoning" && message.encrypted_content && (
 				<CollapsibleBox title="Encrypted Reasoning Content" onCopy={() => message.encrypted_content || ""} collapsedHeight={100}>
-					<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{message.encrypted_content}</div>
+					<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+						{message.encrypted_content}
+					</div>
 				</CollapsibleBox>
 			)}
 
@@ -294,7 +293,9 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 								</CollapsibleBox>
 							) : (
 								<CollapsibleBox title="Content" onCopy={() => (message.content as string) || ""} collapsedHeight={100}>
-									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{message.content}</div>
+									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+										{message.content}
+									</div>
 								</CollapsibleBox>
 							)}
 						</>
@@ -354,7 +355,9 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 							Object.fromEntries(
 								Object.entries(message).filter(
 									([key]) =>
-										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content"].includes(key),
+										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content"].includes(
+											key,
+										),
 								),
 							),
 							null,
@@ -372,7 +375,9 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 							Object.fromEntries(
 								Object.entries(message).filter(
 									([key]) =>
-										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content"].includes(key),
+										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content"].includes(
+											key,
+										),
 								),
 							),
 							null,
@@ -385,7 +390,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 				</CollapsibleBox>
 			)}
 		</div>
-	)
+	);
 }
 
 export default function LogResponsesMessageView({ messages }: LogResponsesMessageViewProps) {
@@ -394,8 +399,14 @@ export default function LogResponsesMessageView({ messages }: LogResponsesMessag
 			<div className="w-full rounded-sm border">
 				<div className="text-muted-foreground px-6 py-4 text-center text-sm">No responses messages available</div>
 			</div>
-		)
+		);
 	}
 
-	return <div className="space-y-4">{messages.map((message, index) => <MessageView key={index} message={message} index={index} />)}</div>
+	return (
+		<div className="space-y-4">
+			{messages.map((message, index) => (
+				<MessageView key={index} message={message} index={index} />
+			))}
+		</div>
+	);
 }

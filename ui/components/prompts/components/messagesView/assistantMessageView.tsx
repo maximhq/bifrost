@@ -75,31 +75,52 @@ export function AssistantMessageView({
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
+		<div
+			className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors"
+			ref={containerRef}
+		>
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
-				<div className="ml-auto flex items-center gap-0.5 h-5">
+				<div className="ml-auto flex h-5 items-center gap-0.5">
 					{usage && (
 						<Tooltip>
-							<TooltipTrigger className="p-1 hover:bg-muted focus:bg-muted focus:opacity-100 rounded-sm">
-								<InfoIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 " />
+							<TooltipTrigger className="hover:bg-muted focus:bg-muted rounded-sm p-1 focus:opacity-100">
+								<InfoIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100" />
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
 								<div className="flex flex-col gap-0.5 text-xs tabular-nums">
-									<span><span className="w-12 inline-block">Input:</span> {usage.prompt_tokens} tokens</span>
-									<span><span className="w-12 inline-block">Output:</span> {usage.completion_tokens} tokens</span>
-									<span><span className="w-12 inline-block">Total:</span> {usage.total_tokens} tokens</span>
+									<span>
+										<span className="inline-block w-12">Input:</span> {usage.prompt_tokens} tokens
+									</span>
+									<span>
+										<span className="inline-block w-12">Output:</span> {usage.completion_tokens} tokens
+									</span>
+									<span>
+										<span className="inline-block w-12">Total:</span> {usage.total_tokens} tokens
+									</span>
 								</div>
 							</TooltipContent>
 						</Tooltip>
 					)}
 					{!disabled && !isStreaming && (
-						<button type="button" aria-label="Edit message" data-testid="assistant-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button
+							type="button"
+							aria-label="Edit message"
+							data-testid="assistant-msg-edit"
+							onClick={() => setEditMode(true)}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+						>
 							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
-						<button type="button" aria-label="Delete message" data-testid="assistant-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button
+							type="button"
+							aria-label="Delete message"
+							data-testid="assistant-msg-delete"
+							onClick={onRemove}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+						>
 							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
@@ -117,7 +138,7 @@ export function AssistantMessageView({
 					<Textarea
 						autoFocus
 						value={content}
-						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						className="text-muted-foreground min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent"
 						disabled={disabled}
 						onChange={(e) => {
 							const clone = message.clone();

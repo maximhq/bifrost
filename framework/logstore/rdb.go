@@ -726,6 +726,43 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 				stats.TotalCost = result.TotalCost.Float64
 			}
 		}
+
+		// User-facing success rate: count each fallback chain as one user request.
+		// A chain is identified by the original request (fallback_index=0); any successful
+		// attempt (original or fallback) makes the whole chain a success.
+		// When scoped to a specific parent request, root rows are excluded by definition
+		// (they have parent_request_id = NULL), so fall back to the per-attempt success rate.
+		if filters.ParentRequestID != "" {
+			stats.UserFacingSuccessRate = stats.SuccessRate
+		} else {
+			var userFacingResult struct {
+				TotalUserRequests      sql.NullInt64 `gorm:"column:total_user_requests"`
+				SuccessfulUserRequests sql.NullInt64 `gorm:"column:successful_user_requests"`
+			}
+			userFacingQuery := s.db.WithContext(ctx).Model(&Log{})
+			userFacingQuery = s.applyFilters(userFacingQuery, filters)
+			// Scope to root rows only so denominator and numerator are drawn from the same population.
+			// A chain is successful if the root itself succeeded or any of its fallbacks succeeded.
+			userFacingQuery = userFacingQuery.Where("fallback_index = ?", 0).Where("status IN ?", []string{"success", "error"})
+			if err := userFacingQuery.Select(`
+				COUNT(DISTINCT id) as total_user_requests,
+				COUNT(DISTINCT CASE
+					WHEN status = 'success' THEN id
+					WHEN EXISTS (
+						SELECT 1
+						FROM logs fallback
+						WHERE fallback.parent_request_id = logs.id
+							AND fallback.status = 'success'
+					) THEN id
+					ELSE NULL
+				END) as successful_user_requests
+			`).Scan(&userFacingResult).Error; err != nil {
+				return nil, err
+			}
+			if userFacingResult.TotalUserRequests.Int64 > 0 {
+				stats.UserFacingSuccessRate = float64(userFacingResult.SuccessfulUserRequests.Int64) / float64(userFacingResult.TotalUserRequests.Int64) * 100
+			}
+		}
 	}
 
 	return stats, nil

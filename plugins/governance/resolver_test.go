@@ -26,7 +26,7 @@ func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -41,7 +41,7 @@ func TestBudgetResolver_EvaluateRequest_VirtualKeyNotFound(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-nonexistent", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -59,7 +59,7 @@ func TestBudgetResolver_EvaluateRequest_VirtualKeyBlocked(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -82,7 +82,7 @@ func TestBudgetResolver_EvaluateRequest_ProviderBlocked(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	// Try to use OpenAI (not allowed)
@@ -113,7 +113,7 @@ func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	// Try to use gpt-4o-mini (not in allowed list)
@@ -136,7 +136,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit(t *testing.
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -159,7 +159,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_RequestLimit(t *testin
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -197,7 +197,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExpired(t *testing.T) {
 	err = store.ResetExpiredRateLimits(context.Background(), expiredRateLimits)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -219,7 +219,7 @@ func TestBudgetResolver_EvaluateRequest_BudgetExceeded(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -246,7 +246,7 @@ func TestBudgetResolver_EvaluateRequest_BudgetExpired(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -280,7 +280,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	// Test: All under limit should pass
@@ -314,7 +314,7 @@ func TestBudgetResolver_EvaluateRequest_ProviderLevelRateLimit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -337,7 +337,7 @@ func TestBudgetResolver_CheckRateLimits_BothExceeded(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -352,7 +352,7 @@ func TestBudgetResolver_IsProviderAllowed(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 
 	tests := []struct {
 		name            string
@@ -400,7 +400,7 @@ func TestBudgetResolver_IsModelAllowed(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 
 	tests := []struct {
 		name            string
@@ -488,7 +488,7 @@ func TestBudgetResolver_ContextPopulation(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)

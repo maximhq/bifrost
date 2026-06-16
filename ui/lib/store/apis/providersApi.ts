@@ -228,9 +228,7 @@ export const providersApi = baseApi.injectEndpoints({
 							}
 						}),
 					);
-					dispatch(
-						providersApi.util.updateQueryData("getProviderKey", { provider, keyId }, () => updatedKey),
-					);
+					dispatch(providersApi.util.updateQueryData("getProviderKey", { provider, keyId }, () => updatedKey));
 					dispatch(
 						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
 							const index = draft.findIndex((k) => k.key_id === keyId);
@@ -294,9 +292,7 @@ export const providersApi = baseApi.injectEndpoints({
 						}),
 					);
 					dispatch(
-						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) =>
-							draft.filter((key) => key.provider !== providerName),
-						),
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => draft.filter((key) => key.provider !== providerName)),
 					);
 				} catch {}
 			},

@@ -1,5 +1,3 @@
-"use client";
-
 import { CheckIcon, ChevronDown, PlusIcon, XIcon } from "lucide-react";
 import React, { KeyboardEventHandler, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -36,7 +34,7 @@ import {
 	CustomOptionProps,
 	CustomPlaceholderProps,
 	Option,
-	OptionGroup
+	OptionGroup,
 } from "./multiselectUtils";
 import { Separator } from "./separator";
 import { cn, radixDialogOnBlurWorkaround } from "./utils";
@@ -146,6 +144,8 @@ interface AsyncMultiSelectProps<T> {
 	reload?: (query: string, callback: (options: Option<T>[] | OptionGroup<T>[]) => void) => void;
 
 	menuPosition?: "absolute" | "fixed";
+	/** Target element for the menu portal. When set, the menu renders inside this element instead of document.body. */
+	menuPortalTarget?: HTMLElement | null;
 
 	/** enable dynamic option creation from the input */
 	dynamicOptionCreation?: boolean;
@@ -393,13 +393,16 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				menuPlacement={props.menuPlacement}
 				blurInputOnSelect={false}
 				menuPosition={props.menuPosition ?? "fixed"}
+				menuPortalTarget={props.menuPortalTarget}
 				onInputChange={(newValue, actionMeta) => {
 					if (props.onInputChange) {
 						props.onInputChange(newValue, { action: actionMeta.action });
 					}
 				}}
 				onBlur={(e) => {
-					radixDialogOnBlurWorkaround(e);
+					if (!props.menuPortalTarget) {
+						radixDialogOnBlurWorkaround(e);
+					}
 					if (props.onBlur) props.onBlur();
 				}}
 				onMenuOpen={() => {
@@ -416,6 +419,7 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				}
 				inputValue={props.inputValue}
 				styles={{
+					menuPortal: (base) => ({ ...base, zIndex: 9999 }),
 					control: (base) => ({ ...base, boxShadow: "none", minHeight: "32px" }),
 					multiValue: () => ({}),
 					multiValueLabel: () => ({}),
@@ -435,7 +439,7 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				defaultMenuIsOpen={props.defaultMenuIsOpen}
 				classNames={{
 					container: () => cn("min-h-8 border-none", props.className),
-					control: ({ isFocused }) =>
+					control: () =>
 						cn(
 							"border-border! multiselect-control dark:!bg-accent flex flex-wrap items-start justify-between rounded-md border bg-white",
 							props.triggerClassName,
@@ -530,7 +534,6 @@ export function MultiSelectInput<T>(props: AsyncMultiSelectProps<T>) {
 	);
 }
 
-
 function CustomOption<T>(props: OptionProps<Option<T>> & { selectProps: CustomOptionProps & CustomComponentsProps }) {
 	const { Option } = components;
 
@@ -576,8 +579,6 @@ function CustomOption<T>(props: OptionProps<Option<T>> & { selectProps: CustomOp
 }
 
 function CustomControl<T>(props: ControlProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { Control } = components;
-
 	if (props.selectProps.controlView) {
 		return props.selectProps.controlView(props);
 	}
@@ -621,8 +622,6 @@ function CustomMultiValueLabel<T>(props: MultiValueGenericProps<Option<T>> & { s
 }
 
 function CustomMultiValue<T>(props: MultiValueProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { MultiValue } = components;
-
 	if (props.selectProps.multiValueView) {
 		return props.selectProps.multiValueView(props);
 	}
@@ -631,8 +630,6 @@ function CustomMultiValue<T>(props: MultiValueProps<Option<T>> & { selectProps: 
 }
 
 function CustomGroupHeading<T>(props: GroupHeadingProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { GroupHeading } = components;
-
 	if (props.selectProps.groupHeadingView) {
 		return props.selectProps.groupHeadingView(props);
 	}
@@ -651,8 +648,6 @@ function CustomGroup<T>(props: GroupProps<Option<T>> & { selectProps: CustomComp
 }
 
 function CustomClearIndicator<T>(props: ClearIndicatorProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { ClearIndicator } = components;
-
 	if (props.selectProps.clearIndicatorView) {
 		return props.selectProps.clearIndicatorView(props);
 	}
@@ -661,8 +656,6 @@ function CustomClearIndicator<T>(props: ClearIndicatorProps<Option<T>> & { selec
 }
 
 function CustomIndicatorSeparator<T>(props: IndicatorSeparatorProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { IndicatorSeparator } = components;
-
 	if (props.selectProps.indicatorSeparatorView) {
 		return props.selectProps.indicatorSeparatorView(props);
 	}
@@ -671,8 +664,6 @@ function CustomIndicatorSeparator<T>(props: IndicatorSeparatorProps<Option<T>> &
 }
 
 function CustomInput<T>(props: InputProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { Input } = components;
-
 	if (props.selectProps.inputView) {
 		return props.selectProps.inputView(props);
 	}
@@ -681,8 +672,6 @@ function CustomInput<T>(props: InputProps<Option<T>> & { selectProps: CustomComp
 }
 
 function CustomLoadingIndicator<T>(props: LoadingIndicatorProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { LoadingIndicator } = components;
-
 	if (props.selectProps.loadingIndicatorView) {
 		return props.selectProps.loadingIndicatorView(props);
 	}
@@ -691,8 +680,6 @@ function CustomLoadingIndicator<T>(props: LoadingIndicatorProps<Option<T>> & { s
 }
 
 function CustomMenu<T>(props: MenuProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { Menu } = components;
-
 	if (props.selectProps.menuView) {
 		return props.selectProps.menuView(props);
 	}
@@ -701,8 +688,6 @@ function CustomMenu<T>(props: MenuProps<Option<T>> & { selectProps: CustomCompon
 }
 
 function CustomMenuList<T>(props: MenuListProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { MenuList } = components;
-
 	if (props.selectProps.menuListView) {
 		return props.selectProps.menuListView(props);
 	}
@@ -711,8 +696,6 @@ function CustomMenuList<T>(props: MenuListProps<Option<T>> & { selectProps: Cust
 }
 
 function CustomMultiValueContainer<T>(props: MultiValueGenericProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { MultiValueContainer } = components;
-
 	if (props.selectProps.multiValueContainerView) {
 		return props.selectProps.multiValueContainerView(props);
 	}
@@ -721,8 +704,6 @@ function CustomMultiValueContainer<T>(props: MultiValueGenericProps<Option<T>> &
 }
 
 function CustomNoOptionsMessage<T>(props: NoticeProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { NoOptionsMessage } = components;
-
 	if (props.selectProps.noOptionsMessageView) {
 		return props.selectProps.noOptionsMessageView(props);
 	}
@@ -731,8 +712,6 @@ function CustomNoOptionsMessage<T>(props: NoticeProps<Option<T>> & { selectProps
 }
 
 function CustomPlaceholder<T>(props: PlaceholderProps<Option<T>> & { selectProps: CustomPlaceholderProps & CustomComponentsProps }) {
-	const { Placeholder } = components;
-
 	if (props.selectProps.placeholderView) {
 		return props.selectProps.placeholderView(props);
 	}
@@ -746,8 +725,6 @@ function CustomPlaceholder<T>(props: PlaceholderProps<Option<T>> & { selectProps
 }
 
 function CustomSingleValue<T>(props: SingleValueProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { SingleValue } = components;
-
 	if (props.selectProps.singleValueView) {
 		return props.selectProps.singleValueView(props);
 	}
@@ -756,8 +733,6 @@ function CustomSingleValue<T>(props: SingleValueProps<Option<T>> & { selectProps
 }
 
 function CustomValueContainer<T>(props: ValueContainerProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-	const { ValueContainer } = components;
-
 	if (props.selectProps.valueContainerView) {
 		return props.selectProps.valueContainerView(props);
 	}

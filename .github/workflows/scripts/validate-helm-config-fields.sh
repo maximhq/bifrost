@@ -160,7 +160,7 @@ bifrost:
     enableLogging: true
     disableContentLogging: true
     disableDbPingsInHealth: true
-    logRetentionDays: 30    
+    logRetentionDays: 30
     enforceGovernanceHeader: true
     allowDirectKeys: true
     maxRequestBodySizeMb: 50
@@ -645,7 +645,7 @@ bifrost:
       config:
         service_name: "bifrost-test"
         collector_url: "otel-collector:4317"
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
         metrics_enabled: true
         metrics_endpoint: "otel-collector:4317"
@@ -718,7 +718,7 @@ assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4
 assert_field_value 'plugins: otel name' '.plugins.[5].name' '"otel"'
 assert_field_value 'plugins: otel service_name' '.plugins.[5].config.service_name' '"bifrost-test"'
 assert_field_value 'plugins: otel collector_url' '.plugins.[5].config.collector_url' '"otel-collector:4317"'
-assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"otel"'
+assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"genai_extension"'
 assert_field_value 'plugins: otel protocol' '.plugins.[5].config.protocol' '"grpc"'
 assert_field_value 'plugins: otel metrics_enabled' '.plugins.[5].config.metrics_enabled' 'true'
 assert_field_value 'plugins: otel metrics_endpoint' '.plugins.[5].config.metrics_endpoint' '"otel-collector:4317"'
@@ -825,10 +825,10 @@ assert_field_value 'mcp client[0] tool_pricing.search' '.mcp.client_configs.[0].
 assert_field_value 'mcp tool_manager_config.code_mode_binding_level' '.mcp.tool_manager_config.code_mode_binding_level' '"server"'
 
 ###############################################################################
-# 8. Cluster, SAML, Load Balancer, Guardrails, Audit Logs
+# 8. Cluster, SCIM, Load Balancer, Guardrails, Audit Logs
 ###############################################################################
 echo ""
-echo -e "${CYAN}🌐 8/10 - Cluster, SAML, LB, Guardrails, Audit Logs${NC}"
+echo -e "${CYAN}🌐 8/10 - Cluster, SCIM, LB, Guardrails, Audit Logs${NC}"
 echo "-----------------------------------------------------"
 
 cat > "$TMPDIR/values-cluster.yaml" << 'VALS'
@@ -872,35 +872,37 @@ assert_field_value 'cluster_config.discovery.k8s_label_selector' '.cluster_confi
 # Gap 7: Cluster region
 assert_field_value 'cluster_config.region' '.cluster_config.region' '"us-east-1"'
 
-# SAML - Okta
-cat > "$TMPDIR/values-saml-okta.yaml" << 'VALS'
+# SCIM - Okta
+cat > "$TMPDIR/values-scim-okta.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "okta"
     config:
       issuerUrl: "https://dev-123.okta.com/oauth2/default"
       clientId: "okta-client-id"
       clientSecret: "okta-client-secret"
+      apiToken: "okta-api-token"
       audience: "api://default"
       userIdField: "sub"
       teamIdsField: "groups"
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-okta.yaml"
-assert_field_value 'saml_config.enabled' '.saml_config.enabled' 'true'
-assert_field_value 'saml_config.provider' '.saml_config.provider' '"okta"'
-assert_field 'saml_config.config' '.saml_config.config'
-
-# SAML - Entra
-cat > "$TMPDIR/values-saml-entra.yaml" << 'VALS'
+render_config "$TMPDIR/values-scim-okta.yaml"
+assert_field_value 'scim_config.enabled' '.scim_config.enabled' 'true'
+assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
+assert_field 'scim_config.config' '.scim_config.config'
+assert_field 'scim_config.config.apiToken' '.scim_config.config.apiToken'
+assert_field 'scim_config.config.clientSecret' '.scim_config.config.clientSecret'
+# SCIM - Entra
+cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "entra"
     config:
@@ -914,9 +916,12 @@ bifrost:
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-entra.yaml"
-assert_field_value 'saml_config (entra) provider' '.saml_config.provider' '"entra"'
-assert_field 'saml_config (entra) config' '.saml_config.config'
+render_config "$TMPDIR/values-scim-entra.yaml"
+assert_field_value 'scim_config (entra) provider' '.scim_config.provider' '"entra"'
+assert_field 'scim_config (entra) config' '.scim_config.config'
+assert_field_value 'scim_config (entra) enabled' '.scim_config.enabled' 'true'
+assert_field 'scim_config (entra) config.tenantId' '.scim_config.config.tenantId'
+assert_field 'scim_config (entra) config.clientId' '.scim_config.config.clientId'
 
 # Load Balancer
 cat > "$TMPDIR/values-lb.yaml" << 'VALS'
@@ -1183,6 +1188,97 @@ assert_field_value 'config_store.config.max_open_conns' '.config_store.config.ma
 assert_field_value 'logs_store.type (postgres)' '.logs_store.type' '"postgres"'
 assert_field_value 'logs_store.config.max_idle_conns' '.logs_store.config.max_idle_conns' '5'
 assert_field_value 'logs_store.config.max_open_conns' '.logs_store.config.max_open_conns' '50'
+
+###############################################################################
+# Object Storage (logsStore.objectStorage)
+###############################################################################
+
+# S3 with inline credentials — exercises camelCase → snake_case mapping in _helpers.tpl
+cat > "$TMPDIR/values-objstore-s3.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      prefix: "prod"
+      compress: true
+      region: "us-east-1"
+      endpoint: "https://minio.internal:9000"
+      accessKeyId: "AKIA..."
+      secretAccessKey: "secret"
+      roleArn: "arn:aws:iam::123:role/bifrost"
+      forcePathStyle: true
+VALS
+
+render_config "$TMPDIR/values-objstore-s3.yaml"
+assert_field_value 'logs_store.object_storage.type (s3)' '.logs_store.object_storage.type' '"s3"'
+assert_field_value 'logs_store.object_storage.bucket' '.logs_store.object_storage.bucket' '"bifrost-logs"'
+assert_field_value 'logs_store.object_storage.prefix' '.logs_store.object_storage.prefix' '"prod"'
+assert_field_value 'logs_store.object_storage.compress' '.logs_store.object_storage.compress' 'true'
+assert_field_value 'logs_store.object_storage.region' '.logs_store.object_storage.region' '"us-east-1"'
+assert_field_value 'logs_store.object_storage.endpoint' '.logs_store.object_storage.endpoint' '"https://minio.internal:9000"'
+assert_field_value 'logs_store.object_storage.access_key_id' '.logs_store.object_storage.access_key_id' '"AKIA..."'
+assert_field_value 'logs_store.object_storage.secret_access_key' '.logs_store.object_storage.secret_access_key' '"secret"'
+assert_field_value 'logs_store.object_storage.role_arn' '.logs_store.object_storage.role_arn' '"arn:aws:iam::123:role/bifrost"'
+assert_field_value 'logs_store.object_storage.force_path_style' '.logs_store.object_storage.force_path_style' 'true'
+
+# S3 with existingSecret — exercises env.BIFROST_OBJECT_STORAGE_* substitution path
+cat > "$TMPDIR/values-objstore-s3-secret.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      existingSecret: "bifrost-os-creds"
+      accessKeyIdKey: "access-key-id"
+      secretAccessKeyKey: "secret-access-key"
+      sessionTokenKey: "session-token"
+      roleArnKey: "role-arn"
+VALS
+
+render_config "$TMPDIR/values-objstore-s3-secret.yaml"
+assert_field_value 'logs_store.object_storage.access_key_id (env)' '.logs_store.object_storage.access_key_id' '"env.BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID"'
+assert_field_value 'logs_store.object_storage.secret_access_key (env)' '.logs_store.object_storage.secret_access_key' '"env.BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY"'
+assert_field_value 'logs_store.object_storage.session_token (env)' '.logs_store.object_storage.session_token' '"env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN"'
+assert_field_value 'logs_store.object_storage.role_arn (env)' '.logs_store.object_storage.role_arn' '"env.BIFROST_OBJECT_STORAGE_ROLE_ARN"'
+
+# GCS — exercises project_id + credentials_json mapping
+cat > "$TMPDIR/values-objstore-gcs.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: gcs
+      bucket: "bifrost-gcs-bucket"
+      projectId: "my-gcp-project"
+      credentialsJson: "/etc/gcs/creds.json"
+VALS
+
+render_config "$TMPDIR/values-objstore-gcs.yaml"
+assert_field_value 'logs_store.object_storage.type (gcs)' '.logs_store.object_storage.type' '"gcs"'
+assert_field_value 'logs_store.object_storage.bucket (gcs)' '.logs_store.object_storage.bucket' '"bifrost-gcs-bucket"'
+assert_field_value 'logs_store.object_storage.project_id' '.logs_store.object_storage.project_id' '"my-gcp-project"'
+assert_field_value 'logs_store.object_storage.credentials_json' '.logs_store.object_storage.credentials_json' '"/etc/gcs/creds.json"'
 
 ###############################################################################
 # Summary

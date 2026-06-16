@@ -136,10 +136,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		}),
 
 		// Get MCP tool call volume histogram
-		getMCPHistogram: builder.query<
-			MCPHistogramResponse,
-			{ filters: MCPToolLogFilters }
-		>({
+		getMCPHistogram: builder.query<MCPHistogramResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram",
 				params: buildMCPFilterParams(filters),
@@ -148,10 +145,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		}),
 
 		// Get MCP cost histogram
-		getMCPCostHistogram: builder.query<
-			MCPCostHistogramResponse,
-			{ filters: MCPToolLogFilters }
-		>({
+		getMCPCostHistogram: builder.query<MCPCostHistogramResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram/cost",
 				params: buildMCPFilterParams(filters),
@@ -160,10 +154,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		}),
 
 		// Get top MCP tools by call count
-		getMCPTopTools: builder.query<
-			MCPTopToolsResponse,
-			{ filters: MCPToolLogFilters }
-		>({
+		getMCPTopTools: builder.query<MCPTopToolsResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram/top-tools",
 				params: buildMCPFilterParams(filters),

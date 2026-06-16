@@ -1,5 +1,3 @@
-"use client";
-
 import ClientForm from "@/app/workspace/mcp-registry/views/mcpClientForm";
 import {
 	AlertDialog,
@@ -39,7 +37,17 @@ interface MCPClientsTableProps {
 	onOffsetChange: (offset: number) => void;
 }
 
-export default function MCPClientsTable({ mcpClients, totalCount, refetch, search, debouncedSearch, onSearchChange, offset, limit, onOffsetChange }: MCPClientsTableProps) {
+export default function MCPClientsTable({
+	mcpClients,
+	totalCount,
+	refetch,
+	search,
+	debouncedSearch,
+	onSearchChange,
+	offset,
+	limit,
+	onOffsetChange,
+}: MCPClientsTableProps) {
 	const [formOpen, setFormOpen] = useState(false);
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
@@ -166,7 +174,7 @@ export default function MCPClientsTable({ mcpClients, totalCount, refetch, searc
 			{/* Toolbar: Search */}
 			<div className="flex items-center gap-3">
 				<div className="relative max-w-sm flex-1">
-					<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
 						aria-label="Search MCP servers by name"
 						placeholder="Search by name..."
@@ -178,7 +186,7 @@ export default function MCPClientsTable({ mcpClients, totalCount, refetch, searc
 				</div>
 			</div>
 
-			<div className="rounded-sm border overflow-hidden">
+			<div className="overflow-hidden rounded-sm border">
 				<Table data-testid="mcp-clients-table">
 					<TableHeader>
 						<TableRow className="bg-muted/50">
@@ -200,97 +208,104 @@ export default function MCPClientsTable({ mcpClients, totalCount, refetch, searc
 								</TableCell>
 							</TableRow>
 						) : (
-						mcpClients.map((c: MCPClient) => {
-							const enabledToolsCount =
-								c.state == "connected"
-									? c.config.tools_to_execute?.includes("*")
-										? c.tools?.length
-										: (c.config.tools_to_execute?.length ?? 0)
-									: 0;
-							const autoExecuteToolsCount =
-								c.state == "connected"
-									? c.config.tools_to_auto_execute?.includes("*")
-										? c.tools?.length
-										: (c.config.tools_to_auto_execute?.length ?? 0)
-									: 0;
-							return (
-								<TableRow
-									key={c.config.client_id}
-									className="hover:bg-muted/50 cursor-pointer transition-colors"
-									onClick={() => handleRowClick(c)}
-								>
-									<TableCell className="font-medium">{c.config.name}</TableCell>
-									<TableCell data-testid="mcp-client-connection-type">{getConnectionTypeDisplay(c.config.connection_type)}</TableCell>
-									<TableCell>
-										<Badge
-											className={
-												c.state == "connected" ? MCP_STATUS_COLORS[c.config.is_code_mode_client ? "connected" : "disconnected"] : ""
-											}
-										>
-											{c.state == "connected" ? <>{c.config.is_code_mode_client ? "Enabled" : "Disabled"}</> : "-"}
-										</Badge>
-									</TableCell>
-									<TableCell className="max-w-72 overflow-hidden text-ellipsis whitespace-nowrap">{getConnectionDisplay(c)}</TableCell>
-									<TableCell>
-										{c.state == "connected" ? (
-											<>
-												{enabledToolsCount}/{c.tools?.length}
-											</>
-										) : (
-											"-"
-										)}
-									</TableCell>
-									<TableCell>
-										{c.state == "connected" ? (
-											<>
-												{autoExecuteToolsCount}/{c.tools?.length}
-											</>
-										) : (
-											"-"
-										)}
-									</TableCell>
-									<TableCell>
-										<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
-									</TableCell>
-									<TableCell className="space-x-2 text-right" onClick={(e) => e.stopPropagation()}>
-										<Button
-											variant="ghost"
-											size="icon"
-											onClick={() => handleReconnect(c)}
-											disabled={reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
-											title="Reconnect"
-										>
-											{reconnectingClients.includes(c.config.client_id) ? (
-												<Loader2 className="h-4 w-4 animate-spin" />
+							mcpClients.map((c: MCPClient) => {
+								const enabledToolsCount =
+									c.state == "connected"
+										? c.config.tools_to_execute?.includes("*")
+											? c.tools?.length
+											: (c.config.tools_to_execute?.length ?? 0)
+										: 0;
+								const autoExecuteToolsCount =
+									c.state == "connected"
+										? c.config.tools_to_auto_execute?.includes("*")
+											? c.tools?.length
+											: (c.config.tools_to_auto_execute?.length ?? 0)
+										: 0;
+								return (
+									<TableRow
+										key={c.config.client_id}
+										className="hover:bg-muted/50 cursor-pointer transition-colors"
+										onClick={() => handleRowClick(c)}
+									>
+										<TableCell className="font-medium">{c.config.name}</TableCell>
+										<TableCell data-testid="mcp-client-connection-type">{getConnectionTypeDisplay(c.config.connection_type)}</TableCell>
+										<TableCell>
+											<Badge
+												className={
+													c.state == "connected" ? MCP_STATUS_COLORS[c.config.is_code_mode_client ? "connected" : "disconnected"] : ""
+												}
+											>
+												{c.state == "connected" ? <>{c.config.is_code_mode_client ? "Enabled" : "Disabled"}</> : "-"}
+											</Badge>
+										</TableCell>
+										<TableCell className="max-w-72 overflow-hidden text-ellipsis whitespace-nowrap">{getConnectionDisplay(c)}</TableCell>
+										<TableCell>
+											{c.state == "connected" ? (
+												<>
+													{enabledToolsCount}/{c.tools?.length}
+												</>
 											) : (
-												<RefreshCcw className="h-4 w-4" />
+												"-"
 											)}
-										</Button>
+										</TableCell>
+										<TableCell>
+											{c.state == "connected" ? (
+												<>
+													{autoExecuteToolsCount}/{c.tools?.length}
+												</>
+											) : (
+												"-"
+											)}
+										</TableCell>
+										<TableCell>
+											<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
+										</TableCell>
+										<TableCell className="space-x-2 text-right" onClick={(e) => e.stopPropagation()}>
+											<Button
+												variant="ghost"
+												size="icon"
+												onClick={() => handleReconnect(c)}
+												disabled={reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
+												title="Reconnect"
+											>
+												{reconnectingClients.includes(c.config.client_id) ? (
+													<Loader2 className="h-4 w-4 animate-spin" />
+												) : (
+													<RefreshCcw className="h-4 w-4" />
+												)}
+											</Button>
 
-										<AlertDialog>
-											<AlertDialogTrigger asChild>
-												<Button variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" disabled={!hasDeleteMCPClientAccess}>
-													<Trash2 className="h-4 w-4" />
-												</Button>
-											</AlertDialogTrigger>
-											<AlertDialogContent>
-												<AlertDialogHeader>
-													<AlertDialogTitle>Remove MCP Server</AlertDialogTitle>
-													<AlertDialogDescription>
-														Are you sure you want to remove MCP server {c.config.name}? You will need to reconnect the server to continue
-														using it.
-													</AlertDialogDescription>
-												</AlertDialogHeader>
-												<AlertDialogFooter>
-													<AlertDialogCancel>Cancel</AlertDialogCancel>
-													<AlertDialogAction onClick={() => handleDelete(c)} className="bg-destructive hover:bg-destructive/90">Delete</AlertDialogAction>
-												</AlertDialogFooter>
-											</AlertDialogContent>
-										</AlertDialog>
-									</TableCell>
-								</TableRow>
-							);
-						})
+											<AlertDialog>
+												<AlertDialogTrigger asChild>
+													<Button
+														variant="ghost"
+														size="icon"
+														className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
+														disabled={!hasDeleteMCPClientAccess}
+													>
+														<Trash2 className="h-4 w-4" />
+													</Button>
+												</AlertDialogTrigger>
+												<AlertDialogContent>
+													<AlertDialogHeader>
+														<AlertDialogTitle>Remove MCP Server</AlertDialogTitle>
+														<AlertDialogDescription>
+															Are you sure you want to remove MCP server {c.config.name}? You will need to reconnect the server to continue
+															using it.
+														</AlertDialogDescription>
+													</AlertDialogHeader>
+													<AlertDialogFooter>
+														<AlertDialogCancel>Cancel</AlertDialogCancel>
+														<AlertDialogAction onClick={() => handleDelete(c)} className="bg-destructive hover:bg-destructive/90">
+															Delete
+														</AlertDialogAction>
+													</AlertDialogFooter>
+												</AlertDialogContent>
+											</AlertDialog>
+										</TableCell>
+									</TableRow>
+								);
+							})
 						)}
 					</TableBody>
 				</Table>

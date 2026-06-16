@@ -1,8 +1,8 @@
-import { Parameter } from "./types";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
-import { CodeEditor } from "@/components/ui/codeEditor";
 import FieldLabel from "./fieldLabel";
+import { Parameter } from "./types";
 
 interface Props {
 	field: Parameter;
@@ -17,9 +17,7 @@ interface Props {
 export default function JSONFieldView(props: Props) {
 	const { field, parentField, config } = props;
 
-	const rawValue = parentField
-		? (config[parentField.id] as any)?.[field.id]
-		: config[field.id];
+	const rawValue = parentField ? (config[parentField.id] as any)?.[field.id] : config[field.id];
 	const value = rawValue !== undefined ? JSON.stringify(rawValue, null, 2) : "";
 	const [currentValue, setCurrentValue] = useState<string>(value);
 
@@ -39,17 +37,17 @@ export default function JSONFieldView(props: Props) {
 					setCurrentValue(v);
 					try {
 						props.onChange(JSON.parse(v));
-					} catch (error) {}
+					} catch {}
 				}}
 				onBlur={() => {
 					try {
 						setCurrentValue(JSON.stringify(JSON.parse(currentValue), null, 2));
-					} catch (ignored) {}
+					} catch {}
 				}}
 				lang="json"
 				wrap={true}
 				height={200}
-				className="h-[200px] w-full border rounded-md py-1"
+				className="h-[200px] w-full rounded-md border py-1"
 				options={{
 					scrollBeyondLastLine: false,
 				}}

@@ -683,17 +683,15 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Stdio(t *testing.T) {
 	}
 }
 
-func TestValidateConfigSchema_MCPClientConfig_Valid_Websocket(t *testing.T) {
-	// Valid MCP client config with websocket connection type
+func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
+	// Valid MCP client config with sse connection type
 	validConfig := `{
 		"mcp": {
 			"client_configs": [
 				{
 					"name": "my-mcp-client",
-					"connection_type": "websocket",
-					"websocket_config": {
-						"url": "ws://localhost:8080"
-					}
+					"connection_type": "sse",
+					"connection_string": "http://localhost:8080"
 				}
 			]
 		}
@@ -701,7 +699,7 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Websocket(t *testing.T) {
 
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
-		t.Errorf("expected valid MCP client config (websocket) to pass validation, got error: %v", err)
+		t.Errorf("expected valid MCP client config (sse) to pass validation, got error: %v", err)
 	}
 }
 
@@ -713,9 +711,7 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 				{
 					"name": "my-mcp-client",
 					"connection_type": "http",
-					"http_config": {
-						"url": "http://localhost:8080"
-					}
+					"connection_string": "http://localhost:8080"
 				}
 			]
 		}
@@ -1205,7 +1201,7 @@ func TestValidateConfigSchema_OtelPlugin_Valid(t *testing.T) {
 				"name": "otel",
 				"config": {
 					"collector_url": "http://localhost:4318",
-					"trace_type": "otel",
+					"trace_type": "genai_extension",
 					"protocol": "http"
 				}
 			}
@@ -1226,7 +1222,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingCollectorUrl(t *testing.T) {
 				"enabled": true,
 				"name": "otel",
 				"config": {
-					"trace_type": "otel",
+					"trace_type": "genai_extension",
 					"protocol": "http"
 				}
 			}
@@ -1269,7 +1265,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingProtocol(t *testing.T) {
 				"name": "otel",
 				"config": {
 					"collector_url": "http://localhost:4318",
-					"trace_type": "otel"
+					"trace_type": "genai_extension"
 				}
 			}
 		]

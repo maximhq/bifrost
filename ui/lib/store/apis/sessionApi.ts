@@ -48,7 +48,7 @@ export const sessionApi = baseApi.injectEndpoints({
 			async onQueryStarted(arg, { queryFulfilled }) {
 				try {
 					await queryFulfilled;
-				} catch (error) {
+				} catch {
 				} finally {
 					clearAuthStorage();
 				}

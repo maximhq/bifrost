@@ -1,5 +1,3 @@
-"use client";
-
 import * as React from "react";
 import * as SliderPrimitive from "@radix-ui/react-slider";
 
@@ -54,9 +52,7 @@ function Slider({
 									className="border-primary ring-ring/50 block size-4 shrink-0 rounded-full border bg-white shadow-sm transition-[color,box-shadow] hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
 								/>
 							</TooltipTrigger>
-							<TooltipContent className="text-md w-[300px] font-normal">
-								{thumbTooltipText}
-							</TooltipContent>
+							<TooltipContent className="text-md w-[300px] font-normal">{thumbTooltipText}</TooltipContent>
 						</Tooltip>
 					</TooltipProvider>
 				) : (

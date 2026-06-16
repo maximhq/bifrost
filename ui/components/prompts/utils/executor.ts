@@ -11,7 +11,7 @@ export interface ExecutionConfig {
 }
 
 function getBaseUrl() {
-	if(process.env.NODE_ENV === "development") {
+	if (process.env.NODE_ENV === "development") {
 		return "http://localhost:8080";
 	} else {
 		return "";
@@ -45,9 +45,7 @@ export async function executePrompt(
 	callbacks.onStreamingStart(allMessages, placeholder);
 
 	// Replace Jinja2 variables before sending to the API
-	const resolvedMessages = config.variables
-		? replaceVariablesInMessages(allMessages, config.variables)
-		: allMessages;
+	const resolvedMessages = config.variables ? replaceVariablesInMessages(allMessages, config.variables) : allMessages;
 
 	try {
 		const headers: Record<string, string> = { "Content-Type": "application/json" };

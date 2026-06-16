@@ -1,0 +1,550 @@
+---
+title: "Storage"
+description: "Configure Bifrost storage backends in Helm — SQLite, PostgreSQL (embedded and external), per-store overrides, and S3/GCS object storage for logs"
+icon: "database"
+---
+
+Bifrost persists two types of data — **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store, both defaulting to the top-level `storage.mode`.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `storage.mode` | Default backend for both stores (`sqlite` or `postgres`) | `sqlite` |
+| `storage.configStore.type` | Override backend for the config store | `""` (inherits `storage.mode`) |
+| `storage.logsStore.type` | Override backend for the logs store | `""` (inherits `storage.mode`) |
+
+<Note>
+When any store uses SQLite the chart deploys a **StatefulSet** with a PVC. With PostgreSQL only (no SQLite) it deploys a **Deployment**. Mixing backends (e.g. config=postgres, logs=sqlite) still requires a StatefulSet.
+</Note>
+
+---
+
+<Tabs>
+
+<Tab title="SQLite">
+
+### SQLite (Default)
+
+Simplest setup — no external database required. Bifrost runs as a StatefulSet with a persistent volume for the SQLite files.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `storage.persistence.enabled` | Create a PVC for SQLite data | `true` |
+| `storage.persistence.size` | PVC size | `10Gi` |
+| `storage.persistence.accessMode` | PVC access mode | `ReadWriteOnce` |
+| `storage.persistence.storageClass` | Storage class (leave empty for cluster default) | `""` |
+| `storage.persistence.existingClaim` | Reuse an existing PVC | `""` |
+
+```yaml
+# sqlite-values.yaml
+image:
+  tag: "v1.4.11"
+
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    size: 20Gi
+    # storageClass: "gp3"   # uncomment to pin storage class
+
+bifrost:
+  encryptionKey: "your-32-byte-encryption-key-here"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f sqlite-values.yaml
+```
+
+**Reuse an existing PVC** (e.g. after a StatefulSet migration):
+
+```yaml
+storage:
+  persistence:
+    existingClaim: "bifrost-data"
+```
+
+<Warning>
+Upgrading from SQLite to PostgreSQL requires a data migration — the two stores are not compatible. Plan accordingly before switching `storage.mode` on a running deployment.
+</Warning>
+
+#### StatefulSet Migration (chart v2.0.0+)
+
+Prior to v2.0.0, SQLite used a Deployment + manual PVC. v2.0.0 moved SQLite to a StatefulSet. If upgrading from an older chart:
+
+```bash
+# 1. Scale down the old deployment
+kubectl scale deployment bifrost --replicas=0
+
+# 2. Note the existing PVC name
+kubectl get pvc
+
+# 3. Upgrade the chart, pointing at the existing claim
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set storage.persistence.existingClaim=<your-old-pvc-name> \
+  --set image.tag=v1.4.11
+```
+
+</Tab>
+
+<Tab title="Embedded PostgreSQL">
+
+### Embedded PostgreSQL
+
+The chart can deploy a PostgreSQL instance alongside Bifrost. Good for simple production setups where you don't have an existing database.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `storage.mode` | Set to `postgres` | `sqlite` |
+| `postgresql.enabled` | Deploy PostgreSQL as a sub-deployment | `false` |
+| `postgresql.auth.username` | Database user | `bifrost` |
+| `postgresql.auth.password` | Database password | `bifrost_password` |
+| `postgresql.auth.database` | Database name | `bifrost` |
+| `postgresql.primary.persistence.size` | PVC size for PostgreSQL data | `8Gi` |
+
+<Note>
+Ensure the database is created with **UTF8 encoding**. The embedded PostgreSQL deployment handles this automatically. See [PostgreSQL UTF8 Requirement](/quickstart/gateway/setting-up#postgresql-utf8-requirement) for manual setups.
+</Note>
+
+```bash
+kubectl create secret generic postgres-credentials \
+  --from-literal=password='your-secure-postgres-password'
+```
+
+```yaml
+# embedded-postgres-values.yaml
+image:
+  tag: "v1.4.11"
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    password: "your-secure-postgres-password"   # use existingSecret in production
+    database: bifrost
+  primary:
+    persistence:
+      enabled: true
+      size: 50Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+
+bifrost:
+  encryptionKey: "your-32-byte-encryption-key-here"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f embedded-postgres-values.yaml
+```
+
+**Verify the connection from Bifrost:**
+
+```bash
+kubectl exec -it deployment/bifrost -- nc -zv bifrost-postgresql 5432
+```
+
+</Tab>
+
+<Tab title="External PostgreSQL">
+
+### External PostgreSQL
+
+Point Bifrost at an existing PostgreSQL instance — RDS, Cloud SQL, Azure Database, or self-managed.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `postgresql.enabled` | Must be `false` | `false` |
+| `postgresql.external.enabled` | Enable external connection | `false` |
+| `postgresql.external.host` | Hostname or IP | `""` |
+| `postgresql.external.port` | Port | `5432` |
+| `postgresql.external.user` | Username | `bifrost` |
+| `postgresql.external.database` | Database name | `bifrost` |
+| `postgresql.external.sslMode` | SSL mode (`disable`, `require`, `verify-ca`, `verify-full`) | `disable` |
+| `postgresql.external.existingSecret` | Secret name for the password | `""` |
+| `postgresql.external.passwordKey` | Key within the secret | `"password"` |
+
+```bash
+kubectl create secret generic external-postgres-credentials \
+  --from-literal=password='your-external-postgres-password'
+```
+
+```yaml
+# external-postgres-values.yaml
+image:
+  tag: "v1.4.11"
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "your-rds-endpoint.us-east-1.rds.amazonaws.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: "external-postgres-credentials"
+    passwordKey: "password"
+
+bifrost:
+  encryptionKey: "your-32-byte-encryption-key-here"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f external-postgres-values.yaml
+```
+
+**Test connectivity before installing:**
+
+```bash
+kubectl run pg-test --image=postgres:16-alpine --rm -it --restart=Never -- \
+  psql "host=your-rds-endpoint.us-east-1.rds.amazonaws.com dbname=bifrost user=bifrost sslmode=require" \
+  -c "SELECT version();"
+```
+
+</Tab>
+
+<Tab title="Mixed (Config=Postgres, Logs=SQLite)">
+
+### Mixed Backend
+
+Run the config store on PostgreSQL (fast lookups, shared across replicas) while keeping logs on SQLite (simpler, cheaper for append-heavy workloads).
+
+```yaml
+# mixed-values.yaml
+image:
+  tag: "v1.4.11"
+
+storage:
+  mode: sqlite           # default fallback
+  configStore:
+    type: postgres       # override: config uses postgres
+  logsStore:
+    type: sqlite         # explicit: logs use sqlite
+  persistence:
+    enabled: true
+    size: 20Gi           # for the SQLite logs store
+
+postgresql:
+  external:
+    enabled: true
+    host: "your-postgres-host.example.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: "postgres-credentials"
+    passwordKey: "password"
+
+bifrost:
+  encryptionKey: "your-32-byte-encryption-key-here"
+```
+
+```bash
+kubectl create secret generic postgres-credentials \
+  --from-literal=password='your-postgres-password'
+
+helm install bifrost bifrost/bifrost -f mixed-values.yaml
+```
+
+<Note>
+In mixed mode, Bifrost deploys a StatefulSet (because SQLite is in use) with both a PostgreSQL connection and a local PVC for the SQLite log store.
+</Note>
+
+**PostgreSQL connection pool tuning** (high log volume):
+
+```yaml
+storage:
+  configStore:
+    type: postgres
+    maxIdleConns: 5
+    maxOpenConns: 50
+  logsStore:
+    type: postgres
+    maxIdleConns: 10
+    maxOpenConns: 100
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Object Storage for Logs
+
+Offload large request/response payloads from the database to S3 or GCS. The DB retains only lightweight index records; payloads are fetched on demand.
+
+<Tabs>
+<Tab title="AWS S3">
+
+```bash
+kubectl create secret generic s3-credentials \
+  --from-literal=access-key-id='AKIAIOSFODNN7EXAMPLE' \
+  --from-literal=secret-access-key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+```
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      prefix: "bifrost"
+      compress: true           # gzip compression
+
+      # S3 configuration
+      region: us-east-1
+      accessKeyId: "env.S3_ACCESS_KEY_ID"
+      secretAccessKey: "env.S3_SECRET_ACCESS_KEY"
+      # endpoint: ""           # Custom endpoint for MinIO / Cloudflare R2
+      # forcePathStyle: false  # Set true for MinIO
+
+bifrost:
+  # inject S3 credentials as env vars
+  providerSecrets:
+    s3-access-key:
+      existingSecret: "s3-credentials"
+      key: "access-key-id"
+      envVar: "S3_ACCESS_KEY_ID"
+    s3-secret-key:
+      existingSecret: "s3-credentials"
+      key: "secret-access-key"
+      envVar: "S3_SECRET_ACCESS_KEY"
+```
+
+**Using IAM role (IRSA / instance profile) instead of static keys:**
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      region: us-east-1
+      # No accessKeyId / secretAccessKey — uses SDK default chain
+      roleArn: "arn:aws:iam::123456789012:role/BifrostS3Role"
+```
+
+</Tab>
+<Tab title="Google Cloud Storage">
+
+```bash
+kubectl create secret generic gcs-credentials \
+  --from-literal=service-account-json="$(cat service-account-key.json)"
+```
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: gcs
+      bucket: "bifrost-logs"
+      prefix: "bifrost"
+      compress: true
+
+      # GCS configuration
+      projectId: "my-gcp-project"
+      credentialsJson: "env.GCS_CREDENTIALS_JSON"   # omit for Workload Identity
+
+bifrost:
+  providerSecrets:
+    gcs-creds:
+      existingSecret: "gcs-credentials"
+      key: "service-account-json"
+      envVar: "GCS_CREDENTIALS_JSON"
+```
+
+</Tab>
+<Tab title="MinIO (Self-Hosted)">
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      prefix: "bifrost"
+      compress: false
+
+      region: us-east-1          # can be any value for MinIO
+      endpoint: "http://minio.minio-ns.svc.cluster.local:9000"
+      accessKeyId: "env.MINIO_ACCESS_KEY"
+      secretAccessKey: "env.MINIO_SECRET_KEY"
+      forcePathStyle: true        # required for MinIO
+```
+
+</Tab>
+</Tabs>
+
+```bash
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  -f object-storage-values.yaml
+```
+
+---
+
+## Vector Store
+
+A vector store is required for [semantic caching](/deployment-guides/helm/plugins). Choose from Weaviate, Redis, or Qdrant (embedded or external), or Pinecone (external only).
+
+<Tabs>
+<Tab title="Weaviate">
+
+```yaml
+vectorStore:
+  enabled: true
+  type: weaviate
+  weaviate:
+    enabled: true          # deploy embedded Weaviate
+    replicas: 1
+    persistence:
+      enabled: true
+      size: 20Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+```
+
+**External Weaviate:**
+
+```yaml
+vectorStore:
+  enabled: true
+  type: weaviate
+  weaviate:
+    enabled: false
+    external:
+      enabled: true
+      scheme: https
+      host: "weaviate.example.com"
+      apiKey: "env.WEAVIATE_API_KEY"
+      grpcHost: "weaviate-grpc.example.com"
+      grpcSecured: true
+      existingSecret: "weaviate-credentials"
+      apiKeyKey: "api-key"
+```
+
+</Tab>
+<Tab title="Redis / Valkey">
+
+```yaml
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    enabled: true          # deploy embedded Redis
+    auth:
+      enabled: true
+      password: "redis_password"
+    master:
+      persistence:
+        size: 8Gi
+```
+
+**External Redis / AWS MemoryDB:**
+
+```bash
+kubectl create secret generic redis-credentials \
+  --from-literal=password='your-redis-password'
+```
+
+```yaml
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    enabled: false
+    external:
+      enabled: true
+      host: "your-redis.cache.amazonaws.com"
+      port: 6379
+      useTls: true
+      clusterMode: true          # required for AWS MemoryDB
+      existingSecret: "redis-credentials"
+      passwordKey: "password"
+```
+
+</Tab>
+<Tab title="Qdrant">
+
+```yaml
+vectorStore:
+  enabled: true
+  type: qdrant
+  qdrant:
+    enabled: true          # deploy embedded Qdrant
+    persistence:
+      size: 10Gi
+```
+
+**External Qdrant:**
+
+```bash
+kubectl create secret generic qdrant-credentials \
+  --from-literal=api-key='your-qdrant-api-key'
+```
+
+```yaml
+vectorStore:
+  enabled: true
+  type: qdrant
+  qdrant:
+    enabled: false
+    external:
+      enabled: true
+      host: "qdrant.example.com"
+      port: 6334
+      useTls: true
+      existingSecret: "qdrant-credentials"
+      apiKeyKey: "api-key"
+```
+
+</Tab>
+<Tab title="Pinecone">
+
+Pinecone is external-only.
+
+```bash
+kubectl create secret generic pinecone-credentials \
+  --from-literal=api-key='your-pinecone-api-key'
+```
+
+```yaml
+vectorStore:
+  enabled: true
+  type: pinecone
+  pinecone:
+    external:
+      enabled: true
+      indexHost: "your-index.svc.us-east1-gcp.pinecone.io"
+      existingSecret: "pinecone-credentials"
+      apiKeyKey: "api-key"
+```
+
+</Tab>
+</Tabs>
+
+```bash
+helm install bifrost bifrost/bifrost \
+  --set image.tag=v1.4.11 \
+  -f storage-values.yaml
+```

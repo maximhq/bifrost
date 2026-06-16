@@ -1,10 +1,9 @@
-"use client";
-
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import ProviderIcons, { type ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ModelHistogramResponse, ModelRankingEntry, ModelRankingsResponse } from "@/lib/types/logs";
+import { formatCompactNumber as formatNumber } from "@/lib/utils/governance";
 import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -24,14 +23,6 @@ interface ModelRankingsTabProps {
 	endTime: number;
 }
 
-function formatNumber(value: number): string {
-	if (value >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(2)}T`;
-	if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
-	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-	if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-	return value.toLocaleString();
-}
-
 function formatCost(value: number): string {
 	if (value >= 1) return `$${value.toFixed(2)}`;
 	if (value >= 0.01) return `$${value.toFixed(3)}`;
@@ -46,11 +37,7 @@ function formatLatency(ms: number): string {
 
 function TrendBadge({ value, positiveIsGood = true, isNew = false }: { value: number; positiveIsGood?: boolean; isNew?: boolean }) {
 	if (isNew) {
-		return (
-			<span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-				new
-			</span>
-		);
+		return <span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">new</span>;
 	}
 
 	if (value === 0) {
@@ -89,7 +76,13 @@ function SortableHeader({
 	const isActive = currentSort === field;
 	const ariaSort = isActive ? (currentOrder === "asc" ? "ascending" : "descending") : "none";
 	return (
-		<button type="button" data-testid={`sort-${field}-btn`} aria-sort={ariaSort} className="hover:text-foreground inline-flex items-center gap-1 transition-colors" onClick={() => onSort(field)}>
+		<button
+			type="button"
+			data-testid={`sort-${field}-btn`}
+			aria-sort={ariaSort}
+			className="hover:text-foreground inline-flex items-center gap-1 transition-colors"
+			onClick={() => onSort(field)}
+		>
 			{label}
 			{isActive ? (
 				currentOrder === "desc" ? (

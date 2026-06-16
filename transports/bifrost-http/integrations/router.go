@@ -1487,7 +1487,6 @@ func (g *GenericRouter) handleAsyncCreate(
 	}
 
 	operationType := config.GetHTTPRequestType(ctx)
-	vkValue := getVirtualKeyFromBifrostContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, g.handlerStore.GetAsyncJobResultTTL())
 
 	// The operation closure runs the Bifrost client call in the background.

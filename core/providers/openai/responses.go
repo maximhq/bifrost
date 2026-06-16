@@ -201,9 +201,12 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				// Convert "minimal" to "low" for non-OpenAI providers
-				if effort == "minimal" {
+				// Convert "minimal" to "low"; cap "xhigh"/"max" to "high" — OpenAI tops out at high.
+				switch effort {
+				case "minimal":
 					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("low")
+				case "xhigh", "max":
+					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("high")
 				}
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
@@ -218,6 +221,11 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
+			}
+
+			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
+			if req.ResponsesParameters.Reasoning.Summary != nil && *req.ResponsesParameters.Reasoning.Summary == "none" {
+				req.ResponsesParameters.Reasoning.Summary = nil
 			}
 
 			// Handle xAI-specific parameter filtering

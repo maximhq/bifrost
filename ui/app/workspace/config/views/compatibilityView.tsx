@@ -1,11 +1,8 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CompatConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -64,7 +61,7 @@ export default function CompatibilityView() {
 				<h2 className="text-lg font-semibold tracking-tight">Compatibility</h2>
 				<p className="text-muted-foreground text-sm">
 					Configure request conversions and compatibility fallbacks.{" "}
-					<Link
+					<a
 						className="text-primary underline"
 						href="https://docs.getbifrost.ai/features/litellm-compat"
 						target="_blank"
@@ -72,7 +69,7 @@ export default function CompatibilityView() {
 						data-testid="litellm-docs-link"
 					>
 						Learn more
-					</Link>
+					</a>
 				</p>
 			</div>
 

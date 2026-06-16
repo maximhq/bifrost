@@ -1,16 +1,24 @@
+import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Message, type MessageContent } from "@/lib/message";
 import { Loader2, Paperclip, Play, Plus } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { usePromptContext } from "../context";
-import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import MessageRoleSwitcher from "./messagesView/messageRoleSwitcher";
 import { fileToAttachment } from "../utils/attachment";
 import { AttachmentBadge } from "./messagesView/attachmentViews";
+import MessageRoleSwitcher from "./messagesView/messageRoleSwitcher";
 
 export function NewMessageInputView() {
-	const { messages, setMessages: onUpdateMessages, handleSendMessage: onSendMessage, isStreaming, supportsVision, provider, model } = usePromptContext();
+	const {
+		messages,
+		setMessages: onUpdateMessages,
+		handleSendMessage: onSendMessage,
+		isStreaming,
+		supportsVision,
+		provider,
+		model,
+	} = usePromptContext();
 	const [userInput, setUserInput] = useState("");
 	const [inputRole, setInputRole] = useState<string>("user");
 	const [attachments, setAttachments] = useState<MessageContent[]>([]);
@@ -176,7 +184,15 @@ export function NewMessageInputView() {
 				</div>
 			)}
 			<div className="mb-1 flex items-center">
-				<MessageRoleSwitcher role={inputRole} disabled={isStreaming} onRoleChange={(role) => { setInputRole(role); if (role !== "user") setAttachments([]); }} restrictedRoles={["system", "tool"]} />
+				<MessageRoleSwitcher
+					role={inputRole}
+					disabled={isStreaming}
+					onRoleChange={(role) => {
+						setInputRole(role);
+						if (role !== "user") setAttachments([]);
+					}}
+					restrictedRoles={["system", "tool"]}
+				/>
 				{supportsVision && inputRole === "user" && (
 					<div className="ml-auto">
 						<input
@@ -187,7 +203,13 @@ export function NewMessageInputView() {
 							className="hidden"
 							onChange={handleFileSelect}
 						/>
-						<button type="button" aria-label="Attach file" data-testid="new-message-attach-file" onClick={() => fileInputRef.current?.click()} className="rounded-sm p-1 hover:bg-muted focus:bg-muted">
+						<button
+							type="button"
+							aria-label="Attach file"
+							data-testid="new-message-attach-file"
+							onClick={() => fileInputRef.current?.click()}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1"
+						>
 							<Paperclip className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
 						</button>
 					</div>
@@ -237,11 +259,7 @@ export function NewMessageInputView() {
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent side="top">
-							{!canRun ? (
-								<span>Select a provider and model to run</span>
-							) : (
-								<span>Run prompt</span>
-							)}
+							{!canRun ? <span>Select a provider and model to run</span> : <span>Run prompt</span>}
 							<kbd className="bg-primary-foreground/20 ml-1.5 rounded px-1 py-0.5 font-mono text-[10px]">↵</kbd>
 						</TooltipContent>
 					</Tooltip>

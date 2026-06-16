@@ -80,8 +80,7 @@ The new clustering configuration uses a `cluster_config` object with integrated 
     "discovery": {
       "enabled": true,
       "type": "kubernetes",
-      "service_name": "bifrost-cluster",
-      // Discovery-specific configuration here
+      "service_name": "bifrost-cluster"
     },
     "gossip": {
       "port": 10101,
@@ -94,6 +93,8 @@ The new clustering configuration uses a `cluster_config` object with integrated 
   }
 }
 ```
+
+Discovery-specific fields (e.g. `k8s_label_selector`, `consul_address`, `etcd_endpoints`) slot into the `discovery` object alongside `type` — see each method's section below.
 
 ### Common Discovery Configuration Fields
 
@@ -173,7 +174,12 @@ Kubernetes discovery uses the K8s API to automatically discover pods based on la
       "k8s_label_selector": "app=bifrost"
     },
     "gossip": {
-      "port": 10101
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
     }
   }
 }
@@ -367,7 +373,12 @@ Consul discovery integrates with HashiCorp Consul for service registration and d
       "consul_address": "consul.service.consul:8500"
     },
     "gossip": {
-      "port": 10101
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
     }
   }
 }
@@ -510,7 +521,12 @@ etcd discovery uses etcd's distributed key-value store for service registration 
       "dial_timeout": "10s"
     },
     "gossip": {
-      "port": 10101
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
     }
   }
 }
@@ -661,7 +677,12 @@ DNS discovery uses standard DNS resolution to discover cluster nodes. Works with
       "bind_port": 10101
     },
     "gossip": {
-      "port": 10101
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
     }
   }
 }
@@ -806,7 +827,12 @@ UDP broadcast discovery automatically finds nodes on the same local network usin
       "dial_timeout": "10s"
     },
     "gossip": {
-      "port": 10101
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
     }
   }
 }
@@ -937,7 +963,12 @@ mDNS (Multicast DNS) provides zero-configuration service discovery on local netw
       "dial_timeout": "10s"
     },
     "gossip": {
-      "port": 10101
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
     }
   }
 }
@@ -1353,7 +1384,12 @@ sudo cat > /etc/bifrost/config.json <<EOF
       "dns_names": ["bifrost-cluster.internal.company.com"]
     },
     "gossip": {
-      "port": 10101
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
     }
   },
   "config_store": {

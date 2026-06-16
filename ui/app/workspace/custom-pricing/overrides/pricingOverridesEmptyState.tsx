@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { ArrowUpRight, SlidersHorizontal } from "lucide-react";
 
@@ -11,7 +9,10 @@ interface PricingOverridesEmptyStateProps {
 
 export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEmptyStateProps) {
 	return (
-		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center" data-testid="pricing-overrides-empty-state">
+		<div
+			className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
+			data-testid="pricing-overrides-empty-state"
+		>
 			<div className="text-muted-foreground">
 				<SlidersHorizontal className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
@@ -31,11 +32,7 @@ export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEm
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Create your first pricing override"
-						data-testid="pricing-override-create-btn"
-						onClick={onCreateClick}
-					>
+					<Button aria-label="Create your first pricing override" data-testid="pricing-override-create-btn" onClick={onCreateClick}>
 						Create Override
 					</Button>
 				</div>

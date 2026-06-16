@@ -1,5 +1,3 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -210,15 +208,12 @@ export function PricingFieldSelector({ values, errors, selectedRequestTypes, onC
 												)}
 											</span>
 											<ChevronDown
-												className={cn(
-													"text-muted-foreground h-4 w-4 transition-transform duration-200",
-													isOpen && "rotate-180",
-												)}
+												className={cn("text-muted-foreground h-4 w-4 transition-transform duration-200", isOpen && "rotate-180")}
 											/>
 										</button>
 
 										{isOpen && (
-											<div className="bg-muted/20 space-y-0.5 border-t px-2 pb-2 pt-1">
+											<div className="bg-muted/20 space-y-0.5 border-t px-2 pt-1 pb-2">
 												{group.fields.map((field) => renderFieldRow(field))}
 											</div>
 										)}

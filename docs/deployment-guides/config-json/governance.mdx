@@ -1,0 +1,333 @@
+---
+title: "Governance"
+description: "Seed virtual keys, budgets, rate limits, routing rules, and admin auth in config.json"
+icon: "shield-check"
+---
+
+The `governance` block lets you seed all governance resources directly in `config.json`. On startup, Bifrost loads these into the configuration store. This is the recommended approach for GitOps workflows where governance state is managed as code.
+
+<Note>
+**Governance enforcement is always active** in OSS — you do not need a plugin entry to enable it. To require a virtual key on every inference request, set `client.enforce_auth_on_inference: true`. This is the global default, but a more specific inference-auth flag such as `governance.auth_config.disable_auth_on_inference` overrides it; if no specific override is set, `client.enforce_auth_on_inference` applies.
+</Note>
+
+---
+
+## Admin Authentication
+
+Protect the Bifrost dashboard and management API with username/password auth:
+
+```json
+{
+  "governance": {
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "disable_auth_on_inference": false
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `is_enabled` | `false` | Enable admin username/password auth |
+| `admin_username` | — | Admin username (supports `env.` prefix) |
+| `admin_password` | — | Admin password (supports `env.` prefix) |
+| `disable_auth_on_inference` | `false` | Skip auth check on `/v1/*` inference routes |
+
+---
+
+## Virtual Keys
+
+Virtual keys are issued to clients and act as scoped API tokens. Each key specifies which providers, models, and API keys the bearer is allowed to use.
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-team-platform",
+        "name": "platform-team",
+        "value": "env.VK_PLATFORM_TEAM",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+            "key_ids": ["*"],
+            "weight": 1
+          },
+          {
+            "provider": "anthropic",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Virtual Key Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique virtual key ID (referenced by budgets / rate limits) |
+| `name` | Yes | Human-readable name |
+| `value` | No | The key token sent by clients (use `env.` prefix). Auto-generated if omitted |
+| `is_active` | No | Default `true`. Set `false` to disable without deleting |
+| `team_id` | No | Associate with a team (mutually exclusive with `customer_id`) |
+| `customer_id` | No | Associate with a customer |
+| `rate_limit_id` | No | Attach a rate limit |
+| `calendar_aligned` | No | Snap budget resets to day/week/month/year boundaries |
+| `provider_configs` | No | Allowed provider/model/key combinations (empty = deny all) |
+
+### Provider Config Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `provider` | Yes | Provider name (e.g. `"openai"`) |
+| `allowed_models` | No | Model allow-list. `["*"]` = all models; `[]` = deny all |
+| `key_ids` | No | Provider key names allowed for this VK. `["*"]` = all keys; `[]` = deny all. Use key `name` values (not UUIDs) in `config.json` |
+| `weight` | No | Load-balancing weight when multiple provider configs are present |
+| `rate_limit_id` | No | Attach a per-provider-config rate limit |
+
+---
+
+## Budgets
+
+Budgets cap cumulative spend (in USD) for a virtual key or provider config over a rolling window:
+
+```json
+{
+  "governance": {
+    "budgets": [
+      {
+        "id": "budget-platform-monthly",
+        "max_limit": 500.00,
+        "reset_duration": "1M",
+        "virtual_key_id": "vk-team-platform"
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique budget ID |
+| `max_limit` | Yes | Maximum spend in USD |
+| `reset_duration` | Yes | Window length: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"1w"`, `"1M"`, `"1Y"` |
+| `virtual_key_id` | No | Attach to a virtual key (mutually exclusive with `provider_config_id`) |
+| `provider_config_id` | No | Attach to a provider config ID |
+
+---
+
+## Rate Limits
+
+Rate limits cap requests or tokens over a rolling window:
+
+```json
+{
+  "governance": {
+    "rate_limits": [
+      {
+        "id": "rl-platform-hourly",
+        "request_max_limit": 1000,
+        "request_reset_duration": "1h",
+        "token_max_limit": 1000000,
+        "token_reset_duration": "1h"
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique rate limit ID |
+| `request_max_limit` | No | Maximum requests in window |
+| `request_reset_duration` | No | Window for request counter |
+| `token_max_limit` | No | Maximum tokens (input + output) in window |
+| `token_reset_duration` | No | Window for token counter |
+
+Attach a rate limit to a virtual key via `virtual_keys[].rate_limit_id`, or to a provider config via `virtual_keys[].provider_configs[].rate_limit_id`.
+
+---
+
+## Routing Rules
+
+Routing rules dynamically select the provider and model for each request based on a [CEL](https://cel.dev) expression. They are evaluated in priority order before the request is dispatched.
+
+```json
+{
+  "governance": {
+    "routing_rules": [
+      {
+        "id": "route-gpt4-to-azure",
+        "name": "Redirect GPT-4o to Azure",
+        "cel_expression": "request.model == 'gpt-4o'",
+        "targets": [
+          { "provider": "azure", "model": "gpt-4o", "weight": 1.0 }
+        ]
+      },
+      {
+        "id": "route-cost-split",
+        "name": "Split traffic 70/30 between providers",
+        "cel_expression": "true",
+        "targets": [
+          { "provider": "openai",    "weight": 0.7 },
+          { "provider": "anthropic", "weight": 0.3 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Rule Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique rule ID |
+| `name` | Yes | Human-readable name |
+| `cel_expression` | No | CEL expression. `"true"` matches every request |
+| `targets` | Yes | Weighted target list (weights must sum to `1.0`) |
+| `enabled` | No | Default `true` |
+| `priority` | No | Evaluation order within scope — lower numbers run first |
+| `scope` | No | `"global"` (default), `"team"`, `"customer"`, `"virtual_key"` |
+| `scope_id` | Conditional | Required when `scope` is not `"global"` |
+| `chain_rule` | No | If `true`, re-evaluates the chain after this rule matches |
+| `fallbacks` | No | Ordered fallback provider list if primary target fails |
+
+### Target Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `weight` | Yes | Fraction of traffic (all weights in a rule must sum to `1.0`) |
+| `provider` | No | Target provider. Omit to keep the incoming request's provider |
+| `model` | No | Target model. Omit to keep the incoming request's model |
+| `key_id` | No | Pin a specific API key by name |
+
+---
+
+## Customers & Teams
+
+Define organizational entities and attach budgets or rate limits to them:
+
+```json
+{
+  "governance": {
+    "customers": [
+      {
+        "id": "customer-acme",
+        "name": "Acme Corp",
+        "budget_id": "budget-acme-monthly",
+        "rate_limit_id": "rl-acme-hourly"
+      }
+    ],
+    "teams": [
+      {
+        "id": "team-ml",
+        "name": "ML Team",
+        "customer_id": "customer-acme",
+        "budget_id": "budget-team-ml"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Full Governance Example
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "client": {
+    "enforce_auth_on_inference": true
+  },
+
+  "governance": {
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD"
+    },
+
+    "budgets": [
+      {
+        "id": "budget-platform",
+        "max_limit": 1000.00,
+        "reset_duration": "1M",
+        "virtual_key_id": "vk-platform"
+      }
+    ],
+
+    "rate_limits": [
+      {
+        "id": "rl-platform",
+        "request_max_limit": 5000,
+        "request_reset_duration": "1h",
+        "token_max_limit": 5000000,
+        "token_reset_duration": "1h"
+      }
+    ],
+
+    "virtual_keys": [
+      {
+        "id": "vk-platform",
+        "name": "platform-key",
+        "value": "env.VK_PLATFORM",
+        "is_active": true,
+        "rate_limit_id": "rl-platform",
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1
+          }
+        ]
+      }
+    ],
+
+    "routing_rules": [
+      {
+        "id": "fallback-to-anthropic",
+        "name": "Fallback on error",
+        "cel_expression": "true",
+        "targets": [{ "provider": "openai", "weight": 1.0 }],
+        "fallbacks": ["anthropic"]
+      }
+    ]
+  },
+
+  "providers": {
+    "openai": {
+      "keys": [{ "name": "openai-primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1.0 }]
+    },
+    "anthropic": {
+      "keys": [{ "name": "anthropic-primary", "value": "env.ANTHROPIC_API_KEY", "models": ["*"], "weight": 1.0 }]
+    }
+  },
+
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost"
+    }
+  }
+}
+```

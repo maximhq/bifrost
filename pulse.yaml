@@ -1,0 +1,16 @@
+services:
+  bifrost:
+    path: transports/bifrost-http
+    build: sh -c 'if [ -n "$DEBUG" ]; then go build -tags dev -gcflags="all=-N -l" -o tmp/main .; else go build -tags dev -o tmp/main .; fi'
+    run: sh -c 'if [ -n "$DEBUG" ]; then dlv exec ./tmp/main --listen=127.0.0.1:2345 --headless=true --api-version=2 --accept-multiclient --log -- -host "${HOST:-localhost}" -port "${PORT:-8080}" -log-style "${LOG_STYLE:-json}" -log-level "${LOG_LEVEL:-info}" ${APP_DIR:+-app-dir "$APP_DIR"}; else ./tmp/main -host "${HOST:-localhost}" -port "${PORT:-8080}" -log-style "${LOG_STYLE:-json}" -log-level "${LOG_LEVEL:-info}" ${APP_DIR:+-app-dir "$APP_DIR"}; fi'
+    env:
+      BIFROST_UI_DEV: "true"
+    watch: [".go", "go.mod", "go.sum"]
+    ignore: ["*_test.go"]
+    kill_timeout: 10s
+    proxy:
+      addr: ":${PORT}"
+    healthcheck:
+      path: /health
+      interval: 2s
+      timeout: 120s

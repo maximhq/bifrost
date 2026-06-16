@@ -3,8 +3,58 @@
 
 @source "../app/**/*.tsx";
 @source "../node_modules/streamdown/dist/*.js";
+@source "../../../bifrost-enterprise/ui/**/*.tsx";
 
 @custom-variant dark (&:is(.dark *));
+
+/* ─── Local Geist fonts ───────────────────────────────────────────────────
+ * Variable woff2 files self-hosted from public/static/fonts/.
+ * Self-hosted variable woff2 files, replaces @fontsource-variable/geist.
+ */
+@font-face {
+	font-family: Geist;
+	src:
+		url("/static/fonts/Geist-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/Geist-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: Geist;
+	src:
+		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: italic;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Geist Mono";
+	src:
+		url("/static/fonts/GeistMono-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/GeistMono-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Geist Mono";
+	src:
+		url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: italic;
+	font-display: swap;
+}
+
+:root {
+	--font-geist-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+	--font-geist-mono: "Geist Mono", ui-monospace, "SFMono-Regular", "Menlo", "Monaco", "Liberation Mono", monospace;
+}
 
 @theme inline {
 	--color-background: var(--background);
@@ -214,7 +264,6 @@ body {
 .query-builder-wrapper {
 	padding: 1rem;
 	padding-inline: 0.5rem;
-
 }
 
 [data-radix-scroll-area-viewport].no-table > div {
@@ -311,6 +360,7 @@ div.content-container:has(.no-border-parent) {
 
 /* // Custom styling for streamdown */
 
-[data-streamdown="code-block"], [data-streamdown="code-block-body"]{
+[data-streamdown="code-block"],
+[data-streamdown="code-block-body"] {
 	@apply rounded-sm!;
 }

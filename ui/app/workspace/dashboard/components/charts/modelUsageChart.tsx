@@ -1,5 +1,3 @@
-"use client";
-
 import type { ModelHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -146,7 +144,9 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 						/>
 						{selectedModel === "all" ? (
 							displayModels.map((model, idx) => (
-								<Bar isAnimationActive={false}									key={model}
+								<Bar
+									isAnimationActive={false}
+									key={model}
 									dataKey={`model_${sanitizeModelKey(model)}`}
 									stackId="models"
 									fill={getModelColor(idx)}
@@ -157,8 +157,24 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 							))
 						) : (
 							<>
-								<Bar isAnimationActive={false} dataKey="success" stackId="status" fill={CHART_COLORS.success} fillOpacity={0.9} radius={[0, 0, 0, 0]} barSize={30} />
-								<Bar isAnimationActive={false} dataKey="error" stackId="status" fill={CHART_COLORS.error} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
+								<Bar
+									isAnimationActive={false}
+									dataKey="success"
+									stackId="status"
+									fill={CHART_COLORS.success}
+									fillOpacity={0.9}
+									radius={[0, 0, 0, 0]}
+									barSize={30}
+								/>
+								<Bar
+									isAnimationActive={false}
+									dataKey="error"
+									stackId="status"
+									fill={CHART_COLORS.error}
+									fillOpacity={0.9}
+									radius={[2, 2, 0, 0]}
+									barSize={30}
+								/>
 							</>
 						)}
 					</BarChart>
@@ -187,7 +203,9 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 						<Tooltip content={<CustomTooltip selectedModel={selectedModel} models={displayModels} />} />
 						{selectedModel === "all" ? (
 							displayModels.map((model, idx) => (
-								<Area isAnimationActive={false}									key={model}
+								<Area
+									isAnimationActive={false}
+									key={model}
 									type="monotone"
 									dataKey={`model_${sanitizeModelKey(model)}`}
 									stackId="1"
@@ -198,14 +216,24 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 							))
 						) : (
 							<>
-								<Area isAnimationActive={false}									type="monotone"
+								<Area
+									isAnimationActive={false}
+									type="monotone"
 									dataKey="success"
 									stackId="1"
 									stroke={CHART_COLORS.success}
 									fill={CHART_COLORS.success}
 									fillOpacity={0.7}
 								/>
-								<Area isAnimationActive={false} type="monotone" dataKey="error" stackId="1" stroke={CHART_COLORS.error} fill={CHART_COLORS.error} fillOpacity={0.7} />
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="error"
+									stackId="1"
+									stroke={CHART_COLORS.error}
+									fill={CHART_COLORS.error}
+									fillOpacity={0.7}
+								/>
 							</>
 						)}
 					</AreaChart>

@@ -797,11 +797,19 @@ func (m *MockConfigStore) GetVirtualKeyByValue(ctx context.Context, value string
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Context, mcpClientID uint) ([]tables.TableVirtualKeyMCPConfig, error) {
 	return nil, nil
 }
 
 func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx context.Context, clientIDs []string) ([]tables.TableVirtualKeyMCPConfig, error) {
 	return nil, nil
 }
 
@@ -15360,7 +15368,7 @@ var enterpriseSchemaPaths = map[string]bool{
 	"$schema":                    true,
 	"audit_logs":                 true,
 	"cluster_config":             true,
-	"saml_config":                true,
+	"scim_config":                true,
 	"load_balancer_config":       true,
 	"guardrails_config":          true,
 	"large_payload_optimization": true,
@@ -15731,7 +15739,7 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 		"$schema":                    true,
 		"audit_logs":                 true,
 		"cluster_config":             true,
-		"saml_config":                true,
+		"scim_config":                true,
 		"load_balancer_config":       true,
 		"guardrails_config":          true,
 		"large_payload_optimization": true,

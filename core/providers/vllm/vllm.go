@@ -517,6 +517,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		// Start streaming in a goroutine
 		go func() {
+			defer providerUtils.EnsureStreamFinalizerCalled(ctx)
 			defer func() {
 				if ctx.Err() == context.Canceled {
 					providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger)

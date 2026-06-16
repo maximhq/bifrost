@@ -96,7 +96,13 @@ export default function ToolCallMessageView({
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
 				<div className="ml-auto h-5">
 					{!disabled && onRemove && (
-							<button type="button" aria-label="Delete message" data-testid="tool-call-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button
+							type="button"
+							aria-label="Delete message"
+							data-testid="tool-call-msg-delete"
+							onClick={onRemove}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+						>
 							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
@@ -114,14 +120,14 @@ export default function ToolCallMessageView({
 						}
 					}
 					return (
-						<div key={tc.id} className="bg-muted/50 rounded-sm border px-3 py-2 mt-2">
+						<div key={tc.id} className="bg-muted/50 mt-2 rounded-sm border px-3 py-2">
 							<div className="flex items-center gap-2">
 								<Wrench className="text-muted-foreground size-3 shrink-0" />
-								<span className="font-mono text-xs font-medium shrink-0 mr-4">{tc.function.name}</span>
-								<span className="text-muted-foreground ml-auto font-mono text-[10px] truncate">{tc.id}</span>
+								<span className="mr-4 shrink-0 font-mono text-xs font-medium">{tc.function.name}</span>
+								<span className="text-muted-foreground ml-auto truncate font-mono text-[10px]">{tc.id}</span>
 							</div>
-							{formattedArgs && (
-								argsIsJson ? (
+							{formattedArgs &&
+								(argsIsJson ? (
 									<div className="mt-2">
 										<CodeEditor
 											wrap
@@ -140,12 +146,13 @@ export default function ToolCallMessageView({
 										/>
 									</div>
 								) : (
-									<pre className="text-muted-foreground mt-2 overflow-x-auto rounded bg-card p-2 text-xs leading-relaxed">{formattedArgs}</pre>
-								)
-							)}
+									<pre className="text-muted-foreground bg-card mt-2 overflow-x-auto rounded p-2 text-xs leading-relaxed">
+										{formattedArgs}
+									</pre>
+								))}
 							{!disabled && onSubmitToolResult && !respondedToolCallIds?.has(tc.id) && (
 								<div className="mt-2 border-t pt-2">
-									<div className="text-muted-foreground mb-1 text-[10px] font-semibold uppercase tracking-wide">Response</div>
+									<div className="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">Response</div>
 									<div className="flex items-end gap-2">
 										<Textarea
 											placeholder="Enter tool response..."

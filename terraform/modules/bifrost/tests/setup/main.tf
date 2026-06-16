@@ -51,7 +51,7 @@ module "bifrost" {
   config_store   = var.config_store
   logs_store     = var.logs_store
   cluster_config = var.cluster_config
-  saml_config    = var.saml_config
+  scim_config    = var.scim_config
   load_balancer_config = var.load_balancer_config
   guardrails_config = var.guardrails_config
   plugins        = var.plugins

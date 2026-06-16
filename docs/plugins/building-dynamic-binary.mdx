@@ -98,7 +98,7 @@ Use this for Alpine-based deployments or when you want minimal image size.
 <Accordion title="Complete Dockerfile for Alpine (musl libc)">
 
 ```dockerfile
-# --- UI Build Stage: Build the Next.js frontend ---
+# --- UI Build Stage: Build the React + Vite frontend ---
 FROM node:25-alpine3.23 AS ui-builder
 WORKDIR /app
 
@@ -110,8 +110,7 @@ RUN npm ci
 COPY ui/ ./
 
 # Build UI (skip the copy-build step)
-RUN npx next build
-RUN node scripts/fix-paths.js
+RUN npm run build-enterprise
 
 # --- Go Build Stage: Compile the Go binary ---
 FROM golang:1.26.1-alpine3.23 AS builder
@@ -215,7 +214,7 @@ Use this for Debian/Ubuntu-based deployments or when deploying to glibc-based sy
 <Accordion title="Complete Dockerfile for Debian (glibc)">
 
 ```dockerfile
-# --- UI Build Stage: Build the Next.js frontend ---
+# --- UI Build Stage: Build the React + Vite frontend ---
 FROM node:25-bookworm AS ui-builder
 WORKDIR /app
 
@@ -227,8 +226,7 @@ RUN npm ci
 COPY ui/ ./
 
 # Build UI
-RUN npx next build
-RUN node scripts/fix-paths.js
+RUN npm run build-enterprise
 
 # --- Go Build Stage: Compile the Go binary ---
 FROM golang:1.26.1-bookworm AS builder

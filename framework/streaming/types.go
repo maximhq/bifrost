@@ -135,6 +135,9 @@ type StreamAccumulator struct {
 	MaxTranscriptionChunkIndex int
 	MaxAudioChunkIndex         int
 
+	// TerminalErrorChunkIndex holds the reserved chunk index for the terminal error (-1 = unset); reused across plugin calls for correct dedup.
+	TerminalErrorChunkIndex int
+
 	IsComplete     bool
 	FinalTimestamp time.Time
 	mu             sync.Mutex

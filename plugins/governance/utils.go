@@ -2,6 +2,7 @@
 package governance
 
 import (
+	"slices"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -113,9 +114,21 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		isAllowed := false
 		for _, pc := range vk.ProviderConfigs {
 			if pc.Provider == string(provider) {
-				if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, pc.AllowedModels) {
-					isAllowed = true
-					break
+				if p.modelCatalog != nil && p.inMemoryStore != nil {
+					providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[provider]
+					providerConfigPtr := &providerConfig
+					if !ok {
+						providerConfigPtr = nil
+					}
+					if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, providerConfigPtr, pc.AllowedModels) {
+						isAllowed = true
+						break
+					}
+				} else {
+					if pc.AllowedModels.IsAllowed(modelName) {
+						isAllowed = true
+						break
+					}
 				}
 			}
 		}

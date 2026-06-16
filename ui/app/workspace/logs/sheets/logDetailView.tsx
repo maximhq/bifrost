@@ -1,6 +1,3 @@
-"use client";
-
-import type { ReactNode } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -24,6 +21,7 @@ import {
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
 	RequestTypeColors,
@@ -34,9 +32,10 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { Link } from "@tanstack/react-router";
+import { addMilliseconds, format } from "date-fns";
 import { Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
-import moment from "moment";
+import type { ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -48,7 +47,6 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import Link from "next/link";
 
 const formatJsonSafe = (str: string | undefined): string => {
 	try {
@@ -79,6 +77,7 @@ const isContainerOperation = (object: string) => {
 
 interface LogDetailViewProps {
 	log: LogEntry | null;
+	resolvedSelectedPromptName?: string; // Current prompt name from prompt-repo when `selected_prompt_id` is set; falls back to stored log name
 	loading?: boolean;
 	handleDelete?: (log: LogEntry) => void;
 	onClose?: () => void;
@@ -88,6 +87,7 @@ interface LogDetailViewProps {
 
 export function LogDetailView({
 	log,
+	resolvedSelectedPromptName,
 	loading = false,
 	handleDelete,
 	onClose,
@@ -101,6 +101,8 @@ export function LogDetailView({
 	});
 
 	if (!log) return null;
+
+	const selectedPromptDisplayName = resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
 	const isContainer = isContainerOperation(log.object);
 	const isPassthrough = isPassthroughOperation(log.object);
@@ -213,13 +215,15 @@ export function LogDetailView({
 				<div className="space-y-4">
 					<BlockHeader title="Timings" />
 					<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
-						<LogEntryDetailsView className="w-full" label="Start Timestamp" value={moment(log.timestamp).format("YYYY-MM-DD HH:mm:ss A")} />
+						<LogEntryDetailsView
+							className="w-full"
+							label="Start Timestamp"
+							value={format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa")}
+						/>
 						<LogEntryDetailsView
 							className="w-full"
 							label="End Timestamp"
-							value={moment(log.timestamp)
-								.add(log.latency || 0, "ms")
-								.format("YYYY-MM-DD HH:mm:ss A")}
+							value={format(addMilliseconds(new Date(log.timestamp), log.latency || 0), "yyyy-MM-dd hh:mm:ss aa")}
 						/>
 						<LogEntryDetailsView
 							className="w-full"
@@ -279,6 +283,19 @@ export function LogDetailView({
 							/>
 						)}
 						{log.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={log.selected_key.name} />}
+						{(log.selected_prompt_id || log.selected_prompt_name || log.selected_prompt_version) && (
+							<LogEntryDetailsView
+								className="w-full"
+								label="Selected Prompt"
+								value={
+									<span className="break-words">
+										{selectedPromptDisplayName}
+										{selectedPromptDisplayName && log.selected_prompt_version ? " · " : ""}
+										{log.selected_prompt_version ? <>v{log.selected_prompt_version}</> : null}
+									</span>
+								}
+							/>
+						)}
 						{log.number_of_retries > 0 && (
 							<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
 						)}
@@ -288,7 +305,8 @@ export function LogDetailView({
 								label="Team"
 								value={
 									<Link
-										href={`/workspace/logs?team_ids=${encodeURIComponent(log.team_id)}`}
+										to="/workspace/logs"
+										search={{ team_ids: [log.team_id] }}
 										className="text-blue-600 hover:underline dark:text-blue-400"
 										data-testid="logdetails-team-link"
 									>
@@ -303,7 +321,8 @@ export function LogDetailView({
 								label="Customer"
 								value={
 									<Link
-										href={`/workspace/logs?customer_ids=${encodeURIComponent(log.customer_id)}`}
+										to="/workspace/logs"
+										search={{ customer_ids: [log.customer_id] }}
 										className="text-blue-600 hover:underline dark:text-blue-400"
 										data-testid="logdetails-customer-link"
 									>
@@ -318,7 +337,8 @@ export function LogDetailView({
 								label="Business Unit"
 								value={
 									<Link
-										href={`/workspace/logs?business_unit_ids=${encodeURIComponent(log.business_unit_id)}`}
+										to="/workspace/logs"
+										search={{ business_unit_ids: [log.business_unit_id] }}
 										className="text-blue-600 hover:underline dark:text-blue-400"
 										data-testid="logdetails-business-unit-link"
 									>
@@ -332,13 +352,19 @@ export function LogDetailView({
 								className="w-full"
 								label="User"
 								value={
-									<Link
-										href={`/workspace/logs?user_ids=${encodeURIComponent(log.user_id)}`}
-										className="text-blue-600 hover:underline dark:text-blue-400"
-										data-testid="logdetails-user-link"
-									>
-										{log.user_id}
-									</Link>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Link
+												to="/workspace/logs"
+												search={{ user_ids: [log.user_id] }}
+												className={`text-primary hover:text-primary/80 block min-w-0 cursor-pointer text-sm font-normal break-all underline-offset-2 hover:underline${log.user_name ? "" : " font-mono"}`}
+												data-testid="logdetails-user-link"
+											>
+												{log.user_name || log.user_id}
+											</Link>
+										</TooltipTrigger>
+										<TooltipContent sideOffset={6}>{log.user_name ? log.user_id : "Filter by user"}</TooltipContent>
+									</Tooltip>
 								}
 							/>
 						)}
@@ -618,6 +644,39 @@ export function LogDetailView({
 					</>
 				)}
 			</div>
+			{log.attempt_trail && log.attempt_trail.length > 1 && (
+				<CollapsibleBox
+					title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
+					onCopy={() => JSON.stringify(log.attempt_trail, null, 2)}
+				>
+					<div className="overflow-x-auto px-6 py-3">
+						<table className="w-full text-xs border-collapse">
+							<thead>
+								<tr className="border-b border-border text-muted-foreground">
+									<th className="text-left py-1 pr-6 font-medium">#</th>
+									<th className="text-left py-1 pr-6 font-medium">Key</th>
+									<th className="text-left py-1 font-medium">Result</th>
+								</tr>
+							</thead>
+							<tbody>
+								{log.attempt_trail.map((record) => (
+									<tr key={record.attempt} className="border-b border-border/50 last:border-0">
+										<td className="py-1.5 pr-6 tabular-nums text-muted-foreground">{record.attempt + 1}</td>
+										<td className="py-1.5 pr-6 font-mono">{record.key_name || record.key_id}</td>
+										<td className="py-1.5">
+											{record.fail_reason ? (
+												<span className="text-destructive">{record.fail_reason}</span>
+											) : (
+												<span className="text-green-600 dark:text-green-400">success</span>
+											)}
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</div>
+				</CollapsibleBox>
+			)}
 			{log.routing_engine_logs && (
 				<CollapsibleBox title="Routing Decision Logs" onCopy={() => log.routing_engine_logs || ""}>
 					<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">

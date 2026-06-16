@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -40,7 +38,6 @@ export default function MCPView() {
 			});
 		}
 	}, [config, bifrostConfig]);
-
 
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
@@ -184,7 +181,9 @@ export default function MCPView() {
 							Disable Auto Tool Injection
 						</label>
 						<p className="text-muted-foreground text-sm">
-							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via request headers (<code className="text-xs">x-bf-mcp-include-tools</code>) and still must be allowed by the virtual key MCP configuration.
+							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via
+							request headers (<code className="text-xs">x-bf-mcp-include-tools</code>) and still must be allowed by the virtual key MCP
+							configuration.
 						</p>
 					</div>
 					<Switch

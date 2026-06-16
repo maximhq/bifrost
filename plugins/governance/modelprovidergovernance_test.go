@@ -793,7 +793,7 @@ func TestResolver_EvaluateModelAndProviderRequest_NoConfigs(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -810,7 +810,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderBudgetExceeded(t *test
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -828,7 +828,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitExceeded(t *t
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -846,7 +846,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelBudgetExceeded(t *testing
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -864,7 +864,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelRateLimitExceeded(t *test
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -882,7 +882,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelRateLimitExceeded_Request
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -905,7 +905,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderBudgetThenModelBudget(
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -929,7 +929,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitThenModelRate
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -953,7 +953,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitThenModelRate
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -980,7 +980,7 @@ func TestResolver_EvaluateModelAndProviderRequest_AllChecksPass(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
@@ -998,7 +998,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderOnly_NoModel(t *testin
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// No model provided
@@ -1016,7 +1016,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelOnly_NoProvider(t *testin
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// No provider provided
@@ -1036,7 +1036,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificBudget_Differe
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Request with Azure (different provider) for same model should pass
@@ -1056,7 +1056,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificRateLimit_Diff
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Request with Azure (different provider) for same model should pass
@@ -1076,7 +1076,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificRateLimit_Diff
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Request with Azure (different provider) for same model should pass

@@ -290,12 +290,19 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 	if result.TotalCount > 0 {
 		successRate = float64(result.SuccessCount) / float64(result.TotalCount) * 100
 	}
+
+	// User-facing success rate requires per-request fallback chain data which is not
+	// available in the materialized view. Scanning the raw logs table on large datasets
+	// (>100 GB) can take minutes, so the matview path uses the per-attempt success rate
+	// as a fast approximation. Accurate chain-level computation runs in the raw-table path.
+
 	return &SearchStats{
-		TotalRequests:  result.TotalCount,
-		SuccessRate:    successRate,
-		AverageLatency: result.AvgLatency,
-		TotalTokens:    result.TotalTokens,
-		TotalCost:      result.TotalCost,
+		TotalRequests:         result.TotalCount,
+		SuccessRate:           successRate,
+		UserFacingSuccessRate: successRate,
+		AverageLatency:        result.AvgLatency,
+		TotalTokens:           result.TotalTokens,
+		TotalCost:             result.TotalCost,
 	}, nil
 }
 

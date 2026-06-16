@@ -1,0 +1,94 @@
+---
+title: "v1.5.0-prerelease3"
+description: "v1.5.0-prerelease3 changelog - 2026-04-13"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.0-prerelease3
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.0-prerelease3
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.0-prerelease3
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.0-prerelease3">
+## ✨ Features
+
+- **OAuth MCP** - add next-step hints to OAuth MCP client creation response
+- **Azure passthrough** - added azure passthrough support
+- **272k token tier** - add 272k token tier pricing support in pricing
+- **Flex and priority tier support** - added flex and priority tier support in pricing
+
+## 🐞 Fixed
+
+- **Streaming Post-Hook Race** — Fix race condition where fasthttp RequestCtx could be recycled before transport post-hooks complete in streaming goroutines; eagerly captures request/response snapshots before handler returns
+- **Async User Values** — Propagate user values through all async inference handlers and job submissions
+- **Trace Completer Safety** — Refactor trace completer to accept transport logs as parameter instead of reading from potentially recycled context
+- **Async Log Store Exceptions** — Fix exception handling in async log store jobs
+- **Model Alias Tracking** — Split ModelRequested into OriginalModelRequested and ResolvedModelUsed for accurate model alias resolution tracking
+- **MCP Tool Discovery** — Add discovered tools and tool name mapping columns to MCP clients
+
+</Update>
+<Update label="Core" description="1.5.2">
+- refactor: split ModelRequested into OriginalModelRequested and ResolvedModelUsed for model alias tracking
+- refactor: simplify Azure passthrough by removing redundant config nil checks
+- refactor: simplify Mistral error parsing signature
+- fix: carry ProviderResponseHeaders through text completion response conversion
+
+</Update>
+<Update label="Framework" description="1.3.2">
+- feat: add MCP client discovered tools and tool name mapping migration
+- fix: exception handling in async log store jobs
+- refactor: model catalog Init API to use SetShouldSyncGate method
+- refactor: rename DefaultPricingSyncInterval to DefaultSyncInterval
+
+</Update>
+<Update label="compat" description="0.1.1">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="governance" description="1.5.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="jsonparser" description="1.5.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="litellmcompat" description="0.1.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="logging" description="1.5.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="maxim" description="1.6.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="mocker" description="1.5.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="otel" description="1.2.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="prompts" description="1.0.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="semanticcache" description="1.5.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>
+<Update label="telemetry" description="1.5.2">
+- chore: upgraded core to v1.5.2 and framework to v1.3.2
+
+</Update>

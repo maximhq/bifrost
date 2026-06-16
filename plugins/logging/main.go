@@ -79,24 +79,29 @@ func applyLargePayloadPreviews(ctx *schemas.BifrostContext, updateData *UpdateLo
 	}
 }
 
-func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logstore.Log) {
+func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
 	if ctx == nil || entry == nil {
 		return
 	}
 
 	updateData := &UpdateLogData{}
 	applyLargePayloadPreviews(ctx, updateData)
+	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 
 	if updateData.IsLargePayloadRequest {
 		entry.IsLargePayloadRequest = true
-		if preview, ok := updateData.RawRequest.(string); ok {
-			entry.RawRequest = preview
+		if shouldStoreRaw && contentLoggingEnabled {
+			if preview, ok := updateData.RawRequest.(string); ok {
+				entry.RawRequest = preview
+			}
 		}
 	}
 	if updateData.IsLargePayloadResponse {
 		entry.IsLargePayloadResponse = true
-		if preview, ok := updateData.RawResponse.(string); ok {
-			entry.RawResponse = preview
+		if shouldStoreRaw && contentLoggingEnabled {
+			if preview, ok := updateData.RawResponse.(string); ok {
+				entry.RawResponse = preview
+			}
 		}
 	}
 }
@@ -183,6 +188,7 @@ type LogMessage struct {
 	FallbackIndex      int                                // Fallback index
 	SelectedKeyID      string                             // Selected key ID
 	SelectedKeyName    string                             // Selected key name
+	AttemptTrail       []schemas.KeyAttemptRecord         // Per-attempt key selection history
 	VirtualKeyID       string                             // Virtual key ID
 	VirtualKeyName     string                             // Virtual key name
 	RoutingEnginesUsed []string                           // List of routing engines used
@@ -594,10 +600,6 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		initialData.Metadata["isAsyncRequest"] = true
 	}
 
-	// Queue the log creation message (non-blocking) - Using sync.Pool
-	logMsg := p.getLogMessage()
-	logMsg.Operation = LogOperationCreate
-
 	// If fallback request ID is present, use it instead of the primary request ID
 	// Determine effective request ID (fallback override)
 	effectiveRequestID := requestID
@@ -679,16 +681,23 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
+	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
+	selectedPromptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
 	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
 	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
 	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
 	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+	userName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
 	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
 	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
 
 	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
+	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -738,7 +747,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.ErrorDetails = string(data)
 			}
 			entry.ErrorDetailsParsed = bifrostErr
-			applyLargePayloadPreviewsToEntry(ctx, entry)
+			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		} else {
 			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
@@ -760,7 +769,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if result != nil {
 		latency = result.GetExtraFields().Latency
 	}
-	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, teamID, teamName, customerID, customerName, userID, businessUnitID, businessUnitName, numberOfRetries, latency)
+	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
@@ -774,6 +783,21 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if bifrost.IsStreamRequestType(requestType) {
 			entry.Stream = true
 		}
+
+		// For streaming errors, finalize and read accumulated chunks so logs retain pre-error stream metadata
+		if bifrost.IsStreamRequestType(requestType) &&
+			requestType != schemas.PassthroughStreamRequest &&
+			requestType != schemas.RealtimeRequest &&
+			tracer != nil &&
+			traceID != "" {
+			if accResult := tracer.ProcessStreamingChunk(traceID, true, result, bifrostErr); accResult != nil {
+				if streamResponse := convertToProcessedStreamResponse(accResult, requestType); streamResponse != nil {
+					p.applyStreamingOutputToEntry(entry, streamResponse)
+				}
+			}
+			tracer.CleanupStreamAccumulator(traceID)
+		}
+
 		// Serialize error details immediately since bifrostErr may be released
 		// back to the pool before the async batch writer processes this entry.
 		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
@@ -781,7 +805,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.ErrorDetails = string(data)
 		}
 		entry.ErrorDetailsParsed = bifrostErr
-		if p.disableContentLogging == nil || !*p.disableContentLogging {
+		if shouldStoreRaw && contentLoggingEnabled {
 			if bifrostErr.ExtraFields.RawRequest != nil {
 				rawReqBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawRequest)
 				if err == nil {
@@ -789,14 +813,14 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 			}
 
-			if bifrostErr.ExtraFields.RawResponse != nil {
+			if entry.RawResponse == "" && bifrostErr.ExtraFields.RawResponse != nil {
 				rawRespBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawResponse)
 				if err == nil {
 					entry.RawResponse = string(rawRespBytes)
 				}
 			}
 		}
-		applyLargePayloadPreviewsToEntry(ctx, entry)
+		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
@@ -828,7 +852,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true
-			p.applyStreamingOutputToEntry(entry, streamResponse)
+			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw)
 		}
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
@@ -840,7 +864,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.Status = "error"
 			}
 		}
-		applyLargePayloadPreviewsToEntry(ctx, entry)
+		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 
 		if requestType != schemas.PassthroughStreamRequest && tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
@@ -865,24 +889,23 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// Realtime turns that fail mid-stream still need their input transcript
 		// surfaced — backfill from bifrostErr.ExtraFields.RawRequest if present.
 		if requestType == schemas.RealtimeRequest {
-			contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
-			applyRealtimeRawRequestBackfill(entry, bifrostErr.ExtraFields.RawRequest, contentLoggingEnabled)
+			applyRealtimeRawRequestBackfill(entry, bifrostErr.ExtraFields.RawRequest, contentLoggingEnabled, shouldStoreRaw)
 		}
 	} else if result != nil {
 		entry.Status = "success"
 		extraFields := result.GetExtraFields()
 		applyModelAlias(entry, extraFields.OriginalModelRequested, extraFields.ResolvedModelUsed)
 		if requestType == schemas.RealtimeRequest {
-			p.applyRealtimeOutputToEntry(entry, result)
+			p.applyRealtimeOutputToEntry(entry, result, shouldStoreRaw)
 		} else {
-			p.applyNonStreamingOutputToEntry(entry, result)
+			p.applyNonStreamingOutputToEntry(entry, result, shouldStoreRaw)
 		}
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
 			entry.Status = "error"
 		}
 	}
-	applyLargePayloadPreviewsToEntry(ctx, entry)
+	applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 
 	// Calculate cost
 	var cacheDebug *schemas.BifrostCacheDebug
@@ -898,17 +921,19 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	// Pre-apply denormalized fields for WebSocket callback enrichment
-	entry.SelectedKey = &schemas.Key{
-		ID:   entry.SelectedKeyID,
-		Name: entry.SelectedKeyName,
+	if entry.SelectedKeyID != "" && entry.SelectedKeyName != "" {
+		entry.SelectedKey = &schemas.Key{
+			ID:   entry.SelectedKeyID,
+			Name: entry.SelectedKeyName,
+		}
 	}
-	if entry.VirtualKeyID != nil && entry.VirtualKeyName != nil {
+	if entry.VirtualKeyID != nil && entry.VirtualKeyName != nil && *entry.VirtualKeyID != "" && *entry.VirtualKeyName != "" {
 		entry.VirtualKey = &tables.TableVirtualKey{
 			ID:   *entry.VirtualKeyID,
 			Name: *entry.VirtualKeyName,
 		}
 	}
-	if entry.RoutingRuleID != nil && entry.RoutingRuleName != nil {
+	if entry.RoutingRuleID != nil && entry.RoutingRuleName != nil && *entry.RoutingRuleID != "" && *entry.RoutingRuleName != "" {
 		entry.RoutingRule = &tables.TableRoutingRule{
 			ID:   *entry.RoutingRuleID,
 			Name: *entry.RoutingRuleName,

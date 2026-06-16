@@ -118,11 +118,10 @@ func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.TextCompletionRequest(bgCtx, bifrostTextReq)
@@ -157,11 +156,10 @@ func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ChatCompletionRequest(bgCtx, bifrostChatReq)
@@ -196,11 +194,10 @@ func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ResponsesRequest(bgCtx, bifrostResponsesReq)
@@ -231,11 +228,10 @@ func (h *AsyncHandler) asyncEmbeddings(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.EmbeddingRequest(bgCtx, bifrostEmbeddingReq)
@@ -270,11 +266,10 @@ func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.SpeechRequest(bgCtx, bifrostSpeechReq)
@@ -309,11 +304,10 @@ func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.TranscriptionRequest(bgCtx, bifrostTranscriptionReq)
@@ -348,11 +342,10 @@ func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageGenerationRequest(bgCtx, bifrostReq)
@@ -387,11 +380,10 @@ func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageEditRequest(bgCtx, bifrostReq)
@@ -421,11 +413,10 @@ func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageVariationRequest(bgCtx, bifrostReq)
@@ -455,11 +446,10 @@ func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.RerankRequest(bgCtx, bifrostReq)
@@ -489,11 +479,10 @@ func (h *AsyncHandler) asyncOCR(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.OCRRequest(bgCtx, bifrostReq)

@@ -1,25 +1,21 @@
-"use client";
-
+import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type VariableMap } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import {
-	useCreateSessionMutation,
 	useDeleteFolderMutation,
 	useDeletePromptMutation,
 	useGetFoldersQuery,
 	useGetPromptsQuery,
 	useGetPromptVersionQuery,
 	useGetSessionsQuery,
-	useGetVersionsQuery,
 	useUpdatePromptMutation,
 } from "@/lib/store/apis/promptsApi";
 import { useGetModelParametersQuery } from "@/lib/store/apis/providersApi";
-import { Message, MessageRole, MessageType, extractVariablesFromMessages, mergeVariables, type VariableMap } from "@/lib/message";
 import { Folder, ModelParams, Prompt, PromptSession, PromptVersion } from "@/lib/types/prompts";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { executePrompt } from "./utils/executor";
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 
 interface PromptContextValue {
 	// Data
@@ -124,7 +120,6 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const [deleteFolder, { isLoading: isDeletingFolder }] = useDeleteFolderMutation();
 	const [deletePrompt, { isLoading: isDeletingPrompt }] = useDeletePromptMutation();
 	const [updatePrompt] = useUpdatePromptMutation();
-	const [createSession] = useCreateSessionMutation();
 
 	// UI state — persisted in URL query params
 	const [{ promptId: selectedPromptId, sessionId: selectedSessionId, versionId: selectedVersionId }, setUrlState] = useQueryStates(
@@ -171,7 +166,6 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const selectedPrompt = useMemo(() => prompts.find((p) => p.id === selectedPromptId), [prompts, selectedPromptId]);
 
 	// Fetch versions and sessions for selected prompt
-	const { data: versionsData } = useGetVersionsQuery(selectedPromptId ?? "", { skip: !selectedPromptId });
 	const { data: sessionsData, isLoading: isSessionsLoading } = useGetSessionsQuery(selectedPromptId ?? "", { skip: !selectedPromptId });
 
 	// Filter sessions to current prompt — RTK Query may briefly return stale cached data from the previous prompt
@@ -183,7 +177,11 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const selectedSession = useMemo(() => sessions.find((s) => s.id === selectedSessionId), [sessions, selectedSessionId]);
 
 	// Fetch full version data (with messages) when a version is selected
-	const { currentData: selectedVersionData, isLoading: isVersionLoading, isFetching: isVersionFetching } = useGetPromptVersionQuery(selectedVersionId ?? 0, {
+	const {
+		currentData: selectedVersionData,
+		isLoading: isVersionLoading,
+		isFetching: isVersionFetching,
+	} = useGetPromptVersionQuery(selectedVersionId ?? 0, {
 		skip: !selectedVersionId,
 	});
 	const selectedVersion = selectedVersionData?.version;
@@ -222,6 +220,10 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const loaded = Message.fromLegacyAll(raw);
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedSession.model_params, selectedSession.provider, selectedSession.model);
+			// Restore variables (key:value) from session
+			if (selectedSession.variables && Object.keys(selectedSession.variables).length > 0) {
+				setVariables(selectedSession.variables);
+			}
 		} else if (selectedVersion) {
 			// If sessions are still loading and no session is explicitly selected,
 			// wait — a session may auto-select and take priority
@@ -230,6 +232,10 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const loaded = Message.fromLegacyAll(raw);
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedVersion.model_params, selectedVersion.provider, selectedVersion.model);
+			// Initialize variables from version (keys with empty values)
+			if (selectedVersion.variables && Object.keys(selectedVersion.variables).length > 0) {
+				setVariables((prev) => mergeVariables(prev, Object.keys(selectedVersion.variables!)));
+			}
 		} else if (selectedPrompt?.latest_version) {
 			// Only fall back to latest_version after sessions have settled
 			// to avoid racing with the session auto-select effect
@@ -239,6 +245,10 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const loaded = Message.fromLegacyAll(raw);
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(version.model_params, version.provider, version.model);
+			// Initialize variables from version (keys with empty values)
+			if (version.variables && Object.keys(version.variables).length > 0) {
+				setVariables((prev) => mergeVariables(prev, Object.keys(version.variables!)));
+			}
 			if (sessions.length === 0) {
 				setUrlState({ versionId: version.id });
 			}
@@ -249,7 +259,16 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			setModelParams({ stream: true });
 			setApiKeyId("__auto__");
 		}
-	}, [selectedSession, selectedVersion, selectedPrompt, selectedSessionId, selectedVersionId, setUrlState, isSessionsLoading, sessions.length]);
+	}, [
+		selectedSession,
+		selectedVersion,
+		selectedPrompt,
+		selectedSessionId,
+		selectedVersionId,
+		setUrlState,
+		isSessionsLoading,
+		sessions.length,
+	]);
 
 	// Auto-select the most recent session when sessions load and none is selected
 	// Sessions take priority over versions for initial loading
@@ -282,7 +301,10 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			};
 			const normalizedCurrent = normalizeParams(modelParams);
 			const normalizedRef = normalizeParams(refParamsRest);
-			if (JSON.stringify(normalizedCurrent, Object.keys(normalizedCurrent).sort()) !== JSON.stringify(normalizedRef, Object.keys(normalizedRef).sort()))
+			if (
+				JSON.stringify(normalizedCurrent, Object.keys(normalizedCurrent).sort()) !==
+				JSON.stringify(normalizedRef, Object.keys(normalizedRef).sort())
+			)
 				return true;
 
 			const currentSerialized = Message.serializeAll(messages);
@@ -405,54 +427,59 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const isActive = () => activeRunRef.current === runToken;
 
 			setIsStreaming(true);
-			await executePrompt(messages, pendingMessage, { provider, model, modelParams, apiKeyId, variables }, {
-				onStreamingStart: (allMessages, placeholder) => {
-					if (!isActive()) return;
-					setMessages([...allMessages, placeholder]);
+			await executePrompt(
+				messages,
+				pendingMessage,
+				{ provider, model, modelParams, apiKeyId, variables },
+				{
+					onStreamingStart: (allMessages, placeholder) => {
+						if (!isActive()) return;
+						setMessages([...allMessages, placeholder]);
+					},
+					onStreamChunk: (content) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							const last = updated[updated.length - 1];
+							const clone = last.clone();
+							clone.content = content;
+							updated[updated.length - 1] = clone;
+							return updated;
+						});
+					},
+					onComplete: (content, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.response(content, 0, usage);
+							return updated;
+						});
+					},
+					onToolCallComplete: (content, toolCalls, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.toolCallResponse(content, toolCalls, 0, usage);
+							return updated;
+						});
+					},
+					onEmptyResponse: () => {
+						if (!isActive()) return;
+						setMessages((prev) => prev.slice(0, -1));
+					},
+					onError: (error) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const withoutPlaceholder = prev.slice(0, -1);
+							return [...withoutPlaceholder, Message.error(error)];
+						});
+					},
+					onFinally: () => {
+						if (!isActive()) return;
+						setIsStreaming(false);
+					},
 				},
-				onStreamChunk: (content) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const updated = [...prev];
-						const last = updated[updated.length - 1];
-						const clone = last.clone();
-						clone.content = content;
-						updated[updated.length - 1] = clone;
-						return updated;
-					});
-				},
-				onComplete: (content, usage) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const updated = [...prev];
-						updated[updated.length - 1] = Message.response(content, 0, usage);
-						return updated;
-					});
-				},
-				onToolCallComplete: (content, toolCalls, usage) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const updated = [...prev];
-						updated[updated.length - 1] = Message.toolCallResponse(content, toolCalls, 0, usage);
-						return updated;
-					});
-				},
-				onEmptyResponse: () => {
-					if (!isActive()) return;
-					setMessages((prev) => prev.slice(0, -1));
-				},
-				onError: (error) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const withoutPlaceholder = prev.slice(0, -1);
-						return [...withoutPlaceholder, Message.error(error)];
-					});
-				},
-				onFinally: () => {
-					if (!isActive()) return;
-					setIsStreaming(false);
-				},
-			});
+			);
 		},
 		[messages, provider, model, modelParams, apiKeyId, variables],
 	);
@@ -463,16 +490,11 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			activeRunRef.current = runToken;
 			const isActive = () => activeRunRef.current === runToken;
 
-			const toolResultMsg = new Message(
-				crypto.randomUUID(),
-				0,
-				MessageType.ToolResult,
-				{
-					role: MessageRole.TOOL,
-					content,
-					tool_call_id: toolCallId,
-				},
-			);
+			const toolResultMsg = new Message(crypto.randomUUID(), 0, MessageType.ToolResult, {
+				role: MessageRole.TOOL,
+				content,
+				tool_call_id: toolCallId,
+			});
 			const newMessages = [...messages];
 			// Insert after any existing tool results that follow the assistant message
 			let insertAt = afterIndex + 1;
@@ -484,54 +506,59 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 
 			// Execute with the updated messages
 			setIsStreaming(true);
-			await executePrompt(newMessages, undefined, { provider, model, modelParams, apiKeyId, variables }, {
-				onStreamingStart: (allMessages, placeholder) => {
-					if (!isActive()) return;
-					setMessages([...allMessages, placeholder]);
+			await executePrompt(
+				newMessages,
+				undefined,
+				{ provider, model, modelParams, apiKeyId, variables },
+				{
+					onStreamingStart: (allMessages, placeholder) => {
+						if (!isActive()) return;
+						setMessages([...allMessages, placeholder]);
+					},
+					onStreamChunk: (content) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							const last = updated[updated.length - 1];
+							const clone = last.clone();
+							clone.content = content;
+							updated[updated.length - 1] = clone;
+							return updated;
+						});
+					},
+					onComplete: (content, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.response(content, 0, usage);
+							return updated;
+						});
+					},
+					onToolCallComplete: (content, toolCalls, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.toolCallResponse(content, toolCalls, 0, usage);
+							return updated;
+						});
+					},
+					onEmptyResponse: () => {
+						if (!isActive()) return;
+						setMessages((prev) => prev.slice(0, -1));
+					},
+					onError: (error) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const withoutPlaceholder = prev.slice(0, -1);
+							return [...withoutPlaceholder, Message.error(error)];
+						});
+					},
+					onFinally: () => {
+						if (!isActive()) return;
+						setIsStreaming(false);
+					},
 				},
-				onStreamChunk: (content) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const updated = [...prev];
-						const last = updated[updated.length - 1];
-						const clone = last.clone();
-						clone.content = content;
-						updated[updated.length - 1] = clone;
-						return updated;
-					});
-				},
-				onComplete: (content, usage) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const updated = [...prev];
-						updated[updated.length - 1] = Message.response(content, 0, usage);
-						return updated;
-					});
-				},
-				onToolCallComplete: (content, toolCalls, usage) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const updated = [...prev];
-						updated[updated.length - 1] = Message.toolCallResponse(content, toolCalls, 0, usage);
-						return updated;
-					});
-				},
-				onEmptyResponse: () => {
-					if (!isActive()) return;
-					setMessages((prev) => prev.slice(0, -1));
-				},
-				onError: (error) => {
-					if (!isActive()) return;
-					setMessages((prev) => {
-						const withoutPlaceholder = prev.slice(0, -1);
-						return [...withoutPlaceholder, Message.error(error)];
-					});
-				},
-				onFinally: () => {
-					if (!isActive()) return;
-					setIsStreaming(false);
-				},
-			});
+			);
 		},
 		[messages, provider, model, modelParams, apiKeyId, variables],
 	);

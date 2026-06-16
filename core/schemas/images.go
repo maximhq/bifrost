@@ -69,11 +69,22 @@ type BifrostImageGenerationResponse struct {
 // - Size on ImageGenerationResponseParameters (from request params if not in response)
 // - Quality (low, medium, high, auto) only
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
+	if r == nil || req == nil {
+		return
+	}
 	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
 
-	// Backfill Model if not returned by the provider
+	// Backfill Model from whichever inner request carries it. Some provider APIs
+	// (notably OpenAI /v1/images/*) omit model in the response body.
 	if r.Model == "" {
-		r.Model = getModelFromRequest(req)
+		switch {
+		case req.ImageGenerationRequest != nil:
+			r.Model = req.ImageGenerationRequest.Model
+		case req.ImageEditRequest != nil:
+			r.Model = req.ImageEditRequest.Model
+		case req.ImageVariationRequest != nil:
+			r.Model = req.ImageVariationRequest.Model
+		}
 	}
 
 	// Backfill NumInputImages
