@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **pprof Profiling Server** - Optional runtime profiling server gated by `BIFROST_PPROF_PORT`, with env-tunable block/mutex sampling rates and graceful shutdown alongside the main server.
+- **Anthropic Cache Diagnostics** - Surface Anthropic's prompt-cache diagnostics beta (`cache-diagnosis-2026-04-07`): responses now expose the first cache-prefix divergence point, so you can see exactly why a prompt cache missed.
 
 ## 🐞 Fixed
 
