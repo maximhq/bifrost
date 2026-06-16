@@ -251,6 +251,23 @@ interface MultiSelectProps
 	 * Optional, defaults to false.
 	 */
 	closeOnSelect?: boolean;
+
+	/**
+	 * Optional action rendered as a row pinned to the bottom of the dropdown,
+	 * below the option list (e.g. "Create new channel..."). When provided, the
+	 * popover closes before the handler runs so a sheet/dialog can open cleanly.
+	 * Opt-in: when omitted, no footer row is rendered and behavior is unchanged.
+	 */
+	footerAction?: {
+		/** Label text shown in the action row. */
+		label: string;
+		/** Invoked when the action row is selected. The popover is closed first. */
+		onSelect: () => void;
+		/** Optional leading icon for the action row. */
+		icon?: React.ComponentType<{ className?: string }>;
+		/** Optional test id for the action row. */
+		testId?: string;
+	};
 }
 
 /**
@@ -307,6 +324,7 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 			deduplicateOptions = false,
 			resetOnDefaultValueChange = true,
 			closeOnSelect = false,
+			footerAction,
 			...props
 		},
 		ref,
@@ -982,6 +1000,21 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 										)}
 									</div>
 								</CommandGroup>
+								{footerAction && (
+									<CommandGroup className="bg-popover sticky bottom-0 z-10 border-t">
+										<CommandItem
+											onSelect={() => {
+												setIsPopoverOpen(false);
+												footerAction.onSelect();
+											}}
+											data-testid={footerAction.testId}
+											className="text-muted-foreground data-[selected=true]:text-foreground cursor-pointer gap-2"
+										>
+											{footerAction.icon ? <footerAction.icon className="h-4 w-4" /> : null}
+											<span>{footerAction.label}</span>
+										</CommandItem>
+									</CommandGroup>
+								)}
 							</CommandList>
 						</Command>
 					</PopoverContent>
