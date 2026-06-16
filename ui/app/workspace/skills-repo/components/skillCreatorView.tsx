@@ -31,7 +31,7 @@ export function SkillCreateView({ onCreated, onBack }: { onCreated: (id: string)
 
 	if (!hasCreateAccess) {
 		return (
-			<div className="flex h-[calc(100vh_-_50px)] items-center justify-center">
+			<div className="flex h-full items-center justify-center">
 				<p className="text-muted-foreground">You do not have permission to create skills.</p>
 			</div>
 		);

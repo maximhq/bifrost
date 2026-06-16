@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ScrollBar } from "@/components/ui/scrollArea";
 import { Textarea } from "@/components/ui/textarea";
 import { Tree, type BaseNodeData, type TreeNode } from "@/components/ui/treeView";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
@@ -36,22 +37,15 @@ import {
 	Check,
 	ChevronDown,
 	ChevronRight,
-	ChevronsDownUp,
-	ChevronsUpDown,
 	FileText,
 	Folder,
-	FolderPlus,
 	Info,
 	Loader2,
 	MoreHorizontal,
-	MoveRight,
-	Pencil,
 	Plus,
-	Trash2,
-	Upload,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { formatFileSize } from "./helpers";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -125,17 +119,17 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 	const [error, setError] = useState<string | null>(null);
 
 	const locationLabel = folderPath ? `${folderPath}/` : "root";
-	// Adding a new text file only asks for a name; its content is edited in the
-	// right-hand pane afterwards. (Editing an existing entry keeps the full form.)
-	const isTextNameOnly = sourceType === "text" && !initialEntry;
+	// Adding a new file asks for its name in-tree first; source-specific fields
+	// are edited in the right-hand pane after the file is inserted.
+	const isNewFileNameOnly = !initialEntry;
 	const nameInputRef = useRef<HTMLInputElement | null>(null);
 
 	// Grab focus after the menu that opened this draft has returned focus to its trigger.
 	useEffect(() => {
-		if (!isTextNameOnly) return;
+		if (!isNewFileNameOnly) return;
 		const id = window.setTimeout(() => nameInputRef.current?.focus(), 0);
 		return () => window.clearTimeout(id);
-	}, [isTextNameOnly]);
+	}, [isNewFileNameOnly]);
 
 	const handleUploadFileChange = (file: File | null) => {
 		setSelectedFile(file);
@@ -160,7 +154,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 		const pathErr = validateFilePath(fullPath);
 		if (pathErr) return setError(pathErr);
 
-		if (!isTextNameOnly) {
+		if (!isNewFileNameOnly) {
 			const srcErr = validateSourceType(sourceType, {
 				url,
 				dataurl,
@@ -201,49 +195,58 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 		onAdd(entry);
 	};
 
-	// Name-only add: a single full-width input. Enter adds, Escape/empty-blur cancels.
-	if (isTextNameOnly) {
+	// Name-only add: input with check/cross like folder add.
+	if (isNewFileNameOnly) {
 		return (
-			<div className={cn("w-full", className)}>
-				<Input
-					ref={nameInputRef}
-					autoFocus
-					data-testid="skill-file-filename-input"
-					value={filename}
-					onChange={(e) => {
-						setFilename(e.target.value);
-						setError(null);
-					}}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") {
-							e.preventDefault();
-							handleSubmit();
-						} else if (e.key === "Escape") {
-							e.preventDefault();
-							onCancel();
-						}
-					}}
-					placeholder="filename.ext (press Enter to add, Esc to cancel)"
-					className="h-8 w-full font-mono text-xs"
-					aria-label="Filename"
-				/>
+			<div className={cn("flex flex-col gap-1.5 py-1", className)}>
+				<div className="flex items-center gap-2">
+					<Input
+						ref={nameInputRef}
+						autoFocus
+						data-testid="skill-file-filename-input"
+						value={filename}
+						onChange={(e) => {
+							setFilename(e.target.value);
+							setError(null);
+						}}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") {
+								e.preventDefault();
+								handleSubmit();
+							} else if (e.key === "Escape") {
+								e.preventDefault();
+								onCancel();
+							}
+						}}
+						placeholder="filename.ext"
+						className="h-7 max-w-xs font-mono text-xs"
+						aria-label="Filename"
+					/>
+					<Button variant="ghost" size="sm" className="h-7 w-7 p-0" data-testid="skill-file-confirm-btn" onClick={handleSubmit}>
+						<Check className="h-3 w-3" />
+					</Button>
+					<Button variant="ghost" size="sm" className="h-7 w-7 p-0" data-testid="skill-file-cancel-btn" onClick={onCancel}>
+						<X className="h-3 w-3" />
+					</Button>
+				</div>
 				{error && (
-					<p className="text-destructive mt-1 text-xs" role="alert">
+					<div className="text-destructive flex items-center gap-2 text-xs" role="alert">
+						<AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
 						{error}
-					</p>
+					</div>
 				)}
 			</div>
 		);
 	}
 
 	return (
-		<div className={cn("w-full rounded-sm border border-dashed p-2 space-y-3", className)}>
-			{!isTextNameOnly && (
+		<div className={cn("w-full rounded-sm border border-dashed p-2 flex flex-col gap-3", className)}>
+			{!isNewFileNameOnly && (
 				<div className="flex items-center gap-3">
-					<span className="border-border/60 text-muted-foreground inline-flex h-5 shrink-0 items-center rounded-full border bg-transparent px-2 text-[10px] leading-none font-medium">
+					<span className="border-border/60 text-muted-foreground inline-flex h-5 shrink-0 items-center rounded-full border bg-transparent px-2 text-xs leading-none font-medium">
 						{sourceOption.label}
 					</span>
-					<span className="text-muted-foreground font-mono text-[10px]">Location: {locationLabel}</span>
+					<span className="text-muted-foreground font-mono text-xs">Location: {locationLabel}</span>
 				</div>
 			)}
 
@@ -268,13 +271,13 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 					aria-label="Source URL"
 				/>
 			)}
-			{sourceType === "text" && !isTextNameOnly && (
+			{sourceType === "text" && !isNewFileNameOnly && (
 				<Textarea
 					data-testid="skill-file-content-textarea"
 					value={content}
 					onChange={(e) => setContent(e.target.value)}
 					placeholder="File content..."
-					className="min-h-[80px] font-mono text-xs"
+					className="min-h-20 font-mono text-xs"
 					rows={4}
 					aria-label="File content"
 				/>
@@ -291,7 +294,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 				/>
 			)}
 			{sourceType === "upload" && (
-				<div className="space-y-1.5">
+				<div className="flex flex-col gap-1.5">
 					<Input
 						data-testid="skill-file-upload-input"
 						type="file"
@@ -300,7 +303,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 						aria-label="Choose file to upload"
 					/>
 					{selectedFile && (
-						<div className="text-muted-foreground flex items-center gap-2 text-[10px]">
+						<div className="text-muted-foreground flex items-center gap-2 text-xs">
 							<span className="truncate font-mono">{selectedFile.name}</span>
 							<span>{formatFileSize(selectedFile.size)}</span>
 							{selectedFile.type && <span>{selectedFile.type}</span>}
@@ -380,14 +383,14 @@ function buildTree(files: SkillFileEntry[]) {
 }
 
 interface FileTreeNodeData extends BaseNodeData {
-	kind: "root" | "folder" | "file" | "skillmd" | "add-file" | "add-folder" | "edit-file" | "empty-folder";
+	kind: "root" | "folder" | "file" | "skillmd" | "add-file" | "add-folder" | "empty-folder";
 	path: string;
 	folder?: TreeFolder;
 	file?: SkillFileEntry;
 	fileIndex?: number;
 }
 
-function folderToTreeNode(folder: TreeFolder, editingFullFileIndex: number | null): TreeNode<FileTreeNodeData> {
+function folderToTreeNode(folder: TreeFolder): TreeNode<FileTreeNodeData> {
 	const childFolders = [...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name));
 	const childFiles = [...folder.files].sort((a, b) => basename(a.entry.path).localeCompare(basename(b.entry.path)));
 
@@ -400,12 +403,12 @@ function folderToTreeNode(folder: TreeFolder, editingFullFileIndex: number | nul
 			folder,
 		},
 		children: [
-			...childFolders.map((childFolder) => folderToTreeNode(childFolder, editingFullFileIndex)),
+			...childFolders.map((childFolder) => folderToTreeNode(childFolder)),
 			...childFiles.map(({ entry, index }) => ({
 				data: {
-					id: editingFullFileIndex === index ? `draft-edit:${index}:${entry.path}` : `file:${index}:${entry.path}`,
+					id: `file:${index}:${entry.path}`,
 					name: basename(entry.path),
-					kind: editingFullFileIndex === index ? ("edit-file" as const) : ("file" as const),
+					kind: "file" as const,
 					path: entry.path,
 					file: entry,
 					fileIndex: index,
@@ -441,6 +444,7 @@ export function FileManagerSection({
 	onSelectFile,
 	bodySelected,
 	onSelectBody,
+	hasBodyError,
 }: {
 	files: SkillFileEntry[];
 	onAddFile: (entry: SkillFileEntry) => void;
@@ -454,6 +458,8 @@ export function FileManagerSection({
 	// calls onSelectBody (the body is edited in the external pane).
 	bodySelected?: boolean;
 	onSelectBody?: () => void;
+	// When true, the SKILL.md label renders red to indicate missing body.
+	hasBodyError?: boolean;
 }) {
 	const [uploadSkillFile] = useUploadSkillFileMutation();
 	const folderUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -470,7 +476,7 @@ export function FileManagerSection({
 	const [editingFileOriginal, setEditingFileOriginal] = useState<{
 		path: string;
 	} | null>(null);
-	const [editingFullFileIndex, setEditingFullFileIndex] = useState<number | null>(null);
+	const [searchQuery, setSearchQuery] = useState("");
 	const [addingFile, setAddingFile] = useState<{
 		folderPath: string;
 		sourceType: string;
@@ -499,10 +505,7 @@ export function FileManagerSection({
 		});
 	}, [files]);
 
-	const treeStates = useMemo(() => ({ expandedNodes, setExpandedNodes }), [expandedNodes]);
-
-	const expandFolder = useCallback((folderPath: string) => {
-		// Expand root, the target folder, and all its ancestors
+	const expandFolder = (folderPath: string) => {
 		const normalizedFolderPath = folderPath === "root" ? "" : folderPath;
 		const ancestors = normalizedFolderPath.split("/").filter(Boolean);
 		setExpandedNodes((prev) => {
@@ -514,13 +517,19 @@ export function FileManagerSection({
 			}
 			return next;
 		});
-	}, []);
+	};
 
 	const isFolderUploading = folderUploadState !== null;
 
+	const filteredFiles = searchQuery.trim() ? files.filter((file) => file.path.toLowerCase().includes(searchQuery.toLowerCase())) : files;
+
 	const treeData = useMemo(() => {
-		const rootFolder = buildTree(files);
+		const rootFolder = buildTree(filteredFiles);
 		for (const folderPath of folders) {
+			if (searchQuery.trim()) {
+				const hasMatchingFile = filteredFiles.some((f) => f.path.startsWith(`${folderPath}/`));
+				if (!hasMatchingFile) continue;
+			}
 			const segments = folderPath.split("/").filter(Boolean);
 			let folder = rootFolder;
 			let currentPath = "";
@@ -531,11 +540,16 @@ export function FileManagerSection({
 			}
 		}
 
-		const rootNode = folderToTreeNode(rootFolder, editingFullFileIndex);
+		const rootNode = folderToTreeNode(rootFolder);
 
 		// SKILL.md sits at the top of the tree (under root), selecting the body pane.
 		if (onSelectBody) {
-			rootNode.children = [{ data: { id: "skillmd", name: "SKILL.md", kind: "skillmd", path: "" } }, ...(rootNode.children ?? [])];
+			rootNode.children = [
+				{
+					data: { id: "skillmd", name: "SKILL.md", kind: "skillmd", path: "" },
+				},
+				...(rootNode.children ?? []),
+			];
 		}
 
 		if (newFolderParent !== null) {
@@ -589,9 +603,9 @@ export function FileManagerSection({
 		addEmptyFolderDrafts(rootNode);
 
 		return [rootNode];
-	}, [addingFile, editingFullFileIndex, files, folders, newFolderParent, onSelectBody]);
+	}, [addingFile, filteredFiles, files, folders, newFolderParent, onSelectBody, searchQuery]);
 
-	const availableFolderPaths = useMemo(() => {
+	const availableFolderPaths = (() => {
 		const folderSet = new Set<string>([""]);
 		folders.forEach((folder) => folderSet.add(folder));
 		files.forEach((file) => {
@@ -602,7 +616,7 @@ export function FileManagerSection({
 			if (b === "") return 1;
 			return a.localeCompare(b);
 		});
-	}, [files, folders]);
+	})();
 
 	const handleFolderUploadClick = (folderPath: string) => {
 		if (isFolderUploading) return;
@@ -618,7 +632,6 @@ export function FileManagerSection({
 		setAddingFile(null);
 		setEditingFileIndex(null);
 		setEditingFileOriginal(null);
-		setEditingFullFileIndex(null);
 		fileUploadInputRef.current?.click();
 	};
 
@@ -644,7 +657,11 @@ export function FileManagerSection({
 			return;
 		}
 
-		setFolderUploadState({ folderPath: targetFolderPath, total: 1, completed: 0 });
+		setFolderUploadState({
+			folderPath: targetFolderPath,
+			total: 1,
+			completed: 0,
+		});
 		try {
 			const upload = await uploadSkillFile({ file }).unwrap();
 			onAddFile({
@@ -681,7 +698,6 @@ export function FileManagerSection({
 		setAddingFile(null);
 		setEditingFileIndex(null);
 		setEditingFileOriginal(null);
-		setEditingFullFileIndex(null);
 
 		setFolderUploadState({
 			folderPath: targetFolderPath,
@@ -809,16 +825,9 @@ export function FileManagerSection({
 				setEditingFileIndex(editingFileIndex - 1);
 			}
 		}
-		if (editingFullFileIndex !== null) {
-			if (editingFullFileIndex === index) {
-				setEditingFullFileIndex(null);
-			} else if (index < editingFullFileIndex) {
-				setEditingFullFileIndex(editingFullFileIndex - 1);
-			}
-		}
 	};
 
-	const folderDeleteImpact = useMemo(() => {
+	const folderDeleteImpact = (() => {
 		if (!folderToDelete) return null;
 		const nestedFiles = files
 			.filter((file) => file.path.startsWith(`${folderToDelete}/`))
@@ -829,7 +838,7 @@ export function FileManagerSection({
 			.sort((a, b) => a.localeCompare(b));
 
 		return { nestedFiles, nestedFolders };
-	}, [files, folderToDelete, folders]);
+	})();
 
 	const removeFolder = (folderPath: string) => {
 		setFolders((prev) => prev.filter((folder) => folder !== folderPath && !folder.startsWith(`${folderPath}/`)));
@@ -855,7 +864,6 @@ export function FileManagerSection({
 			}
 			return nextIndex;
 		});
-		setEditingFullFileIndex(adjustIndexAfterBatchRemove);
 		if (addingFile?.folderPath === folderPath || addingFile?.folderPath.startsWith(`${folderPath}/`)) setAddingFile(null);
 		if (newFolderParent === folderPath || newFolderParent?.startsWith(`${folderPath}/`)) {
 			setNewFolderParent(null);
@@ -886,7 +894,6 @@ export function FileManagerSection({
 		const folder = dirname(entry.path);
 		expandFolder(folder || "root");
 		setAddingFile(null);
-		setEditingFullFileIndex(null);
 		// Select the new file (appended at the end) so its editor opens immediately.
 		onSelectFile?.(files.length);
 	};
@@ -936,6 +943,7 @@ export function FileManagerSection({
 	}) => {
 		if (item.kind === "skillmd") {
 			const selected = !!bodySelected;
+			const showError = !selected && !!hasBodyError;
 			return (
 				<div
 					data-selected={selected || undefined}
@@ -949,19 +957,23 @@ export function FileManagerSection({
 						}
 					}}
 					className={cn(
-						"flex min-w-0 cursor-pointer items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-sm transition-colors hover:bg-muted/50",
+						"flex h-7 min-w-0 cursor-pointer items-center gap-2 rounded-sm px-1.5 text-sm transition-colors hover:bg-muted/50",
 						selected && "bg-primary/10 text-primary hover:bg-primary/10",
 					)}
 				>
-					<BookOpen className={cn("h-3.5 w-3.5 shrink-0", selected ? "text-primary" : "text-muted-foreground")} />
-					<span className="min-w-0 flex-1 truncate font-mono text-xs">SKILL.md</span>
+					<BookOpen
+						className={cn("h-3.5 w-3.5 shrink-0", selected ? "text-primary" : showError ? "text-destructive" : "text-muted-foreground")}
+					/>
+					<span className={cn("min-w-0 flex-1 truncate font-mono text-xs", showError && "text-destructive")} title="SKILL.md">
+						SKILL.md
+					</span>
 				</div>
 			);
 		}
 
 		if (item.kind === "add-folder") {
 			return (
-				<div className="ml-1 space-y-1.5 py-1">
+				<div className="ml-1 flex flex-col gap-1.5 py-1">
 					<div className="flex items-center gap-2">
 						<Input
 							data-testid="skill-file-folder-name-input"
@@ -1018,32 +1030,11 @@ export function FileManagerSection({
 			);
 		}
 
-		if (item.kind === "edit-file" && item.file && item.fileIndex != null) {
-			return (
-				<FileAddForm
-					className="ml-1"
-					folderPath={dirname(item.file.path)}
-					initialSourceType={item.file.source_type}
-					initialEntry={item.file}
-					submitLabel="Update"
-					onAdd={(entry) => {
-						if (files.some((f, i) => i !== item.fileIndex && f.path === entry.path)) {
-							toast.error("A file already exists at that path");
-							return;
-						}
-						onUpdateFile(item.fileIndex!, entry);
-						setEditingFullFileIndex(null);
-					}}
-					onCancel={() => setEditingFullFileIndex(null)}
-				/>
-			);
-		}
-
 		if (item.kind === "empty-folder") {
 			return (
 				<div className="text-muted-foreground ml-1 flex items-center gap-2 py-1 text-xs">
 					<span>Empty folder</span>
-					<span className="text-muted-foreground/60 text-[10px]">Not saved until it contains a file.</span>
+					<span className="text-muted-foreground/60 text-xs">Not saved until it contains a file.</span>
 				</div>
 			);
 		}
@@ -1051,18 +1042,44 @@ export function FileManagerSection({
 		if (item.kind === "file" && item.file && item.fileIndex != null) {
 			const file = item.file;
 			const index = item.fileIndex;
-			const canFullEdit = !!file.__local && file.source_type !== "upload";
 			const fileMoveTargets = availableFolderPaths.filter((folderPath) => folderPath !== dirname(file.path));
 			const fileMeta = [file.source_type, file.mime_type, file.file_size_bytes ? formatFileSize(file.file_size_bytes) : null]
 				.filter(Boolean)
-				.join(" · ");
+				.join(" \u00b7 ");
 
-			if (editingFileIndex === index) {
-				return (
-					<div className="ml-1 space-y-2 rounded-sm border border-dashed p-1">
-						<div className="flex items-center gap-2">
-							<FileText className="text-muted-foreground h-3.5 w-3.5 shrink-0" />
+			const fileDropdownActive = activeDropdownNodeId === item.id;
+			const isSelected = onSelectFile != null && selectedIndex === index;
+			const isRenaming = editingFileIndex === index;
+
+			return (
+				<div
+					data-selected={isSelected || undefined}
+					className={cn(
+						"group flex min-w-0 items-center gap-2 rounded-sm px-1.5 py-1 text-sm transition-colors hover:bg-muted/50",
+						fileDropdownActive && "bg-muted/50",
+						isSelected && "bg-primary/10 hover:bg-primary/10",
+					)}
+				>
+					<div
+						className={cn("flex min-w-0 flex-1 items-center gap-2", onSelectFile && !isRenaming && "cursor-pointer")}
+						onClick={!isRenaming && onSelectFile ? () => onSelectFile(index) : undefined}
+						onKeyDown={
+							!isRenaming && onSelectFile
+								? (e) => {
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault();
+											onSelectFile(index);
+										}
+									}
+								: undefined
+						}
+						role={!isRenaming && onSelectFile ? "button" : undefined}
+						tabIndex={!isRenaming && onSelectFile ? 0 : undefined}
+					>
+						<FileText className={cn("h-3.5 w-3.5 shrink-0", isSelected ? "text-primary" : "text-muted-foreground")} />
+						{isRenaming ? (
 							<Input
+								autoFocus
 								value={basename(file.path)}
 								onChange={(e) => {
 									const newPath = joinPath(dirname(file.path), e.target.value);
@@ -1072,84 +1089,45 @@ export function FileManagerSection({
 									}
 									onUpdateFile(index, { path: newPath });
 								}}
-								placeholder="filename.ext"
-								className="h-7 font-mono text-xs"
-								aria-label="File name"
-							/>
-							<Button
-								variant="ghost"
-								size="sm"
-								className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
-								onClick={() => {
-									if (editingFileOriginal) onUpdateFile(index, { path: editingFileOriginal.path });
-									setEditingFileIndex(null);
-									setEditingFileOriginal(null);
-								}}
-							>
-								<X className="h-3 w-3" />
-							</Button>
-							<Button
-								variant="ghost"
-								size="sm"
-								className="text-muted-foreground h-7 w-7 p-0"
-								onClick={() => {
-									const err = validateFilePath(file.path);
-									const filenameErr = validateFilename(basename(file.path));
-									if (!err && !filenameErr) {
+								onKeyDown={(e) => {
+									if (e.key === "Enter") {
+										e.preventDefault();
+										const err = validateFilePath(file.path);
+										const filenameErr = validateFilename(basename(file.path));
+										if (!err && !filenameErr) {
+											setEditingFileIndex(null);
+											setEditingFileOriginal(null);
+										}
+									} else if (e.key === "Escape") {
+										e.preventDefault();
+										if (editingFileOriginal) onUpdateFile(index, { path: editingFileOriginal.path });
 										setEditingFileIndex(null);
 										setEditingFileOriginal(null);
 									}
 								}}
-							>
-								<Check className="h-3 w-3" />
-							</Button>
-						</div>
-						<div className="flex items-start gap-2 rounded-sm border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200">
-							<Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-							<span>Committed files keep their stored reference. Rename here; use Move to place the file in another folder.</span>
-						</div>
-					</div>
-				);
-			}
-
-			const fileDropdownActive = activeDropdownNodeId === item.id;
-
-			const isSelected = onSelectFile != null && selectedIndex === index;
-
-			return (
-				<div
-					data-selected={isSelected || undefined}
-					className={cn(
-						"group flex min-w-0 items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-sm transition-colors hover:bg-muted/50",
-						fileDropdownActive && "bg-muted/50",
-						isSelected && "bg-primary/10 hover:bg-primary/10",
-					)}
-				>
-					<div
-						className={cn("flex min-w-0 flex-1 items-center gap-2 overflow-hidden", onSelectFile && "cursor-pointer")}
-						onClick={onSelectFile ? () => onSelectFile(index) : undefined}
-						onKeyDown={
-							onSelectFile
-								? (e) => {
-										if (e.key === "Enter" || e.key === " ") {
-											e.preventDefault();
-											onSelectFile(index);
-										}
+								onBlur={() => {
+									const err = validateFilePath(file.path);
+									const filenameErr = validateFilename(basename(file.path));
+									if (err || filenameErr) {
+										if (editingFileOriginal) onUpdateFile(index, { path: editingFileOriginal.path });
 									}
-								: undefined
-						}
-						role={onSelectFile ? "button" : undefined}
-						tabIndex={onSelectFile ? 0 : undefined}
-					>
-						<FileText className={cn("h-3.5 w-3.5 shrink-0", isSelected ? "text-primary" : "text-muted-foreground")} />
-						<span className="min-w-0 flex-1 truncate font-mono text-xs" title={basename(file.path)}>
-							{basename(file.path)}
-						</span>
+									setEditingFileIndex(null);
+									setEditingFileOriginal(null);
+								}}
+								placeholder="filename.ext"
+								className="h-7 min-w-0 flex-1 font-mono text-xs"
+								aria-label="Rename file"
+							/>
+						) : (
+							<span className="min-w-0 flex-1 truncate font-mono text-xs" title={basename(file.path)}>
+								{basename(file.path)}
+							</span>
+						)}
 					</div>
 					{!readOnly && (
 						<div
 							className={cn(
-								"flex shrink-0 items-center justify-end gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100",
+								"sticky right-1 z-10 ml-auto flex shrink-0 items-center justify-end gap-1 rounded-sm bg-muted px-0.5 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100",
 								fileDropdownActive && "md:opacity-100",
 							)}
 						>
@@ -1159,7 +1137,7 @@ export function FileManagerSection({
 										variant="ghost"
 										size="icon"
 										className="text-muted-foreground h-6 w-6"
-										data-testid={`skill-file-actions-${index}`}
+										data-testid={`skill-file-actions-${basename(file.path)}`}
 										aria-label={`Actions for ${file.path}`}
 									>
 										<MoreHorizontal className="h-3.5 w-3.5" />
@@ -1168,32 +1146,22 @@ export function FileManagerSection({
 								<DropdownMenuContent align="end" className="w-48">
 									{fileMeta && (
 										<>
-											<DropdownMenuLabel className="text-muted-foreground text-[10px] font-normal break-all">{fileMeta}</DropdownMenuLabel>
+											<DropdownMenuLabel className="text-muted-foreground text-xs font-normal break-all">{fileMeta}</DropdownMenuLabel>
 											<DropdownMenuSeparator />
 										</>
 									)}
 									<DropdownMenuItem
 										className="cursor-pointer"
 										onSelect={() => {
-											if (canFullEdit) {
-												setAddingFile(null);
-												setEditingFileIndex(null);
-												setEditingFileOriginal(null);
-												setEditingFullFileIndex(index);
-												return;
-											}
-											setEditingFullFileIndex(null);
 											setEditingFileIndex(index);
 											setEditingFileOriginal({ path: file.path });
 										}}
 									>
-										{canFullEdit ? "Edit source" : "Rename"}
+										Rename
 									</DropdownMenuItem>
 									{fileMoveTargets.length > 0 && (
 										<DropdownMenuSub>
-											<DropdownMenuSubTrigger>
-												Move to…
-											</DropdownMenuSubTrigger>
+											<DropdownMenuSubTrigger>Move to…</DropdownMenuSubTrigger>
 											<DropdownMenuSubContent>
 												{fileMoveTargets.map((folderPath) => (
 													<DropdownMenuItem
@@ -1202,7 +1170,6 @@ export function FileManagerSection({
 														onSelect={() => {
 															setEditingFileIndex(null);
 															setEditingFileOriginal(null);
-															setEditingFullFileIndex(null);
 															moveFileToFolder(index, folderPath);
 														}}
 													>
@@ -1216,7 +1183,13 @@ export function FileManagerSection({
 									<DropdownMenuItem
 										variant="destructive"
 										className="cursor-pointer"
-										onSelect={() => setFileToRemove({ index, path: file.path, isLocal: !!file.__local })}
+										onSelect={() =>
+											setFileToRemove({
+												index,
+												path: file.path,
+												isLocal: !!file.__local,
+											})
+										}
 									>
 										Delete
 									</DropdownMenuItem>
@@ -1239,7 +1212,7 @@ export function FileManagerSection({
 		return (
 			<div
 				className={cn(
-					"group flex min-w-0 items-center gap-2 overflow-hidden rounded-sm px-2 py-1.5 text-sm hover:bg-muted/40",
+					"group flex min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted/40",
 					hasChildren && "cursor-pointer",
 					folderDropdownActive && "bg-muted/40",
 				)}
@@ -1267,10 +1240,10 @@ export function FileManagerSection({
 				<span className="min-w-0 flex-1 truncate font-mono text-xs font-medium" title={isRoot ? "root" : `${item.name}/`}>
 					{isRoot ? "root" : `${item.name}/`}
 				</span>
-				{!readOnly && editingFullFileIndex == null && (
+				{!readOnly && (
 					<div
 						className={cn(
-							"ml-auto flex shrink-0 items-center gap-1 opacity-100 transition-opacity",
+							"sticky right-1 z-10 ml-auto flex shrink-0 items-center gap-1 rounded-sm px-0.5 opacity-100 transition-opacity",
 							// Root keeps its actions always visible; folders reveal on hover/focus.
 							!isRoot && "md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100",
 							!isRoot && folderDropdownActive && "md:opacity-100",
@@ -1305,7 +1278,10 @@ export function FileManagerSection({
 											className="cursor-pointer"
 											onSelect={() => {
 												expandFolder(item.path || "root");
-												setAddingFile({ folderPath: item.path, sourceType: "text" });
+												setAddingFile({
+													folderPath: item.path,
+													sourceType: "text",
+												});
 												setEditingFileIndex(null);
 												setEditingFileOriginal(null);
 											}}
@@ -1316,7 +1292,10 @@ export function FileManagerSection({
 											className="cursor-pointer"
 											onSelect={() => {
 												expandFolder(item.path || "root");
-												setAddingFile({ folderPath: item.path, sourceType: "url" });
+												setAddingFile({
+													folderPath: item.path,
+													sourceType: "url",
+												});
 												setEditingFileIndex(null);
 												setEditingFileOriginal(null);
 											}}
@@ -1327,7 +1306,10 @@ export function FileManagerSection({
 											className="cursor-pointer"
 											onSelect={() => {
 												expandFolder(item.path || "root");
-												setAddingFile({ folderPath: item.path, sourceType: "dataurl" });
+												setAddingFile({
+													folderPath: item.path,
+													sourceType: "dataurl",
+												});
 												setEditingFileIndex(null);
 												setEditingFileOriginal(null);
 											}}
@@ -1369,9 +1351,7 @@ export function FileManagerSection({
 										<DropdownMenuSeparator />
 										{folderMoveTargets.length > 0 && (
 											<DropdownMenuSub>
-												<DropdownMenuSubTrigger>
-													Move to…
-												</DropdownMenuSubTrigger>
+												<DropdownMenuSubTrigger>Move to…</DropdownMenuSubTrigger>
 												<DropdownMenuSubContent>
 													{folderMoveTargets.map((folderPath) => (
 														<DropdownMenuItem
@@ -1380,7 +1360,6 @@ export function FileManagerSection({
 															onSelect={() => {
 																setEditingFileIndex(null);
 																setEditingFileOriginal(null);
-																setEditingFullFileIndex(null);
 																moveFolderToFolder(item.path, folderPath);
 															}}
 														>
@@ -1444,7 +1423,37 @@ export function FileManagerSection({
 					{folderUploadError}
 				</div>
 			)}
-			<Tree data={treeData} renderItem={renderItem} indentSize={22} levelsToExpandByDefault={1} states={treeStates} />
+			<div className="mb-2">
+				<Input
+					value={searchQuery}
+					onChange={(e) => {
+						setSearchQuery(e.target.value);
+						if (e.target.value.trim()) {
+							// Expand all folders when searching so results are visible
+							setExpandedNodes((prev) => {
+								const next: Record<string, boolean> = { ...prev, root: true };
+								folders.forEach((f) => {
+									next[f] = true;
+								});
+								return next;
+							});
+						}
+					}}
+					placeholder="Search files..."
+					className="h-7 font-mono text-xs"
+					aria-label="Search files"
+				/>
+			</div>
+			<div className="min-w-max pr-2">
+				<Tree
+					data={treeData}
+					renderItem={renderItem}
+					indentSize={22}
+					levelsToExpandByDefault={1}
+					states={{ expandedNodes, setExpandedNodes }}
+				/>
+			</div>
+			<ScrollBar orientation="horizontal" />
 
 			<AlertDialog
 				open={folderToDelete !== null}
@@ -1474,10 +1483,10 @@ export function FileManagerSection({
 					</AlertDialogHeader>
 
 					{folderDeleteImpact?.nestedFiles.length ? (
-						<div className="bg-muted/20 space-y-3 rounded-sm border p-3 text-xs">
-							<div className="space-y-1">
-								<div className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">Files</div>
-								<ul className="text-muted-foreground max-h-32 space-y-1 overflow-auto font-mono">
+						<div className="bg-muted/20 flex flex-col gap-3 rounded-sm border p-3 text-xs">
+							<div className="flex flex-col gap-1">
+								<div className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Files</div>
+								<ul className="text-muted-foreground flex max-h-32 flex-col gap-1 overflow-auto font-mono">
 									{folderDeleteImpact.nestedFiles.map((file) => (
 										<li key={file}>{file}</li>
 									))}

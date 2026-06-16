@@ -4,37 +4,6 @@ import { HeadersTable } from "@/components/ui/headersTable";
 
 // ---------- MetadataTableEditor ----------
 
-function parseMetadataValue(metadataJson: string): Record<string, string> {
-  if (!metadataJson.trim()) {
-    return {};
-  }
-
-  try {
-    const parsed = JSON.parse(metadataJson) as unknown;
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [
-        key,
-        String(value ?? ""),
-      ]),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function serializeMetadataValue(value: Record<string, string>): string {
-  const validEntries = Object.entries(value).filter(([key]) => key.trim());
-  if (validEntries.length === 0) {
-    return "";
-  }
-
-  return JSON.stringify(Object.fromEntries(validEntries), null, 2);
-}
-
 export function MetadataTableEditor({
   metadataJson,
   onChange,
@@ -44,12 +13,40 @@ export function MetadataTableEditor({
   onChange: (json: string) => void;
   error?: string;
 }) {
+  // Parse JSON string into key-value pairs for the table
+  let parsedValue: Record<string, string> = {};
+  if (metadataJson.trim()) {
+    try {
+      const parsed = JSON.parse(metadataJson) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        parsedValue = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [
+            key,
+            String(value ?? ""),
+          ]),
+        );
+      }
+    } catch {
+      // Invalid JSON, fall back to empty
+    }
+  }
+
+  const handleChange = (next: Record<string, string>) => {
+    // Serialize key-value pairs back to JSON, filtering out empty keys
+    const validEntries = Object.entries(next).filter(([key]) => key.trim());
+    if (validEntries.length === 0) {
+      onChange("");
+      return;
+    }
+    onChange(JSON.stringify(Object.fromEntries(validEntries), null, 2));
+  };
+
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       <HeadersTable
         label=""
-        value={parseMetadataValue(metadataJson)}
-        onChange={(next) => onChange(serializeMetadataValue(next))}
+        value={parsedValue}
+        onChange={handleChange}
         keyPlaceholder="Metadata key"
         valuePlaceholder="Metadata value"
       />

@@ -6,9 +6,8 @@ import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@
 import { useGetSkillQuery, useShiftSkillVersionMutation } from "@/lib/store/apis/skillsApi";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { getApiBaseUrl } from "@/lib/utils/port";
-import { SkillFile, SkillFileEntry } from "@/lib/types/skills";
+import type { SkillFile, SkillFileEntry } from "@/lib/types/skills";
 import { Loader2, RefreshCw, Download, X } from "lucide-react";
-import { useMemo } from "react";
 import { toast } from "sonner";
 import { composeFrontmatter } from "../components/helpers";
 import { SkillHeader, SkillReadOnlyContent } from "../components/shared";
@@ -33,20 +32,12 @@ export function VersionDetailDialog({
 
 	const skill = versionData?.skill;
 
-	const extraFrontmatter = useMemo(() => {
-		if (!skill?.extra_frontmatter || Object.keys(skill.extra_frontmatter).length === 0) return null;
-		return skill.extra_frontmatter;
-	}, [skill]);
+	const extraFrontmatter = skill?.extra_frontmatter && Object.keys(skill.extra_frontmatter).length > 0 ? skill.extra_frontmatter : null;
 
-	const metadata = useMemo(() => {
-		if (!skill?.metadata || Object.keys(skill.metadata).length === 0) return null;
-		return skill.metadata as Record<string, unknown>;
-	}, [skill]);
+	const metadata = skill?.metadata && Object.keys(skill.metadata).length > 0 ? (skill.metadata as Record<string, unknown>) : null;
 
-	const composedSkillMd = useMemo(() => {
-		if (!skill) return "";
-		return (
-			composeFrontmatter({
+	const composedSkillMd = skill
+		? composeFrontmatter({
 				name: skill.name,
 				description: skill.description,
 				license: skill.license || "",
@@ -57,23 +48,21 @@ export function VersionDetailDialog({
 			}) +
 			"\n\n" +
 			skill.skill_md_body
-		);
-	}, [skill]);
+		: "";
 
-	const fileEntries: SkillFileEntry[] = useMemo(() => {
-		if (!skill?.files) return [];
-		return skill.files.map((f: SkillFile) => ({
-			path: f.path,
-			source_type: f.source_type,
-			content: f.content,
-			source_url: f.source_url,
-			dataurl: f.dataurl,
-			storage_key: f.storage_key,
-			blob_id: f.blob_id,
-			mime_type: f.mime_type,
-			file_size_bytes: f.file_size_bytes,
-		}));
-	}, [skill]);
+	const fileEntries: SkillFileEntry[] = skill?.files
+		? skill.files.map((f: SkillFile) => ({
+				path: f.path,
+				source_type: f.source_type,
+				content: f.content,
+				source_url: f.source_url,
+				dataurl: f.dataurl,
+				storage_key: f.storage_key,
+				blob_id: f.blob_id,
+				mime_type: f.mime_type,
+				file_size_bytes: f.file_size_bytes,
+			}))
+		: [];
 
 	const downloadUrl = skill
 		? `${getApiBaseUrl()}/skills/serve/${encodeURIComponent(skill.name)}/download.zip?version=${encodeURIComponent(version)}`
@@ -103,7 +92,14 @@ export function VersionDetailDialog({
 					</DialogHeader>
 					<div className="flex items-center gap-1.5">
 						{downloadUrl && (
-							<Button variant="ghost" size="icon" className="h-8 w-8" asChild data-testid="skill-version-download-zip" aria-label="Download ZIP">
+							<Button
+								variant="ghost"
+								size="icon"
+								className="h-8 w-8"
+								asChild
+								data-testid="skill-version-download-zip"
+								aria-label="Download ZIP"
+							>
 								<a href={downloadUrl} download>
 									<Download className="h-4 w-4" />
 									<span className="sr-only">Download ZIP</span>

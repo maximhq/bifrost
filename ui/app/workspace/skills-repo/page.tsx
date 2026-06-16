@@ -4,8 +4,6 @@ import { useQueryStates, parseAsBoolean, parseAsString } from "nuqs";
 import { SkillCreateView } from "./components/skillCreatorView";
 import { SkillDetailView } from "./components/skillDetailsView";
 import { SkillsListView } from "./components/skillListView";
-import { cn } from "@/lib/utils";
-
 export default function SkillsRepoPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
@@ -35,7 +33,7 @@ export default function SkillsRepoPage() {
 	// Create view
 	if (urlState.create) {
 		return (
-			<div className="no-padding-parent flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col">
+			<div className="no-padding-parent flex h-full w-full flex-col p-0">
 				<SkillCreateView onCreated={handleCreated} onBack={handleBack} />
 			</div>
 		);
@@ -44,7 +42,7 @@ export default function SkillsRepoPage() {
 	// Detail view when skillId is set
 	if (urlState.skillId) {
 		return (
-			<div className={cn("no-padding-parent flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col p-4 pt-0", urlState.edit && "p-0")}>
+			<div className={urlState.edit ? "no-padding-parent flex h-full w-full flex-col p-0" : "no-padding-parent flex h-full w-full flex-col p-4 pt-0"}>
 				<SkillDetailView skillId={urlState.skillId} isEditing={urlState.edit} setIsEditing={setIsEditing} onBack={handleBack} />
 			</div>
 		);
@@ -52,7 +50,7 @@ export default function SkillsRepoPage() {
 
 	// List view
 	return (
-		<div className="no-padding-parent flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col p-4">
+		<div className="no-padding-parent flex w-full flex-col p-4">
 			<SkillsListView onSelectSkill={handleSelectSkill} onCreateNew={() => setUrlState({ create: true, skillId: null, edit: false })} />
 		</div>
 	);
