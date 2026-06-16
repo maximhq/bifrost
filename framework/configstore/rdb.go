@@ -2,7 +2,11 @@ package configstore
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"sort"
@@ -267,6 +271,8 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
 		AllowDirectKeys:                       config.AllowDirectKeys,
+		MCPServerAuthMode:                     config.MCPServerAuthMode,
+		OAuth2ServerConfig:                    config.OAuth2ServerConfig,
 		ConfigHash:                            config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction.
@@ -532,6 +538,8 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
 		AllowDirectKeys:                       dbConfig.AllowDirectKeys,
+		MCPServerAuthMode:                     dbConfig.MCPServerAuthMode,
+		OAuth2ServerConfig:                    dbConfig.OAuth2ServerConfig,
 		ConfigHash:                            dbConfig.ConfigHash,
 	}, nil
 }
@@ -6674,4 +6682,102 @@ func (s *RDBConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, 
 		}
 		return nil
 	})
+}
+
+// GetOAuth2SigningKey returns the signing key, creating and persisting a new
+// RS2048 keypair if none exists yet.
+func (s *RDBConfigStore) GetOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error) {
+	key, err := s.loadOAuth2SigningKey(ctx)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// No key persisted yet — generate and store one atomically.
+			return s.createOAuth2SigningKey(ctx)
+		}
+		return nil, err
+	}
+	return key, nil
+}
+
+// loadOAuth2SigningKey reads and decrypts the persisted signing key. It returns
+// ErrNotFound when no key has been generated yet.
+func (s *RDBConfigStore) loadOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error) {
+	row, err := s.GetConfig(ctx, tables.GovernanceConfigKeyOAuth2SigningKey)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get oauth2 signing key: %w", err)
+	}
+	if row == nil || row.Value == "" {
+		return nil, ErrNotFound
+	}
+	var key tables.OAuth2SigningKey
+	if err := json.Unmarshal([]byte(row.Value), &key); err != nil {
+		return nil, fmt.Errorf("unmarshal oauth2 signing key: %w", err)
+	}
+	// Decrypt off the stored marker, not the live encrypt.IsEnabled() flag, so a
+	// key persisted while encryption was disabled is not mangled once encryption
+	// is later turned on (mirrors the AfterFind hooks on secret-bearing tables).
+	if err := key.Decrypt(); err != nil {
+		return nil, err
+	}
+	return &key, nil
+}
+
+func (s *RDBConfigStore) createOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("generate RSA key: %w", err)
+	}
+
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("marshal RSA private key: %w", err)
+	}
+	privPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}))
+
+	pubBytes, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshal RSA public key: %w", err)
+	}
+	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}))
+
+	key := &tables.OAuth2SigningKey{
+		KID:           uuid.New().String(),
+		PrivateKeyPEM: privPEM,
+		PublicKeyPEM:  pubPEM,
+	}
+
+	// Encrypt the private key in place and stamp EncryptionStatus before storage
+	// (mirrors the BeforeSave hooks on secret-bearing tables).
+	if err := key.Encrypt(); err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(key)
+	if err != nil {
+		return nil, fmt.Errorf("marshal oauth2 signing key: %w", err)
+	}
+
+	// Persist atomically with INSERT ... ON CONFLICT DO NOTHING so concurrent
+	// first-use callers cannot last-writer-wins different keypairs. If the row
+	// already exists (RowsAffected == 0), another caller won the race — reload
+	// and return the persisted key so every caller agrees on a single keypair.
+	res := s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoNothing: true,
+	}).Create(&tables.TableGovernanceConfig{
+		Key:   tables.GovernanceConfigKeyOAuth2SigningKey,
+		Value: string(data),
+	})
+	if res.Error != nil {
+		return nil, fmt.Errorf("persist oauth2 signing key: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return s.loadOAuth2SigningKey(ctx)
+	}
+
+	// We won the insert — return with plaintext private key for immediate use.
+	key.PrivateKeyPEM = privPEM
+	return key, nil
 }
