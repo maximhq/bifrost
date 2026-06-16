@@ -234,6 +234,80 @@ func TestSchemaPostgresPasswordCommandValidation(t *testing.T) {
 	}
 }
 
+func TestSchemaLogsStoreWriterConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	validConfig := `{
+		"logs_store": {
+			"enabled": true,
+			"type": "sqlite",
+			"config": {
+				"path": "/tmp/logs.db"
+			},
+			"writer": {
+				"max_batch_size": 500,
+				"batch_interval": "2s",
+				"max_batch_bytes": 1048576,
+				"write_queue_capacity": 2000,
+				"deferred_usage_concurrency": 3
+			}
+		}
+	}`
+	if err := validateConfig(t, compiled, validConfig); err != nil {
+		t.Fatalf("logs_store.writer config should be valid, got: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		writer string
+	}{
+		{
+			name:   "rejects zero max batch size",
+			writer: `"max_batch_size": 0`,
+		},
+		{
+			name:   "rejects zero batch interval",
+			writer: `"batch_interval": "0s"`,
+		},
+		{
+			name:   "rejects zero max batch bytes",
+			writer: `"max_batch_bytes": 0`,
+		},
+		{
+			name:   "rejects zero write queue capacity",
+			writer: `"write_queue_capacity": 0`,
+		},
+		{
+			name:   "rejects zero deferred usage concurrency",
+			writer: `"deferred_usage_concurrency": 0`,
+		},
+		{
+			name:   "rejects unknown writer field",
+			writer: `"unknown": 1`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"logs_store": {
+					"enabled": true,
+					"type": "sqlite",
+					"config": {
+						"path": "/tmp/logs.db"
+					},
+					"writer": {
+						%s
+					}
+				}
+			}`, tt.writer)
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
 func postgresStoreConfig(storeName string, passwordFields string) string {
 	return fmt.Sprintf(`{
 		"%s": {

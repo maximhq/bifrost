@@ -208,9 +208,9 @@ type SkillsRegistryFile struct {
 	Path       string `json:"path"`
 	SourceType string `json:"source_type"`
 	// Source-type-specific fields
-	URL     string `json:"url,omitempty"` // for source_type "url"
-	Content  string `json:"content,omitempty"`  // for source_type "text"
-	DataURL  string `json:"dataurl,omitempty"`  // for source_type "dataurl"
+	URL     string `json:"url,omitempty"`     // for source_type "url"
+	Content string `json:"content,omitempty"` // for source_type "text"
+	DataURL string `json:"dataurl,omitempty"` // for source_type "dataurl"
 }
 
 // FeatureFlagsFileConfig is the config.json / Helm shape for feature flag
@@ -487,7 +487,9 @@ type Config struct {
 	ConfigStore configstore.ConfigStore
 	VectorStore vectorstore.VectorStore
 	LogsStore   logstore.LogStore
-	ObjectStore objectstore.ObjectStore
+	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
+	LogsStoreConfig *logstore.Config
+	ObjectStore     objectstore.ObjectStore
 
 	// In-memory storage
 	ServerConfig     *ServerConfig
@@ -960,6 +962,7 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		if err != nil {
 			return err
 		}
+		config.LogsStoreConfig = configData.LogsStoreConfig
 		if err := initSkillsObjectStore(ctx, config, configData.LogsStoreConfig); err != nil {
 			return err
 		}
@@ -1004,12 +1007,16 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 					if err != nil {
 						return fmt.Errorf("failed to initialize logs store: %v", err)
 					}
+					config.LogsStoreConfig = logStoreConfig
 				} else {
 					return fmt.Errorf("failed to initialize logs store: %v", err)
 				}
 			} else {
 				return fmt.Errorf("failed to initialize logs store: %v", err)
 			}
+		}
+		if config.LogsStoreConfig == nil {
+			config.LogsStoreConfig = logStoreConfig
 		}
 		logger.Info("logs store initialized")
 		if err := initSkillsObjectStore(ctx, config, logStoreConfig); err != nil {

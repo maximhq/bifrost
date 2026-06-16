@@ -180,7 +180,7 @@ export default function SecurityView() {
 			<div className="space-y-4">
 				{/* Password Protect the Dashboard */}
 				{IS_ENTERPRISE && authTypeLoading ? (
-					<div className="flex items-center justify-center rounded-lg border p-8" data-testid="security-auth-type-loading">
+					<div className="flex items-center justify-center rounded-sm border p-8" data-testid="security-auth-type-loading">
 						<Loader2 className="text-muted-foreground h-5 w-5 animate-spin" aria-hidden />
 						<span className="sr-only">Loading authentication settings</span>
 					</div>
@@ -196,7 +196,7 @@ export default function SecurityView() {
 				) : null}
 				{showPasswordSection && (
 					<div>
-						<div className="space-y-4 rounded-lg border p-4">
+						<div className="space-y-4 rounded-sm border p-4">
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
 									<Label htmlFor="auth-enabled" className="text-sm font-medium">
@@ -237,7 +237,7 @@ export default function SecurityView() {
 					</div>
 				)}
 				{/* Enable Auth on Inference */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
 							{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
@@ -267,7 +267,7 @@ export default function SecurityView() {
 					/>
 				</div>
 				{/* Allow Direct API Keys */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="allow-direct-keys" className="text-sm font-medium">
 							Allow Direct API Keys
@@ -288,7 +288,7 @@ export default function SecurityView() {
 				{/* Allowed Origins */}
 				{needsRestart && <RestartWarning />}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-origins" className="text-sm font-medium">
 								Allowed Origins
@@ -310,7 +310,7 @@ export default function SecurityView() {
 				</div>
 				{/* Allowed Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-headers" className="text-sm font-medium">
 								Allowed Headers
@@ -328,7 +328,7 @@ export default function SecurityView() {
 				</div>
 				{/* Required Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="required-headers" className="text-sm font-medium">
 								Required Headers
@@ -350,7 +350,7 @@ export default function SecurityView() {
 				</div>
 				{/* Whitelisted Routes */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="whitelisted-routes" className="text-sm font-medium">
 								Whitelisted Routes
