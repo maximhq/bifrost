@@ -744,6 +744,7 @@ append_dynamic_mcp_clients_insert() {
     generate_model_parameters_insert_postgres "$now" "$faker_sql"
     generate_routing_targets_insert_postgres "$now" "$faker_sql"
     generate_pricing_overrides_insert_postgres "$now" "$faker_sql"
+    generate_mcp_library_insert_postgres "$now" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
@@ -759,6 +760,7 @@ append_dynamic_mcp_clients_insert() {
     generate_model_parameters_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_routing_targets_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_pricing_overrides_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_mcp_library_insert_sqlite "$now" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
 }
@@ -1857,6 +1859,42 @@ append_dynamic_columns_postgres() {
       echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
     fi
   done
+
+  # -------------------------------------------------------------------------
+  # v1.5.10+ columns
+  # -------------------------------------------------------------------------
+
+  # framework_configs.mcp_library_url, mcp_library_sync_interval (added via add_mcp_library_config_columns)
+  # Seed the current version's defaults (modelcatalog.DefaultMCPLibraryURL / DefaultSyncInterval=24h)
+  # because the current version backfills these on startup; a NULL seed would diff before vs after.
+  if column_exists_postgres "framework_configs" "mcp_library_url"; then
+    echo "UPDATE framework_configs SET mcp_library_url = 'https://getbifrost.ai/mcp-library' WHERE id = 1;" >> "$output_file"
+  fi
+  if column_exists_postgres "framework_configs" "mcp_library_sync_interval"; then
+    echo "UPDATE framework_configs SET mcp_library_sync_interval = 86400 WHERE id = 1;" >> "$output_file"
+  fi
+
+  # governance_model_pricing.input_cost_per_token_fast, output_cost_per_token_fast (added via add_fast_mode_pricing_columns)
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_fast"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_fast"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # logs.canonical_model_name, alias_model_family (added via logs_add_canonical_model_columns)
+  if column_exists_postgres "logs" "canonical_model_name"; then
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_postgres "logs" "alias_model_family"; then
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2891,6 +2929,30 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE governance_model_configs SET calendar_aligned = 0 WHERE id = 'model-config-migration-test-1';" >> "$output_file"
       echo "UPDATE governance_model_configs SET calendar_aligned = 0 WHERE id = 'model-config-migration-test-2';" >> "$output_file"
     fi
+
+    # -----------------------------------------------------------------------
+    # v1.5.10+ columns - config store tables
+    # -----------------------------------------------------------------------
+
+    # framework_configs.mcp_library_url, mcp_library_sync_interval (added via add_mcp_library_config_columns)
+    # Seed the current version's defaults (modelcatalog.DefaultMCPLibraryURL / DefaultSyncInterval=24h)
+    # because the current version backfills these on startup; a NULL seed would diff before vs after.
+    if column_exists_sqlite "$config_db" "framework_configs" "mcp_library_url"; then
+      echo "UPDATE framework_configs SET mcp_library_url = 'https://getbifrost.ai/mcp-library' WHERE id = 1;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "framework_configs" "mcp_library_sync_interval"; then
+      echo "UPDATE framework_configs SET mcp_library_sync_interval = 86400 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # governance_model_pricing fast-mode pricing columns (added via add_fast_mode_pricing_columns)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_fast"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_fast"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+    fi
   fi
 
   # logs multi-team/BU/customer JSON-array columns (added in v1.5.9 via
@@ -2901,6 +2963,20 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   done
+
+  # logs.canonical_model_name, alias_model_family (added via logs_add_canonical_model_columns).
+  # Guarded on the logs_db schema (in dynamic scope from the SQLite test runner) since these
+  # columns are newer than the oldest tested version, unlike the array columns above.
+  if column_exists_sqlite "$logs_db" "logs" "canonical_model_name"; then
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$logs_db" "logs" "alias_model_family"; then
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # ============================================================================
@@ -3836,6 +3912,68 @@ generate_pricing_overrides_insert_sqlite() {
   echo "-- governance_pricing_overrides (scoped pricing overrides - added in v1.5.0, dynamically generated)" >> "$output_file"
   echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-001', 'Migration Test Override Global', 'global', NULL, NULL, NULL, 'exact', 'gpt-4', '[]', '{\"input_cost_per_token\": 0.00001}', 'po-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
   echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-002', 'Migration Test Override VK', 'virtual_key', 'vk-migration-test-1', NULL, NULL, 'prefix', 'claude', '[]', '{\"output_cost_per_token\": 0.00002}', 'po-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate mcp_library INSERT for PostgreSQL (table added via add_mcp_library_table).
+# source/deleted_at are added later by add_mcp_library_source_columns, so they are
+# only included when present in the schema being tested.
+generate_mcp_library_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Skip if the table doesn't exist in this version's schema
+  if ! column_exists_postgres "mcp_library" "id"; then
+    return
+  fi
+
+  local cols="slug, name, description, category, connection_type, connection_url, stdio_config, auth_type, required_header_keys, icon_url, docs_url, publisher, tags, metadata, created_at, updated_at"
+  local vals="'migration-test-mcp-lib-001', 'Migration Test MCP Server', 'A test MCP library entry for migration testing', 'testing', 'http', 'https://mcp.example.com/sse', NULL, 'none', NULL, 'https://example.com/icon.png', 'https://example.com/docs', 'Migration Test Publisher', NULL, NULL, $now, $now"
+
+  # source/deleted_at added in add_mcp_library_source_columns. source='custom' so the
+  # remote sync never overwrites or prunes the test row.
+  if column_exists_postgres "mcp_library" "source"; then
+    cols="$cols, source"
+    vals="$vals, 'custom'"
+  fi
+  if column_exists_postgres "mcp_library" "deleted_at"; then
+    cols="$cols, deleted_at"
+    vals="$vals, NULL"
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- mcp_library (MCP server catalog - added via add_mcp_library_table, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO mcp_library ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate mcp_library INSERT for SQLite (table added via add_mcp_library_table).
+generate_mcp_library_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  if ! column_exists_sqlite "$config_db" "mcp_library" "id"; then
+    return
+  fi
+
+  local cols="slug, name, description, category, connection_type, connection_url, stdio_config, auth_type, required_header_keys, icon_url, docs_url, publisher, tags, metadata, created_at, updated_at"
+  local vals="'migration-test-mcp-lib-001', 'Migration Test MCP Server', 'A test MCP library entry for migration testing', 'testing', 'http', 'https://mcp.example.com/sse', NULL, 'none', NULL, 'https://example.com/icon.png', 'https://example.com/docs', 'Migration Test Publisher', NULL, NULL, $now, $now"
+
+  if column_exists_sqlite "$config_db" "mcp_library" "source"; then
+    cols="$cols, source"
+    vals="$vals, 'custom'"
+  fi
+  if column_exists_sqlite "$config_db" "mcp_library" "deleted_at"; then
+    cols="$cols, deleted_at"
+    vals="$vals, NULL"
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- mcp_library (MCP server catalog - added via add_mcp_library_table, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO mcp_library ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Validate faker column coverage for SQLite

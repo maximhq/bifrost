@@ -30,7 +30,7 @@ func setupPostgresDeadlockStore(t *testing.T) *RDBConfigStore {
 
 	require.NoError(t, db.Exec("DROP SCHEMA public CASCADE").Error)
 	require.NoError(t, db.Exec("CREATE SCHEMA public").Error)
-	require.NoError(t, triggerMigrations(context.Background(), db))
+	require.NoError(t, triggerMigrations(context.Background(), db, testMigrationLogger))
 
 	store := &RDBConfigStore{logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
 	store.db.Store(db)

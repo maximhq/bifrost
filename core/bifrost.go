@@ -35,6 +35,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
@@ -347,7 +348,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 		config, err := bifrost.account.GetConfigForProvider(providerKey)
 		if err != nil {
-			bifrost.logger.Warn("failed to get config for provider, skipping init: %v", err)
+			bifrost.logger.Warn("failed to get config for provider %s, skipping init: %v", providerKey, err)
 			continue
 		}
 		if config == nil {
@@ -3965,6 +3966,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return ollama.NewOllamaProvider(config, bifrost.logger)
 	case schemas.Groq:
 		return groq.NewGroqProvider(config, bifrost.logger)
+	case schemas.OpencodeGo:
+		return opencode.NewOpencodeGoProvider(config, bifrost.logger)
+	case schemas.OpencodeZen:
+		return opencode.NewOpencodeZenProvider(config, bifrost.logger)
 	case schemas.SGL:
 		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
@@ -4077,7 +4082,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get config for provider: %v", err)
+		return nil, fmt.Errorf("failed to get config for provider %s: %v", providerKey, err)
 	}
 	if config == nil {
 		return nil, fmt.Errorf("config is nil for provider %s", providerKey)
@@ -5933,6 +5938,24 @@ func executeRequestWithRetries[T any](
 	return result, bifrostError
 }
 
+// clearAnthropicPassthroughForNonNativeProvider disables Anthropic raw-body passthrough when a
+// request from the Anthropic-format integration resolves to a provider that doesn't speak the
+// Anthropic Messages API natively (e.g. Bedrock), forcing that provider to convert the request
+// itself. Gated on the final resolved provider so it fires regardless of how the provider was
+// picked (prefix, catalog, key alias, governance) and re-runs per attempt for fallbacks. No-op
+// for Anthropic/Vertex/Azure providers and for non-Anthropic integrations.
+func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider) {
+	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
+		return
+	}
+	if baseProvider == schemas.Anthropic || baseProvider == schemas.Vertex || baseProvider == schemas.Azure {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+}
+
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
@@ -5983,6 +6006,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			baseProvider = cfg.BaseProviderType
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+
+		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
+		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)
 
 		// Determine whether this provider attempt should capture raw payloads.
 		//
@@ -6852,7 +6878,6 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 		return
 	}
 	ctx.BlockRestrictedWrites()
-	defer ctx.UnblockRestrictedWrites()
 	for _, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-request hook for plugin %s", pluginName)
@@ -6875,6 +6900,20 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 			continue
 		}
 		p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+	}
+	ctx.UnblockRestrictedWrites()
+
+	// Commit the routing-rule key pin. A matched routing rule writes the pinned key ID to the
+	// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID during the blocked phase above — a
+	// direct write to the reserved BifrostContextKeyAPIKeyID would have been silently dropped.
+	// Core is the sole writer of the reserved key, so normalize the routing pin into it here,
+	// after unblocking, so key selection reads a single canonical pin. A non-empty routing pin
+	// overrides a caller-supplied pin: the routing rule is authoritative server-side policy and
+	// has typically already rewritten provider/model for this request.
+	if pin, ok := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); ok {
+		if pin = strings.TrimSpace(pin); pin != "" {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, pin)
+		}
 	}
 }
 

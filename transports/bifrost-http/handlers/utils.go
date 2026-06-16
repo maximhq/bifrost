@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -116,7 +117,13 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	} else if !bifrostErr.IsBifrostError {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if bifrostErr.Error != nil &&
+			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
+				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 	}
 
 	ctx.SetContentType("application/json")

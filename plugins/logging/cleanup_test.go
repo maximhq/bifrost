@@ -189,3 +189,46 @@ func TestCleanupIsIdempotent(t *testing.T) {
 		t.Fatalf("second Cleanup() error = %v", err)
 	}
 }
+
+func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if plugin.writerConfig.MaxBatchSize != logstore.DefaultWriterMaxBatchSize {
+		t.Fatalf("MaxBatchSize = %d, want %d", plugin.writerConfig.MaxBatchSize, logstore.DefaultWriterMaxBatchSize)
+	}
+	if cap(plugin.writeQueue) != logstore.DefaultWriterQueueCapacity {
+		t.Fatalf("writeQueue cap = %d, want %d", cap(plugin.writeQueue), logstore.DefaultWriterQueueCapacity)
+	}
+	if cap(plugin.deferredUsageSem) != logstore.DefaultWriterDeferredUsageConcurrency {
+		t.Fatalf("deferredUsageSem cap = %d, want %d", cap(plugin.deferredUsageSem), logstore.DefaultWriterDeferredUsageConcurrency)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	writer := &logstore.WriterConfig{
+		MaxBatchSize:             7,
+		BatchInterval:            "10ms",
+		MaxBatchBytes:            1024,
+		WriteQueueCapacity:       11,
+		DeferredUsageConcurrency: 2,
+	}
+	plugin, err = Init(context.Background(), &Config{Writer: writer}, testLogger{}, newTestStore(t), nil, nil)
+	if err != nil {
+		t.Fatalf("Init() with writer error = %v", err)
+	}
+	if plugin.writerConfig != writer.WithDefaults() {
+		t.Fatalf("writerConfig = %#v, want %#v", plugin.writerConfig, writer.WithDefaults())
+	}
+	if cap(plugin.writeQueue) != writer.WriteQueueCapacity {
+		t.Fatalf("writeQueue cap = %d, want %d", cap(plugin.writeQueue), writer.WriteQueueCapacity)
+	}
+	if cap(plugin.deferredUsageSem) != writer.DeferredUsageConcurrency {
+		t.Fatalf("deferredUsageSem cap = %d, want %d", cap(plugin.deferredUsageSem), writer.DeferredUsageConcurrency)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() with writer error = %v", err)
+	}
+}

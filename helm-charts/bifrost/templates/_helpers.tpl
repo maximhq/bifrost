@@ -208,6 +208,9 @@ false
 {{- if .Values.bifrost.encryptionKey }}
 {{- $_ := set $config "encryption_key" .Values.bifrost.encryptionKey }}
 {{- end }}
+{{- if .Values.bifrost.envLabel }}
+{{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -703,6 +706,13 @@ false
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
 {{- if eq $configStoreType "postgres" }}
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- if and .Values.postgresql.external.enabled .Values.postgresql.external.passwordCommand }}
+{{- $_ := set $pgConfig "password_command" .Values.postgresql.external.passwordCommand }}
+{{- $_ := unset $pgConfig "password" }}
+{{- end }}
+{{- if and .Values.postgresql.external.enabled .Values.postgresql.external.connMaxLifetime }}
+{{- $_ := set $pgConfig "conn_max_lifetime" .Values.postgresql.external.connMaxLifetime }}
+{{- end }}
 {{- if .Values.storage.configStore.maxIdleConns }}
 {{- $_ := set $pgConfig "max_idle_conns" (.Values.storage.configStore.maxIdleConns | int) }}
 {{- end }}
@@ -721,6 +731,13 @@ false
 {{- $logsStoreType := .Values.storage.logsStore.type | default .Values.storage.mode }}
 {{- if eq $logsStoreType "postgres" }}
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- if and .Values.postgresql.external.enabled .Values.postgresql.external.passwordCommand }}
+{{- $_ := set $pgConfig "password_command" .Values.postgresql.external.passwordCommand }}
+{{- $_ := unset $pgConfig "password" }}
+{{- end }}
+{{- if and .Values.postgresql.external.enabled .Values.postgresql.external.connMaxLifetime }}
+{{- $_ := set $pgConfig "conn_max_lifetime" .Values.postgresql.external.connMaxLifetime }}
+{{- end }}
 {{- if .Values.storage.logsStore.maxIdleConns }}
 {{- $_ := set $pgConfig "max_idle_conns" (.Values.storage.logsStore.maxIdleConns | int) }}
 {{- end }}
@@ -731,9 +748,27 @@ false
 {{- $_ := set $pgConfig "matview_refresh_interval" .Values.storage.logsStore.matviewRefreshInterval }}
 {{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
+{{- if .Values.storage.logsStore.writer }}
+{{- $writer := dict }}
+{{- with .Values.storage.logsStore.writer.maxBatchSize }}{{- $_ := set $writer "max_batch_size" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.batchInterval }}{{- $_ := set $writer "batch_interval" . }}{{- end }}
+{{- with .Values.storage.logsStore.writer.maxBatchBytes }}{{- $_ := set $writer "max_batch_bytes" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.writeQueueCapacity }}{{- $_ := set $writer "write_queue_capacity" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.deferredUsageConcurrency }}{{- $_ := set $writer "deferred_usage_concurrency" (. | int) }}{{- end }}
+{{- if $writer }}{{- $_ := set $logsStore "writer" $writer }}{{- end }}
+{{- end }}
 {{- $_ := set $config "logs_store" $logsStore }}
 {{- else }}
 {{- $sqliteLogsStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/logs.db" .Values.bifrost.appDir)) }}
+{{- if .Values.storage.logsStore.writer }}
+{{- $writer := dict }}
+{{- with .Values.storage.logsStore.writer.maxBatchSize }}{{- $_ := set $writer "max_batch_size" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.batchInterval }}{{- $_ := set $writer "batch_interval" . }}{{- end }}
+{{- with .Values.storage.logsStore.writer.maxBatchBytes }}{{- $_ := set $writer "max_batch_bytes" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.writeQueueCapacity }}{{- $_ := set $writer "write_queue_capacity" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.deferredUsageConcurrency }}{{- $_ := set $writer "deferred_usage_concurrency" (. | int) }}{{- end }}
+{{- if $writer }}{{- $_ := set $sqliteLogsStore "writer" $writer }}{{- end }}
+{{- end }}
 {{- $_ := set $config "logs_store" $sqliteLogsStore }}
 {{- end }}
 {{- /* Object Storage for log payloads */ -}}
@@ -1207,8 +1242,20 @@ false
 {{- if $inputConfig.agent_addr }}
 {{- $_ := set $datadogConfig "agent_addr" $inputConfig.agent_addr }}
 {{- end }}
+{{- if $inputConfig.agent_host }}
+{{- $_ := set $datadogConfig "agent_host" $inputConfig.agent_host }}
+{{- end }}
+{{- if $inputConfig.agent_port }}
+{{- $_ := set $datadogConfig "agent_port" $inputConfig.agent_port }}
+{{- end }}
 {{- if $inputConfig.dogstatsd_addr }}
 {{- $_ := set $datadogConfig "dogstatsd_addr" $inputConfig.dogstatsd_addr }}
+{{- end }}
+{{- if $inputConfig.dogstatsd_host }}
+{{- $_ := set $datadogConfig "dogstatsd_host" $inputConfig.dogstatsd_host }}
+{{- end }}
+{{- if $inputConfig.dogstatsd_port }}
+{{- $_ := set $datadogConfig "dogstatsd_port" $inputConfig.dogstatsd_port }}
 {{- end }}
 {{- if $inputConfig.env }}
 {{- $_ := set $datadogConfig "env" $inputConfig.env }}

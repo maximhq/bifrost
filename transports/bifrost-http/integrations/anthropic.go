@@ -12,9 +12,9 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 

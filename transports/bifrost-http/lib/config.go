@@ -37,6 +37,7 @@ import (
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
@@ -159,6 +160,7 @@ type ConfigData struct {
 	// empty = deny all, ["*"] = allow all. Setting it to 1 restores v1.4.x semantics:
 	// empty = allow all (equivalent to ["*"]).
 	Version       int                       `json:"version,omitempty"`
+	EnvLabel      string                    `json:"env_label,omitempty"`
 	Server        *ServerConfig             `json:"server,omitempty"`
 	SourceOfTruth string                    `json:"source_of_truth,omitempty"`
 	Client        *configstore.ClientConfig `json:"client"`
@@ -178,6 +180,37 @@ type ConfigData struct {
 
 	presentSections           map[string]bool
 	presentGovernanceSections map[string]bool
+	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
+}
+
+// SkillsRegistryConfig defines declarative skill definitions in config.json.
+type SkillsRegistryConfig struct {
+	Enabled *bool                 `json:"enabled,omitempty"`
+	Skills  []SkillsRegistryEntry `json:"skills,omitempty"`
+}
+
+// SkillsRegistryEntry describes a single skill to reconcile from config.json.
+type SkillsRegistryEntry struct {
+	Name             string                 `json:"name"`
+	Description      string                 `json:"description"`
+	License          string                 `json:"license,omitempty"`
+	Compatibility    string                 `json:"compatibility,omitempty"`
+	AllowedTools     string                 `json:"allowed_tools,omitempty"`
+	ExtraFrontmatter map[string]interface{} `json:"extra_frontmatter,omitempty"`
+	Metadata         map[string]string      `json:"metadata,omitempty"`
+	SkillMDBody      string                 `json:"skill_md_body"`
+	Version          string                 `json:"version"`
+	Files            []SkillsRegistryFile   `json:"files,omitempty"`
+}
+
+// SkillsRegistryFile describes a file attached to a config-defined skill.
+type SkillsRegistryFile struct {
+	Path       string `json:"path"`
+	SourceType string `json:"source_type"`
+	// Source-type-specific fields
+	URL     string `json:"url,omitempty"`     // for source_type "url"
+	Content string `json:"content,omitempty"` // for source_type "text"
+	DataURL string `json:"dataurl,omitempty"` // for source_type "dataurl"
 }
 
 // FeatureFlagsFileConfig is the config.json / Helm shape for feature flag
@@ -340,6 +373,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
 		Version           int                                   `json:"version,omitempty"`
+		EnvLabel          string                                `json:"env_label,omitempty"`
 		SourceOfTruth     string                                `json:"source_of_truth,omitempty"`
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Server            *ServerConfig                         `json:"server,omitempty"`
@@ -355,6 +389,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -364,6 +399,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 
 	// Set simple fields
 	cd.Version = temp.Version
+	cd.EnvLabel = temp.EnvLabel
 	cd.SourceOfTruth = normalizeSourceOfTruth(temp.SourceOfTruth)
 	cd.Client = temp.Client
 	cd.Server = temp.Server
@@ -385,6 +421,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 			}
 		}
 	}
+	cd.SkillsRegistry = temp.SkillsRegistry
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -450,6 +487,9 @@ type Config struct {
 	ConfigStore configstore.ConfigStore
 	VectorStore vectorstore.VectorStore
 	LogsStore   logstore.LogStore
+	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
+	LogsStoreConfig *logstore.Config
+	ObjectStore     objectstore.ObjectStore
 
 	// In-memory storage
 	ServerConfig     *ServerConfig
@@ -509,6 +549,10 @@ type Config struct {
 	// Optional event broadcaster for real-time updates (e.g., WebSocket).
 	// Set by HTTP server at startup; may be nil in non-HTTP usage.
 	EventBroadcaster schemas.EventBroadcaster
+
+	// EnvLabel is a short label (max 10 chars) displayed in the UI sidebar to identify the
+	// environment (e.g. "staging", "prod"). Set via config.json env_label or BIFROST_ENV_LABEL env var.
+	EnvLabel string
 
 	// StreamingDecompressThreshold overrides the default threshold (10MB) for
 	// switching from buffered to streaming request decompression. Set by
@@ -837,11 +881,26 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadAuthConfig(ctx, config, &configData)
 	// 9. Plugins
 	loadPlugins(ctx, config, &configData)
-	// 10. Framework config and pricing manager
+	// 10. Skills registry (after plugins, before framework)
+	loadSkillsRegistry(ctx, config, &configData)
+	// 11. Framework config and pricing manager
 	initFrameworkConfig(ctx, config, &configData)
-	// 11. Encryption sync
+	// 12. Encryption sync
 	syncEncryption(ctx, config)
-	// 12. WebSocket defaults
+	// 12. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
+	truncateLabel := func(s string) string {
+		r := []rune(s)
+		if len(r) > 14 {
+			return string(r[:14])
+		}
+		return s
+	}
+	if label := strings.TrimSpace(configData.EnvLabel); label != "" {
+		config.EnvLabel = truncateLabel(label)
+	} else if label := strings.TrimSpace(os.Getenv("BIFROST_ENV_LABEL")); label != "" {
+		config.EnvLabel = truncateLabel(label)
+	}
+	// 13. WebSocket defaults
 	if configData.WebSocket != nil {
 		configData.WebSocket.CheckAndSetDefaults()
 		config.WebSocketConfig = configData.WebSocket
@@ -903,6 +962,10 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		if err != nil {
 			return err
 		}
+		config.LogsStoreConfig = configData.LogsStoreConfig
+		if err := initSkillsObjectStore(ctx, config, configData.LogsStoreConfig); err != nil {
+			return err
+		}
 		logger.Info("logs store initialized")
 	} else if configData.LogsStoreConfig == nil {
 		// No logs store section — check DB for stored config (if available), then fall back to default SQLite
@@ -944,6 +1007,7 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 					if err != nil {
 						return fmt.Errorf("failed to initialize logs store: %v", err)
 					}
+					config.LogsStoreConfig = logStoreConfig
 				} else {
 					return fmt.Errorf("failed to initialize logs store: %v", err)
 				}
@@ -951,7 +1015,13 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 				return fmt.Errorf("failed to initialize logs store: %v", err)
 			}
 		}
+		if config.LogsStoreConfig == nil {
+			config.LogsStoreConfig = logStoreConfig
+		}
 		logger.Info("logs store initialized")
+		if err := initSkillsObjectStore(ctx, config, logStoreConfig); err != nil {
+			return err
+		}
 		if config.ConfigStore != nil {
 			if err = config.ConfigStore.UpdateLogsStoreConfig(ctx, logStoreConfig); err != nil {
 				return fmt.Errorf("failed to update logs store config: %w", err)
@@ -1090,10 +1160,14 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		logger.Warn("failed to generate client config hash from file: %v", hashErr)
 		return
 	}
-	if clientConfig.ConfigHash == fileHash {
+	// When config.json owns this section, the file always wins regardless of the
+	// stored hash: UI/API edits do not bump ConfigHash, so a hash match cannot prove
+	// the DB row is unchanged. Forcing the sync reverts UI drift back to file values.
+	forceClientSync := configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("client")
+	if !forceClientSync && clientConfig.ConfigHash == fileHash {
 		// Hash matches - keep DB config (preserves UI changes to both client and tool manager settings)
 		logger.Debug("client config hash matches, keeping DB config")
-	} else if baseHash, baseErr := configData.Client.GenerateClientConfigHash(); baseErr == nil &&
+	} else if baseHash, baseErr := configData.Client.GenerateClientConfigHash(); !forceClientSync && baseErr == nil &&
 		clientConfig.ConfigHash == baseHash && toolManagerFromFile != nil {
 		// Legacy hash match (pre-upgrade): the stored hash covers only the client section and
 		// matches the file, meaning the client section is unchanged. Only apply the tool manager
@@ -2003,6 +2077,11 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 // mergeGovernanceConfig merges governance config from file with store
 func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
 	logger.Debug("merging governance config from config file with store")
+	// When config.json is the source of truth, file-present entities must be
+	// re-synced even when the stored ConfigHash still matches the file. The stored
+	// hash is not updated on UI/API edits, so a hash match cannot prove the DB row
+	// is unchanged; forcing the sync reverts UI drift back to the file values.
+	forceFileSync := configData.isConfigJSONSourceOfTruth()
 	// Merge Budgets by ID with hash comparison
 	budgetsToAdd := make([]configstoreTables.TableBudget, 0)
 	budgetsToUpdate := make([]configstoreTables.TableBudget, 0)
@@ -2018,7 +2097,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingBudget := range governanceConfig.Budgets {
 			if existingBudget.ID == newBudget.ID {
 				found = true
-				if existingBudget.ConfigHash != fileBudgetHash {
+				if forceFileSync || existingBudget.ConfigHash != fileBudgetHash {
 					logger.Debug("config hash mismatch for budget %s, syncing from config file", newBudget.ID)
 					configData.Governance.Budgets[i].ConfigHash = fileBudgetHash
 					budgetsToUpdate = append(budgetsToUpdate, configData.Governance.Budgets[i])
@@ -2049,7 +2128,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingRateLimit := range governanceConfig.RateLimits {
 			if existingRateLimit.ID == newRateLimit.ID {
 				found = true
-				if existingRateLimit.ConfigHash != fileRLHash {
+				if forceFileSync || existingRateLimit.ConfigHash != fileRLHash {
 					logger.Debug("config hash mismatch for rate limit %s, syncing from config file", newRateLimit.ID)
 					configData.Governance.RateLimits[i].ConfigHash = fileRLHash
 					rateLimitsToUpdate = append(rateLimitsToUpdate, configData.Governance.RateLimits[i])
@@ -2086,7 +2165,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					configData.Governance.Customers[i].ID = existingCustomer.ID
 				}
 				found = true
-				if existingCustomer.ConfigHash != fileCustomerHash {
+				if forceFileSync || existingCustomer.ConfigHash != fileCustomerHash {
 					logger.Debug("config hash mismatch for customer %s, syncing from config file", newCustomer.ID)
 					configData.Governance.Customers[i].ConfigHash = fileCustomerHash
 					customersToUpdate = append(customersToUpdate, configData.Governance.Customers[i])
@@ -2126,7 +2205,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					configData.Governance.Teams[i].ID = existingTeam.ID
 				}
 				found = true
-				if existingTeam.ConfigHash != fileTeamHash {
+				if forceFileSync || existingTeam.ConfigHash != fileTeamHash {
 					logger.Debug("config hash mismatch for team %s, syncing from config file", newTeam.ID)
 					configData.Governance.Teams[i].ConfigHash = fileTeamHash
 					teamsToUpdate = append(teamsToUpdate, configData.Governance.Teams[i])
@@ -2166,7 +2245,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					configData.Governance.VirtualKeys[i].ID = existingVirtualKey.ID
 				}
 				found = true
-				if existingVirtualKey.ConfigHash != fileVKHash {
+				if forceFileSync || existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 					// This is added for backward compatibility with existing configs
@@ -2244,7 +2323,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingRoutingRule := range governanceConfig.RoutingRules {
 			if existingRoutingRule.ID == newRoutingRule.ID {
 				found = true
-				if existingRoutingRule.ConfigHash != fileRoutingRuleHash {
+				if forceFileSync || existingRoutingRule.ConfigHash != fileRoutingRuleHash {
 					logger.Debug("config hash mismatch for routing rule %s, syncing from config file", newRoutingRule.ID)
 					configData.Governance.RoutingRules[i].ConfigHash = fileRoutingRuleHash
 					routingRulesToUpdate = append(routingRulesToUpdate, configData.Governance.RoutingRules[i])
@@ -2285,7 +2364,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existing := range governanceConfig.PricingOverrides {
 			if existing.ID == newOverride.ID {
 				found = true
-				if existing.ConfigHash != fileHash {
+				if forceFileSync || existing.ConfigHash != fileHash {
 					logger.Debug("config hash mismatch for pricing override %s, syncing from config file", newOverride.ID)
 					pricingOverridesToUpdate = append(pricingOverridesToUpdate, configData.Governance.PricingOverrides[i])
 					governanceConfig.PricingOverrides[j] = configData.Governance.PricingOverrides[i]
@@ -2314,7 +2393,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		for j, existingModelConfig := range governanceConfig.ModelConfigs {
 			if existingModelConfig.ID == newModelConfig.ID {
 				found = true
-				if existingModelConfig.ConfigHash != fileModelConfigHash {
+				if forceFileSync || existingModelConfig.ConfigHash != fileModelConfigHash {
 					logger.Debug("config hash mismatch for model config %s, syncing from config file", newModelConfig.ID)
 					modelConfigsToUpdate = append(modelConfigsToUpdate, configData.Governance.ModelConfigs[i])
 					governanceConfig.ModelConfigs[j] = configData.Governance.ModelConfigs[i]
@@ -2819,7 +2898,7 @@ func updateGovernanceConfigInStore(
 				// budget_id removed — unlink any budget previously owned via this path.
 				if err := tx.Model(&configstoreTables.TableBudget{}).
 					Where("customer_id = ?", customer.ID).
-					Update("customer_id", nil).Error; err != nil {
+					UpdateColumn("customer_id", nil).Error; err != nil {
 					return fmt.Errorf("failed to unlink stale budgets from customer %s: %w", customer.ID, err)
 				}
 				continue
@@ -3100,13 +3179,13 @@ func linkCustomerBudgetID(tx *gorm.DB, customerID, budgetID string, clearStale b
 	if clearStale {
 		if err := tx.Model(&configstoreTables.TableBudget{}).
 			Where("customer_id = ? AND id != ?", customerID, budgetID).
-			Update("customer_id", nil).Error; err != nil {
+			UpdateColumn("customer_id", nil).Error; err != nil {
 			return fmt.Errorf("failed to unlink stale budget from customer %s: %w", customerID, err)
 		}
 	}
 	result := tx.Model(&configstoreTables.TableBudget{}).
 		Where("id = ?", budgetID).
-		Update("customer_id", customerID)
+		UpdateColumn("customer_id", customerID)
 	if result.Error != nil {
 		return fmt.Errorf("failed to link budget %s to customer %s: %w", budgetID, customerID, result.Error)
 	}
@@ -3853,8 +3932,8 @@ func syncPluginsFromFile(ctx context.Context, config *Config, configData *Config
 				Placement: plugin.Placement,
 				Order:     plugin.Order,
 			}
-			if err := config.ConfigStore.UpsertPlugin(ctx, tablePlugin, tx); err != nil {
-				return fmt.Errorf("failed to upsert plugin %s: %w", plugin.Name, err)
+			if err := config.ConfigStore.UpdatePlugin(ctx, tablePlugin, tx); err != nil {
+				return fmt.Errorf("failed to update plugin %s: %w", plugin.Name, err)
 			}
 		}
 		return nil
@@ -4779,9 +4858,33 @@ func (c *Config) Close(ctx context.Context) {
 	if c.LogsStore != nil {
 		c.LogsStore.Close(ctx)
 	}
+	if c.ObjectStore != nil {
+		if err := c.ObjectStore.Close(); err != nil {
+			logger.Warn("failed to close object store: %v", err)
+		}
+	}
 	if c.VectorStore != nil {
 		c.VectorStore.Close(ctx, "")
 	}
+}
+
+func initSkillsObjectStore(ctx context.Context, config *Config, logStoreConfig *logstore.Config) error {
+	if config == nil || config.ObjectStore != nil || logStoreConfig == nil || logStoreConfig.ObjectStorage == nil {
+		return nil
+	}
+	objStore, err := objectstore.NewObjectStore(ctx, logStoreConfig.ObjectStorage, logger)
+	if err != nil {
+		return fmt.Errorf("failed to create skills object store: %w", err)
+	}
+	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pingCancel()
+	if err := objStore.Ping(pingCtx); err != nil {
+		_ = objStore.Close()
+		return fmt.Errorf("failed to ping skills object store: %w", err)
+	}
+	config.ObjectStore = objStore
+	logger.Info("skills object store initialized")
+	return nil
 }
 
 // initFeatureFlags constructs the feature flag store and applies overrides

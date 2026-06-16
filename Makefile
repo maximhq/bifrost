@@ -13,6 +13,7 @@ FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
+COMPAT ?=
 
 # Colors for output
 RED=\033[0;31m
@@ -239,15 +240,33 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 
 dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment using pulse for hot reloading
 	@$(EXPOSE_ENV); \
-	set -m; \
+	set +m; \
+	ui_pid=""; \
+	pulse_pid=""; \
 	cleanup() { \
+		$(ECHO) "$(YELLOW)[make dev-pulse] cleanup started; ui_pid=$$ui_pid pulse_pid=$$pulse_pid$(NC)"; \
 		trap - EXIT INT TERM HUP; \
-		kill %1 %2 2>/dev/null || true; \
+		for pid in "$$ui_pid" "$$pulse_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev-pulse] sending TERM to pid $$pid and children: $${children:-none}$(NC)"; \
+				kill -TERM $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
 		sleep 1; \
-		kill -KILL %1 %2 2>/dev/null || true; \
+		for pid in "$$ui_pid" "$$pulse_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev-pulse] sending KILL to pid $$pid and remaining children: $${children:-none}$(NC)"; \
+				kill -KILL $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
+		$(ECHO) "$(YELLOW)[make dev-pulse] waiting for background jobs to exit...$(NC)"; \
 		wait 2>/dev/null || true; \
+		$(ECHO) "$(GREEN)[make dev-pulse] cleanup completed.$(NC)"; \
 	}; \
 	stop_dev() { \
+		$(ECHO) "$(YELLOW)[make dev-pulse] received shutdown signal; starting cleanup...$(NC)"; \
 		cleanup; \
 		exit 130; \
 	}; \
@@ -274,29 +293,24 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 	else \
 		(cd ui && npm run dev) & \
 	fi; \
+	ui_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] UI dev server started with pid $$ui_pid$(NC)"; \
 	sleep 3; \
 	$(ECHO) "$(YELLOW)Starting API server with UI proxy...$(NC)"; \
 	$(MAKE) setup-workspace >/dev/null; \
 	if [ -n "$(DEBUG)" ]; then \
 		$(ECHO) "$(CYAN)Starting with pulse + delve debugger on port 2345...$(NC)"; \
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
-		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
-			-host "$(HOST)" \
-			-port "$(PORT)" \
-			-log-style "$(LOG_STYLE)" \
-			-log-level "$(LOG_LEVEL)" \
-			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
+		PORT="$(PORT)" HOST="$(HOST)" LOG_STYLE="$(LOG_STYLE)" LOG_LEVEL="$(LOG_LEVEL)" BIFROST_UI_DEV=true \
+			$(if $(APP_DIR),APP_DIR="$(abspath $(APP_DIR))") pulse & \
 	else \
-		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
-			-host "$(HOST)" \
-			-port "$(PORT)" \
-			-log-style "$(LOG_STYLE)" \
-			-log-level "$(LOG_LEVEL)" \
-			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
+		PORT="$(PORT)" HOST="$(HOST)" LOG_STYLE="$(LOG_STYLE)" LOG_LEVEL="$(LOG_LEVEL)" BIFROST_UI_DEV=true \
+			$(if $(APP_DIR),APP_DIR="$(abspath $(APP_DIR))") pulse & \
 	fi; \
-	while [ "$$(jobs -r | wc -l | tr -d ' ')" -eq 2 ]; do sleep 1; done; \
+	pulse_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] pulse started with pid $$pulse_pid$(NC)"; \
+	while kill -0 "$$ui_pid" 2>/dev/null && kill -0 "$$pulse_pid" 2>/dev/null; do sleep 1; done; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] one of the dev processes exited; running cleanup...$(NC)"; \
 	cleanup; \
 	exit 1
 
@@ -1771,6 +1785,21 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		exit 0; \
 	fi
 	@if [ -n "$(HELP)" ]; then exit 0; fi; \
+	if [ "$(COMPAT)" = "both" ]; then \
+		mkdir -p tmp; \
+		$(ECHO) "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		for mode in off on; do \
+			$(ECHO) "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
+			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
+			RC=$$?; \
+			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
+			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
+			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
+			if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
+		done; \
+		$(ECHO) "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
+		exit $${BOTH_RC:-0}; \
+	fi; \
 	$(EXPOSE_ENV); \
 	mkdir -p tmp; \
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
@@ -1893,6 +1922,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			( \
 				newman run "tmp/harness-filtered-$$p.json" \
 					--env-var "baseUrl=$$BASE_URL_VAL" \
+					$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 					$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
@@ -1975,6 +2005,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			echo $$! > tmp/harness-monitor.pid; \
 			newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
@@ -1998,6 +2029,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		else \
 			newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \

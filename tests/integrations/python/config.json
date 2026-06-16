@@ -1,5 +1,6 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "env_label":"Development",
   "mcp": {
     "client_configs": [
       {
@@ -302,6 +303,13 @@
     "type": "sqlite",
     "config": {
       "path": "../../tests/integrations/python/logs.db"
+    },
+    "writer": {
+      "max_batch_size":  100,
+      "batch_interval": "1s",
+      "max_batch_bytes": 10485760,
+      "write_queue_capacity": 1000,
+      "deferred_usage_concurrency": 10
     }
   },
   "governance": {
