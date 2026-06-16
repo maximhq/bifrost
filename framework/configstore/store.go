@@ -52,6 +52,7 @@ type SkillVersionListQueryParams struct {
 	Offset int
 	SortBy string // version, created_at (default: created_at)
 	Order  string // asc, desc (default: desc)
+	Search string // substring match on the version string (optional)
 }
 
 // RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
