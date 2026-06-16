@@ -111,6 +111,9 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	// itself so ParseModelString can strip its prefix from "deepseek/deepseek-v4-pro".
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
 	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
 
 	tests := []struct {
 		name     string
@@ -191,6 +194,20 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			name:     "preserves max for provider-prefixed deepseek-v4",
 			provider: schemas.ModelProvider("deepseek"),
 			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.2",
 			effort:   "max",
 			expected: "max",
 		},
@@ -314,6 +331,9 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
 	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
 
 	tests := []struct {
 		name     string
@@ -390,6 +410,18 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 		{
 			name:     "preserves max for provider-prefixed deepseek-v4",
 			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.2",
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			model:    "zai/glm-5.2",
 			effort:   "max",
 			expected: "max",
 		},
