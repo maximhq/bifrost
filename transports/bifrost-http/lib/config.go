@@ -891,7 +891,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	truncateLabel := func(s string) string {
 		r := []rune(s)
 		if len(r) > 10 {
-			return string(r[:10])
+			return string(r[:14])
 		}
 		return s
 	}
