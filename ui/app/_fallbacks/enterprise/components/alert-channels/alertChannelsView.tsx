@@ -1,16 +1,12 @@
-import { Siren } from "lucide-react";
-import ContactUsView from "../views/contactUsView";
+import AlertingPlaceholderView from "./alertingPlaceholderView";
 
 export default function AlertChannelsView() {
 	return (
-		<div className="h-full w-full">
-			<ContactUsView
-				className="mx-auto min-h-[80vh]"
-				icon={<Siren className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
-				title="Unlock alert channels for better observability"
-				description="This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
-				readmeLink="https://docs.getbifrost.ai/enterprise/alert-channels"
-			/>
-		</div>
+		<AlertingPlaceholderView
+			title="Unlock alerting channels for proactive monitoring"
+			description="This feature is a part of the Bifrost enterprise license. Configure Slack, PagerDuty, OpsGenie, and webhook alerts to stay ahead of budget and performance issues."
+			readmeLink="https://docs.getbifrost.ai/enterprise/alerting/alert-channels"
+			testIdPrefix="alert-channels"
+		/>
 	);
 }
