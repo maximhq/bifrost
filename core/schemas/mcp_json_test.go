@@ -61,3 +61,44 @@ func TestMCPConfigUnmarshalToolSyncIntervalRejectsFractionalNumber(t *testing.T)
 	}
 }
 
+func TestMCPClientConfigUnmarshalToolExecutionTimeoutString(t *testing.T) {
+	raw := []byte(`{"name":"demo","connection_type":"http","tool_execution_timeout":"45s"}`)
+	var cfg MCPClientConfig
+	if err := sonic.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if cfg.ToolExecutionTimeout != 45*time.Second {
+		t.Fatalf("expected 45s, got %v", cfg.ToolExecutionTimeout)
+	}
+}
+
+func TestMCPClientConfigUnmarshalToolExecutionTimeoutInteger(t *testing.T) {
+	raw := []byte(`{"name":"demo","connection_type":"http","tool_execution_timeout":60}`)
+	var cfg MCPClientConfig
+	if err := sonic.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if cfg.ToolExecutionTimeout != 60*time.Second {
+		t.Fatalf("expected 60s, got %v", cfg.ToolExecutionTimeout)
+	}
+}
+
+func TestMCPClientConfigUnmarshalToolExecutionTimeoutNotSet(t *testing.T) {
+	raw := []byte(`{"name":"demo","connection_type":"http"}`)
+	var cfg MCPClientConfig
+	if err := sonic.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if cfg.ToolExecutionTimeout != 0 {
+		t.Fatalf("expected 0 (use global), got %v", cfg.ToolExecutionTimeout)
+	}
+}
+
+func TestMCPClientConfigUnmarshalToolExecutionTimeoutInvalidString(t *testing.T) {
+	raw := []byte(`{"name":"demo","connection_type":"http","tool_execution_timeout":"not-a-duration"}`)
+	var cfg MCPClientConfig
+	if err := sonic.Unmarshal(raw, &cfg); err == nil {
+		t.Fatal("expected unmarshal error for invalid duration, got nil")
+	}
+}
+

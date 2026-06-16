@@ -313,9 +313,10 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`  // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
-	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`       // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolExecutionTimeout  time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
 	Disabled              bool               `json:"disabled"`                     // Whether the client is intentionally disabled (stops connection and workers)
 	ConfigHash            string             `json:"-"`                            // Config hash for reconciliation (not serialized)
 	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`    // Whether to allow the MCP client to run on all virtual keys
@@ -325,12 +326,14 @@ type MCPClientConfig struct {
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
 }
 
-// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
-// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
+// tool_execution_timeout. Numeric values are treated as raw nanoseconds for tool_sync_interval
+// and as seconds for tool_execution_timeout (matching tool_manager_config behaviour).
 func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	type alias MCPClientConfig
 	aux := &struct {
-		ToolSyncInterval *json.Number `json:"tool_sync_interval,omitempty"`
+		ToolSyncInterval     *json.Number     `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 
@@ -340,33 +343,61 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return errors.New("trailing JSON data")
 		}
-		if aux.ToolSyncInterval == nil {
-			return nil
+		if aux.ToolSyncInterval != nil {
+			dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
+			if parseErr != nil {
+				return parseErr
+			}
+			c.ToolSyncInterval = dur
 		}
-		dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
-		if parseErr != nil {
-			return parseErr
+		if aux.ToolExecutionTimeout != nil {
+			raw := *aux.ToolExecutionTimeout
+			// string like "30s" — parse as Go duration
+			if len(raw) > 0 && raw[0] == '"' {
+				var s string
+				if err := json.Unmarshal(raw, &s); err != nil {
+					return fmt.Errorf("invalid tool_execution_timeout: %w", err)
+				}
+				dur, err := time.ParseDuration(s)
+				if err != nil {
+					return fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
+				}
+				c.ToolExecutionTimeout = dur
+			} else {
+				// bare integer — treat as seconds 
+				var n int64
+				if err := json.Unmarshal(raw, &n); err != nil {
+					return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+				}
+				c.ToolExecutionTimeout = time.Duration(n) * time.Second
+			}
 		}
-		c.ToolSyncInterval = dur
 		return nil
 	}
 
 	// Allow Go duration strings while keeping numeric tokens as json.Number.
 	auxStr := &struct {
-		ToolSyncInterval *string `json:"tool_sync_interval,omitempty"`
+		ToolSyncInterval     *string `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout *string `json:"tool_execution_timeout,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(data, auxStr); err != nil {
 		return err
 	}
-	if auxStr.ToolSyncInterval == nil {
-		return nil
+	if auxStr.ToolSyncInterval != nil {
+		dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
+		if err != nil {
+			return err
+		}
+		c.ToolSyncInterval = dur
 	}
-	dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
-	if err != nil {
-		return err
+	if auxStr.ToolExecutionTimeout != nil {
+		dur, err := parseFlexibleDurationField(*auxStr.ToolExecutionTimeout, "tool_execution_timeout")
+		if err != nil {
+			return err
+		}
+		c.ToolExecutionTimeout = dur
 	}
-	c.ToolSyncInterval = dur
 	return nil
 }
 

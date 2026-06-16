@@ -683,8 +683,12 @@ func (m *ToolsManager) executeToolInternal(
 	sanitizedToolName := stripClientPrefix(toolName, executionConfig.Name)
 	originalMCPToolName := getOriginalToolName(sanitizedToolName, toolNameMapping)
 
-	// Create timeout context for tool execution
+	// Create timeout context for tool execution.
+	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
 	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
+	if executionConfig != nil && executionConfig.ToolExecutionTimeout > 0 {
+		toolExecutionTimeout = executionConfig.ToolExecutionTimeout
+	}
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
