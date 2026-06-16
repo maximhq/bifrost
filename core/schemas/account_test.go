@@ -223,8 +223,8 @@ func TestKeyAliasesResolveConfig(t *testing.T) {
 func TestKeyAliasesValidate(t *testing.T) {
 	madeUp := ModelFamily("made-up")
 	azureCfg := &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}
-	bedrockCfg := &BedrockAliasCfg{InferenceProfileARN: NewEnvVar("arn:aws:bedrock:...")}
-	vertexCfg := &VertexAliasCfg{ProjectID: NewEnvVar("my-gcp-project")}
+	bedrockCfg := &BedrockAliasCfg{InferenceProfileARN: NewSecretVar("arn:aws:bedrock:...")}
+	vertexCfg := &VertexAliasCfg{ProjectID: NewSecretVar("my-gcp-project")}
 	replicateCfg := &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)}
 	cases := []struct {
 		name     string

@@ -122,7 +122,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key := &pc.Keys[i]
 
 			// Clear the actual API key value
-			key.Value = *schemas.NewEnvVar("")
+			key.Value = *schemas.NewSecretVar("")
 
 			// Clear all Azure-related sensitive fields
 			key.AzureEndpoint = nil

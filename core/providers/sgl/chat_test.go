@@ -80,9 +80,9 @@ func TestChatCompletion_ExtraParamsForwardedAutomatically(t *testing.T) {
 	provider := newTestSGLProvider()
 	key := schemas.Key{
 		ID:    "test-key",
-		Value: schemas.EnvVar{Val: "test-api-key"},
+		Value: schemas.SecretVar{Val: "test-api-key"},
 		SGLKeyConfig: &schemas.SGLKeyConfig{
-			URL: schemas.EnvVar{Val: server.URL},
+			URL: schemas.SecretVar{Val: server.URL},
 		},
 	}
 
@@ -213,9 +213,9 @@ func TestChatCompletionStream_SetsAuthorizationHeader(t *testing.T) {
 	const apiKey = "sgl-streaming-secret"
 	key := schemas.Key{
 		ID:    "test-key",
-		Value: schemas.EnvVar{Val: apiKey},
+		Value: schemas.SecretVar{Val: apiKey},
 		SGLKeyConfig: &schemas.SGLKeyConfig{
-			URL: schemas.EnvVar{Val: server.URL},
+			URL: schemas.SecretVar{Val: server.URL},
 		},
 	}
 
@@ -266,9 +266,9 @@ func TestTextCompletionStream_SetsAuthorizationHeader(t *testing.T) {
 	const apiKey = "sgl-streaming-secret"
 	key := schemas.Key{
 		ID:    "test-key",
-		Value: schemas.EnvVar{Val: apiKey},
+		Value: schemas.SecretVar{Val: apiKey},
 		SGLKeyConfig: &schemas.SGLKeyConfig{
-			URL: schemas.EnvVar{Val: server.URL},
+			URL: schemas.SecretVar{Val: server.URL},
 		},
 	}
 

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestEnvVar_UnmarshalJSON_DoubleEscapedJSON(t *testing.T) {
+func TestSecretVar_UnmarshalJSON_DoubleEscapedJSON(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -46,22 +46,22 @@ func TestEnvVar_UnmarshalJSON_DoubleEscapedJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var envVar EnvVar
-			err := envVar.UnmarshalJSON([]byte(tt.input))
+			var secretVar SecretVar
+			err := secretVar.UnmarshalJSON([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("UnmarshalJSON failed: %v", err)
 			}
-			if envVar.Val != tt.expected {
-				t.Errorf("Expected Val=%q, got Val=%q", tt.expected, envVar.Val)
+			if secretVar.Val != tt.expected {
+				t.Errorf("Expected Val=%q, got Val=%q", tt.expected, secretVar.Val)
 			}
-			if envVar.FromEnv {
+			if secretVar.FromEnv {
 				t.Errorf("Expected FromEnv=false, got FromEnv=true")
 			}
 		})
 	}
 }
 
-func TestEnvVar_UnmarshalJSON_EnvVarReference(t *testing.T) {
+func TestSecretVar_UnmarshalJSON_SecretVarReference(t *testing.T) {
 	// Set up test environment variable
 	os.Setenv("TEST_API_KEY", "actual-api-key-value")
 	defer os.Unsetenv("TEST_API_KEY")
@@ -91,45 +91,45 @@ func TestEnvVar_UnmarshalJSON_EnvVarReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var envVar EnvVar
-			err := envVar.UnmarshalJSON([]byte(tt.input))
+			var secretVar SecretVar
+			err := secretVar.UnmarshalJSON([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("UnmarshalJSON failed: %v", err)
 			}
-			if envVar.Val != tt.expectedVal {
-				t.Errorf("Expected Val=%q, got Val=%q", tt.expectedVal, envVar.Val)
+			if secretVar.Val != tt.expectedVal {
+				t.Errorf("Expected Val=%q, got Val=%q", tt.expectedVal, secretVar.Val)
 			}
-			if envVar.EnvVar != tt.expectedEnvVar {
-				t.Errorf("Expected EnvVar=%q, got EnvVar=%q", tt.expectedEnvVar, envVar.EnvVar)
+			if secretVar.EnvVar != tt.expectedEnvVar {
+				t.Errorf("Expected SecretVar=%q, got SecretVar=%q", tt.expectedEnvVar, secretVar.EnvVar)
 			}
-			if envVar.FromEnv != tt.expectedFromEnv {
-				t.Errorf("Expected FromEnv=%v, got FromEnv=%v", tt.expectedFromEnv, envVar.FromEnv)
+			if secretVar.FromEnv != tt.expectedFromEnv {
+				t.Errorf("Expected FromEnv=%v, got FromEnv=%v", tt.expectedFromEnv, secretVar.FromEnv)
 			}
 		})
 	}
 }
 
-func TestEnvVar_UnmarshalJSON_FullStructure(t *testing.T) {
-	// Test when the input is already an EnvVar JSON object
+func TestSecretVar_UnmarshalJSON_FullStructure(t *testing.T) {
+	// Test when the input is already an SecretVar JSON object
 	input := `{"value":"my-api-key","env_var":"env.MY_KEY","from_env":true}`
 
-	var envVar EnvVar
-	err := envVar.UnmarshalJSON([]byte(input))
+	var secretVar SecretVar
+	err := secretVar.UnmarshalJSON([]byte(input))
 	if err != nil {
 		t.Fatalf("UnmarshalJSON failed: %v", err)
 	}
-	if envVar.Val != "my-api-key" {
-		t.Errorf("Expected Val=%q, got Val=%q", "my-api-key", envVar.Val)
+	if secretVar.Val != "my-api-key" {
+		t.Errorf("Expected Val=%q, got Val=%q", "my-api-key", secretVar.Val)
 	}
-	if envVar.EnvVar != "env.MY_KEY" {
-		t.Errorf("Expected EnvVar=%q, got EnvVar=%q", "env.MY_KEY", envVar.EnvVar)
+	if secretVar.EnvVar != "env.MY_KEY" {
+		t.Errorf("Expected SecretVar=%q, got SecretVar=%q", "env.MY_KEY", secretVar.EnvVar)
 	}
-	if !envVar.FromEnv {
+	if !secretVar.FromEnv {
 		t.Errorf("Expected FromEnv=true, got FromEnv=false")
 	}
 }
 
-func TestNewEnvVar_DoubleEscapedJSON(t *testing.T) {
+func TestNewSecretVar_DoubleEscapedJSON(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -159,15 +159,15 @@ func TestNewEnvVar_DoubleEscapedJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			envVar := NewEnvVar(tt.input)
-			if envVar.Val != tt.expected {
-				t.Errorf("Expected Val=%q, got Val=%q", tt.expected, envVar.Val)
+			secretVar := NewSecretVar(tt.input)
+			if secretVar.Val != tt.expected {
+				t.Errorf("Expected Val=%q, got Val=%q", tt.expected, secretVar.Val)
 			}
 		})
 	}
 }
 
-func TestNewEnvVar_EnvVarReference(t *testing.T) {
+func TestNewSecretVar_SecretVarReference(t *testing.T) {
 	// Set up test environment variable
 	os.Setenv("TEST_NEW_ENVVAR_KEY", "resolved-value")
 	defer os.Unsetenv("TEST_NEW_ENVVAR_KEY")
@@ -204,28 +204,28 @@ func TestNewEnvVar_EnvVarReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			envVar := NewEnvVar(tt.input)
-			if envVar.Val != tt.expectedVal {
-				t.Errorf("Expected Val=%q, got Val=%q", tt.expectedVal, envVar.Val)
+			secretVar := NewSecretVar(tt.input)
+			if secretVar.Val != tt.expectedVal {
+				t.Errorf("Expected Val=%q, got Val=%q", tt.expectedVal, secretVar.Val)
 			}
-			if envVar.EnvVar != tt.expectedEnvVar {
-				t.Errorf("Expected EnvVar=%q, got EnvVar=%q", tt.expectedEnvVar, envVar.EnvVar)
+			if secretVar.EnvVar != tt.expectedEnvVar {
+				t.Errorf("Expected SecretVar=%q, got SecretVar=%q", tt.expectedEnvVar, secretVar.EnvVar)
 			}
-			if envVar.FromEnv != tt.expectedFromEnv {
-				t.Errorf("Expected FromEnv=%v, got FromEnv=%v", tt.expectedFromEnv, envVar.FromEnv)
+			if secretVar.FromEnv != tt.expectedFromEnv {
+				t.Errorf("Expected FromEnv=%v, got FromEnv=%v", tt.expectedFromEnv, secretVar.FromEnv)
 			}
 		})
 	}
 }
 
-// TestEnvVar_RealWorldVertexCredentials tests the actual use case that triggered
+// TestSecretVar_RealWorldVertexCredentials tests the actual use case that triggered
 // the double-escaping bug: Vertex AI service account credentials
-func TestEnvVar_RealWorldVertexCredentials(t *testing.T) {
+func TestSecretVar_RealWorldVertexCredentials(t *testing.T) {
 	// This simulates what happens when parsing config.json with embedded service account JSON
 	type VertexKeyConfig struct {
-		ProjectID       EnvVar `json:"project_id"`
-		Region          EnvVar `json:"region"`
-		AuthCredentials EnvVar `json:"auth_credentials"`
+		ProjectID       SecretVar `json:"project_id"`
+		Region          SecretVar `json:"region"`
+		AuthCredentials SecretVar `json:"auth_credentials"`
 	}
 
 	jsonInput := `{
@@ -255,15 +255,15 @@ func TestEnvVar_RealWorldVertexCredentials(t *testing.T) {
 	}
 }
 
-// TestEnvVar_MixedConfigParsing tests parsing a config with both env var references
+// TestSecretVar_MixedConfigParsing tests parsing a config with both env var references
 // and embedded JSON credentials
-func TestEnvVar_MixedConfigParsing(t *testing.T) {
+func TestSecretVar_MixedConfigParsing(t *testing.T) {
 	os.Setenv("TEST_PROJECT_ID", "env-project-id")
 	defer os.Unsetenv("TEST_PROJECT_ID")
 
 	type Config struct {
-		ProjectID   EnvVar `json:"project_id"`
-		Credentials EnvVar `json:"credentials"`
+		ProjectID   SecretVar `json:"project_id"`
+		Credentials SecretVar `json:"credentials"`
 	}
 
 	jsonInput := `{
@@ -295,11 +295,11 @@ func TestEnvVar_MixedConfigParsing(t *testing.T) {
 	}
 }
 
-func TestEnvVar_Equals(t *testing.T) {
+func TestSecretVar_Equals(t *testing.T) {
 	tests := []struct {
 		name     string
-		a        *EnvVar
-		b        *EnvVar
+		a        *SecretVar
+		b        *SecretVar
 		expected bool
 	}{
 		{
@@ -311,25 +311,25 @@ func TestEnvVar_Equals(t *testing.T) {
 		{
 			name:     "first nil",
 			a:        nil,
-			b:        &EnvVar{Val: "test"},
+			b:        &SecretVar{Val: "test"},
 			expected: false,
 		},
 		{
 			name:     "second nil",
-			a:        &EnvVar{Val: "test"},
+			a:        &SecretVar{Val: "test"},
 			b:        nil,
 			expected: false,
 		},
 		{
 			name:     "equal values",
-			a:        &EnvVar{Val: "test", EnvVar: "env.TEST", FromEnv: true},
-			b:        &EnvVar{Val: "test", EnvVar: "env.TEST", FromEnv: true},
+			a:        &SecretVar{Val: "test", EnvVar: "env.TEST", FromEnv: true},
+			b:        &SecretVar{Val: "test", EnvVar: "env.TEST", FromEnv: true},
 			expected: true,
 		},
 		{
 			name:     "different values",
-			a:        &EnvVar{Val: "test1"},
-			b:        &EnvVar{Val: "test2"},
+			a:        &SecretVar{Val: "test1"},
+			b:        &SecretVar{Val: "test2"},
 			expected: false,
 		},
 	}
@@ -344,25 +344,25 @@ func TestEnvVar_Equals(t *testing.T) {
 	}
 }
 
-func TestEnvVar_Redacted(t *testing.T) {
+func TestSecretVar_Redacted(t *testing.T) {
 	tests := []struct {
 		name        string
-		input       EnvVar
+		input       SecretVar
 		expectedVal string
 	}{
 		{
 			name:        "empty value",
-			input:       EnvVar{Val: ""},
+			input:       SecretVar{Val: ""},
 			expectedVal: "",
 		},
 		{
 			name:        "short value (8 chars)",
-			input:       EnvVar{Val: "12345678"},
+			input:       SecretVar{Val: "12345678"},
 			expectedVal: "********",
 		},
 		{
 			name:        "long value",
-			input:       EnvVar{Val: "sk-1234567890abcdefghijklmnop"},
+			input:       SecretVar{Val: "sk-1234567890abcdefghijklmnop"},
 			expectedVal: "sk-1************************mnop",
 		},
 	}
@@ -377,9 +377,9 @@ func TestEnvVar_Redacted(t *testing.T) {
 	}
 }
 
-func TestEnvVar_FullyRedacted(t *testing.T) {
+func TestSecretVar_FullyRedacted(t *testing.T) {
 	t.Run("nil receiver", func(t *testing.T) {
-		var ev *EnvVar
+		var ev *SecretVar
 		if got := ev.FullyRedacted(); got != nil {
 			t.Fatalf("expected nil, got %+v", got)
 		}
@@ -387,26 +387,26 @@ func TestEnvVar_FullyRedacted(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		input       EnvVar
+		input       SecretVar
 		wantVal     string
 		wantFromEnv bool
 		wantEnvVar  string
 	}{
 		{
 			name:        "empty value",
-			input:       EnvVar{Val: ""},
+			input:       SecretVar{Val: ""},
 			wantVal:     "",
 			wantFromEnv: false,
 		},
 		{
 			name:        "long literal never leaks prefix or suffix",
-			input:       EnvVar{Val: "mysecretpassword", FromEnv: false},
+			input:       SecretVar{Val: "mysecretpassword", FromEnv: false},
 			wantVal:     "<REDACTED>",
 			wantFromEnv: false,
 		},
 		{
 			name:        "resolved env password preserves reference metadata",
-			input:       EnvVar{Val: "resolved-secret", FromEnv: true, EnvVar: "env.PROXY_PASS"},
+			input:       SecretVar{Val: "resolved-secret", FromEnv: true, EnvVar: "env.PROXY_PASS"},
 			wantVal:     "<REDACTED>",
 			wantFromEnv: true,
 			wantEnvVar:  "env.PROXY_PASS",
@@ -429,40 +429,40 @@ func TestEnvVar_FullyRedacted(t *testing.T) {
 	}
 }
 
-func TestEnvVar_IsRedacted(t *testing.T) {
+func TestSecretVar_IsRedacted(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    EnvVar
+		input    SecretVar
 		expected bool
 	}{
 		{
 			name:     "empty not from env",
-			input:    EnvVar{Val: "", FromEnv: false},
+			input:    SecretVar{Val: "", FromEnv: false},
 			expected: false,
 		},
 		{
 			name:     "from env",
-			input:    EnvVar{Val: "test", FromEnv: true},
+			input:    SecretVar{Val: "test", FromEnv: true},
 			expected: true,
 		},
 		{
 			name:     "short all asterisks",
-			input:    EnvVar{Val: "****"},
+			input:    SecretVar{Val: "****"},
 			expected: true,
 		},
 		{
 			name:     "redacted pattern 32 chars",
-			input:    EnvVar{Val: "sk-1************************mnop"},
+			input:    SecretVar{Val: "sk-1************************mnop"},
 			expected: true,
 		},
 		{
 			name:     "normal value",
-			input:    EnvVar{Val: "sk-test-key"},
+			input:    SecretVar{Val: "sk-test-key"},
 			expected: false,
 		},
 		{
 			name:     "uppercase redacted sentinel",
-			input:    EnvVar{Val: "<REDACTED>"},
+			input:    SecretVar{Val: "<REDACTED>"},
 			expected: true,
 		},
 	}
@@ -477,14 +477,14 @@ func TestEnvVar_IsRedacted(t *testing.T) {
 	}
 }
 
-// TestEnvVar_IsSet verifies the semantic difference between GetValue() != "" and IsSet().
-// IsSet() must return true when the EnvVar references an env var (regardless of whether
+// TestSecretVar_IsSet verifies the semantic difference between GetValue() != "" and IsSet().
+// IsSet() must return true when the SecretVar references an env var (regardless of whether
 // that env var has been resolved to a non-empty Val). This is the property that the
 // BeforeSave hooks rely on so env var references survive persistence.
-func TestEnvVar_IsSet(t *testing.T) {
+func TestSecretVar_IsSet(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    *EnvVar
+		input    *SecretVar
 		expected bool
 	}{
 		{
@@ -494,37 +494,37 @@ func TestEnvVar_IsSet(t *testing.T) {
 		},
 		{
 			name:     "completely empty",
-			input:    &EnvVar{},
+			input:    &SecretVar{},
 			expected: false,
 		},
 		{
 			name:     "only Val set (plain value)",
-			input:    &EnvVar{Val: "abc"},
+			input:    &SecretVar{Val: "abc"},
 			expected: true,
 		},
 		{
-			name:     "only EnvVar reference set (env not resolved on this server)",
-			input:    &EnvVar{EnvVar: "env.MISSING", FromEnv: true},
+			name:     "only SecretVar reference set (env not resolved on this server)",
+			input:    &SecretVar{EnvVar: "env.MISSING", FromEnv: true},
 			expected: true,
 		},
 		{
-			name:     "Val and EnvVar both set (env was resolved)",
-			input:    &EnvVar{Val: "resolved-secret", EnvVar: "env.X", FromEnv: true},
+			name:     "Val and SecretVar both set (env was resolved)",
+			input:    &SecretVar{Val: "resolved-secret", EnvVar: "env.X", FromEnv: true},
 			expected: true,
 		},
 		{
 			name:     "FromEnv true but no reference and no value",
-			input:    &EnvVar{FromEnv: true},
+			input:    &SecretVar{FromEnv: true},
 			expected: false,
 		},
 		{
 			name:     "vault reference set",
-			input:    &EnvVar{VaultRef: "vault.bifrost/key", FromVault: true, Val: "vault.bifrost/key"},
+			input:    &SecretVar{VaultRef: "vault.bifrost/key", FromVault: true, Val: "vault.bifrost/key"},
 			expected: true,
 		},
 		{
 			name:     "FromVault true but no reference",
-			input:    &EnvVar{FromVault: true},
+			input:    &SecretVar{FromVault: true},
 			expected: false,
 		},
 	}
@@ -538,7 +538,7 @@ func TestEnvVar_IsSet(t *testing.T) {
 	}
 }
 
-func TestEnvVar_Scan_VaultRef(t *testing.T) {
+func TestSecretVar_Scan_VaultRef(t *testing.T) {
 	tests := []struct {
 		name              string
 		input             string
@@ -575,7 +575,7 @@ func TestEnvVar_Scan_VaultRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var e EnvVar
+			var e SecretVar
 			if err := e.Scan(tt.input); err != nil {
 				t.Fatalf("Scan() error: %v", err)
 			}
@@ -600,7 +600,7 @@ func TestEnvVar_Scan_VaultRef(t *testing.T) {
 	}
 }
 
-func TestEnvVar_UnmarshalJSON_VaultRef(t *testing.T) {
+func TestSecretVar_UnmarshalJSON_VaultRef(t *testing.T) {
 	tests := []struct {
 		name          string
 		input         string
@@ -633,7 +633,7 @@ func TestEnvVar_UnmarshalJSON_VaultRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var e EnvVar
+			var e SecretVar
 			if err := json.Unmarshal([]byte(tt.input), &e); err != nil {
 				t.Fatalf("UnmarshalJSON() error: %v", err)
 			}
@@ -650,8 +650,8 @@ func TestEnvVar_UnmarshalJSON_VaultRef(t *testing.T) {
 	}
 }
 
-func TestEnvVar_Value_VaultRef(t *testing.T) {
-	e := &EnvVar{
+func TestSecretVar_Value_VaultRef(t *testing.T) {
+	e := &SecretVar{
 		Val:       "actual-secret",
 		VaultRef:  "vault.bifrost/key",
 		FromVault: true,
@@ -665,8 +665,8 @@ func TestEnvVar_Value_VaultRef(t *testing.T) {
 	}
 }
 
-func TestEnvVar_Redacted_VaultRef(t *testing.T) {
-	e := &EnvVar{
+func TestSecretVar_Redacted_VaultRef(t *testing.T) {
+	e := &SecretVar{
 		Val:       "actual-secret-value",
 		VaultRef:  "vault.bifrost/key",
 		FromVault: true,
@@ -684,9 +684,9 @@ func TestEnvVar_Redacted_VaultRef(t *testing.T) {
 	}
 }
 
-func TestEnvVar_IsSet_VaultRef(t *testing.T) {
-	set := &EnvVar{VaultRef: "vault.bifrost/key", FromVault: true, Val: "vault.bifrost/key"}
-	unset := &EnvVar{FromVault: true}
+func TestSecretVar_IsSet_VaultRef(t *testing.T) {
+	set := &SecretVar{VaultRef: "vault.bifrost/key", FromVault: true, Val: "vault.bifrost/key"}
+	unset := &SecretVar{FromVault: true}
 	if !set.IsSet() {
 		t.Error("IsSet() = false for vault ref, want true")
 	}
@@ -695,8 +695,8 @@ func TestEnvVar_IsSet_VaultRef(t *testing.T) {
 	}
 }
 
-func TestNewEnvVar_VaultRef(t *testing.T) {
-	e := NewEnvVar("vault.bifrost/mykey")
+func TestNewSecretVar_VaultRef(t *testing.T) {
+	e := NewSecretVar("vault.bifrost/mykey")
 	if !e.FromVault {
 		t.Error("FromVault = false, want true")
 	}

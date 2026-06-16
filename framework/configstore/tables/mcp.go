@@ -18,7 +18,7 @@ type TableMCPClient struct {
 	Name                    string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
 	IsCodeModeClient        bool            `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType          string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
-	ConnectionString        *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
+	ConnectionString        *schemas.SecretVar `gorm:"type:text" json:"connection_string,omitempty"`
 	StdioConfigJSON         *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
 	TLSConfigJSON           *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
 	ToolsToExecuteJSON      string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
@@ -61,7 +61,7 @@ type TableMCPClient struct {
 	TLSConfig                 *schemas.MCPTLSConfig       `gorm:"-" json:"tls_config,omitempty"`
 	ToolsToExecute            schemas.WhiteList           `gorm:"-" json:"tools_to_execute"`
 	ToolsToAutoExecute        schemas.WhiteList           `gorm:"-" json:"tools_to_auto_execute"`
-	Headers                   map[string]schemas.EnvVar   `gorm:"-" json:"headers"`
+	Headers                   map[string]schemas.SecretVar   `gorm:"-" json:"headers"`
 	AllowedExtraHeaders       schemas.WhiteList           `gorm:"-" json:"allowed_extra_headers"`
 	ToolPricing               map[string]float64          `gorm:"-" json:"tool_pricing"`
 	DiscoveredTools           map[string]schemas.ChatTool `gorm:"-" json:"-"`
@@ -125,7 +125,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if schemas.VaultStoreEnabled() {
-		if err := schemas.StoreOwnedVaultEnvVars(tx.Statement.Context,
+		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context,
 			schemas.VaultBasePath(c.TableName(), c.ClientID), c); err != nil {
 			return err
 		}
@@ -306,6 +306,6 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 // AfterDelete hook for best-effort vault cleanup on row deletion.
 func (c *TableMCPClient) AfterDelete(tx *gorm.DB) error {
 	base := schemas.VaultBasePath(c.TableName(), c.ClientID)
-	schemas.RemoveOwnedVaultEnvVars(tx.Statement.Context, base, c)
+	schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, c)
 	return nil
 }

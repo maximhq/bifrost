@@ -32,8 +32,8 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
-// EnvVarAsString returns the wire form used when serializing *EnvVar as a string.
-func EnvVarAsString(e *EnvVar) string {
+// SecretVarAsString returns the wire form used when serializing *SecretVar as a string.
+func SecretVarAsString(e *SecretVar) string {
 	if e == nil {
 		return ""
 	}

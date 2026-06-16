@@ -5966,7 +5966,7 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB, log
 			}
 
 			stmts := []string{
-				// config_keys table - all encrypted EnvVar fields
+				// config_keys table - all encrypted SecretVar fields
 				"ALTER TABLE config_keys ALTER COLUMN azure_client_id TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN azure_tenant_id TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN vertex_project_id TYPE TEXT",
@@ -7572,7 +7572,7 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 				}
 
 				// Create a new key with the provider's base_url
-				urlEnvVar := schemas.EnvVar{Val: nc.BaseURL}
+				urlSecretVar := schemas.SecretVar{Val: nc.BaseURL}
 				enabled := true
 				weight := 1.0
 				newKey := tables.TableKey{
@@ -7585,11 +7585,11 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 				}
 				if strings.ToLower(p.Name) == "ollama" {
 					newKey.Name = "Default Ollama Key"
-					newKey.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: urlEnvVar}
+					newKey.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: urlSecretVar}
 				}
 				if strings.ToLower(p.Name) == "sgl" {
 					newKey.Name = "Default SGL Key"
-					newKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: urlEnvVar}
+					newKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: urlSecretVar}
 				}
 
 				schemaKey := schemaKeyFromTableKey(newKey)
@@ -9673,7 +9673,7 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
 					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
 					MCPEnableTempTokenAuth:                cc.MCPEnableTempTokenAuth,
-					MCPExternalClientURL:                  schemas.NewEnvVar(cc.MCPExternalClientURL),
+					MCPExternalClientURL:                  schemas.NewSecretVar(cc.MCPExternalClientURL),
 					HeaderFilterConfig:                    cc.HeaderFilterConfig,
 					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
 					RequiredHeaders:                       cc.RequiredHeaders,
