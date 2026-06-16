@@ -202,8 +202,14 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)
+	} else if !bifrostErr.IsBifrostError {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if bifrostErr.Error != nil && strings.Contains(strings.ToLower(bifrostErr.Error.Message), "could not auto resolve a provider for the request") {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 	}
 	ctx.SetContentType("application/json")
 

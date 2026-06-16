@@ -116,7 +116,11 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	} else if !bifrostErr.IsBifrostError {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if bifrostErr.Error != nil && strings.Contains(strings.ToLower(bifrostErr.Error.Message), "could not auto resolve a provider for the request") {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 	}
 
 	ctx.SetContentType("application/json")
