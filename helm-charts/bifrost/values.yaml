@@ -170,6 +170,17 @@ tolerations: []
 
 affinity: {}
 
+# Deployment rolling update strategy. Applies to the Deployment only (not the
+# StatefulSet used for sqlite-with-persistence). Rendered verbatim into spec.strategy.
+# Empty ({}) uses the Kubernetes default (RollingUpdate, maxSurge 25%, maxUnavailable 25%).
+# For HA gateway deployments, surge-only rollouts avoid dropping capacity:
+# strategy:
+#   type: RollingUpdate
+#   rollingUpdate:
+#     maxSurge: 100%
+#     maxUnavailable: 0%
+strategy: {}
+
 # Graceful shutdown configuration for long-lived connections (SSE streaming)
 # When a pod is terminated (e.g. during HPA scale-down), active streaming connections
 # are severed abruptly. This causes clients to lose their SSE stream mid-response.
@@ -282,6 +293,8 @@ bifrost:
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
+    # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
+    # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
 
   # Server configuration
   server:
@@ -704,6 +717,7 @@ bifrost:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
+      #       blacklisted_models: []   # Models blocked even if matched by allowed_models; ["*"] blocks all
       #       rate_limit_id: ""
       #       keys:
       #         - key_id: "uuid-of-key"
@@ -941,6 +955,27 @@ bifrost:
       #   enabled: true
       #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
       #   config: {}
+
+  # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`
+  # in config.json and reconciled at startup when enabled.
+  # skillsRegistry:
+  #   enabled: true
+  #   skills:
+  #     - name: "my-skill"
+  #       description: "What this skill does"
+  #       version: "1.0.0"
+  #       skill_md_body: "# My Skill\n\nInstructions..."
+  #       # license: "MIT"
+  #       # compatibility: ">=1.0.0"
+  #       # allowed_tools: "Read,Write"
+  #       # metadata: {}
+  #       # extra_frontmatter: {}
+  #       # files:
+  #       #   - path: "reference.md"
+  #       #     source_type: "text"   # text | url | dataurl
+  #       #     content: "..."          # required when source_type=text
+  #       #     # url: "https://..."    # required when source_type=url
+  #       #     # dataurl: "data:..."   # required when source_type=dataurl
 
   # Access profiles (enterprise): seed RBAC access profile templates from Helm.
   # This is rendered directly as top-level `access_profiles` in config.json.

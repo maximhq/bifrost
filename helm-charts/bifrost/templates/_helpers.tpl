@@ -319,6 +319,12 @@ false
 {{- if .Values.bifrost.client.routingChainMaxDepth }}
 {{- $_ := set $client "routing_chain_max_depth" .Values.bifrost.client.routingChainMaxDepth }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "allowDirectKeys" }}
+{{- $_ := set $client "allow_direct_keys" .Values.bifrost.client.allowDirectKeys }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpExternalClientUrl }}
+{{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
+{{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
 {{- /* Server */ -}}
@@ -406,6 +412,9 @@ false
 {{- end }}
 {{- if $providerConfig.network_config.beta_header_overrides }}
 {{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "allow_private_network" }}
+{{- $_ := set $networkConfig "allow_private_network" $providerConfig.network_config.allow_private_network }}
 {{- end }}
 {{- $_ := set $providerCopy "network_config" $networkConfig }}
 {{- end }}
@@ -696,6 +705,10 @@ false
 {{- if or $guardrails.guardrail_rules $guardrails.guardrail_providers }}
 {{- $_ := set $config "guardrails_config" $guardrails }}
 {{- end }}
+{{- end }}
+{{- /* Skills Registry */ -}}
+{{- if .Values.bifrost.skillsRegistry }}
+{{- $_ := set $config "skills_registry" .Values.bifrost.skillsRegistry }}
 {{- end }}
 {{- /* Access Profiles (Enterprise) */ -}}
 {{- if .Values.bifrost.accessProfiles }}
