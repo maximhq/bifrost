@@ -1,0 +1,1 @@
+- fix: preserve extra_content on ChatAssistantMessageToolCall so provider-specific tool-call metadata (e.g. Gemini thought_signature) round-trips losslessly through the gateway (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
