@@ -763,7 +763,6 @@ func (s *RDBConfigStore) GetSkillVersion(ctx context.Context, skillID, version s
 		}
 		return nil, err
 	}
-	hydrateInlineTextContent(v.Files)
 	return &v, nil
 }
 
@@ -1085,19 +1084,6 @@ func createSkillVersion(tx *gorm.DB, skill *tables.TableSkill, version string) (
 }
 
 // populateSkillFiles reloads the serving version's files into the transient skill.Files.
-// hydrateInlineTextContent fills InlineContent for text files from their DB blob
-// so GET responses return the editable content (the `content` field). Content kept
-// only in object storage is served via the file endpoint rather than inlined here.
-func hydrateInlineTextContent(files []tables.TableSkillFile) {
-	for i := range files {
-		file := &files[i]
-		if file.SourceType == tables.SkillSourceTypeText && file.InlineContent == nil && file.Blob != nil {
-			content := string(file.Blob.Data)
-			file.InlineContent = &content
-		}
-	}
-}
-
 func populateSkillFiles(tx *gorm.DB, skill *tables.TableSkill) error {
 	var version tables.TableSkillVersion
 	if err := tx.Preload("Files").
@@ -1110,7 +1096,6 @@ func populateSkillFiles(tx *gorm.DB, skill *tables.TableSkill) error {
 	}
 	skill.Files = version.Files
 	skill.FileCount = int64(len(version.Files))
-	hydrateInlineTextContent(skill.Files)
 	return nil
 }
 

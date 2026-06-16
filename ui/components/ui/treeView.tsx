@@ -102,7 +102,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 	const isExpanded = expandedNodes[node.data.id] ?? false;
 
 	return (
-		<div className="relative min-w-0 overflow-hidden">
+		<div className="relative min-w-max">
 			{/* Vertical line from parent — spans the full node height (row + children) for sibling continuation */}
 			{level > 0 && !isLast && (
 				<div
@@ -118,7 +118,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 			)}
 
 			{/* Row wrapper — horizontal line positions relative to just this row */}
-			<div className="relative min-w-0 overflow-hidden">
+			<div className="relative min-w-max">
 				{/* Vertical line stub for last child — only goes to row center */}
 				{level > 0 && isLast && (
 					<div
@@ -148,7 +148,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 				)}
 
 				{/* Node content */}
-				<div className="relative min-w-0 overflow-hidden" style={{ paddingLeft: `${level * indentSize}px` }}>
+				<div className="relative min-w-max" style={{ paddingLeft: `${level * indentSize}px` }}>
 					<div className="py-0.5">
 						{renderItem({
 							item: node.data,
@@ -167,7 +167,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 
 			{/* Children */}
 			{isExpanded && node.children && (
-				<div className="relative min-w-0 overflow-hidden">
+				<div className="relative min-w-max">
 					{node.children.map((child, idx) => (
 						<TreeNodeComponent
 							key={child.data.id}
@@ -274,7 +274,7 @@ export function Tree<T extends BaseNodeData>({
 	}, [dataFingerprint, levelsToExpandByDefault]);
 
 	return (
-		<div className={cn("min-w-0 overflow-hidden", className)}>
+		<div className={cn("min-w-max", className)}>
 			{data.map((node, idx) => (
 				<TreeNodeComponent
 					key={node.data.id}

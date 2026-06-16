@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
-import { ScrollArea } from "@/components/ui/scrollArea";
+import { ScrollArea, ScrollBar } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Markdown } from "@/components/ui/markdown";
@@ -29,14 +29,13 @@ import {
 	Folder,
 	FolderOpen,
 	Hammer,
-	Maximize2,
 	MoreHorizontal,
 	PanelLeftClose,
 	PanelLeftOpen,
 	Scale,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useState, useMemo } from "react";
 import { formatYamlRecord } from "./helpers";
 import { FilePreviewPane, getFileServeUrl } from "./filePreview";
 
@@ -156,23 +155,20 @@ export function SkillHeader({
 						)}
 					</div>
 				</div>
-				<div className={cn("w-full", onBack && "ml-10")}>
-					<p className="text-muted-foreground max-w-3xl text-xs">{description}</p>
-					<TooltipProvider>
-						<div className="mt-3 flex flex-wrap items-center gap-2 pb-2">
-							<HeaderMetaItem label="License" value={license} missingText="No license defined" icon={Scale} />
-							<HeaderMetaItem label="Compatibility" value={compatibility} missingText="No compatibility defined" icon={Bot} />
-							<HeaderMetaItem label="Allowed tools" value={allowedTools} missingText="No allowed tools defined" icon={Hammer} />
-						</div>
-					</TooltipProvider>
-				</div>
+			</div>
+			<div className="w-full">
+				<p className="text-muted-foreground max-w-3xl text-xs">{description}</p>
+				<TooltipProvider>
+					<div className="mt-3 flex flex-wrap items-center gap-2 pb-2">
+						<HeaderMetaItem label="License" value={license} missingText="No license defined" icon={Scale} />
+						<HeaderMetaItem label="Compatibility" value={compatibility} missingText="No compatibility defined" icon={Bot} />
+						<HeaderMetaItem label="Allowed tools" value={allowedTools} missingText="No allowed tools defined" icon={Hammer} />
+					</div>
+				</TooltipProvider>
 			</div>
 			{composedSkillMd && (
 				<Dialog open={showRawDialog} onOpenChange={setShowRawDialog}>
-					<DialogContent
-						showCloseButton={false}
-						className="h-[90vh] max-h-[90vh] w-[95vw] max-w-[95vw] min-w-0 overflow-hidden border-0 bg-transparent p-0 shadow-none sm:w-[80vw] sm:max-w-[80vw] md:w-[50vw] md:max-w-[50vw]"
-					>
+					<DialogContent showCloseButton={false} className="w-full max-w-full border-0 p-0 sm:w-4/5 sm:max-w-4xl md:w-1/2 md:max-w-3xl">
 						<DialogHeader className="sr-only">
 							<DialogTitle>Raw SKILL.md</DialogTitle>
 						</DialogHeader>
@@ -192,8 +188,8 @@ export function SkillHeader({
 									<span className="sr-only">Close</span>
 								</DialogClose>
 							</div>
-							<ScrollArea className="h-[90vh]" viewportClassName="bg-muted">
-								<pre className="bg-muted min-h-[420px] p-5 pr-24 font-mono text-xs leading-5 whitespace-pre-wrap">{composedSkillMd}</pre>
+							<ScrollArea className="h-screen" viewportClassName="bg-muted">
+								<pre className="bg-muted min-h-96 p-5 pr-24 font-mono text-xs leading-5 whitespace-pre-wrap">{composedSkillMd}</pre>
 							</ScrollArea>
 						</div>
 					</DialogContent>
@@ -217,7 +213,7 @@ export function FormSection({
 	helperText?: React.ReactNode;
 }) {
 	return (
-		<section className={cn("space-y-3", className)}>
+		<section className={cn("flex flex-col gap-3", className)}>
 			<div className="flex items-baseline gap-2 pb-1">
 				<h2 className="text-foreground text-base font-semibold tracking-tight">{title}</h2>
 				{optional && <span className="text-muted-foreground text-xs">optional</span>}
@@ -229,12 +225,12 @@ export function FormSection({
 }
 
 // ---------- ReadOnlyYamlBlock ----------
-export function ReadOnlyYamlBlock({ title, value }: { title: string; value: Record<string, unknown> }) {
+export function ReadOnlyYamlBlock({ title, value, className }: { title: string; value: Record<string, unknown>; className?: string }) {
 	const yaml = formatYamlRecord(value);
 
 	return (
-		<FormSection title={title}>
-			<div>
+		<FormSection title={title} className={cn("flex flex-1 flex-col", className)}>
+			<div className="bg-muted/10 flex-1 overflow-y-auto rounded-sm border p-3">
 				<Markdown content={`\`\`\`yaml\n${yaml}\n\`\`\``} />
 			</div>
 		</FormSection>
@@ -242,17 +238,17 @@ export function ReadOnlyYamlBlock({ title, value }: { title: string; value: Reco
 }
 
 // ---------- ReadOnlyMetadataTable ----------
-export function ReadOnlyMetadataTable({ value }: { value: Record<string, unknown> }) {
+export function ReadOnlyMetadataTable({ value, className }: { value: Record<string, unknown>; className?: string }) {
 	const entries = Object.entries(value);
 
 	return (
-		<FormSection title="Metadata">
-			<div className="rounded-sm border">
-				<div className="bg-muted/30 grid grid-cols-2 border-b px-3 py-2 text-sm font-medium">
+		<FormSection title="Metadata" className={cn("flex flex-1 flex-col", className)}>
+			<div className="flex flex-1 flex-col rounded-sm border">
+				<div className="bg-muted/30 sticky top-0 z-10 grid grid-cols-2 border-b px-3 py-2 text-sm font-medium">
 					<span>Key</span>
 					<span>Value</span>
 				</div>
-				<div className="text-muted-foreground divide-y">
+				<div className="text-muted-foreground flex-1 divide-y overflow-y-auto">
 					{entries.map(([key, item]) => (
 						<div key={key} className="grid grid-cols-2 gap-3 px-3 py-2.5 text-sm">
 							<p className="min-w-0 truncate font-mono text-xs">{key}</p>
@@ -268,60 +264,47 @@ export function ReadOnlyMetadataTable({ value }: { value: Record<string, unknown
 
 export function ReadOnlySkillBody({ body }: { body: string }) {
 	const [activeTab, setActiveTab] = useState("rendered");
-	const [dialogTab, setDialogTab] = useState("rendered");
-	const [expandOpen, setExpandOpen] = useState(false);
-	const [externalLink, setExternalLink] = useState<{ href: string; label: string } | null>(null);
+	const [externalLink, setExternalLink] = useState<{
+		href: string;
+		label: string;
+	} | null>(null);
 
-	const markdownComponents = useMemo(
-		() => ({
-			a: ({ href, children, ...props }: React.ComponentProps<"a">) => {
-				const isExternal = Boolean(href && /^https?:\/\//i.test(href));
-				const label = typeof children === "string" ? children : href || "external link";
+	const markdownComponents = {
+		a: ({ href, children, ...props }: React.ComponentProps<"a">) => {
+			const isExternal = Boolean(href && /^https?:\/\//i.test(href));
+			const label = typeof children === "string" ? children : href || "external link";
 
-				if (!isExternal || !href) {
-					return (
-						<a href={href} {...props}>
-							{children}
-						</a>
-					);
-				}
-
+			if (!isExternal || !href) {
 				return (
-					<a
-						href={href}
-						{...props}
-						onClick={(event) => {
-							props.onClick?.(event);
-							if (event.defaultPrevented) return;
-							event.preventDefault();
-							setExternalLink({ href, label });
-						}}
-					>
+					<a href={href} {...props}>
 						{children}
 					</a>
 				);
-			},
-		}),
-		[],
-	);
+			}
 
-	const openExternalLink = () => {
-		if (!externalLink) return;
-		window.open(externalLink.href, "_blank", "noopener,noreferrer");
-		setExternalLink(null);
+			return (
+				<a
+					href={href}
+					{...props}
+					onClick={(event) => {
+						props.onClick?.(event);
+						if (event.defaultPrevented) return;
+						event.preventDefault();
+						setExternalLink({ href, label });
+					}}
+				>
+					{children}
+				</a>
+			);
+		},
 	};
 
 	return (
 		<FormSection title="SKILL.md Body" className="flex min-h-0 flex-1 flex-col">
 			<Tabs defaultValue="rendered" onValueChange={setActiveTab} className="flex min-h-0 w-full flex-1 flex-col">
-				<div
-					className={cn(
-						"relative min-h-[320px] flex-1 overflow-hidden rounded-sm border",
-						activeTab === "raw" ? "bg-muted" : "bg-background",
-					)}
-				>
+				<div className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-sm border")}>
 					<div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
-						<TabsList className="bg-card h-8 shadow-sm backdrop-blur">
+						<TabsList className="bg-muted h-8 shadow-sm backdrop-blur">
 							<TabsTrigger value="rendered" className="h-6 px-2.5 text-xs">
 								Rendered
 							</TabsTrigger>
@@ -329,89 +312,21 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
 								Raw
 							</TabsTrigger>
 						</TabsList>
-						<button
-							type="button"
-							className="bg-card text-muted-foreground hover:text-foreground inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm shadow-sm backdrop-blur transition-colors"
-							onClick={() => setExpandOpen(true)}
-							aria-label="Expand SKILL.md body"
-						>
-							<Maximize2 className="h-3.5 w-3.5" />
-						</button>
 					</div>
-					<TabsContent value="rendered" className="absolute inset-0 m-0 overflow-hidden">
-						<ScrollArea className="h-full">
-							<div className="min-w-0 p-4">
-								<Markdown
-									content={body || ""}
-									className="max-w-full text-sm break-words [&_*]:max-w-full [&_*]:break-words [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:whitespace-pre-wrap [&_table]:table-fixed"
-									components={markdownComponents}
-								/>
-							</div>
-						</ScrollArea>
+					<TabsContent value="rendered" className="m-0 flex-1 overflow-y-auto">
+						<div className="min-w-0 p-4">
+							<Markdown
+								content={body || ""}
+								className="max-w-full text-sm break-words [&_*]:max-w-full [&_*]:break-words [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:whitespace-pre-wrap [&_table]:table-fixed"
+								components={markdownComponents}
+							/>
+						</div>
 					</TabsContent>
-					<TabsContent value="raw" className="bg-muted absolute inset-0 m-0 overflow-hidden">
-						<ScrollArea className="h-full" viewportClassName="bg-muted">
-							<pre className="bg-muted min-h-full p-4 font-mono text-xs leading-5 whitespace-pre-wrap">{body || "(empty)"}</pre>
-						</ScrollArea>
+					<TabsContent value="raw" className="m-0 flex-1 overflow-y-auto">
+						<pre className="min-h-full p-4 font-mono text-xs leading-5 whitespace-pre-wrap">{body || "(empty)"}</pre>
 					</TabsContent>
 				</div>
 			</Tabs>
-
-			<Dialog
-				open={expandOpen}
-				onOpenChange={(open) => {
-					setExpandOpen(open);
-					if (open) setDialogTab(activeTab);
-				}}
-			>
-				<DialogContent
-					showCloseButton={false}
-					className="h-[90vh] max-h-[90vh] w-[95vw] max-w-[95vw] min-w-0 overflow-hidden border-0 bg-transparent p-0 shadow-none sm:w-[80vw] sm:max-w-[80vw] md:w-[50vw] md:max-w-[50vw]"
-				>
-					<DialogHeader className="sr-only">
-						<DialogTitle>SKILL.md Body</DialogTitle>
-					</DialogHeader>
-					<Tabs value={dialogTab} onValueChange={setDialogTab} className="h-full">
-						<div
-							className={cn(
-								"relative h-full overflow-hidden rounded-sm border shadow-lg",
-								dialogTab === "raw" ? "bg-muted" : "bg-background",
-							)}
-						>
-							<div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
-								<TabsList className="bg-card h-8 shadow-sm backdrop-blur">
-									<TabsTrigger value="rendered" className="h-6 px-2.5 text-xs">
-										Rendered
-									</TabsTrigger>
-									<TabsTrigger value="raw" className="h-6 px-2.5 text-xs">
-										Raw
-									</TabsTrigger>
-								</TabsList>
-								<DialogClose className="bg-card text-muted-foreground hover:text-foreground inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm shadow-sm backdrop-blur transition-colors">
-									<X className="h-4 w-4" />
-									<span className="sr-only">Close</span>
-								</DialogClose>
-							</div>
-							<TabsContent value="rendered" className="absolute inset-0 m-0 overflow-hidden">
-								<ScrollArea className="h-full">
-									<div className="min-w-0 p-5">
-										<Markdown
-											content={body || ""}
-											className="max-w-full text-sm break-words [&_*]:max-w-full [&_*]:break-words [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:whitespace-pre-wrap [&_table]:table-fixed"
-											components={markdownComponents}
-										/>
-									</div>
-								</ScrollArea>
-							</TabsContent>
-							<TabsContent value="raw" className="bg-muted absolute inset-0 m-0 overflow-hidden">
-								<ScrollArea className="h-full" viewportClassName="bg-muted">
-									<pre className="bg-muted min-h-full p-5 font-mono text-xs leading-5 whitespace-pre-wrap">{body || "(empty)"}</pre>
-								</ScrollArea>
-							</TabsContent>
-						</div>
-					</Tabs>
-				</DialogContent>
-			</Dialog>
 
 			<Dialog open={externalLink != null} onOpenChange={(open) => !open && setExternalLink(null)}>
 				<DialogContent>
@@ -427,7 +342,13 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
 						<Button variant="outline" onClick={() => setExternalLink(null)}>
 							Cancel
 						</Button>
-						<Button onClick={openExternalLink}>
+						<Button
+							onClick={() => {
+								if (!externalLink) return;
+								window.open(externalLink.href, "_blank", "noopener,noreferrer");
+								setExternalLink(null);
+							}}
+						>
 							<ExternalLink className="h-4 w-4" />
 							Open link
 						</Button>
@@ -463,6 +384,32 @@ function downloadTextAsFile(content: string, filename: string) {
 
 function fileNameFromPath(filePath: string) {
 	return filePath.split("/").filter(Boolean).pop() || filePath;
+}
+
+// Simple helper components to avoid nested ternaries in the file tree rows.
+
+function TreeRowChevron({ hasChildren, isExpanded }: { hasChildren: boolean; isExpanded: boolean }) {
+	if (!hasChildren) return <span className="w-3.5 shrink-0" />;
+	if (isExpanded) return <ChevronDown className="text-muted-foreground h-3.5 w-3.5 shrink-0" />;
+	return <ChevronRight className="text-muted-foreground h-3.5 w-3.5 shrink-0" />;
+}
+
+function TreeRowIcon({
+	isSkillMd,
+	isFile,
+	isFolder,
+	isExpanded,
+}: {
+	isSkillMd: boolean;
+	isFile: boolean;
+	isFolder: boolean;
+	isExpanded: boolean;
+}) {
+	if (isSkillMd) return <BookOpen className="text-muted-foreground h-4 w-4 shrink-0" />;
+	if (isFile) return <FileText className="text-muted-foreground h-4 w-4 shrink-0" />;
+	if (isFolder && isExpanded) return <FolderOpen className="text-muted-foreground h-4 w-4 shrink-0" />;
+	if (isFolder) return <Folder className="text-muted-foreground h-4 w-4 shrink-0" />;
+	return null;
 }
 
 export function ReadOnlyFileTree({
@@ -597,7 +544,7 @@ export function ReadOnlyFileTree({
 							data-selected={isSelected || undefined}
 							className={cn(
 								"group flex h-7 min-w-0 items-center gap-1.5 rounded-sm px-1.5 text-sm transition-colors",
-								(hasChildren || isDownloadable) && "cursor-pointer hover:bg-muted/50",
+								(hasChildren || isDownloadable) && "cursor-pointer hover:bg-muted",
 								isSelected && "bg-primary/10 text-primary hover:bg-primary/10",
 							)}
 							onClick={handleClick}
@@ -611,36 +558,15 @@ export function ReadOnlyFileTree({
 							tabIndex={hasChildren || isDownloadable ? 0 : undefined}
 							aria-label={isFolder ? `${isExpanded ? "Collapse" : "Expand"} ${item.name}` : item.name}
 						>
-							{hasChildren ? (
-								isExpanded ? (
-									<ChevronDown className="text-muted-foreground h-3.5 w-3.5 shrink-0" />
-								) : (
-									<ChevronRight className="text-muted-foreground h-3.5 w-3.5 shrink-0" />
-								)
-							) : (
-								<span className="w-3.5 shrink-0" />
-							)}
-
-							{isDownloadable ? (
-								isSkillMd ? (
-									<BookOpen className="text-muted-foreground h-4 w-4 shrink-0" />
-								) : (
-									<FileText className="text-muted-foreground h-4 w-4 shrink-0" />
-								)
-							) : isFolder ? (
-								isExpanded ? (
-									<FolderOpen className="text-muted-foreground h-4 w-4 shrink-0" />
-								) : (
-									<Folder className="text-muted-foreground h-4 w-4 shrink-0" />
-								)
-							) : null}
+							<TreeRowChevron hasChildren={hasChildren} isExpanded={isExpanded} />
+							<TreeRowIcon isSkillMd={isSkillMd} isFile={isFile} isFolder={isFolder} isExpanded={isExpanded} />
 
 							<span className={cn("min-w-0 flex-1 truncate font-mono text-xs", isFolder && "font-medium")} title={item.name}>
 								{item.name}
 							</span>
 
 							{isFolder && !isExpanded && item.childCount != null && item.childCount > 0 && (
-								<span className="text-muted-foreground text-[10px]">
+								<span className="text-muted-foreground text-xs">
 									{item.childCount} item{item.childCount !== 1 ? "s" : ""}
 								</span>
 							)}
@@ -649,21 +575,14 @@ export function ReadOnlyFileTree({
 							{isDownloadable && (
 								<div
 									className={cn(
-										"shrink-0 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100",
-										isSelected && "opacity-100",
+										"sticky right-1 z-10 ml-auto shrink-0 rounded-sm bg-muted px-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100",
 									)}
 									onClick={(e) => e.stopPropagation()}
 									onKeyDown={(e) => e.stopPropagation()}
 								>
 									<DropdownMenu>
 										<DropdownMenuTrigger asChild>
-											<Button
-												variant="ghost"
-												size="icon"
-												className="h-6 w-6"
-												data-testid="skill-file-row-actions"
-												aria-label={`Actions for ${item.name}`}
-											>
+											<Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Actions for ${item.name}`}>
 												<MoreHorizontal className="h-3.5 w-3.5" />
 											</Button>
 										</DropdownMenuTrigger>
@@ -678,16 +597,14 @@ export function ReadOnlyFileTree({
 							)}
 
 							{item.type === "root" && (
-								<div className="ml-auto" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+								<div
+									className="sticky right-1 z-10 ml-auto rounded-sm px-0.5"
+									onClick={(e) => e.stopPropagation()}
+									onKeyDown={(e) => e.stopPropagation()}
+								>
 									<DropdownMenu>
 										<DropdownMenuTrigger asChild>
-											<Button
-												variant="ghost"
-												size="icon"
-												className="h-6 w-6"
-												data-testid="skill-files-tree-actions"
-												aria-label="File actions"
-											>
+											<Button variant="ghost" size="icon" className="h-6 w-6" aria-label="File actions">
 												<MoreHorizontal className="h-3.5 w-3.5" />
 											</Button>
 										</DropdownMenuTrigger>
@@ -729,6 +646,7 @@ export function SkillReadOnlyContent({
 	extraFrontmatter,
 	metadata,
 	composedSkillMd,
+	className,
 }: {
 	skillName: string;
 	skillMdBody: string;
@@ -736,27 +654,75 @@ export function SkillReadOnlyContent({
 	extraFrontmatter: Record<string, unknown> | null;
 	metadata: Record<string, unknown> | null;
 	composedSkillMd: string;
+	className?: string;
 }) {
+	const METADATA_KEY = "__metadata__";
+	const FRONTMATTER_KEY = "__extra_frontmatter__";
+
 	// Default selection is the SKILL.md body, preserving the prior default view.
 	const [selected, setSelected] = useState<string>(SKILLMD_KEY);
-	const selectedFile = selected === SKILLMD_KEY ? null : (files.find((f) => f.path === selected) ?? null);
+	const selectedFile =
+		selected === SKILLMD_KEY || selected === METADATA_KEY || selected === FRONTMATTER_KEY
+			? null
+			: (files.find((f) => f.path === selected) ?? null);
+
+	const hasMetadata = metadata && Object.keys(metadata).length > 0;
+	const hasFrontmatter = extraFrontmatter && Object.keys(extraFrontmatter).length > 0;
 
 	return (
-		<div className="flex h-full min-h-0 w-full gap-3">
-			{/* Left: collapsible files sidebar */}
-			<SkillFilesSidebar
-				skillName={skillName}
-				files={files}
-				composedSkillMd={composedSkillMd}
-				selectedPath={selected}
-				onSelectPath={setSelected}
-			/>
+		<div className={cn("flex min-h-0 w-full gap-3", className)}>
+			<div className="flex w-72 shrink-0 flex-col gap-2">
+				{/* Metadata & Frontmatter buttons */}
+				{(hasMetadata || hasFrontmatter) && (
+					<div className="flex gap-1.5">
+						{hasMetadata && (
+							<button
+								type="button"
+								data-testid="skill-readonly-metadata-pane-btn"
+								onClick={() => setSelected(METADATA_KEY)}
+								className={cn(
+									"flex-1 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
+									selected === METADATA_KEY ? "border-primary/20 bg-primary/10 text-primary hover:bg-primary/10" : "bg-card hover:bg-muted",
+								)}
+							>
+								Metadata
+							</button>
+						)}
+						{hasFrontmatter && (
+							<button
+								type="button"
+								data-testid="skill-readonly-frontmatter-pane-btn"
+								onClick={() => setSelected(FRONTMATTER_KEY)}
+								className={cn(
+									"flex-1 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
+									selected === FRONTMATTER_KEY
+										? "border-primary/20 bg-primary/10 text-primary hover:bg-primary/10"
+										: "bg-card hover:bg-muted",
+								)}
+							>
+								Extra Frontmatter
+							</button>
+						)}
+					</div>
+				)}
 
-			{/* Right: skill content — frontmatter/metadata, then the selected file or SKILL.md body */}
-			<div className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 pr-1 pb-1">
-				{extraFrontmatter && <ReadOnlyYamlBlock title="Extra Frontmatter" value={extraFrontmatter} />}
-				{metadata && <ReadOnlyMetadataTable value={metadata} />}
-				{selectedFile ? (
+				{/* Files sidebar */}
+				<SkillFilesSidebar
+					skillName={skillName}
+					files={files}
+					composedSkillMd={composedSkillMd}
+					selectedPath={selected === METADATA_KEY || selected === FRONTMATTER_KEY ? undefined : selected}
+					onSelectPath={setSelected}
+				/>
+			</div>
+
+			{/* Right: content pane */}
+			<div className="flex grow flex-col overflow-auto">
+				{selected === METADATA_KEY && metadata ? (
+					<ReadOnlyMetadataTable value={metadata} />
+				) : selected === FRONTMATTER_KEY && extraFrontmatter ? (
+					<ReadOnlyYamlBlock title="Extra Frontmatter" value={extraFrontmatter} />
+				) : selectedFile ? (
 					<FilePreviewPane file={selectedFile} skillName={skillName} mode="view" />
 				) : (
 					<ReadOnlySkillBody body={skillMdBody} />
@@ -781,16 +747,12 @@ function SkillFilesSidebar({
 	selectedPath?: string;
 	onSelectPath?: (path: string) => void;
 }) {
-	const [collapsed, setCollapsed] = useState(false);
+	const [collapsed, setCollapsed] = useState(() => {
+		if (typeof window === "undefined") return false;
+		return window.localStorage.getItem(FILES_COLLAPSE_STORAGE_KEY) === "true";
+	});
 
-	// Load persisted collapsed state on mount
-	useEffect(() => {
-		if (typeof window === "undefined") return;
-		const stored = window.localStorage.getItem(FILES_COLLAPSE_STORAGE_KEY);
-		if (stored === "true") setCollapsed(true);
-	}, []);
-
-	const toggleCollapsed = useCallback(() => {
+	const toggleCollapsed = () => {
 		setCollapsed((prev) => {
 			const next = !prev;
 			if (typeof window !== "undefined") {
@@ -798,7 +760,7 @@ function SkillFilesSidebar({
 			}
 			return next;
 		});
-	}, []);
+	};
 
 	// Collapsed: thin rail with a vertical "Files" label — the whole rail expands on click
 	if (collapsed) {

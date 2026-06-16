@@ -10,7 +10,7 @@ import {
   validateSkillName,
   validateVersion,
 } from "@/lib/validators/skills";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 // ---------- Constants ----------
 
@@ -103,13 +103,6 @@ function yamlMetadataBlock(value: unknown, indent = 0): string[] {
   return [`${pad}${yamlMetadataScalar(value)}`];
 }
 
-function yamlMetadataField(key: string, value: unknown): string[] {
-  if (value !== null && typeof value === "object") {
-    return [`${key}:`, ...yamlMetadataBlock(value, 2)];
-  }
-  return [`${key}: ${yamlMetadataScalar(value)}`];
-}
-
 export function composeFrontmatter(data: {
   name: string;
   description: string;
@@ -147,8 +140,13 @@ export function composeFrontmatter(data: {
   if (data.metadata_json.trim()) {
     try {
       const md = JSON.parse(data.metadata_json) as Record<string, string>;
-      if (Object.keys(md).length > 0)
-        lines.push(...yamlMetadataField("metadata", md));
+      if (Object.keys(md).length > 0) {
+        if (typeof md === "object" && md !== null) {
+          lines.push("metadata:", ...yamlMetadataBlock(md, 2));
+        } else {
+          lines.push(`metadata: ${yamlMetadataScalar(md)}`);
+        }
+      }
     } catch {
       /* skip if invalid */
     }
@@ -220,32 +218,21 @@ export function useSkillForm(initial?: SkillFormState) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [bodyWarning, setBodyWarning] = useState<string | null>(null);
 
-  const validateField = useCallback((field: string, value: string) => {
+  const validateField = (field: string, value: string) => {
     let err: string | null = null;
-    switch (field) {
-      case "name":
-        err = validateSkillName(value);
-        break;
-      case "description":
-        err = validateDescription(value);
-        break;
-      case "version":
-        err = validateVersion(value);
-        break;
-      case "extra_frontmatter":
-        err = validateExtraFrontmatter(value);
-        break;
-      case "metadata":
-        err = validateMetadata(value);
-        break;
-    }
+    if (field === "name") err = validateSkillName(value);
+    else if (field === "description") err = validateDescription(value);
+    else if (field === "version") err = validateVersion(value);
+    else if (field === "extra_frontmatter") err = validateExtraFrontmatter(value);
+    else if (field === "metadata") err = validateMetadata(value);
+
     setErrors((prev) => {
       const next = { ...prev };
       if (err) next[field] = err;
       else delete next[field];
       return next;
     });
-  }, []);
+  };
 
   useEffect(() => {
     const result = validateSkillMdBody(skillMdBody);
@@ -260,22 +247,30 @@ export function useSkillForm(initial?: SkillFormState) {
 
   const hasErrors = Object.keys(errors).length > 0;
 
-  const getPayload = () => ({
-    name,
-    description,
-    license: license || undefined,
-    compatibility: compatibility || undefined,
-    metadata: metadataJson.trim()
-      ? (() => { try { return JSON.parse(metadataJson); } catch { return undefined; } })()
-      : undefined,
-    extra_frontmatter: extraFrontmatterJson.trim()
-      ? (() => { try { return JSON.parse(extraFrontmatterJson); } catch { return undefined; } })()
-      : undefined,
-    allowed_tools: allowedTools || undefined,
-    skill_md_body: skillMdBody,
-    version,
-    files: files.map(({ __local, ...file }) => file),
-  });
+  const getPayload = () => {
+    let parsedMetadata: Record<string, string> | undefined;
+    if (metadataJson.trim()) {
+      try { parsedMetadata = JSON.parse(metadataJson) as Record<string, string>; } catch { /* skip */ }
+    }
+
+    let parsedExtraFrontmatter: Record<string, unknown> | undefined;
+    if (extraFrontmatterJson.trim()) {
+      try { parsedExtraFrontmatter = JSON.parse(extraFrontmatterJson) as Record<string, unknown>; } catch { /* skip */ }
+    }
+
+    return {
+      name,
+      description,
+      license: license || undefined,
+      compatibility: compatibility || undefined,
+      metadata: parsedMetadata,
+      extra_frontmatter: parsedExtraFrontmatter,
+      allowed_tools: allowedTools || undefined,
+      skill_md_body: skillMdBody,
+      version,
+      files: files.map(({ __local, ...file }) => file),
+    };
+  };
 
   const runValidation = () => {
     const validationErrors = validateSkillForm({

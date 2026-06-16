@@ -118,7 +118,7 @@ useEffect(() => {
 										{isServing && (
 											<Badge
 												variant="secondary"
-												className="bg-emerald-100 text-[10px] text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+												className="bg-emerald-100 text-xs text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
 											>
 												Serving
 											</Badge>

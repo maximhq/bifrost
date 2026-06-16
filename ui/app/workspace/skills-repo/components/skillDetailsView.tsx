@@ -20,7 +20,7 @@ import { validateVersionBump } from "@/lib/validators/skills";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ArrowLeft, Download, MoreHorizontal, Plus, Loader2, Trash2 } from "lucide-react";
 import { getApiBaseUrl } from "@/lib/utils/port";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { type SkillFormState, composeFrontmatter, useSkillForm } from "./helpers";
 import { SkillHeader } from "./shared";
@@ -57,9 +57,10 @@ export function SkillDetailView({
 
 	const highestVersion = skill?.highest_version || skill?.latest_version || "0.0.0";
 
-	const getSkillFormState = useMemo(() => {
+	/** Build a SkillFormState from the current skill data. Returns null if skill isn't loaded yet. */
+	function buildFormState(): SkillFormState | null {
 		if (!skill) return null;
-		const state: SkillFormState = {
+		return {
 			name: skill.name,
 			description: skill.description,
 			license: skill.license || "",
@@ -84,14 +85,24 @@ export function SkillDetailView({
 					}))
 				: [],
 		};
-		return state;
-	}, [highestVersion, skill]);
+	}
 
-	// Populate form when skill loads
+	// Tracks the skill we last seeded the form from, so switching to a different
+	// skill still resets even while another skill was being edited.
+	const lastResetSkillIdRef = useRef<string | null>(null);
+
+	// Populate form when skill data loads or changes. Skip resets during an
+	// active edit of the same skill so a background refetch can't wipe unsaved
+	// changes.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
 	useEffect(() => {
-		if (getSkillFormState) form.reset(getSkillFormState);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [getSkillFormState]);
+		const state = buildFormState();
+		const isNewSkill = lastResetSkillIdRef.current !== skillId;
+		if (state && (!isEditing || isNewSkill)) {
+			form.reset(state);
+			lastResetSkillIdRef.current = skillId;
+		}
+	}, [skill, highestVersion, isEditing, skillId]);
 
 	const handleSave = async (serve: boolean) => {
 		if (!form.runValidation()) return;
@@ -129,7 +140,8 @@ export function SkillDetailView({
 	};
 
 	const handleCancelEdit = () => {
-		if (getSkillFormState) form.reset(getSkillFormState);
+		const state = buildFormState();
+		if (state) form.reset(state);
 		setIsEditing(false);
 	};
 
@@ -139,7 +151,7 @@ export function SkillDetailView({
 
 	if (!skill) {
 		return (
-			<div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center p-4">
+			<div className="flex w-full flex-1 flex-col items-center justify-center p-4">
 				<p className="text-muted-foreground text-sm">Skill not found</p>
 				<Button variant="outline" size="sm" className="mt-3" onClick={onBack}>
 					<ArrowLeft className="h-3.5 w-3.5" />
@@ -150,8 +162,7 @@ export function SkillDetailView({
 	}
 
 	return (
-		<div className="relative flex w-full flex-1 flex-col">
-			{/* Content */}
+		<div className="relative flex w-full min-h-0 flex-1 flex-col">
 			{isEditing ? (
 				<SkillEditView
 					form={form}
@@ -252,7 +263,7 @@ export function SkillDetailView({
 						}
 					/>
 
-					<div className="mt-3 min-h-0 flex-1 overflow-hidden">
+					<div className="mt-3 min-h-0 flex-1 flex flex-col">
 						<SkillFormFields skill={skill} />
 					</div>
 				</>
