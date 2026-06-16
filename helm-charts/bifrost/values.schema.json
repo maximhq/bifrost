@@ -270,6 +270,10 @@
     "affinity": {
       "type": "object"
     },
+    "strategy": {
+      "type": "object",
+      "description": "Deployment update strategy. Applies to the Deployment only (not the StatefulSet). Empty uses the Kubernetes default. Rendered verbatim into spec.strategy."
+    },
     "bifrost": {
       "type": "object",
       "description": "Bifrost application configuration",
@@ -529,6 +533,15 @@
               "minimum": 1,
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
+            },
+            "allowDirectKeys": {
+              "type": "boolean",
+              "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",
+              "default": false
+            },
+            "mcpExternalClientUrl": {
+              "type": "string",
+              "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."
             }
           },
           "additionalProperties": false
@@ -3011,6 +3024,111 @@
           },
           "additionalProperties": false
         },
+        "skillsRegistry": {
+          "type": "object",
+          "description": "Declarative Skills Repository definitions reconciled from config.json. Rendered verbatim into skills_registry.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether config-defined skills should be reconciled at startup"
+            },
+            "skills": {
+              "type": "array",
+              "description": "Skills to create or update from config.json",
+              "items": {
+                "type": "object",
+                "required": ["name", "description", "skill_md_body", "version"],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "license": {
+                    "type": "string"
+                  },
+                  "compatibility": {
+                    "type": "string"
+                  },
+                  "allowed_tools": {
+                    "type": "string"
+                  },
+                  "extra_frontmatter": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "skill_md_body": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "source_type"],
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "source_type": {
+                          "type": "string",
+                          "enum": ["text", "url", "dataurl"]
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "type": "string"
+                        },
+                        "dataurl": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "url"
+                            }
+                          },
+                          "required": ["url"]
+                        },
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "text"
+                            }
+                          },
+                          "required": ["content"]
+                        },
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "dataurl"
+                            }
+                          },
+                          "required": ["dataurl"]
+                        }
+                      ]
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "accessProfiles": {
           "type": "array",
           "description": "Enterprise access profile templates rendered as top-level access_profiles in config.json",
@@ -5112,6 +5230,13 @@
         "allowed_models": {
           "type": "array",
           "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all.",
           "items": {
             "type": "string"
           }
