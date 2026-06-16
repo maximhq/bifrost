@@ -388,13 +388,11 @@ func TestListToolsHook_InitialListToolsFailure_FailsConnect(t *testing.T) {
 
 	// AddClient cleans up the failed entry, so the client must not linger as a
 	// Connected-but-empty entry that would lie to /api/mcp/clients.
+	clientNames := make([]string, 0, len(manager.GetClients()))
 	for _, c := range manager.GetClients() {
-		if c.Name == "list_err" {
-			assert.NotEqual(t, schemas.MCPConnectionStateConnected, c.State,
-				"client with failed list_tools must not be marked Connected")
-			assert.Empty(t, c.ToolMap, "client with failed list_tools must not serve tools")
-		}
+		clientNames = append(clientNames, c.Name)
 	}
+	assert.NotContains(t, clientNames, "list_err", "failed list_tools client must be removed")
 
 	// tools/list (served via GetToolPerClient) must not surface this client's tools.
 	served := manager.GetToolPerClient(context.Background())
