@@ -294,6 +294,11 @@
           "type": "string",
           "enum": ["json", "text"]
         },
+        "envLabel": {
+          "type": "string",
+          "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
+          "maxLength": 10
+        },
         "sourceOfTruth": {
           "type": "string",
           "enum": ["split", "config.json"],
@@ -975,11 +980,27 @@
                     },
                     "agent_addr": {
                       "type": "string",
-                      "description": "Datadog Agent address for APM traces (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_AGENT_ADDR)"
+                      "description": "Datadog Agent address for APM traces as combined host:port (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_AGENT_ADDR). Overridden by agent_host when set"
+                    },
+                    "agent_host": {
+                      "type": "string",
+                      "description": "Datadog Agent host for APM traces, set separately from the port (agent mode only). Supports env.VAR_NAME prefix (e.g. env.DD_AGENT_HOST). Takes precedence over agent_addr. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)"
+                    },
+                    "agent_port": {
+                      "type": "string",
+                      "description": "Datadog Agent port for APM traces, used with agent_host (agent mode only). Supports env.VAR_NAME prefix. Defaults to 8126; has no effect when agent_host is unset"
                     },
                     "dogstatsd_addr": {
                       "type": "string",
-                      "description": "DogStatsD server address for metrics (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_DOGSTATSD_ADDR)"
+                      "description": "DogStatsD server address for metrics as combined host:port (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_DOGSTATSD_ADDR). Overridden by dogstatsd_host when set"
+                    },
+                    "dogstatsd_host": {
+                      "type": "string",
+                      "description": "DogStatsD server host for metrics, set separately from the port (agent mode only). Supports env.VAR_NAME prefix (e.g. env.DD_DOGSTATSD_HOST). Takes precedence over dogstatsd_addr. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)"
+                    },
+                    "dogstatsd_port": {
+                      "type": "string",
+                      "description": "DogStatsD server port for metrics, used with dogstatsd_host (agent mode only). Supports env.VAR_NAME prefix. Defaults to 8125; has no effect when dogstatsd_host is unset"
                     },
                     "env": {
                       "type": "string"
@@ -3341,6 +3362,33 @@
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
               "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
             },
+            "writer": {
+              "type": "object",
+              "description": "Async logging writer queue and batch tuning",
+              "properties": {
+                "maxBatchSize": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "batchInterval": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "maxBatchBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "writeQueueCapacity": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "deferredUsageConcurrency": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
             "objectStorageExcludeFields": {
               "type": "array",
               "items": {
@@ -3454,6 +3502,33 @@
             "password": {
               "type": "string"
             },
+            "passwordCommand": {
+              "type": "object",
+              "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout for each new physical connection",
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^\\S+$"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "timeout": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                }
+              },
+              "required": ["command"],
+              "additionalProperties": false
+            },
+            "connMaxLifetime": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "database": {
               "type": "string"
             },
@@ -3468,16 +3543,30 @@
               "type": "string"
             }
           },
-          "if": {
-            "properties": {
-              "enabled": {
-                "const": true
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": ["host", "port", "user", "database", "sslMode"]
+              }
+            },
+            {
+              "not": {
+                "required": ["password", "passwordCommand"]
+              }
+            },
+            {
+              "not": {
+                "required": ["existingSecret", "passwordCommand"]
               }
             }
-          },
-          "then": {
-            "required": ["host", "port", "user", "database", "sslMode"]
-          }
+          ]
         },
         "image": {
           "type": "object",
