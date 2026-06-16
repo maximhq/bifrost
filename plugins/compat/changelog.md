@@ -1,2 +1,0 @@
-- fix(compat): preserve max_output_tokens on Responses requests (thanks [@webagil-kevin](https://github.com/webagil-kevin)!)
-- chore: upgraded core to v1.5.20 and framework to v1.3.20
