@@ -434,6 +434,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_dump_errors_in_console_logs_column"}, run: migrationAddDumpErrorsInConsoleLogsColumn},
 	{IDs: []string{"add_bedrock_mantle_key_columns"}, run: migrationAddBedrockMantleKeyColumns},
 	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
+	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10267,6 +10268,39 @@ func migrationAddOAuth2IssuanceTables(ctx context.Context, db *gorm.DB, logger s
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_tool_execution_timeout_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_execution_timeout") {
+				logger.Info("[configstore] %s: adding column tool_execution_timeout to TableMCPClient", migrationName)
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_execution_timeout"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column tool_execution_timeout from TableMCPClient", migrationName)
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_execution_timeout"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
 }

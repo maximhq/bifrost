@@ -125,6 +125,16 @@ func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudg
 	return nil
 }
 
+func toolExecutionTimeoutDurationToStoredSeconds(timeout time.Duration) (int, error) {
+	if timeout < 0 {
+		return 0, fmt.Errorf("tool_execution_timeout must be non-negative, got %q", timeout.String())
+	}
+	if timeout%time.Second != 0 {
+		return 0, fmt.Errorf("tool_execution_timeout must be a whole number of seconds, got %q", timeout.String())
+	}
+	return int(timeout / time.Second), nil
+}
+
 func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error) {
 	if interval < 0 {
 		return 0, fmt.Errorf("tool_sync_interval must be non-negative, got %q", interval.String())
@@ -1525,6 +1535,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 					IsPingAvailable:           dbClient.IsPingAvailable,
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
+					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
 					AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 					Disabled:                  dbClient.Disabled,
@@ -1567,6 +1578,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 			IsPingAvailable:           dbClient.IsPingAvailable,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
+			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 			Disabled:                  dbClient.Disabled,
 			ToolPricing:               dbClient.ToolPricing,
@@ -1989,6 +2001,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 		IsPingAvailable:           dbClient.IsPingAvailable,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
+		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 		Disabled:                  dbClient.Disabled,
 		ToolPricing:               dbClient.ToolPricing,
@@ -2027,6 +2040,10 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		if err != nil {
 			return err
 		}
+		toolExecutionTimeoutSec, err := toolExecutionTimeoutDurationToStoredSeconds(clientConfigCopy.ToolExecutionTimeout)
+		if err != nil {
+			return err
+		}
 		dbClient := tables.TableMCPClient{
 			ClientID:              clientConfigCopy.ID,
 			Name:                  clientConfigCopy.Name,
@@ -2043,6 +2060,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			AllowedExtraHeaders:   clientConfigCopy.AllowedExtraHeaders,
 			IsPingAvailable:       clientConfigCopy.IsPingAvailable,
 			ToolSyncInterval:      toolSyncIntervalSec,
+			ToolExecutionTimeout:  toolExecutionTimeoutSec,
 			AllowOnAllVirtualKeys: clientConfigCopy.AllowOnAllVirtualKeys,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
@@ -2192,6 +2210,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"allowed_extra_headers_json": string(allowedExtraHeadersJSON),
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
+			"tool_execution_timeout":     clientConfigCopy.ToolExecutionTimeout,
 			"allow_on_all_virtual_keys":  clientConfigCopy.AllowOnAllVirtualKeys,
 			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
