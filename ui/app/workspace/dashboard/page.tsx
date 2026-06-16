@@ -2,6 +2,7 @@ import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
 import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
@@ -28,6 +29,8 @@ export default function DashboardPage() {
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
 	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
+
+	const [timezone, setTimezone] = useTimezonePreference();
 
 	const { search } = useLocation();
 	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
@@ -113,9 +116,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedProviders.length > 0 && { providers: selectedProviders }),
 			...(selectedModels.length > 0 && { models: selectedModels }),
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
@@ -134,8 +137,8 @@ export default function DashboardPage() {
 			...(missingCostOnly && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
-				metadata_filters: metadataFilters,
-			}),
+					metadata_filters: metadataFilters,
+				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
 			...(selectedUserIds.length > 0 && { user_ids: selectedUserIds }),
 			...(selectedTeamIds.length > 0 && { team_ids: selectedTeamIds }),
@@ -172,9 +175,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedMcpToolNames.length > 0 && {
 				tool_names: selectedMcpToolNames,
 			}),
@@ -207,7 +210,16 @@ export default function DashboardPage() {
 	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
-	const allRefs = [overviewRef, providerRef, mcpRef, modelRankingsRef, teamRankingsRef, customerRankingsRef, buRankingsRef, userRankingsRef];
+	const allRefs = [
+		overviewRef,
+		providerRef,
+		mcpRef,
+		modelRankingsRef,
+		teamRankingsRef,
+		customerRankingsRef,
+		buRankingsRef,
+		userRankingsRef,
+	];
 
 	const getDashboardData = useCallback((): DashboardData => {
 		const merged: Partial<DashboardData> = {};
@@ -471,6 +483,9 @@ export default function DashboardPage() {
 							onPredefinedPeriodChange={handlePeriodChange}
 							triggerTestId="dashboard-filter-daterange"
 							popupAlignment="end"
+							showTimezone
+							timezone={timezone}
+							onTimezoneChange={setTimezone}
 						/>
 					</div>
 				</div>
