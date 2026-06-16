@@ -110,63 +110,83 @@ func (p *opencodeProvider) TextCompletionStream(ctx *schemas.BifrostContext, pos
 
 // ChatCompletion performs a chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIChatCompletionRequest(
-		ctx,
-		p.client,
-		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
-		request,
-		key,
-		p.networkConfig.ExtraHeaders,
-		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
-		p.GetProviderKey(),
-		nil,
-		parseOpencodeError,
-		p.logger,
-	)
+	route := resolveRoute(p.GetProviderKey(), request.Model)
+	if err := validateChatRoute(route, request); err != nil {
+		return nil, err
+	}
+	switch route.Adapter {
+	case adapterOpenAIChat:
+		return p.executeOpenAIChat(ctx, route, key, request)
+	case adapterAnthropicMessages:
+		return p.executeAnthropicChat(ctx, route, key, request)
+	case adapterGeminiNative:
+		return p.executeGeminiChat(ctx, route, key, request)
+	default:
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, context.DeadlineExceeded)
+	}
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	var authHeader map[string]string
-	if v := key.Value.GetValue(); v != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + v}
+	route := resolveRoute(p.GetProviderKey(), request.Model)
+	if err := validateChatRoute(route, request); err != nil {
+		return nil, err
 	}
-	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx,
-		p.streamingClient,
-		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
-		request,
-		authHeader,
-		p.networkConfig.ExtraHeaders,
-		p.networkConfig.StreamIdleTimeoutInSeconds,
-		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
-		p.providerKey,
-		postHookRunner,
-		nil,
-		nil,
-		parseOpencodeError,
-		nil,
-		nil,
-		p.logger,
-		postHookSpanFinalizer,
-	)
+	switch route.Adapter {
+	case adapterOpenAIChat:
+		return p.executeOpenAIChatStream(ctx, route, postHookRunner, postHookSpanFinalizer, key, request)
+	case adapterAnthropicMessages:
+		return p.executeAnthropicChatStream(ctx, route, postHookRunner, postHookSpanFinalizer, key, request)
+	case adapterGeminiNative:
+		return p.executeGeminiChatStream(ctx, route, postHookRunner, postHookSpanFinalizer, key, request)
+	default:
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, context.DeadlineExceeded)
+	}
 }
 
 // Responses performs a responses request to the Opencode API.
 func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
+	route := resolveRoute(p.GetProviderKey(), request.Model)
+	if err := validateResponsesRoute(route, request); err != nil {
 		return nil, err
 	}
-	return chatResponse.ToBifrostResponsesResponse(), nil
+	switch route.Adapter {
+	case adapterOpenAIResponses:
+		return p.executeOpenAIResponses(ctx, route, key, request)
+	case adapterOpenAIChat:
+		chatResponse, err := p.executeOpenAIChat(ctx, route, key, request.ToChatRequest())
+		if err != nil {
+			return nil, err
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
+	case adapterAnthropicMessages:
+		return p.executeAnthropicResponses(ctx, route, key, request)
+	case adapterGeminiNative:
+		return p.executeGeminiResponses(ctx, route, key, request)
+	default:
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, context.DeadlineExceeded)
+	}
 }
 
 // ResponsesStream performs a streaming responses request to the Opencode API.
 func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	route := resolveRoute(p.GetProviderKey(), request.Model)
+	if err := validateResponsesRoute(route, request); err != nil {
+		return nil, err
+	}
+	switch route.Adapter {
+	case adapterOpenAIResponses:
+		return p.executeOpenAIResponsesStream(ctx, route, postHookRunner, postHookSpanFinalizer, key, request)
+	case adapterOpenAIChat:
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return p.executeOpenAIChatStream(ctx, route, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	case adapterAnthropicMessages:
+		return p.executeAnthropicResponsesStream(ctx, route, postHookRunner, postHookSpanFinalizer, key, request)
+	case adapterGeminiNative:
+		return p.executeGeminiResponsesStream(ctx, route, postHookRunner, postHookSpanFinalizer, key, request)
+	default:
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, context.DeadlineExceeded)
+	}
 }
 
 // Embedding is not supported by Opencode.
