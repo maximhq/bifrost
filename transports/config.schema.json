@@ -2388,6 +2388,24 @@
     "load_balancer_config": {
       "$ref": "#/$defs/load_balancer_config"
     },
+    "alerting_config": {
+      "type": "object",
+      "description": "Alerting engine configuration.",
+      "properties": {
+        "allow_insecure_webhooks": {
+          "type": "boolean",
+          "description": "Allow HTTP webhook URLs and disable SSRF protection for webhook channels.",
+          "default": false
+        },
+        "alert_history_retention_days": {
+          "type": "integer",
+          "description": "Number of days to retain alert history rows before pruning.",
+          "default": 365,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "large_payload_optimization": {
       "$ref": "#/$defs/large_payload_optimization"
     },

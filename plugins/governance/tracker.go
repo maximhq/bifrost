@@ -173,7 +173,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 4. Now handle virtual key-level updates (if virtual key exists)
 	if update.VirtualKey == "" {
-		// No virtual key, provider-level and model-level updates already done above
+		// No virtual key, provider-level and model-level updates already done above.
 		return
 	}
 
