@@ -2,6 +2,8 @@ export { Message } from "./message";
 export {
 	MessageRole,
 	MessageType,
+	type Annotation,
+	type AnnotationCitation,
 	type APIMessage,
 	type CompletionRequest,
 	type CompletionResult,

@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import {
+	Annotation,
 	APIMessage,
 	CompletionRequest,
 	CompletionResult,
@@ -265,6 +266,27 @@ export class Message {
 			return calls && calls.length > 0 ? calls : undefined;
 		}
 		return undefined;
+	}
+
+	// Annotations
+
+	public get annotations(): Annotation[] | undefined {
+		if (this.originalType === MessageType.CompletionResult) {
+			const anns = (this._payload as CompletionResult)?.choices?.[0]?.message?.annotations;
+			return anns && anns.length > 0 ? anns : undefined;
+		}
+		return undefined;
+	}
+
+	public set annotations(annotations: Annotation[] | undefined) {
+		if (this.originalType === MessageType.CompletionResult) {
+			const result = this._payload as CompletionResult;
+			const choices = result?.choices?.map((c) => ({ ...c })) ?? [];
+			if (choices[0]) {
+				choices[0].message = { ...choices[0].message, annotations };
+			}
+			this._payload = { ...result, choices } as CompletionResult;
+		}
 	}
 
 	public get toolCallId(): string | undefined {
