@@ -12,6 +12,10 @@ export class SidebarPage extends BasePage {
   readonly mcpClientsLink: Locator
   readonly userGroupsLink: Locator
   readonly pluginsLink: Locator
+  readonly alertingButton: Locator
+  readonly alertingChannelsLink: Locator
+  readonly alertingRulesLink: Locator
+  readonly alertingHistoryLink: Locator
   readonly configLink: Locator
 
   constructor(page: Page) {
@@ -22,6 +26,14 @@ export class SidebarPage extends BasePage {
     this.mcpClientsLink = page.getByRole('link', { name: /mcp/i })
     this.userGroupsLink = page.getByRole('link', { name: /user groups/i })
     this.pluginsLink = page.getByRole('link', { name: /plugins/i })
+    this.alertingButton = page.getByTestId('sidebar-item-btn-alerting')
+    // Target by route-specific data-nav-url rather than the title-derived
+    // testid: the subitem slug "rules" also matches the Guardrails "Rules"
+    // subitem, so getByTestId('sidebar-subitem-link-rules') is ambiguous under
+    // Playwright strict mode when both submenus are expanded.
+    this.alertingChannelsLink = page.locator('[data-nav-url="/workspace/alerting/channels"]')
+    this.alertingRulesLink = page.locator('[data-nav-url="/workspace/alerting/rules"]')
+    this.alertingHistoryLink = page.locator('[data-nav-url="/workspace/alerting/history"]')
     this.configLink = page.getByRole('link', { name: /config/i })
   }
 
@@ -70,6 +82,44 @@ export class SidebarPage extends BasePage {
    */
   async goToPlugins(): Promise<void> {
     await this.pluginsLink.click()
+    await this.waitForPageLoad()
+  }
+
+  /**
+   * Ensure the Alerting submenu is expanded before clicking a subitem.
+   * The Alerting button toggles the submenu, so only click it when the
+   * target link is not already visible to avoid collapsing an open menu.
+   */
+  private async expandAlertingIfNeeded(targetLink: Locator): Promise<void> {
+    if (!(await targetLink.isVisible())) {
+      await this.alertingButton.click()
+    }
+  }
+
+  /**
+   * Navigate to Alerting Channels page
+   */
+  async goToAlertingChannels(): Promise<void> {
+    await this.expandAlertingIfNeeded(this.alertingChannelsLink)
+    await this.alertingChannelsLink.click()
+    await this.waitForPageLoad()
+  }
+
+  /**
+   * Navigate to Alerting Rules page
+   */
+  async goToAlertingRules(): Promise<void> {
+    await this.expandAlertingIfNeeded(this.alertingRulesLink)
+    await this.alertingRulesLink.click()
+    await this.waitForPageLoad()
+  }
+
+  /**
+   * Navigate to Alerting History page
+   */
+  async goToAlertingHistory(): Promise<void> {
+    await this.expandAlertingIfNeeded(this.alertingHistoryLink)
+    await this.alertingHistoryLink.click()
     await this.waitForPageLoad()
   }
 
