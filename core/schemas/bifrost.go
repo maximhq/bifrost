@@ -65,6 +65,7 @@ const (
 	XAI           ModelProvider = "xai"
 	Replicate     ModelProvider = "replicate"
 	VLLM          ModelProvider = "vllm"
+	TEI           ModelProvider = "tei"
 	Runway        ModelProvider = "runway"
 	Runware       ModelProvider = "runware"
 	Fireworks     ModelProvider = "fireworks"
@@ -79,6 +80,7 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	TEI,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -107,6 +109,7 @@ var StandardProviders = []ModelProvider{
 	XAI,
 	Replicate,
 	VLLM,
+	TEI,
 	Runway,
 	Runware,
 	Fireworks,

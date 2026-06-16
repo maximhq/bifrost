@@ -404,6 +404,9 @@
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
+        "tei": {
+          "$ref": "#/$defs/provider"
+        },
         "huggingface": {
           "$ref": "#/$defs/provider"
         },
@@ -5593,6 +5596,7 @@
             "xai",
             "replicate",
             "vllm",
+            "tei",
             "runway",
             "runware",
             "fireworks"
