@@ -3244,10 +3244,6 @@ func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gor
 	migrationName := "logs_recreate_matviews_with_governance_columns"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
-	// Materialized views are PostgreSQL-only; skip on other dialects
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
@@ -3287,14 +3283,14 @@ func migrationSplitFilterDataMatView(ctx context.Context, db *gorm.DB, logger sc
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
 	// Materialized views are PostgreSQL-only; skip on other dialects.
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
+			if db.Dialector.Name() != "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE").Error; err != nil {
 				return fmt.Errorf("failed to drop legacy mv_logs_filterdata: %w", err)
@@ -3531,14 +3527,14 @@ func migrationAddSafeJsonbFunction(ctx context.Context, db *gorm.DB, logger sche
 	migrationName := "logs_add_safe_jsonb_function"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
+			if db.Dialector.Name() != "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			const stmt = `
 CREATE OR REPLACE FUNCTION bifrost_safe_jsonb(t text) RETURNS text
@@ -3764,14 +3760,14 @@ func migrationRecreateFilterUsersMatView(ctx context.Context, db *gorm.DB, logge
 	migrationName := "logs_recreate_filter_users_matview"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
+			if db.Dialector.Name() != "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_users CASCADE").Error; err != nil {
 				return fmt.Errorf("failed to drop mv_filter_users: %w", err)
@@ -3800,14 +3796,14 @@ func migrationRecreateFilterTeamBUMatViews(ctx context.Context, db *gorm.DB, log
 	migrationName := "logs_recreate_filter_team_bu_matviews_multivalue"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
+			if db.Dialector.Name() != "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			for _, view := range []string{"mv_filter_teams", "mv_filter_business_units"} {
 				if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE").Error; err != nil {
@@ -3914,14 +3910,14 @@ func migrationRecreateFilterCustomersMatView(ctx context.Context, db *gorm.DB, l
 	migrationName := "logs_recreate_filter_customers_matview_multivalue"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
+			if db.Dialector.Name() != "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_customers CASCADE").Error; err != nil {
 				return fmt.Errorf("failed to drop mv_filter_customers: %w", err)

@@ -1,5 +1,6 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "env_label":"Development",
   "mcp": {
     "client_configs": [
       {

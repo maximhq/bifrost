@@ -23,7 +23,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		return nil, err
 	}
 	dsn := postgresconn.BuildDSN(config)
-	logger.Info("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
+	logger.Debug("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
 		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
 	// Migration-only DSN. Forces pgx into simple-query protocol on the migration
