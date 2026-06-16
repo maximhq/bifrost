@@ -224,19 +224,6 @@ func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatal
 			if slices.Contains(providers, preferred) {
 				selected = preferred
 			}
-
-			// For Anthropic-type routes, raw request body passthrough is only valid for
-			// providers that speak the Anthropic Messages API natively. When the model
-			// catalog falls back to a provider that doesn't (e.g. Bedrock), clear the
-			// flag so the provider performs its own format conversion.
-			if integrationType == "anthropic" &&
-				selected != schemas.Anthropic &&
-				selected != schemas.Vertex &&
-				selected != schemas.Azure {
-				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
-				ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
-				ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
-			}
 		}
 	}
 	return selected, providers
