@@ -58151,6 +58151,14 @@
             }
           },
           {
+            "name": "search",
+            "in": "query",
+            "description": "Search versions by version string.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "sort_by",
             "in": "query",
             "description": "Field to sort by.",
