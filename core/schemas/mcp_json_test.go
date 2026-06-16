@@ -102,3 +102,19 @@ func TestMCPClientConfigUnmarshalToolExecutionTimeoutInvalidString(t *testing.T)
 	}
 }
 
+func TestMCPClientConfigUnmarshalToolExecutionTimeoutNegativeInteger(t *testing.T) {
+	raw := []byte(`{"name":"demo","connection_type":"http","tool_execution_timeout":-30}`)
+	var cfg MCPClientConfig
+	if err := sonic.Unmarshal(raw, &cfg); err == nil {
+		t.Fatal("expected unmarshal error for negative timeout, got nil")
+	}
+}
+
+func TestMCPClientConfigUnmarshalToolExecutionTimeoutNegativeString(t *testing.T) {
+	raw := []byte(`{"name":"demo","connection_type":"http","tool_execution_timeout":"-30s"}`)
+	var cfg MCPClientConfig
+	if err := sonic.Unmarshal(raw, &cfg); err == nil {
+		t.Fatal("expected unmarshal error for negative duration string, got nil")
+	}
+}
+

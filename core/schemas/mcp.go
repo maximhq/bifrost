@@ -362,12 +362,18 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 				if err != nil {
 					return fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
 				}
+				if dur < 0 {
+					return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
+				}
 				c.ToolExecutionTimeout = dur
 			} else {
-				// bare integer — treat as seconds 
+				// bare integer — treat as seconds
 				var n int64
 				if err := json.Unmarshal(raw, &n); err != nil {
 					return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+				}
+				if n < 0 {
+					return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %d", n)
 				}
 				c.ToolExecutionTimeout = time.Duration(n) * time.Second
 			}
@@ -395,6 +401,9 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		dur, err := parseFlexibleDurationField(*auxStr.ToolExecutionTimeout, "tool_execution_timeout")
 		if err != nil {
 			return err
+		}
+		if dur < 0 {
+			return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
 		}
 		c.ToolExecutionTimeout = dur
 	}
