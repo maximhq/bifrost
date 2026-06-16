@@ -26,13 +26,13 @@ Use it when you want to:
 
 ## Create a skill
 
-From the dashboard, open **Skills Repository** and click **Create Skill**.
+From the dashboard, open **Skills Repository** and click **New Skill** (or **Create Skill** from the empty-state page if no skills exist yet).
 
-A skill has three parts: identity, content, and files.
+The editor uses a two-pane workspace. The left sidebar has three navigation buttons -- **Details**, **Metadata**, and **Extra Frontmatter** -- above the file tree. Clicking a button switches the right pane to the corresponding editor.
 
 ### 1. Fill the skill details
 
-Start with the fields that describe the skill:
+Click **Details** in the left sidebar to open the details pane. Fill in the fields that describe the skill:
 
 | Field | What it does |
 | --- | --- |
@@ -41,24 +41,26 @@ Start with the fields that describe the skill:
 | **License** | Optional SPDX-style license identifier shown in the generated `SKILL.md` frontmatter, such as `MIT` or `Apache-2.0`. |
 | **Compatibility** | Optional list of skill-aware harnesses this skill is intended to work with, such as Claude Code or Codex. |
 | **Allowed tools** | Optional, experimental frontmatter that compatible harnesses may use to allow or restrict tool usage for the skill. |
-| **Metadata** | Optional key-value metadata nested under `metadata:` in `SKILL.md`. |
-| **Extra frontmatter** | Optional JSON that becomes additional top-level YAML frontmatter. Useful for other keys that the agentskills.io spec does not support but the harness does. |
 
-Version is not part of the `SKILL.md` frontmatter. Choose it after the skill content and files are ready, right before publishing.
+Click **Metadata** to open the key-value table editor for optional metadata nested under `metadata:` in `SKILL.md`. Click **Extra Frontmatter** to open a JSON editor for additional top-level YAML frontmatter keys.
+
+Version is not entered inline. You choose it in a dialog when you click **Create Skill**, right before publishing.
 
 <Warning>
   Do not use reserved names like `all-skills`, `all`, `claude-code`, or `codex`. These are used by the serving and marketplace routes.
 </Warning>
 
 <Frame>
-  <img src="/media/skills-repository/create-skill-details.png" alt="Skill details form with name, description, version, and frontmatter fields" />
+  <img src="/media/skills-repository/create-skill-details.png" alt="Two-pane skill editor showing Details pane with name, description, license, compatibility, and allowed tools fields" />
 </Frame>
 
 ### 2. Write the `SKILL.md` body
 
-The editor stores only the Markdown body of `SKILL.md`. Bifrost generates the YAML frontmatter from the fields above, then appends this body underneath it.
+Click the **SKILL.md** node in the file tree on the left sidebar to open the markdown editor. The editor stores only the Markdown body of `SKILL.md`. Bifrost generates the YAML frontmatter from the fields above, then appends this body underneath it.
 
-Use this space for the instructions that should load after a harness activates the skill. Keep discovery fields such as name, description, license, compatibility, allowed tools, and metadata in the form fields above.
+The editor has **Edit** and **Preview** tabs so you can switch between writing and previewing the rendered output.
+
+Use this space for the instructions that should load after a harness activates the skill. Keep discovery fields such as name, description, license, compatibility, allowed tools, and metadata in the sidebar panes.
 
 For the canonical guidance on writing effective Agent Skills, use the Agent Skills docs:
 
@@ -90,44 +92,51 @@ You type `@sty`, pick the file from the dropdown, and the editor expands it into
 
 ## Add files and folders
 
-The **Files** panel below the editor is where you attach scripts, references, templates, and any other supporting content the skill needs.
+The **Files** section in the left sidebar below the pane-selector buttons is where you attach scripts, references, templates, and any other supporting content the skill needs.
 
-The file tree starts at **root**, which shows a `SKILL.md` badge to remind you that the generated `SKILL.md` lives at the top level. The toolbar on the right side of each row gives you three actions:
+The file tree starts at **root** with the `SKILL.md` node at the top. A search bar above the tree lets you filter files by path. The context menu on each row gives you three actions:
 
-- **+ Add file** -- add a single file into that location
+- **Add file** -- add a single file into that location
+- **Add Folder** -- create a new empty subfolder (type the name and confirm with the checkmark)
 - **Upload folder** -- upload an entire folder from your machine, preserving its structure
-- **Folder** -- create a new empty subfolder (type the name and confirm with the checkmark)
 
 <Frame>
-  <img src="/media/skills-repository/file-manager-overview.png" alt="File manager showing the root node with SKILL.md badge and the Add file, Upload folder, and Folder buttons" />
+  <img src="/media/skills-repository/file-manager-overview.png" alt="File tree in the left sidebar with search bar, SKILL.md node, and Add file, Upload folder, and Folder buttons" />
 </Frame>
 
 Every folder in the tree has the same set of actions, so you can add files or create subfolders at any depth directly.
 
 ### Adding a file
 
-Click **+ Add file** and pick one of the four source types:
+Choosing **Add file** and gives you four source types:
 
 | Source | What it does |
 | --- | --- |
-| **Via text** | Opens an inline form where you type a filename and paste or write the content directly. The form shows the current location (e.g. "Location: root") so you know where the file lands. |
-| **Via URL** | Provide an `http://` or `https://` URL. The content is fetched from that URL when the skill is served, so it stays up to date with the remote source. |
-| **Via data URL** | Paste a `data:` URL for content you already have base64-encoded or inline. |
-| **Via upload** | Pick a file from your machine to upload directly. |
+| **Upload** | Pick a file from your machine to upload directly. |
+| **From text** | Creates a file you can write or paste content into directly. |
+| **From URL** | References an `http://` or `https://` URL. The content is fetched from that URL when the skill is served, so it stays up to date with the remote source. |
+| **From data URL** | References a `data:` URL for content you already have base64-encoded or inline. |
 
 <Frame>
   <img src="/media/skills-repository/add-file-source-types.png" alt="Add file dropdown showing Via text, Via URL, Via data URL, and Via upload options" />
 </Frame>
 
-For example, choosing **Via text** expands an inline form right inside the file tree. Fill in the filename, write or paste the content, and click **+ Add**.
+After choosing a source type, an inline text input appears in the file tree for you to type the filename. Confirm with the checkmark. Once confirmed, the right pane opens the appropriate editor for that source type:
+
+- **Text**: A free-form text area where you type or paste the file content.
+- **URL**: A single text input to paste the URL, with a note that it is stored as a live reference.
+- **Data URL**: A text area to paste the data URL.
+- **Upload**: A file picker to select and upload the file directly.
+
+For **text**, **URL**, and **data URL** files you can edit the content later by selecting the file in the tree. **Upload** files are stored and referred and cannot be edited in place -- delete and re-upload to replace them.
 
 <Frame>
-  <img src="/media/skills-repository/add-file-via-text.png" alt="Via text form showing filename field, file content textarea, and Add button" />
+  <img src="/media/skills-repository/add-file-name-and-source-editor.png" alt="New text file selected in the file tree with its source editor open in the right pane" />
 </Frame>
 
 ### Creating a folder
 
-Click **Folder** and an inline text input appears with a `folder-name` placeholder. Type your folder name and confirm with the checkmark. The new folder appears in the tree immediately, with its own set of **+ Add file**, **Upload folder**, and **Folder** buttons.
+Click **Add folder** and an inline text input appears with a `folder-name` placeholder. Type your folder name and confirm with the checkmark. The new folder appears in the tree immediately, with its own set of **Add file**, **Add folder** and **Upload folder** buttons.
 
 <Frame>
   <img src="/media/skills-repository/create-folder.png" alt="Inline folder name input with placeholder and confirm/cancel buttons" />
@@ -139,31 +148,31 @@ Click **Upload folder** to bring in an entire directory from your machine. Bifro
 
 ### Moving files and folders
 
-Hover over a folder or file to reveal the **move** arrow. Clicking it opens a **Search folders...** dropdown listing every folder in the tree. Pick the destination and the item moves there.
+In the context menu of any file you will find the **move** option. Clicking it opens a submenu listing every folder and subfolder in the tree. Pick the destination and the item moves there.
 
 <Frame>
-  <img src="/media/skills-repository/move-folder-dropdown.png" alt="Move folder dropdown showing Search folders input with root and references as destinations" />
+  <img src="/media/skills-repository/move-folder-dropdown.png" alt="Move submenu listing available destination folders" />
 </Frame>
 
 Moving a file or folder only changes its location in the tree. Stored file references stay intact, so you can reorganize without re-uploading anything.
 
 ### Storage and versioning
 
-When you create a new version, Bifrost copies only the lightweight metadata: the `SKILL.md` content, description, frontmatter fields, and the file paths. The uploaded file objects themselves are not duplicated. Every version that references the same file points to the same underlying stored object.
+When you create a new version, Bifrost copies only the lightweight metadata: the `SKILL.md` content, description, frontmatter fields, and the file paths. The uploaded file objects themselves are not duplicated. Every version that references the same file points to the same underlying stored object. Unless you change the contents of the file.
 
-This means you can publish many versions of a skill with large attached files and your storage will not grow with each version. Storage only increases when you upload genuinely new files. Renaming or moving existing files across versions costs nothing extra.
+This means you can publish many versions of a skill with large attached files and your storage will not grow with each version. Storage only increases when you upload genuinely new files or modify the content of a file. Renaming or moving existing files across versions costs nothing extra.
 
 When you delete a skill, all of its uploaded file objects are cleaned up alongside it.
 
 ### Deleting a folder
 
-Click the trash icon on a folder to delete it. If the folder contains files, Bifrost asks for confirmation before removing everything inside it.
+Click the **Delete** option in a folder's context menu to delete it. If the folder contains files, Bifrost asks for confirmation before removing everything inside it.
 
 The deletion is applied to the skill only after you save a new version.
 
 ## Publish a version
 
-When the skill is ready, choose the version you want to publish and click **Create Skill**. Bifrost creates the first immutable version and serves it immediately.
+When the skill is ready, click **Create Skill**. A version dialog appears where you choose the version number. Bifrost creates the first immutable version and serves it immediately.
 
 <Frame>
   <img src="/media/skills-repository/publish-first-version.png" alt="Publishing the first skill version" />
@@ -190,22 +199,21 @@ Use bumps consistently so marketplaces and harnesses can update predictably:
   Numeric versions cannot go backwards. If `3.0.0` exists, you cannot publish `1.0.1` or `2.5.0` later, even if you are currently serving an older version.
 </Warning>
 
-## Edit a skill
+## Adding new versions
 
-Open a skill and choose **Edit**.
+Open a skill and click on **Add New Version**.
 
 <Frame>
   <img src="/media/skills-repository/edit-skill-entry.png" alt="Edit action on a skill detail page" />
 </Frame>
 
-Edits always create a new version snapshot. The existing published versions remain available in version history.
+New versions always create a new snapshot. The existing published versions remain available in version history.
 
-### What changes in edit mode?
+### What changes in adding a new version?
 
 - The **name** is locked. It is the stable identifier used by marketplace plugin names and install URLs.
-- The **description, frontmatter, metadata, body, and files** can be updated.
-- You must provide a new version.
-- You can choose **Save** or **Save & Serve**.
+- The **description, frontmatter, metadata, body, and files** can be updated using the same two-pane workspace as the create flow.
+- You choose the new version in a dialog when you click **Save** or **Save & Serve**.
 
 | Action | Result |
 | --- | --- |
@@ -215,22 +223,6 @@ Edits always create a new version snapshot. The existing published versions rema
 <Frame>
   <img src="/media/skills-repository/edit-skill-save-actions.png" alt="Save and Save & Serve actions in the skill editor" />
 </Frame>
-
-### Editing existing files
-
-Existing stored files keep a backend reference. Because of that:
-
-- you can **rename** a committed file
-- you can **move** it to another folder
-- you cannot directly replace its content in-place
-
-To change the content of a committed file, remove it and add the new file again.
-
-<Frame>
-  <img src="/media/skills-repository/rename-committed-file.png" alt="Rename-only state for an existing committed file" />
-</Frame>
-
-This keeps historical versions reproducible while still letting you reorganize the file tree.
 
 ### Deleting existing files
 
@@ -242,13 +234,13 @@ Removing an existing file means the next saved version will no longer track that
 
 ## Switch the served version
 
-Every saved version appears in the skill's version history. If you publish a version and later decide an older one was better, open the version history first.
+Every saved version appears in the skill's version history. Click **Versions** in the skill detail header to open the versions popover. You can search versions by version string using the search bar at the top of the popover.
 
 <Frame>
   <img src="/media/skills-repository/version-history-table.png" alt="Version history table for a skill" />
 </Frame>
 
-Pick the version you want to inspect. The version details dialog shows the snapshot for that version, including the action to serve it again.
+Pick the version you want to inspect. The version details dialog opens as a near-full-screen overlay showing the full skill header with metadata pills, the two-pane file browser with preview, and the action to serve that version.
 
 <Frame>
   <img src="/media/skills-repository/version-history-shift-dialog.png" alt="Version details dialog with Shift to this version action" />
@@ -262,7 +254,7 @@ Shifting changes which version is served to marketplaces and downloads. It does 
 
 ## Register Bifrost as a marketplace
 
-Once your repository has skills, use **Register as Marketplace** from the Skills Repository page. Bifrost shows copyable commands for supported harnesses.
+Once your repository has skills, click **Register as Marketplace** in the Skills Repository header. A popover shows copyable CLI commands for each supported harness.
 
 <Frame>
   <img src="/media/skills-repository/register-marketplace-menu.png" alt="Register as Marketplace menu showing Claude Code and Codex commands" />
@@ -368,7 +360,7 @@ Use the dashboard for interactive editing, and use the API when you want to sync
 
 - Create new immutable versions with [Update skill](/api-reference/skills/update-skill). Use **save without serving** when you want to stage a version, and **save and serve** when the marketplace should switch to it immediately.
 - Inspect the currently served skill with [Get skill](/api-reference/skills/get-skill). Pass the `version` query parameter to load a specific historical snapshot.
-- Inspect the full version history with [List skill versions](/api-reference/skills/list-skill-versions).
+- Inspect the full version history with [List skill versions](/api-reference/skills/list-skill-versions). Use the `search` query parameter to filter by version string when you only need a specific release or prefix.
 - Roll the serving version back or forward with [Shift served skill version](/api-reference/skills/shift-served-skill-version).
 - Track or nudge the bundled plugin with [Get all-skills version](/api-reference/skills/get-all-skills-version) and [Bump all-skills version](/api-reference/skills/bump-all-skills-version).
 
