@@ -1,15 +1,15 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { prometheusFormSchema, type EnvVar, type PrometheusFormSchema } from "@/lib/types/schemas";
-import { emptyEnvVar, toEnvVarFormValue } from "@/lib/utils/envVarForm";
+import { prometheusFormSchema, type SecretVar, type PrometheusFormSchema } from "@/lib/types/schemas";
+import { emptySecretVar, toSecretVarFormValue } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { AlertTriangle, Copy, Info, Plus, Trash, Trash2 } from "lucide-react";
@@ -20,13 +20,13 @@ interface PrometheusFormFragmentProps {
 	currentConfig?: {
 		metrics_enabled?: boolean;
 		push_gateway_enabled?: boolean;
-		push_gateway_url?: string | EnvVar;
+		push_gateway_url?: string | SecretVar;
 		job_name?: string;
 		instance_id?: string;
 		push_interval?: number;
 		basic_auth?: {
-			username?: string | EnvVar;
-			password?: string | EnvVar;
+			username?: string | SecretVar;
+			password?: string | SecretVar;
 		};
 	};
 	onSave: (config: PrometheusFormSchema) => Promise<void>;
@@ -36,19 +36,19 @@ interface PrometheusFormFragmentProps {
 	metricsEndpoint?: string;
 }
 
-const hasAuth = (v?: string | EnvVar): boolean =>
-	typeof v === "string" ? !!v.trim() : !!(v?.value?.trim() || (v?.from_env && !!v?.env_var?.trim()));
+const hasAuth = (v?: string | SecretVar): boolean =>
+	typeof v === "string" ? !!v.trim() : !!(v?.value?.trim() || (v?.from_env && !!v?.env_var?.trim()) || (v?.from_vault && !!v?.vault_var?.trim()));
 
 const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfig"]): PrometheusFormSchema => ({
 	metrics_enabled: initialConfig?.metrics_enabled ?? true,
 	push_gateway_enabled: initialConfig?.push_gateway_enabled ?? false,
 	prometheus_config: {
-		push_gateway_url: toEnvVarFormValue(initialConfig?.push_gateway_url),
+		push_gateway_url: toSecretVarFormValue(initialConfig?.push_gateway_url),
 		job_name: initialConfig?.job_name ?? "bifrost",
 		instance_id: initialConfig?.instance_id ?? "",
 		push_interval: initialConfig?.push_interval ?? 15,
-		basic_auth_username: toEnvVarFormValue(initialConfig?.basic_auth?.username),
-		basic_auth_password: toEnvVarFormValue(initialConfig?.basic_auth?.password),
+		basic_auth_username: toSecretVarFormValue(initialConfig?.basic_auth?.username),
+		basic_auth_password: toSecretVarFormValue(initialConfig?.basic_auth?.password),
 	},
 });
 
@@ -107,11 +107,11 @@ export function PrometheusFormFragment({
 	};
 
 	const handleRemoveBasicAuth = () => {
-		form.setValue("prometheus_config.basic_auth_username", emptyEnvVar(), {
+		form.setValue("prometheus_config.basic_auth_username", emptySecretVar(), {
 			shouldDirty: true,
 			shouldValidate: true,
 		});
-		form.setValue("prometheus_config.basic_auth_password", emptyEnvVar(), {
+		form.setValue("prometheus_config.basic_auth_password", emptySecretVar(), {
 			shouldDirty: true,
 			shouldValidate: true,
 		});
@@ -144,11 +144,11 @@ export function PrometheusFormFragment({
 			shouldValidate: true,
 		});
 		form.setValue("prometheus_config.push_interval", defaults.prometheus_config.push_interval, { shouldDirty: true, shouldValidate: true });
-		form.setValue("prometheus_config.basic_auth_username", defaults.prometheus_config.basic_auth_username ?? emptyEnvVar(), {
+		form.setValue("prometheus_config.basic_auth_username", defaults.prometheus_config.basic_auth_username ?? emptySecretVar(), {
 			shouldDirty: true,
 			shouldValidate: true,
 		});
-		form.setValue("prometheus_config.basic_auth_password", defaults.prometheus_config.basic_auth_password ?? emptyEnvVar(), {
+		form.setValue("prometheus_config.basic_auth_password", defaults.prometheus_config.basic_auth_password ?? emptySecretVar(), {
 			shouldDirty: true,
 			shouldValidate: true,
 		});
@@ -351,7 +351,7 @@ export function PrometheusFormFragment({
 									<FormItem className="w-full">
 										<FormLabel>Push Gateway URL</FormLabel>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												placeholder="http://pushgateway:9091 or env.PUSHGATEWAY_URL"
 												disabled={!hasPrometheusAccess}
 												data-testid="prometheus-push-gateway-url"
@@ -476,7 +476,7 @@ export function PrometheusFormFragment({
 													<FormItem>
 														<FormLabel>Username</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																placeholder="Username or env.PG_USER"
 																disabled={!hasPrometheusAccess}
 																data-testid="prometheus-basic-auth-username"
@@ -495,7 +495,7 @@ export function PrometheusFormFragment({
 													<FormItem>
 														<FormLabel>Password</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																type="password"
 																placeholder="Password or env.PG_PASS"
 																disabled={!hasPrometheusAccess}

@@ -13,8 +13,8 @@ import (
 // This stores the OAuth client configuration and flow state
 type TableOauthConfig struct {
 	ID                  string          `gorm:"type:varchar(255);primaryKey" json:"id"`          // UUID
-	ClientID            *schemas.EnvVar `gorm:"type:varchar(512)" json:"client_id"`              // OAuth provider's client ID (optional for public clients)
-	ClientSecret        *schemas.EnvVar `gorm:"type:text" json:"-"`                              // Encrypted OAuth client secret (optional for public clients)
+	ClientID            *schemas.SecretVar `gorm:"type:varchar(512)" json:"client_id"`              // OAuth provider's client ID (optional for public clients)
+	ClientSecret        *schemas.SecretVar `gorm:"type:text" json:"-"`                              // Encrypted OAuth client secret (optional for public clients)
 	AuthorizeURL        string          `gorm:"type:text" json:"authorize_url"`                  // Provider's authorization endpoint (optional, can be discovered)
 	TokenURL            string          `gorm:"type:text" json:"token_url"`                      // Provider's token endpoint (optional, can be discovered)
 	RegistrationURL     *string         `gorm:"type:text" json:"registration_url,omitempty"`     // Provider's dynamic registration endpoint (optional, can be discovered)
@@ -47,7 +47,7 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if schemas.VaultStoreEnabled() {
-		if err := schemas.StoreOwnedVaultEnvVars(tx.Statement.Context,
+		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context,
 			schemas.VaultBasePath(c.TableName(), c.ID), c); err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 // AfterDelete hook for best-effort vault cleanup on row deletion.
 func (c *TableOauthConfig) AfterDelete(tx *gorm.DB) error {
 	base := schemas.VaultBasePath(c.TableName(), c.ID)
-	schemas.RemoveOwnedVaultEnvVars(tx.Statement.Context, base, c)
+	schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, c)
 	return nil
 }
 
@@ -107,8 +107,8 @@ func (c *TableOauthConfig) GetResolvedClientSecret() string {
 	return c.ClientSecret.GetValue()
 }
 
-// GetClientSecretAsEnvVar returns ClientSecret as an EnvVar (preserves env var reference metadata).
-func (c *TableOauthConfig) GetClientSecretAsEnvVar() *schemas.EnvVar {
+// GetClientSecretAsSecretVar returns ClientSecret as an SecretVar (preserves env var reference metadata).
+func (c *TableOauthConfig) GetClientSecretAsSecretVar() *schemas.SecretVar {
 	return c.ClientSecret
 }
 

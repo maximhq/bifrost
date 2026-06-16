@@ -543,9 +543,9 @@ func signAWSRequestFromKey(
 			cfg.ExternalID, cfg.RoleSessionName,
 			region, service)
 	}
-	// No config: pass zero EnvVar values so signAWSRequest uses the default chain.
+	// No config: pass zero SecretVar values so signAWSRequest uses the default chain.
 	return signAWSRequest(ctx, req,
-		schemas.EnvVar{}, schemas.EnvVar{},
+		schemas.SecretVar{}, schemas.SecretVar{},
 		nil, nil, nil, nil,
 		region, service)
 }
@@ -554,11 +554,11 @@ func signAWSRequestFromKey(
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
-	accessKey, secretKey schemas.EnvVar,
-	sessionToken *schemas.EnvVar,
-	roleARN *schemas.EnvVar,
-	externalID *schemas.EnvVar,
-	sessionName *schemas.EnvVar,
+	accessKey, secretKey schemas.SecretVar,
+	sessionToken *schemas.SecretVar,
+	roleARN *schemas.SecretVar,
+	externalID *schemas.SecretVar,
+	sessionName *schemas.SecretVar,
 	region, service string,
 ) *schemas.BifrostError {
 	// Set required headers before signing (only if not already set)

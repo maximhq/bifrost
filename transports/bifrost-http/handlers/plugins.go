@@ -318,7 +318,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	if isBuiltin && request.Path != nil {
 		request.Path = nil
 	}
-	// Normalize before DB write so EnvVar fields are stored as plain strings.
+	// Normalize before DB write so SecretVar fields are stored as plain strings.
 	normalizedConfig, err := h.normalizePluginConfig(request.Name, request.Config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid plugin configuration: %v", err))
@@ -452,14 +452,14 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		if existingCfg, ok := existingPlugin.Config.(map[string]any); ok && len(existingCfg) > 0 {
 			mergedConfig = make(map[string]any, len(existingCfg)+len(request.Config))
 			maps.Copy(mergedConfig, existingCfg)
-			// Before overwriting, substitute any redacted EnvVar placeholders in the
+			// Before overwriting, substitute any redacted SecretVar placeholders in the
 			// incoming config with the existing stored value so credentials are not
 			// replaced by "***" or similar client-side redaction markers.
 			incoming := restoreRedactedFromExisting(request.Config, existingCfg)
 			maps.Copy(mergedConfig, incoming)
 		}
 	}
-	// Normalize through the typed plugin config so custom MarshalJSON (e.g. EnvVar → string) runs.
+	// Normalize through the typed plugin config so custom MarshalJSON (e.g. SecretVar → string) runs.
 	mergedConfig, err = h.normalizePluginConfig(name, mergedConfig)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid plugin configuration: %v", err))
@@ -628,23 +628,23 @@ func restoreRedactedValue(incoming, existing any) any {
 	}
 }
 
-// isEnvVarObject returns true if m has exactly the shape of a serialised EnvVar:
+// isSecretVarObject returns true if m has exactly the shape of a serialised SecretVar:
 // keys "value", "env_var", and "from_env".
-func isEnvVarObject(m map[string]any) bool {
+func isSecretVarObject(m map[string]any) bool {
 	_, hasValue := m["value"]
-	_, hasEnvVar := m["env_var"]
+	_, hasSecretVar := m["env_var"]
 	_, hasFromEnv := m["from_env"]
-	return hasValue && hasEnvVar && hasFromEnv
+	return hasValue && hasSecretVar && hasFromEnv
 }
 
-// marshalEnvVarObject serialises an EnvVar-shaped map back to the JSON string that
-// schemas.NewEnvVar expects so we can call ShouldPreserveStored on it.
-func marshalEnvVarObject(m map[string]any) string {
+// marshalSecretVarObject serialises an SecretVar-shaped map back to the JSON string that
+// schemas.NewSecretVar expects so we can call ShouldPreserveStored on it.
+func marshalSecretVarObject(m map[string]any) string {
 	value, _ := m["value"].(string)
-	envVar, _ := m["env_var"].(string)
+	secretVar, _ := m["env_var"].(string)
 	fromEnv, _ := m["from_env"].(bool)
 	if fromEnv {
-		return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":true}`, value, envVar)
+		return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":true}`, value, secretVar)
 	}
-	return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":false}`, value, envVar)
+	return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":false}`, value, secretVar)
 }

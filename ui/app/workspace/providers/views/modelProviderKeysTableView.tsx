@@ -231,7 +231,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												{key.status === "list_models_failed" &&
 													(() => {
 														// Check if the failure might be due to an env var that the server couldn't resolve
-														const hasEnvVarConfig =
+														const hasSecretVarConfig =
 															key.azure_key_config?.endpoint?.from_env ||
 															key.vertex_key_config?.project_id?.from_env ||
 															key.vertex_key_config?.region?.from_env ||
@@ -239,7 +239,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															key.vllm_key_config?.url?.from_env ||
 															key.value?.from_env;
 														const isEnvResolutionError =
-															hasEnvVarConfig && key.description && /not set|empty|missing/i.test(key.description);
+															hasSecretVarConfig && key.description && /not set|empty|missing/i.test(key.description);
 
 														return isEnvResolutionError ? (
 															<Tooltip>
