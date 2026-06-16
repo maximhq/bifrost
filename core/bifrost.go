@@ -5938,6 +5938,24 @@ func executeRequestWithRetries[T any](
 	return result, bifrostError
 }
 
+// clearAnthropicPassthroughForNonNativeProvider disables Anthropic raw-body passthrough when a
+// request from the Anthropic-format integration resolves to a provider that doesn't speak the
+// Anthropic Messages API natively (e.g. Bedrock), forcing that provider to convert the request
+// itself. Gated on the final resolved provider so it fires regardless of how the provider was
+// picked (prefix, catalog, key alias, governance) and re-runs per attempt for fallbacks. No-op
+// for Anthropic/Vertex/Azure providers and for non-Anthropic integrations.
+func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider) {
+	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
+		return
+	}
+	if baseProvider == schemas.Anthropic || baseProvider == schemas.Vertex || baseProvider == schemas.Azure {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+}
+
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
@@ -5988,6 +6006,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			baseProvider = cfg.BaseProviderType
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+
+		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
+		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)
 
 		// Determine whether this provider attempt should capture raw payloads.
 		//
