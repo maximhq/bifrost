@@ -60,6 +60,8 @@ const (
 	AnthropicTaskBudgetsBetaHeader = "task-budgets-2026-03-13"
 	// AnthropicAdvisorBetaHeader is required for the advisor_20260301 server tool. Anthropic API only.
 	AnthropicAdvisorBetaHeader = "advisor-tool-2026-03-01"
+	// AnthropicCacheDiagnosisBetaHeader is required for cache diagnostics (diagnostics.previous_message_id). Anthropic API only.
+	AnthropicCacheDiagnosisBetaHeader = "cache-diagnosis-2026-04-07"
 	// AnthropicEagerInputStreamingBetaHeader is required for eager_input_streaming
 	// on custom tools (streams input_json_delta before full args are determined).
 	// Per Table 20: GA on Anthropic/Bedrock/Vertex, Beta on Azure.
@@ -83,6 +85,7 @@ const (
 	AnthropicSkillsBetaHeaderPrefix              = "skills-"
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
+	AnthropicCacheDiagnosisBetaHeaderPrefix      = "cache-diagnosis-"
 	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
 	AnthropicTaskBudgetsBetaHeaderPrefix         = "task-budgets-"
 	AnthropicEagerInputStreamingBetaHeaderPrefix = "fine-grained-tool-streaming-"
@@ -140,7 +143,7 @@ type ProviderFeatureSupport struct {
 	FileSearch             bool // file_search server tool (OpenAI-only)
 	ImageGeneration        bool // image_generation server tool (OpenAI-only)
 	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
-	Diagnostics            bool // diagnostics request field — undocumented Claude Code session-continuity field (diagnostics.previous_message_id); not in the public Messages API reference, so treated as Claude API only and stripped elsewhere (fail-closed). Azure rejects it; Bedrock/Vertex undocumented.
+	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -159,7 +162,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
 		ServiceTier: true,
-		Diagnostics: true, // Claude Code talks to the direct API and sends diagnostics.previous_message_id; only this provider keeps it.
+		Diagnostics: true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -372,6 +375,7 @@ type AnthropicMessageRequest struct {
 	InferenceGeo      *string                `json:"inference_geo,omitempty"` // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	ContextManagement *ContextManagement     `json:"context_management,omitempty"`
 	Container         *AnthropicContainer    `json:"container,omitempty"` // string id OR object with skills[]; skills require skills-2025-10-02 beta
+	Diagnostics       *AnthropicDiagnostics  `json:"diagnostics,omitempty"`   // cache diagnostics opt-in; requires cache-diagnosis-2026-04-07 beta (Anthropic API only)
 
 	// Extra params for advanced use cases
 	ExtraParams map[string]interface{} `json:"-"`
@@ -395,6 +399,14 @@ func (req *AnthropicMessageRequest) GetExtraParams() map[string]interface{} {
 
 type AnthropicMetaData struct {
 	UserID *string `json:"user_id"`
+}
+
+// AnthropicDiagnostics is the request-side cache diagnostics opt-in
+// (cache-diagnosis-2026-04-07 beta). PreviousMessageID is the prior response id
+// to compare prompt prefixes against; it is sent as JSON null on the first turn
+// to opt in, so previous_message_id is never omitted.
+type AnthropicDiagnostics struct {
+	PreviousMessageID *string `json:"previous_message_id"`
 }
 
 type AnthropicThinking struct {
@@ -649,6 +661,7 @@ var anthropicMessageRequestKnownFields = map[string]bool{
 	"inference_geo":      true,
 	"context_management": true,
 	"container":          true,
+	"diagnostics":        true,
 	"extra_params":       true,
 	"fallbacks":          true,
 }
@@ -1523,6 +1536,10 @@ type AnthropicMessageResponse struct {
 	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
+	// Diagnostics is the cache-diagnosis response payload (cache-diagnosis-2026-04-07).
+	// omitempty when absent; a present-but-null value (no divergence) is conveyed by a
+	// non-nil pointer with a nil CacheMissReason — see schemas.CacheDiagnostics.
+	Diagnostics *schemas.CacheDiagnostics `json:"diagnostics,omitempty"`
 }
 
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API
