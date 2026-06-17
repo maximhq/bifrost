@@ -1099,6 +1099,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	resolvedToolExecutionTimeout := existingConfig.ToolExecutionTimeout
 	if req.ToolExecutionTimeout != nil {
+		if *req.ToolExecutionTimeout < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must be >= 0")
+			return
+		}
 		resolvedToolExecutionTimeout = time.Duration(*req.ToolExecutionTimeout) * time.Second
 	}
 

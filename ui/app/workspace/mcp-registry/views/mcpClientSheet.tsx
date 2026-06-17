@@ -827,10 +827,16 @@ export default function MCPClientSheet({
 															placeholder="0"
 															value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
 															onChange={(e) => {
-																const val = e.target.value === "" ? undefined : parseInt(e.target.value);
-																field.onChange(val);
+																if (e.target.value === "") {
+																	field.onChange(undefined);
+																	return;
+																}
+																const n = Number(e.target.value);
+																field.onChange(Number.isInteger(n) ? n : Math.trunc(n));
 															}}
 															min="0"
+															step="1"
+															data-testid="mcp-tool-execution-timeout"
 														/>
 													</FormControl>
 												</FormItem>

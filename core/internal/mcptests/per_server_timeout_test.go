@@ -78,12 +78,19 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 
 	start := time.Now()
 	toolCall := makeDelayToolCall(clientName, 3.0)
-	_, _ = bf.ExecuteChatMCPTool(ctx, &toolCall)
+	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &toolCall)
 	elapsed := time.Since(start)
 
 	assert.Less(t, elapsed, 2500*time.Millisecond,
 		"per-server timeout (1s) should fire before the 3s tool delay; got %v", elapsed)
-	t.Logf("elapsed: %v (expected < 2.5s)", elapsed)
+	// Timeout surfaces either as a BifrostError or as an error message in the result content.
+	if bifrostErr != nil && bifrostErr.Error != nil {
+		t.Logf("elapsed: %v, error: %s", elapsed, bifrostErr.Error.Message)
+	} else if result != nil {
+		t.Logf("elapsed: %v, timeout returned in result", elapsed)
+	} else {
+		t.Errorf("expected either a bifrost error or a result indicating timeout, got both nil")
+	}
 }
 
 // TestPerServerTimeout_AllowsLongerThanGlobal verifies that when the per-server
@@ -150,10 +157,17 @@ func TestPerServerTimeout_FallsBackToGlobal(t *testing.T) {
 
 	start := time.Now()
 	toolCall := makeDelayToolCall(clientName, 5.0) // 5s delay
-	_, _ = bf.ExecuteChatMCPTool(ctx, &toolCall)
+	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &toolCall)
 	elapsed := time.Since(start)
 
 	assert.Less(t, elapsed, 2*time.Second,
 		"context deadline should cancel the tool (per-server=0 falls back to global); got %v", elapsed)
-	t.Logf("elapsed: %v (expected < 2s)", elapsed)
+	// Cancellation surfaces either as a BifrostError or as an error message in the result content.
+	if bifrostErr != nil && bifrostErr.Error != nil {
+		t.Logf("elapsed: %v, error: %s", elapsed, bifrostErr.Error.Message)
+	} else if result != nil {
+		t.Logf("elapsed: %v, cancellation returned in result", elapsed)
+	} else {
+		t.Errorf("expected either a bifrost error or a result indicating cancellation, got both nil")
+	}
 }
