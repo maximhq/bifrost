@@ -418,7 +418,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						control={control}
 						name={`${base}.resource_attributes`}
 						render={({ field }) => (
-							<FormItem className="w-full">
+							<FormItem className="w-full" data-testid={`otel-profile-${index}-resource-attributes-form-item`}>
 								<FormLabel>Resource Attributes <span className="text-muted-foreground font-normal">(Optional)</span></FormLabel>
 								<FormDescription>
 									Profile-scoped OTEL resource attributes. These override matching process-level resource attributes only for this
