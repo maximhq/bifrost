@@ -1823,6 +1823,12 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 			clientConfig.ToolSyncInterval.String(),
 		)
 	}
+	if clientConfig.ToolExecutionTimeout < 0 {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf(
+			"tool_execution_timeout must be >= 0, got %q",
+			clientConfig.ToolExecutionTimeout.String(),
+		)
+	}
 	authType := string(clientConfig.AuthType)
 	if authType == "" {
 		authType = string(schemas.MCPAuthTypeHeaders)

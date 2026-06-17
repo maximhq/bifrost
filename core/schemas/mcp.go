@@ -352,36 +352,11 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 			c.ToolSyncInterval = dur
 		}
 		if aux.ToolExecutionTimeout != nil {
-			raw := *aux.ToolExecutionTimeout
-			// string like "30s" — parse as Go duration
-			if len(raw) > 0 && raw[0] == '"' {
-				var s string
-				if err := json.Unmarshal(raw, &s); err != nil {
-					return fmt.Errorf("invalid tool_execution_timeout: %w", err)
-				}
-				dur, err := time.ParseDuration(s)
-				if err != nil {
-					return fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
-				}
-				if dur < 0 {
-					return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
-				}
-				c.ToolExecutionTimeout = dur
-			} else {
-				// bare integer — treat as seconds
-				var n int64
-				if err := json.Unmarshal(raw, &n); err != nil {
-					return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
-				}
-				if n < 0 {
-					return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %d", n)
-				}
-				const maxTimeoutSeconds = math.MaxInt64 / int64(time.Second)
-				if n > maxTimeoutSeconds {
-					return fmt.Errorf("invalid tool_execution_timeout: value %d seconds overflows duration (max %d)", n, maxTimeoutSeconds)
-				}
-				c.ToolExecutionTimeout = time.Duration(n) * time.Second
+			dur, err := parseToolExecutionTimeoutField(*aux.ToolExecutionTimeout)
+			if err != nil {
+				return err
 			}
+			c.ToolExecutionTimeout = dur
 		}
 		return nil
 	}
@@ -405,36 +380,45 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		c.ToolSyncInterval = dur
 	}
 	if auxStr.ToolExecutionTimeout != nil {
-		raw := *auxStr.ToolExecutionTimeout
-		if len(raw) > 0 && raw[0] == '"' {
-			var s string
-			if err := json.Unmarshal(raw, &s); err != nil {
-				return fmt.Errorf("invalid tool_execution_timeout: %w", err)
-			}
-			dur, err := time.ParseDuration(s)
-			if err != nil {
-				return fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
-			}
-			if dur < 0 {
-				return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
-			}
-			c.ToolExecutionTimeout = dur
-		} else {
-			var n int64
-			if err := json.Unmarshal(raw, &n); err != nil {
-				return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
-			}
-			if n < 0 {
-				return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %d", n)
-			}
-			const maxTimeoutSeconds = math.MaxInt64 / int64(time.Second)
-			if n > maxTimeoutSeconds {
-				return fmt.Errorf("invalid tool_execution_timeout: value %d seconds overflows duration (max %d)", n, maxTimeoutSeconds)
-			}
-			c.ToolExecutionTimeout = time.Duration(n) * time.Second
+		dur, err := parseToolExecutionTimeoutField(*auxStr.ToolExecutionTimeout)
+		if err != nil {
+			return err
 		}
+		c.ToolExecutionTimeout = dur
 	}
 	return nil
+}
+
+// parseToolExecutionTimeoutField parses a tool_execution_timeout JSON value.
+// Accepts a Go duration string (e.g. "30s") or a bare integer treated as seconds.
+// Rejects negative values and integers that would overflow time.Duration.
+func parseToolExecutionTimeoutField(raw json.RawMessage) (time.Duration, error) {
+	if len(raw) > 0 && raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return 0, fmt.Errorf("invalid tool_execution_timeout: %w", err)
+		}
+		dur, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
+		}
+		if dur < 0 {
+			return 0, fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
+		}
+		return dur, nil
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %d", n)
+	}
+	const maxTimeoutSeconds = math.MaxInt64 / int64(time.Second)
+	if n > maxTimeoutSeconds {
+		return 0, fmt.Errorf("invalid tool_execution_timeout: value %d seconds overflows duration (max %d)", n, maxTimeoutSeconds)
+	}
+	return time.Duration(n) * time.Second, nil
 }
 
 // MarshalJSON emits tool_execution_timeout as a duration string so it round-trips

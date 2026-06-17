@@ -2199,6 +2199,10 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 		// Update only editable fields using a map to avoid updating connection info
 		// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
+		if clientConfigCopy.ToolExecutionTimeout < 0 {
+			return fmt.Errorf("tool_execution_timeout must be non-negative, got %d", clientConfigCopy.ToolExecutionTimeout)
+		}
+
 		updates := map[string]interface{}{
 			"name":                       clientConfigCopy.Name,
 			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
