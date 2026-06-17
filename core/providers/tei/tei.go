@@ -87,6 +87,9 @@ func (provider *TEIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		providerUtils.DrainLargePayloadRemainder(ctx)
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

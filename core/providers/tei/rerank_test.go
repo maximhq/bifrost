@@ -122,10 +122,11 @@ func TestTEIProviderRerank(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	largePayloadReader := strings.NewReader(`{"model":"tei/BAAI/bge-reranker-v2-m3","documents":[{"text":"raw"}]}`)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 	ctx.SetValue(
 		schemas.BifrostContextKeyLargePayloadReader,
-		strings.NewReader(`{"model":"tei/BAAI/bge-reranker-v2-m3","documents":[{"text":"raw"}]}`),
+		largePayloadReader,
 	)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, 70)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
@@ -153,6 +154,9 @@ func TestTEIProviderRerank(t *testing.T) {
 	assert.Equal(t, 0.99, resp.Results[0].RelevanceScore)
 	assert.NotNil(t, resp.ExtraFields.RawRequest)
 	assert.NotNil(t, resp.ExtraFields.RawResponse)
+	remainingBody, err := io.ReadAll(largePayloadReader)
+	require.NoError(t, err)
+	assert.Empty(t, remainingBody)
 }
 
 func TestTEIProviderRerankDisabled(t *testing.T) {
