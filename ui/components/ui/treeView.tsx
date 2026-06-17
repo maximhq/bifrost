@@ -33,6 +33,12 @@ export interface TreeProps<T extends BaseNodeData> {
 	lineColor?: string;
 	lineWidth?: number;
 	levelsToExpandByDefault?: number;
+	/**
+	 * When true, rows fill the container width and long labels truncate instead of
+	 * growing the tree (and the parent) horizontally. Defaults to false, where the
+	 * tree expands to its widest content (enabling horizontal scroll).
+	 */
+	fitContainer?: boolean;
 	/** External expansion state control — parent can manage expandedNodes directly */
 	states?: {
 		expandedNodes: Record<string, boolean>;
@@ -83,6 +89,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 	onCollapseAll,
 	isAllExpanded,
 	isAllCollapsed,
+	fitContainer,
 }: {
 	node: TreeNode<T>;
 	level: number;
@@ -97,12 +104,14 @@ function TreeNodeComponent<T extends BaseNodeData>({
 	onCollapseAll: () => void;
 	isAllExpanded: boolean;
 	isAllCollapsed: boolean;
+	fitContainer: boolean;
 }) {
 	const hasChildren = Boolean(node.children?.length);
 	const isExpanded = expandedNodes[node.data.id] ?? false;
+	const widthClass = fitContainer ? "min-w-0" : "min-w-max";
 
 	return (
-		<div className="relative min-w-max">
+		<div className={cn("relative", widthClass)}>
 			{/* Vertical line from parent — spans the full node height (row + children) for sibling continuation */}
 			{level > 0 && !isLast && (
 				<div
@@ -118,7 +127,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 			)}
 
 			{/* Row wrapper — horizontal line positions relative to just this row */}
-			<div className="relative min-w-max">
+			<div className={cn("relative", widthClass)}>
 				{/* Vertical line stub for last child — only goes to row center */}
 				{level > 0 && isLast && (
 					<div
@@ -148,7 +157,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 				)}
 
 				{/* Node content */}
-				<div className="relative min-w-max" style={{ paddingLeft: `${level * indentSize}px` }}>
+				<div className={cn("relative", widthClass)} style={{ paddingLeft: `${level * indentSize}px` }}>
 					<div className="py-0.5">
 						{renderItem({
 							item: node.data,
@@ -167,7 +176,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 
 			{/* Children */}
 			{isExpanded && node.children && (
-				<div className="relative min-w-max">
+				<div className={cn("relative", widthClass)}>
 					{node.children.map((child, idx) => (
 						<TreeNodeComponent
 							key={child.data.id}
@@ -184,6 +193,7 @@ function TreeNodeComponent<T extends BaseNodeData>({
 							onCollapseAll={onCollapseAll}
 							isAllExpanded={isAllExpanded}
 							isAllCollapsed={isAllCollapsed}
+							fitContainer={fitContainer}
 						/>
 					))}
 				</div>
@@ -202,6 +212,7 @@ export function Tree<T extends BaseNodeData>({
 	lineColor = "var(--border)",
 	lineWidth = 1,
 	levelsToExpandByDefault,
+	fitContainer = false,
 	states,
 }: TreeProps<T>) {
 	const [localExpandedNodes, localSetExpandedNodes] = useState<Record<string, boolean>>(() =>
@@ -274,7 +285,7 @@ export function Tree<T extends BaseNodeData>({
 	}, [dataFingerprint, levelsToExpandByDefault]);
 
 	return (
-		<div className={cn("min-w-max", className)}>
+		<div className={cn(fitContainer ? "min-w-0" : "min-w-max", className)}>
 			{data.map((node, idx) => (
 				<TreeNodeComponent
 					key={node.data.id}
@@ -291,6 +302,7 @@ export function Tree<T extends BaseNodeData>({
 					onCollapseAll={handleCollapseAll}
 					isAllExpanded={isAllExpanded}
 					isAllCollapsed={isAllCollapsed}
+					fitContainer={fitContainer}
 				/>
 			))}
 		</div>
