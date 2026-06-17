@@ -44,13 +44,16 @@ The agent handles batching, retries, and provides lower latency. This is the rec
 
 ### Agentless Mode
 
-In agentless mode, the plugin sends data directly to Datadog's intake APIs:
+In agentless mode, the plugin sends data directly to Datadog's intake APIs (`{site}` is your configured Datadog site, e.g. `datadoghq.com`):
 
-- **APM Traces** → `https://trace.agent.{site}`
-- **LLM Observability** → Direct API submission
-- **Metrics** → Datadog Metrics API
+- **LLM Observability** → `https://api.{site}/api/intake/llm-obs/v1/trace/spans`
+- **Metrics** → `https://api.{site}` Metrics API (series to `/api/v2/series`, distributions to `/api/v1/distribution_points`)
 
 This mode requires an API key but simplifies deployment by eliminating the need for a local agent. Ideal for serverless environments, Kubernetes pods, or quick testing.
+
+<Note>
+Datadog officially supports agentless submission for [LLM Observability](https://docs.datadoghq.com/llm_observability/instrumentation/api/) and [metrics](https://docs.datadoghq.com/api/latest/metrics/), but **not** for general APM tracing - the [dd-trace-go setup](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/) assumes a running Agent (or the serverless extension). The plugin points the tracer at the public trace intake so APM spans are still emitted, but if you need fully-supported APM, run the Datadog Agent (agent mode). LLM Observability and metrics are unaffected.
+</Note>
 
 ---
 
@@ -132,7 +135,7 @@ env:
 
 Configure the Datadog plugin through the Bifrost UI:
 
-1. Navigate to **Settings** → **Plugins**
+1. Navigate to **Plugins**
 2. Enable the **Datadog** plugin
 3. Configure the required fields based on your deployment mode
 
@@ -292,6 +295,7 @@ The plugin supports all Datadog regional sites. Set the `site` field to match yo
 | AP1 | Asia Pacific (Japan) | `ap1.datadoghq.com` |
 | AP2 | Asia Pacific (Australia) | `ap2.datadoghq.com` |
 | US1-FED | US Government | `ddog-gov.com` |
+| US2-FED | US Government | `us2.ddog-gov.com` |
 
 <Note>
 Ensure your API key corresponds to the selected site. API keys from one region will not work with another.
@@ -424,7 +428,7 @@ Each APM trace includes comprehensive LLM operation metadata:
 ### Span Attributes
 
 - **Span Name** - Based on request type (`genai.chat`, `genai.embedding`, etc.)
-- **Service Info** - `service.name`, `service.version`, `env`
+- **Service Info** - `service.name`, `service.version`, `env` (Datadog's [unified service tagging](https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/): `service`, `version`, `env`)
 - **Provider & Model** - `gen_ai.provider.name`, `gen_ai.request.model`
 
 ### Request Parameters
