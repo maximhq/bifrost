@@ -47,6 +47,10 @@ type InMemoryStore interface {
 	GetMCPClientsAllowingAllVirtualKeys() map[string]string // clientID → clientName
 }
 
+// CountTokensRequestExecutor invokes Bifrost's provider-native count-token path.
+// It mirrors the signature of bifrost.Client.CountTokensRequest.
+type CountTokensRequestExecutor func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError)
+
 type BaseGovernancePlugin interface {
 	GetName() string
 	EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError)
@@ -80,7 +84,8 @@ type GovernancePlugin struct {
 	logger       schemas.Logger
 
 	// Transport dependencies
-	inMemoryStore InMemoryStore
+	inMemoryStore              InMemoryStore
+	countTokensRequestExecutor CountTokensRequestExecutor
 
 	cfgMutex sync.RWMutex
 
@@ -340,6 +345,13 @@ func InitFromStore(
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// SetCountTokensRequestExecutor wires up the function routing rules use to
+// compute provider-native context_length values. When unset, routing falls back
+// to local byte-size estimation.
+func (p *GovernancePlugin) SetCountTokensRequestExecutor(executor CountTokensRequestExecutor) {
+	p.countTokensRequestExecutor = executor
 }
 
 // ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
@@ -726,6 +738,10 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
+	computeContextLength := func() (int64, bool) {
+		return p.computeContextLength(ctx, req)
+	}
+
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
 		Provider:                 provider,
@@ -735,6 +751,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		QueryParams:              queryParams,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
 		computeComplexity:        computeComplexity,
+		computeContextLength:     computeContextLength,
 	}
 
 	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
