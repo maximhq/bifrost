@@ -155,6 +155,42 @@ func TestTEIProviderRerank(t *testing.T) {
 	assert.NotNil(t, resp.ExtraFields.RawResponse)
 }
 
+func TestTEIProviderRerankDisabled(t *testing.T) {
+	var upstreamCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	provider, err := NewTEIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL: server.URL,
+		},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{
+				Embedding: true,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Rerank(ctx, schemas.Key{}, &schemas.BifrostRerankRequest{
+		Model: "BAAI/bge-reranker-v2-m3",
+		Query: "capital",
+		Documents: []schemas.RerankDocument{
+			{Text: "Paris"},
+			{Text: "Berlin"},
+		},
+	})
+
+	require.Nil(t, resp)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "not supported")
+	assert.Equal(t, 0, upstreamCalls)
+}
+
 func TestTEIProviderBuildRequestURLUsesPathOverride(t *testing.T) {
 	provider, err := NewTEIProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
@@ -177,7 +213,9 @@ func TestTEIProviderBuildRequestURLUsesPathOverride(t *testing.T) {
 func TestTEIProviderEmbedding(t *testing.T) {
 	var upstreamPath string
 	var upstreamBody string
+	var upstreamCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
 		upstreamPath = r.URL.Path
 		buf, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -212,4 +250,38 @@ func TestTEIProviderEmbedding(t *testing.T) {
 	assert.Equal(t, "thenlper/gte-base", resp.Model)
 	require.Len(t, resp.Data, 1)
 	assert.Equal(t, []float64{0.1, 0.2}, resp.Data[0].Embedding.EmbeddingArray)
+	assert.Equal(t, 1, upstreamCalls)
+}
+
+func TestTEIProviderEmbeddingDisabled(t *testing.T) {
+	var upstreamCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	provider, err := NewTEIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL: server.URL,
+		},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{
+				Rerank: true,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	text := "What is Deep Learning?"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Embedding(ctx, schemas.Key{}, &schemas.BifrostEmbeddingRequest{
+		Model: "thenlper/gte-base",
+		Input: &schemas.EmbeddingInput{Text: &text},
+	})
+
+	require.Nil(t, resp)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "not supported")
+	assert.Equal(t, 0, upstreamCalls)
 }

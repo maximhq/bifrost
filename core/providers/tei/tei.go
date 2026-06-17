@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -60,6 +61,10 @@ func (provider *TEIProvider) GetProviderKey() schemas.ModelProvider {
 
 // Rerank performs a rerank request using TEI's /rerank API.
 func (provider *TEIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.TEI, provider.customProviderConfig, schemas.RerankRequest); err != nil {
+		return nil, err
+	}
+
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := buildTEIRerankRequestBody(ctx, request)
 	if bifrostErr != nil {
@@ -126,6 +131,27 @@ func (provider *TEIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key
 	}
 
 	return bifrostResponse, nil
+}
+
+// Embedding performs an embedding request using TEI's OpenAI-compatible endpoint.
+func (provider *TEIProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.TEI, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
+		return nil, err
+	}
+
+	return openai.HandleOpenAIEmbeddingRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/embeddings", schemas.EmbeddingRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		provider.logger,
+	)
 }
 
 func (provider *TEIProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
