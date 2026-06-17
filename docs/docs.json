@@ -865,6 +865,7 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
+              "changelogs/cli-v0.10.6",
               "changelogs/cli-v0.10.5",
               "changelogs/cli-v0.10.4",
               {

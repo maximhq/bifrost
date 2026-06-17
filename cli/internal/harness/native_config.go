@@ -12,11 +12,9 @@ import (
 	"github.com/maximhq/bifrost/cli/internal/config"
 )
 
-// claudePreLaunch forces Claude Code into its simpler terminal mode when
-// launched inside Bifrost's tab multiplexer. This avoids Claude-specific
-// full-screen terminal behavior that doesn't restore reliably across tab swaps.
+// claudePreLaunch pins the selected model across Claude Code's model tiers.
 func claudePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
-	env := []string{"CLAUDE_CODE_SIMPLE=1"}
+	var env []string
 	if model = strings.TrimSpace(model); model != "" {
 		env = append(env, claudeTierModelEnv(model)...)
 	}
