@@ -113,9 +113,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedProviders.length > 0 && { providers: selectedProviders }),
 			...(selectedModels.length > 0 && { models: selectedModels }),
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
@@ -134,8 +134,8 @@ export default function DashboardPage() {
 			...(missingCostOnly && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
-				metadata_filters: metadataFilters,
-			}),
+					metadata_filters: metadataFilters,
+				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
 			...(selectedUserIds.length > 0 && { user_ids: selectedUserIds }),
 			...(selectedTeamIds.length > 0 && { team_ids: selectedTeamIds }),
@@ -172,9 +172,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedMcpToolNames.length > 0 && {
 				tool_names: selectedMcpToolNames,
 			}),
@@ -206,8 +206,19 @@ export default function DashboardPage() {
 	const customerRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const appRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
-	const allRefs = [overviewRef, providerRef, mcpRef, modelRankingsRef, teamRankingsRef, customerRankingsRef, buRankingsRef, userRankingsRef];
+	const allRefs = [
+		overviewRef,
+		providerRef,
+		mcpRef,
+		modelRankingsRef,
+		teamRankingsRef,
+		customerRankingsRef,
+		buRankingsRef,
+		userRankingsRef,
+		appRankingsRef,
+	];
 
 	const getDashboardData = useCallback((): DashboardData => {
 		const merged: Partial<DashboardData> = {};
@@ -228,6 +239,7 @@ export default function DashboardPage() {
 			customerRankingsData: null,
 			buRankingsData: null,
 			userRankingsData: null,
+			appRankingsData: null,
 			mcpHistogramData: null,
 			mcpCostData: null,
 			mcpTopToolsData: null,
@@ -389,6 +401,7 @@ export default function DashboardPage() {
 			"dashboard-section-customer-rankings",
 			"dashboard-section-bu-rankings",
 			"dashboard-section-user-rankings",
+			"dashboard-section-app-rankings",
 		];
 		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
 	}, [handlePreloadData]);
@@ -502,6 +515,9 @@ export default function DashboardPage() {
 							</TabsTrigger>
 							<TabsTrigger value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
 								BU Rankings
+							</TabsTrigger>
+							<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
+								App Rankings
 							</TabsTrigger>
 						</TabsList>
 
@@ -643,6 +659,21 @@ export default function DashboardPage() {
 									dimensionLabel="User"
 									testIdPrefix="dashboard-user-rankings"
 									dataKey="userRankingsData"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* App Rankings Tab */}
+						<TabsContent value="app-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-app-rankings">
+								<DimensionRankingsTabView
+									ref={appRankingsRef}
+									filters={filters}
+									active={activeTab === "app-rankings" || pdfMode}
+									dimension="app"
+									dimensionLabel="App"
+									testIdPrefix="dashboard-app-rankings"
+									dataKey="appRankingsData"
 								/>
 							</div>
 						</TabsContent>
