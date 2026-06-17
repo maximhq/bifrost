@@ -17,6 +17,9 @@ import {
 	Globe,
 	KeyRound,
 	Landmark,
+	Hexagon,
+	BadgeCheck,
+	LaptopMinimalCheck,
 	LayoutGrid,
 	LogOut,
 	Logs,
@@ -271,7 +274,7 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+	const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
 		isHighlighted
 			? "bg-sidebar-accent text-accent-foreground border-primary/20"
 			: isActive || isAnySubItemActive
@@ -288,11 +291,6 @@ const SidebarItemView = ({
 				<span className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
 					{item.title}
 				</span>
-				{item.new && (
-					<Badge data-new-badge="true" className={cn("ml-auto group-data-[collapsible=icon]:hidden", newBadgeClassName)}>
-						New
-					</Badge>
-				)}
 				{item.tag && (
 					<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
 						{item.tag}
@@ -387,11 +385,6 @@ const SidebarItemView = ({
 									<span className={`text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}>
 										{subItem.title}
 									</span>
-									{subItem.new && (
-										<Badge data-new-badge="true" className={cn("ml-auto", newBadgeClassName)}>
-											New
-										</Badge>
-									)}
 									{subItem.tag && (
 										<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 											{subItem.tag}
@@ -435,7 +428,7 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
 							isSubItemHighlighted
 								? "bg-sidebar-accent text-accent-foreground"
 								: isSubItemActive
@@ -448,11 +441,6 @@ const SidebarItemView = ({
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
 								<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
-								{subItem.new && (
-									<Badge data-new-badge="true" className={cn("ml-auto", newBadgeClassName)}>
-										New
-									</Badge>
-								)}
 								{subItem.tag && (
 									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 										{subItem.tag}
@@ -567,6 +555,10 @@ export default function AppSidebar() {
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
+	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
+	const hasInventoryAccess = useRbac(RbacResource.Inventory, RbacOperation.View);
+	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View);
+	const hasAnyEdgeControlAccess = hasDevicesAccess || hasInventoryAccess || hasEdgeConfigAccess;
 	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
 	const hasAnyGovernanceAccess =
 		hasVirtualKeysAccess ||
@@ -832,6 +824,36 @@ export default function AppSidebar() {
 				],
 			},
 			{
+				title: "Edge Control",
+				icon: Hexagon,
+				description: "Edge device management",
+				url: "/workspace/edge-control",
+				hasAccess: hasAnyEdgeControlAccess,
+				subItems: [
+					{
+						title: "Devices",
+						url: "/workspace/edge-control/devices",
+						icon: LaptopMinimalCheck,
+						description: "Manage edge devices",
+						hasAccess: hasDevicesAccess,
+					},
+					{
+						title: "Approvals",
+						url: "/workspace/edge-control/inventory",
+						icon: BadgeCheck,
+						description: "Approve apps and MCP servers",
+						hasAccess: hasInventoryAccess,
+					},
+					{
+						title: "Edge Settings",
+						url: "/workspace/edge-control/config",
+						icon: Settings,
+						description: "Edge settings",
+						hasAccess: hasEdgeConfigAccess,
+					},
+				],
+			},
+			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
 				icon: Network,
@@ -986,6 +1008,12 @@ export default function AppSidebar() {
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
+			hasAccessProfilesAccess,
+			hasFeatureFlagsAccess,
+			hasDevicesAccess,
+			hasInventoryAccess,
+			hasEdgeConfigAccess,
+			hasAnyEdgeControlAccess,
 			isDbConnected,
 		],
 	);
