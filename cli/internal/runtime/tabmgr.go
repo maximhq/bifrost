@@ -507,9 +507,10 @@ func (tm *TabManager) readPTY(tab *Tab) {
 // output is frozen and bifrost enters tab mode.
 const prefix = 0x02
 
-// tmuxSafePrefix is an alternate prefix key: Ctrl+G (0x07). tmux consumes
-// Ctrl+B by default, so this gives users a one-press tab selector inside tmux.
-const tmuxSafePrefix = 0x07
+// tmuxSafePrefix is an alternate prefix key: Ctrl+T (0x14). tmux consumes
+// Ctrl+B by default, so this gives users a one-press tab selector inside tmux
+// without colliding with Claude Code's Ctrl+G shortcut.
+const tmuxSafePrefix = 0x14
 
 // inputLoop is the main event loop that reads stdin and dispatches to tabs or hotkeys.
 //
@@ -518,7 +519,7 @@ const tmuxSafePrefix = 0x07
 //	Ctrl+1…9    — jump to tab N
 //	Ctrl+Tab    — cycle to next tab
 //	Ctrl+B      — toggle tab command mode
-//	Ctrl+G      — toggle tab command mode; useful inside tmux
+//	Ctrl+T      — toggle tab command mode; useful inside tmux
 //
 // Keybindings while in tab command mode (^B prefix):
 //
@@ -528,7 +529,7 @@ const tmuxSafePrefix = 0x07
 //	H/L or J/K      — move left/right
 //	1…9             — jump to tab N
 //	U               — update bifrost (if available)
-//	Esc/Enter/Ctrl+B/Ctrl+G — resume the active tab
+//	Esc/Enter/Ctrl+B/Ctrl+T — resume the active tab
 func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termState *term.State) error {
 	pending := make([]byte, 0, 4096)
 
@@ -606,6 +607,7 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 
 			// Ctrl+1..9 — jump to tab (works in any mode)
 			if idx := parseCtrlDigit(token); idx >= 0 {
+				tm.clearNotice()
 				if tm.isCommandMode() {
 					tm.exitCommandMode()
 				}
@@ -615,6 +617,7 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 
 			// Ctrl+Tab — cycle to next tab (works in any mode)
 			if isCtrlTab(token) {
+				tm.clearNotice()
 				if tm.isCommandMode() {
 					tm.exitCommandMode()
 				}
@@ -643,6 +646,7 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 			// because a child process enabled the kitty protocol.
 			if isCSIu(token) {
 				if decoded := decodeCSIu(token); decoded != nil {
+					tm.clearNotice()
 					if tm.handleActiveCtrlC(decoded) {
 						continue
 					}
@@ -652,8 +656,10 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 			}
 
 			if tm.handleActiveCtrlC(token) {
+				tm.clearNotice()
 				continue
 			}
+			tm.clearNotice()
 			tm.forwardToActive(token)
 		}
 	}
@@ -799,7 +805,7 @@ func containsStandaloneBEL(data []byte, state *belParserState) bool {
 }
 
 // isPrefixSequence reports whether a CSI sequence encodes a bifrost prefix key
-// (Ctrl+B or the tmux-safe Ctrl+G) under the kitty keyboard protocol (CSI u) or
+// (Ctrl+B or the tmux-safe Ctrl+T) under the kitty keyboard protocol (CSI u) or
 // xterm modifyOtherKeys (CSI 27 ~), so it triggers command mode just like the
 // raw single-byte prefix.
 func isPrefixSequence(seq []byte) bool {
@@ -844,11 +850,11 @@ func isReleaseEvent(modField string) bool {
 }
 
 // isPrefixKeyCode reports whether a CSI codepoint field encodes one of the
-// bifrost prefix keys: Ctrl+B (b/B, 98/66) or the tmux-safe Ctrl+G (g/G,
-// 103/71). Used so CSI-encoded prefixes (kitty protocol / modifyOtherKeys)
+// bifrost prefix keys: Ctrl+B (b/B, 98/66) or the tmux-safe Ctrl+T (t/T,
+// 116/84). Used so CSI-encoded prefixes (kitty protocol / modifyOtherKeys)
 // are recognized the same way as their raw single-byte forms.
 func isPrefixKeyCode(s string) bool {
-	return s == "98" || s == "66" || s == "103" || s == "71"
+	return s == "98" || s == "66" || s == "116" || s == "84"
 }
 
 // parseCtrlDigit checks if a CSI sequence is Ctrl+1..9 and returns the
@@ -1425,6 +1431,27 @@ func (tm *TabManager) clearNoticeAndResume() {
 	}
 }
 
+func isNoticeDismissKey(b byte) bool {
+	return b == ' ' || b == 0x1b || b == prefix || b == tmuxSafePrefix
+}
+
+func (tm *TabManager) clearStickyErrorForAction(b byte) bool {
+	if !tm.hasStickyErrorNotice() {
+		return false
+	}
+
+	tm.clearNotice()
+	if isNoticeDismissKey(b) {
+		if tm.hasTabs() {
+			tm.enterCommandMode()
+		} else {
+			tm.drawTabBar()
+		}
+		return true
+	}
+	return false
+}
+
 func (tm *TabManager) hasTabs() bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -1464,16 +1491,16 @@ func (tm *TabManager) exitCommandMode() {
 }
 
 func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc, termState *term.State, b byte) error {
+	if tm.clearStickyErrorForAction(b) {
+		return nil
+	}
+
 	switch {
 	case b == 0x03:
 		if tm.handleHomeCtrlC() {
 			tm.signalClose()
 		}
 	case b == ' ':
-		if tm.hasStickyErrorNotice() {
-			tm.clearNoticeAndStayInCommandMode()
-			return nil
-		}
 		tm.clearNoticeAndResume()
 	case b == 0x1b || b == prefix || b == tmuxSafePrefix:
 		tm.mu.Lock()
@@ -1487,12 +1514,6 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 			return nil
 		}
 		tm.mu.Unlock()
-		if tm.hasStickyErrorNotice() {
-			if b == 0x1b {
-				tm.clearNoticeAndStayInCommandMode()
-			}
-			return nil
-		}
 		if !tm.hasTabs() {
 			if b == 0x1b {
 				return tm.openNewTab(ctx, newTabFn, termState)
@@ -1502,9 +1523,6 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 		}
 		tm.exitCommandMode()
 	case b == '\r' || b == '\n':
-		if tm.hasStickyErrorNotice() {
-			return nil
-		}
 		if !tm.hasTabs() {
 			return tm.openNewTab(ctx, newTabFn, termState)
 		}
@@ -1759,6 +1777,7 @@ func (tm *TabManager) handleTabBarMouseEvent(ev mouseEvent) bool {
 		return false
 	}
 
+	tm.clearNotice()
 	if commandMode {
 		tm.switchTabAndResume(idx)
 	} else {
@@ -3032,14 +3051,15 @@ func normalizedVersionLabel(version string) string {
 	return "v" + version
 }
 
-// tabModeHintLabel returns the tab-mode shortcut shown in the bottom bar.
-// Inside tmux, Ctrl+B is normally tmux's own prefix, so Bifrost advertises
-// Ctrl+G as the one-press shortcut.
+// tabModeHintLabel returns the tab-mode shortcut shown in the bottom bar. In
+// regular terminals it advertises both prefixes so Ctrl+T remains discoverable.
+// Inside tmux, Ctrl+B is normally tmux's own prefix, so Bifrost advertises only
+// Ctrl+T as the one-press shortcut.
 func tabModeHintLabel() string {
 	if strings.TrimSpace(os.Getenv("TMUX")) != "" {
-		return "^G"
+		return "^T"
 	}
-	return "^B"
+	return "^B/^T"
 }
 
 // truncateCells trims a plain ASCII status string to fit in the requested cell
