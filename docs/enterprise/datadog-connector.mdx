@@ -378,10 +378,10 @@ The plugin emits the following metrics to Datadog:
 
 | Metric | Type | Description | Tags |
 |--------|------|-------------|------|
-| `bifrost.requests.total` | Counter | Total LLM requests | provider, model, request_type |
-| `bifrost.success.total` | Counter | Successful requests | provider, model, request_type |
-| `bifrost.errors.total` | Counter | Failed requests | provider, model, request_type, reason |
-| `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, request_type |
+| `bifrost.requests.total` | Counter | Total LLM requests | provider, model, method |
+| `bifrost.success.total` | Counter | Successful requests | provider, model, method |
+| `bifrost.errors.total` | Counter | Failed requests | provider, model, method, reason |
+| `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, method |
 | `bifrost.tokens.input` | Counter | Input/prompt tokens consumed | provider, model |
 | `bifrost.tokens.output` | Counter | Output/completion tokens generated | provider, model |
 | `bifrost.tokens.total` | Counter | Total tokens (input + output) | provider, model |
@@ -411,9 +411,9 @@ The cost metric was renamed from `bifrost.cost.usd` to `bifrost.request.cost.usd
 All metrics include your configured `custom_tags` plus automatic tags for:
 - `provider` - LLM provider (openai, anthropic, etc.)
 - `model` - Model name
-- `request_type` - Type of request (chat, embedding, etc.)
-- `env` - Environment from configuration
+- `method` - Type of request (chat, embedding, etc.)
 - `bifrost_node` - Per-instance identity (`BIFROST_NODE_ID` if set, otherwise `hostname-pid`)
+- plus Bifrost-context tags when available (virtual key, selected key, team, customer, fallback index)
 
 ---
 
