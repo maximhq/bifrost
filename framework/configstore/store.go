@@ -658,6 +658,30 @@ type ConfigStore interface {
 	// on first call. Always returns a usable key — never nil on a nil error.
 	GetOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error)
 
+	// OAuth2 clients (DCR)
+	CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error
+	GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error)
+
+	// OAuth2 authorize requests
+	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)
+	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
+	// to consented (recording the code hash and resolved identity) — returns
+	// ErrNotFound when no longer pending, so concurrent double-consent can't
+	// overwrite an already-minted code.
+	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
+
+	// OAuth2 refresh tokens
+	GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error)
+	// ConsumeOAuth2AuthorizeRequest atomically marks the authorize request as
+	// code_issued and creates the refresh token — if either fails the client can retry.
+	ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error
+	// RotateOAuth2RefreshToken atomically revokes the old token and creates the
+	// new one — if either fails the old token stays active and the client can retry.
+	RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error
+
 	// Cleanup
 	Close(ctx context.Context) error
 }

@@ -1402,6 +1402,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	featureFlagsHandler := handlers.NewFeatureFlagsHandler(s.Config.FeatureFlags, s.Config.ConfigStore)
 	// Going ahead with API handlers
 	handlers.NewOAuth2DiscoveryHandler(s.Config).RegisterRoutes(s.Router, middlewares...)
+	handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens).RegisterRoutes(s.Router)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1771,6 +1772,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
+	// Bootstrap OAuth2 signing key when discovery is enabled — ensures JWKS
+	// and JWT signing are ready before the first request arrives.
+	if s.Config.ConfigStore != nil && s.Config.ClientConfig.IsMCPOAuthDiscoveryEnabled() {
+		if _, keyErr := s.Config.ConfigStore.GetOAuth2SigningKey(s.Ctx); keyErr != nil {
+			logger.Warn("oauth2: failed to bootstrap signing key: %v", keyErr)
+		}
+	}
+
 	// Register routes
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
