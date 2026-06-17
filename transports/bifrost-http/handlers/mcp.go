@@ -443,6 +443,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			AllowedExtraHeaders:   dbClient.AllowedExtraHeaders,
 			IsPingAvailable:       &isPingAvailable,
 			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Second,
+			ToolExecutionTimeout:  time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			ToolPricing:           dbClient.ToolPricing,
 			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
 			Disabled:              dbClient.Disabled,
@@ -576,6 +577,7 @@ type MCPClientUpdateRequest struct {
 	IsCodeModeClient      *bool                        `json:"is_code_mode_client,omitempty"`
 	IsPingAvailable       *bool                        `json:"is_ping_available,omitempty"`
 	ToolSyncInterval      *int                         `json:"tool_sync_interval,omitempty"`
+	ToolExecutionTimeout  *int                         `json:"tool_execution_timeout,omitempty"`
 	Headers               map[string]schemas.SecretVar `json:"headers,omitempty"`
 	AllowedExtraHeaders   *schemas.WhiteList           `json:"allowed_extra_headers,omitempty"`
 	ToolPricing           map[string]float64           `json:"tool_pricing,omitempty"`
@@ -1095,6 +1097,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	if req.ToolSyncInterval != nil {
 		resolvedToolSyncInterval = time.Duration(*req.ToolSyncInterval) * time.Minute
 	}
+	resolvedToolExecutionTimeout := existingConfig.ToolExecutionTimeout
+	if req.ToolExecutionTimeout != nil {
+		resolvedToolExecutionTimeout = time.Duration(*req.ToolExecutionTimeout) * time.Second
+	}
 
 	// Resolve tools_to_execute and tools_to_auto_execute.
 	resolvedToolsToExecute := existingConfig.ToolsToExecute
@@ -1265,6 +1271,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		IsPingAvailable:       isPingAvailable,
 		ToolPricing:           toolPricing,
 		ToolSyncInterval:      int(resolvedToolSyncInterval / time.Second),
+		ToolExecutionTimeout:  int(resolvedToolExecutionTimeout / time.Second),
 		AuthType:              string(existingConfig.AuthType),
 		OauthConfigID:         existingConfig.OauthConfigID,
 		AllowOnAllVirtualKeys: allowOnAllVKs,
@@ -1328,6 +1335,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:         existingConfig.OauthConfigID,
 		IsPingAvailable:       isPingAvailable,
 		ToolSyncInterval:      toolSyncInterval,
+		ToolExecutionTimeout:  resolvedToolExecutionTimeout,
 		ToolPricing:           toolPricing,
 		AllowOnAllVirtualKeys: allowOnAllVKs,
 		Disabled:              disabled,
