@@ -104,7 +104,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				...provider.network_config,
 				base_url: data.network_config?.base_url || undefined,
 				extra_headers: data.network_config?.extra_headers || undefined,
-				default_request_timeout_in_seconds: data.network_config?.default_request_timeout_in_seconds ?? 30,
+				default_request_timeout_in_seconds:
+					data.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: data.network_config?.max_retries ?? 0,
 				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
