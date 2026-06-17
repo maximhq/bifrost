@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -375,6 +376,10 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 				if n < 0 {
 					return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %d", n)
 				}
+				const maxTimeoutSeconds = math.MaxInt64 / int64(time.Second)
+				if n > maxTimeoutSeconds {
+					return fmt.Errorf("invalid tool_execution_timeout: value %d seconds overflows duration (max %d)", n, maxTimeoutSeconds)
+				}
 				c.ToolExecutionTimeout = time.Duration(n) * time.Second
 			}
 		}
@@ -382,9 +387,11 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	// Allow Go duration strings while keeping numeric tokens as json.Number.
+	// ToolExecutionTimeout uses *json.RawMessage (not *string) so that integer
+	// values like 60 remain valid even when tool_sync_interval is a string.
 	auxStr := &struct {
-		ToolSyncInterval     *string `json:"tool_sync_interval,omitempty"`
-		ToolExecutionTimeout *string `json:"tool_execution_timeout,omitempty"`
+		ToolSyncInterval     *string          `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(data, auxStr); err != nil {
@@ -398,16 +405,52 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		c.ToolSyncInterval = dur
 	}
 	if auxStr.ToolExecutionTimeout != nil {
-		dur, err := parseFlexibleDurationField(*auxStr.ToolExecutionTimeout, "tool_execution_timeout")
-		if err != nil {
-			return err
+		raw := *auxStr.ToolExecutionTimeout
+		if len(raw) > 0 && raw[0] == '"' {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return fmt.Errorf("invalid tool_execution_timeout: %w", err)
+			}
+			dur, err := time.ParseDuration(s)
+			if err != nil {
+				return fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
+			}
+			if dur < 0 {
+				return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
+			}
+			c.ToolExecutionTimeout = dur
+		} else {
+			var n int64
+			if err := json.Unmarshal(raw, &n); err != nil {
+				return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+			}
+			if n < 0 {
+				return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %d", n)
+			}
+			const maxTimeoutSeconds = math.MaxInt64 / int64(time.Second)
+			if n > maxTimeoutSeconds {
+				return fmt.Errorf("invalid tool_execution_timeout: value %d seconds overflows duration (max %d)", n, maxTimeoutSeconds)
+			}
+			c.ToolExecutionTimeout = time.Duration(n) * time.Second
 		}
-		if dur < 0 {
-			return fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
-		}
-		c.ToolExecutionTimeout = dur
 	}
 	return nil
+}
+
+// MarshalJSON emits tool_execution_timeout as a duration string so it round-trips
+// correctly — default time.Duration marshaling emits nanoseconds, but UnmarshalJSON
+// treats bare integers as seconds.
+func (c MCPClientConfig) MarshalJSON() ([]byte, error) {
+	type alias MCPClientConfig
+	type shadow struct {
+		ToolExecutionTimeout string `json:"tool_execution_timeout,omitempty"`
+		*alias
+	}
+	s := shadow{alias: (*alias)(&c)}
+	if c.ToolExecutionTimeout > 0 {
+		s.ToolExecutionTimeout = c.ToolExecutionTimeout.String()
+	}
+	return json.Marshal(s)
 }
 
 func parseFlexibleDurationField(v any, fieldName string) (time.Duration, error) {

@@ -94,6 +94,17 @@ func TestMCPClientConfigUnmarshalToolExecutionTimeoutNotSet(t *testing.T) {
 	}
 }
 
+func TestMCPClientConfigUnmarshalToolExecutionTimeoutExplicitZero(t *testing.T) {
+	raw := []byte(`{"name":"demo","connection_type":"http","tool_execution_timeout":0}`)
+	var cfg MCPClientConfig
+	if err := sonic.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if cfg.ToolExecutionTimeout != 0 {
+		t.Fatalf("expected 0 (use global), got %v", cfg.ToolExecutionTimeout)
+	}
+}
+
 func TestMCPClientConfigUnmarshalToolExecutionTimeoutInvalidString(t *testing.T) {
 	raw := []byte(`{"name":"demo","connection_type":"http","tool_execution_timeout":"not-a-duration"}`)
 	var cfg MCPClientConfig

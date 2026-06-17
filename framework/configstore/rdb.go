@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -129,10 +130,7 @@ func toolExecutionTimeoutDurationToStoredSeconds(timeout time.Duration) (int, er
 	if timeout < 0 {
 		return 0, fmt.Errorf("tool_execution_timeout must be non-negative, got %q", timeout.String())
 	}
-	if timeout%time.Second != 0 {
-		return 0, fmt.Errorf("tool_execution_timeout must be a whole number of seconds, got %q", timeout.String())
-	}
-	return int(timeout / time.Second), nil
+	return int(math.Ceil(timeout.Seconds())), nil
 }
 
 func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error) {

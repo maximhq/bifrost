@@ -1823,12 +1823,6 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 			clientConfig.ToolSyncInterval.String(),
 		)
 	}
-	if clientConfig.ToolExecutionTimeout%time.Second != 0 {
-		return configstoreTables.TableMCPClient{}, fmt.Errorf(
-			"tool_execution_timeout must be a whole number of seconds, got %q",
-			clientConfig.ToolExecutionTimeout.String(),
-		)
-	}
 	authType := string(clientConfig.AuthType)
 	if authType == "" {
 		authType = string(schemas.MCPAuthTypeHeaders)
@@ -1848,7 +1842,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
-		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
+		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,
 		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
 		Disabled:                  clientConfig.Disabled,
