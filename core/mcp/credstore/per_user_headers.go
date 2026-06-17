@@ -88,6 +88,14 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 		// can't accidentally start flow rows with empty identity columns.
 		return fmt.Errorf("per-user headers auth-required flow requires an identity")
 	}
+	// Same session-validation gate as per_user_oauth.go — for JWT user-mode
+	// requests, BifrostContextKeyOAuth2JWTSessionValidated must be set,
+	// confirming the caller's identity was actively verified for this request.
+	if jwtAuth, _ := ctx.Value(schemas.BifrostContextKeyOAuth2JWTAuthenticated).(bool); jwtAuth && mode == schemas.MCPAuthModeUser {
+		if validated, _ := ctx.Value(schemas.BifrostContextKeyOAuth2JWTSessionValidated).(bool); !validated {
+			return fmt.Errorf("cannot initiate header submission for %s: user identity could not be verified for this request", config.Name)
+		}
+	}
 	initiation, err := r.provider.InitiateUserSubmissionFlow(ctx, mode, identity, config.ID, baseURL)
 	if err != nil {
 		return fmt.Errorf("failed to initiate per-user headers submission flow for %s: %w", config.Name, err)

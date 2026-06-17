@@ -81,32 +81,34 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 	return handler, nil
 }
 
-// RegisterRoutes registers the MCP server route
+// RegisterRoutes registers the MCP server routes.
 func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// MCP server endpoint - supports both POST (JSON-RPC) and GET (SSE)
 	r.POST("/mcp", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
 	r.GET("/mcp", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
-	// Bifrost is NOT an OAuth authorization server — auth is via the
-	// x-bf-vk / x-bf-mcp-session-id headers or upstream SSO. Claude Code's
-	// MCP client may proactively POST `/register` (RFC 7591 DCR) on
-	// `claude mcp add` and log "SDK auth failed: ..." when the probe fails,
-	// even though the underlying `/mcp` connection works fine. That warning
-	// is a known Claude Code bug — see
-	// https://github.com/anthropics/claude-code/issues/46640 — and is safe
-	// to ignore. We intentionally do NOT implement an OAuth stub.
 }
 
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
-	mcpServer, err := h.getMCPServerForRequest(ctx)
+	authResult, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
 	}
 
-	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
 	defer cancel()
+
+	// Inject JWT identity into BifrostContext so downstream resolvers
+	// (per-user OAuth, governance, tool-group filtering) see the same context
+	// keys as header-based auth paths.
+	if authResult.jwtClaims != nil {
+		if injErr := injectJWTContext(bifrostCtx, authResult.jwtClaims, authResult.jwtVK, authResult.sessionValidated); injErr != nil {
+			SendError(ctx, fasthttp.StatusUnauthorized, injErr.Error())
+			return
+		}
+	}
+	mcpServer := authResult.mcpServer
 
 	// Use mcp-go server to handle the request
 	// HandleMessage processes JSON-RPC messages and returns appropriate responses
@@ -132,12 +134,11 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 // handleMCPServerSSE handles GET requests for MCP Server-Sent Events streaming
 func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
-	_, err := h.getMCPServerForRequest(ctx)
+	authResult, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
 	}
-
 	// Signal to transport-plugin and tracing middlewares that this is a streaming
 	// response. Without this, fasthttpResponseToHTTPResponse calls ctx.Response.Body()
 	// during post-hook processing, which materializes the SSE body stream and
@@ -165,6 +166,14 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+
+	if authResult.jwtClaims != nil {
+		if injErr := injectJWTContext(bifrostCtx, authResult.jwtClaims, authResult.jwtVK, authResult.sessionValidated); injErr != nil {
+			cancel()
+			SendError(ctx, fasthttp.StatusUnauthorized, injErr.Error())
+			return
+		}
+	}
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
@@ -546,33 +555,144 @@ func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 
 // Utility methods
 
-func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, error) {
+// mcpAuthResult carries the outcome of /mcp request authentication.
+type mcpAuthResult struct {
+	mcpServer *server.MCPServer
+	jwtClaims *jwtMCPClaims           // non-nil when authenticated via JWT
+	jwtVK     *tables.TableVirtualKey // non-nil when jwt bf_mode=vk
+	// sessionValidated is set for user-mode JWTs when a live dashboard session
+	// was present and matched bf_sub. It gates initiating new upstream per-user
+	// flows in the resolver; absence does not block listing/calling tools.
+	sessionValidated bool
+}
+
+// getMCPServerForRequest authenticates the /mcp request and returns the
+// appropriate scoped MCP server alongside any JWT claims that must be injected
+// into the BifrostContext after it is created.
+//
+// Authentication priority:
+//  1. JWT Bearer token (when MCPServerAuthMode is both or oauth)
+//  2. VK / header credentials (when MCPServerAuthMode is headers or both)
+//  3. Anonymous access (when EnforceAuthOnInference is false)
+//
+// When MCPServerAuthMode is oauth (strict), header credentials are rejected.
+func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mcpAuthResult, error) {
 	h.config.Mu.RLock()
 	enforceVK := h.config.ClientConfig.EnforceAuthOnInference
+	authMode := h.config.ClientConfig.MCPServerAuthMode
 	h.config.Mu.RUnlock()
 
+	discoveryEnabled := authMode == tables.MCPServerAuthModeBoth || authMode == tables.MCPServerAuthModeOAuth
+
+	// --- JWT path ---
+	if rawJWT := extractBearerJWT(ctx); rawJWT != "" && discoveryEnabled {
+		claims, err := verifyMCPJWT(ctx, rawJWT, h.config)
+		if err != nil {
+			if discoveryEnabled {
+				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+			}
+			// Forward verifyMCPJWT's error verbatim: it already labels a genuine
+			// token failure ("invalid token: ...") precisely, while its config
+			// faults ("signing key unavailable", ...) must not be mislabeled as
+			// the client's token being bad.
+			return nil, err
+		}
+
+		// For user-mode JWTs, opportunistically confirm the dashboard session via
+		// BifrostContextKeyUserID — set by the SCIM middleware when a valid
+		// session cookie is present. A present session must match bf_sub. Its
+		// absence is not fatal: the JWT itself proves identity for listing and
+		// calling tools, and the resolver withholds initiating new upstream
+		// per-user flows when sessionValidated is false.
+		sessionValidated := false
+		if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeUser {
+			sessionUserID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+			if sessionUserID != "" {
+				if sessionUserID != claims.Subject {
+					ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+					return nil, fmt.Errorf("session user does not match the authenticated token")
+				}
+				sessionValidated = true
+			}
+		}
+
+		// Session-mode tokens carry no verified identity. When the operator
+		// requires authentication (EnforceAuthOnInference=true), session-mode
+		// JWT requests are rejected — the session itself is not deleted, but
+		// this endpoint becomes inaccessible until the client re-authenticates
+		// with a VK or user-mode token.
+		if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeSession && enforceVK {
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+			return nil, fmt.Errorf("authentication required; session-mode tokens are not accepted when authentication is enforced — re-authenticate with a virtual key or user identity")
+		}
+
+		res := &mcpAuthResult{jwtClaims: claims, sessionValidated: sessionValidated}
+
+		// For vk mode, look up the VK by ID to get the scoped server and value.
+		if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeVK {
+			if h.config.ConfigStore == nil {
+				return nil, fmt.Errorf("virtual key not found")
+			}
+			vk, err := h.config.ConfigStore.GetVirtualKey(ctx, claims.Subject)
+			if err != nil || vk == nil {
+				return nil, fmt.Errorf("virtual key not found or inactive")
+			}
+			if !vk.IsActiveValue() {
+				return nil, fmt.Errorf("virtual key is inactive")
+			}
+			res.jwtVK = vk
+			vkServer, serverErr := h.ensureVKMCPServerByValue(ctx, vk.Value)
+			if serverErr != nil {
+				return nil, serverErr
+			}
+			res.mcpServer = vkServer
+		} else {
+			res.mcpServer = h.globalMCPServer
+		}
+		return res, nil
+	}
+
+	// --- oauth strict mode: reject non-JWT requests ---
+	if authMode == tables.MCPServerAuthModeOAuth {
+		ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+		return nil, fmt.Errorf("this server requires OAuth JWT authentication; header credentials are not accepted in oauth mode")
+	}
+
+	// --- VK / header credential path ---
 	vk := getVKFromRequest(ctx)
 
 	// EnforceAuth=false: anonymous access to the global (un-scoped) MCP server
 	// is allowed in dev mode. EnforceAuth=true: VK header is mandatory.
 	if !enforceVK && vk == "" {
-		return h.globalMCPServer, nil
+		// Anonymous access allowed in dev mode.
+		return &mcpAuthResult{mcpServer: h.globalMCPServer}, nil
 	}
 
 	if vk == "" {
+		if discoveryEnabled {
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+		}
 		return nil, fmt.Errorf("virtual key required to access mcp server; set one of x-bf-vk, Authorization: Bearer <vk>, or x-api-key in your MCP client config")
 	}
 
-	// Fast path: a per-VK server already exists in the cache.
-	h.mu.RLock()
-	vkServer, ok := h.vkMCPServers[vk]
-	h.mu.RUnlock()
-	if ok {
-		return vkServer, nil
+	vkServer, err := h.ensureVKMCPServerByValue(ctx, vk)
+	if err != nil {
+		return nil, err
 	}
+	return &mcpAuthResult{mcpServer: vkServer}, nil
+}
 
+// ensureVKMCPServerByValue returns the per-VK server from cache or creates it.
+func (h *MCPServerHandler) ensureVKMCPServerByValue(ctx context.Context, vkValue string) (*server.MCPServer, error) {
+	h.mu.RLock()
+	s, ok := h.vkMCPServers[vkValue]
+	h.mu.RUnlock()
+	// Fast path: a per-VK server already exists in the cache.
+	if ok {
+		return s, nil
+	}
 	// Slow path: build the per-VK server lazily on first use.
-	return h.ensureVKMCPServer(ctx, vk)
+	return h.ensureVKMCPServer(ctx, vkValue)
 }
 
 // ensureVKMCPServer lazily builds and caches the MCP server for a virtual key on
@@ -587,6 +707,12 @@ func (h *MCPServerHandler) ensureVKMCPServer(ctx context.Context, vkValue string
 	vk, err := h.config.ConfigStore.GetVirtualKeyByValue(ctx, vkValue)
 	if err != nil || vk == nil {
 		return nil, fmt.Errorf("virtual key not found")
+	}
+	// GetVirtualKeyByValue does not filter inactive keys, so fail closed here:
+	// a deactivated key must not yield (or cache) a usable MCP server. This is
+	// the single chokepoint for both the header path and the JWT vk path.
+	if !vk.IsActiveValue() {
+		return nil, fmt.Errorf("virtual key is inactive")
 	}
 	// SyncVKMCPServer creates (or refreshes) and caches the server under the
 	// handler write lock, returning the live server so a concurrent

@@ -57,6 +57,15 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 		if redirectURI == "" {
 			return nil, fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
 		}
+		// For user-mode JWT requests, require that session validation ran before
+		// initiating a new upstream flow. BifrostContextKeyOAuth2JWTSessionValidated
+		// is only set when the session was actively confirmed; its absence means
+		// the caller's identity could not be verified for this request.
+		if jwtAuth, _ := ctx.Value(schemas.BifrostContextKeyOAuth2JWTAuthenticated).(bool); jwtAuth && mode == schemas.MCPAuthModeUser {
+			if validated, _ := ctx.Value(schemas.BifrostContextKeyOAuth2JWTSessionValidated).(bool); !validated {
+				return nil, fmt.Errorf("cannot initiate upstream authentication for %s: user identity could not be verified for this request", config.Name)
+			}
+		}
 		flowInitiation, sessionID, flowErr := r.provider.InitiateUserOAuthFlow(ctx, *config.OauthConfigID, config.ID, redirectURI, mode)
 		if flowErr != nil {
 			return nil, fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", config.Name, flowErr)
