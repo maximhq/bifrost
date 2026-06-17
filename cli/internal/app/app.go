@@ -147,7 +147,26 @@ func (a *App) Run(ctx context.Context) error {
 				Harnesses:     harnesses,
 				TabBarLine:    tabBarLine,
 				FetchModels:   a.apiClient.ListModels,
-				Input:         stdinReader,
+				SignIn: func(ctx context.Context, baseURL string) ([]tui.VirtualKeyOption, error) {
+					keys, err := a.apiClient.SignInWithBifrost(ctx, baseURL)
+					if err != nil {
+						return nil, err
+					}
+					options := make([]tui.VirtualKeyOption, 0, len(keys))
+					for _, key := range keys {
+						options = append(options, tui.VirtualKeyOption{
+							ID:    key.ID,
+							Name:  key.Name,
+							Value: key.Value,
+						})
+					}
+					return options, nil
+				},
+				SignOut: func() error {
+					vk = ""
+					return secrets.SetVirtualKey(activeProfile.ID, "")
+				},
+				Input: stdinReader,
 				Notify: func(message string, isError bool) {
 					level := runtime.TabNoticeInfo
 					if isError {

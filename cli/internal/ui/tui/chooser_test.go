@@ -87,8 +87,21 @@ func TestChooserSummaryArrowEnterOpensSelectedOption(t *testing.T) {
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(chooserModel)
-	if got.phase != phaseSummary || !got.summaryEditing {
-		t.Fatalf("expected enter on first summary row to edit base URL inline, phase=%v summaryEditing=%v", got.phase, got.summaryEditing)
+	if got.phase != phaseSummary || !got.done {
+		t.Fatalf("expected enter on Start row to launch, phase=%v done=%v", got.phase, got.done)
+	}
+
+	m.summaryIdx = m.summaryIndexForAction(summaryActionConfig)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(chooserModel)
+	if got.phase != phaseConfig {
+		t.Fatalf("expected CLI Config row to open config, phase=%v", got.phase)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(chooserModel)
+	if got.phase != phaseConfig || !got.summaryEditing {
+		t.Fatalf("expected enter on first config row to edit base URL inline, phase=%v summaryEditing=%v", got.phase, got.summaryEditing)
 	}
 
 	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("-edited")})
@@ -117,6 +130,7 @@ func TestChooserSummaryArrowEnterOpensSelectedOption(t *testing.T) {
 			return []string{"gpt-4o-mini"}, nil
 		},
 	})
+	m.phase = phaseConfig
 	for i := 0; i < 2; i++ {
 		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = next.(chooserModel)
@@ -244,11 +258,35 @@ func TestChooserSummaryUsesActionLabels(t *testing.T) {
 	if !strings.Contains(view, "Start") || !strings.Contains(view, "Codex CLI") {
 		t.Fatalf("expected summary to show Start <harness>, got %q", view)
 	}
+	if !strings.Contains(view, "CLI Config") || !strings.Contains(view, "Base URL, virtual key, harness, model") {
+		t.Fatalf("expected summary to show CLI Config action, got %q", view)
+	}
 	if !strings.Contains(view, "Exit") || !strings.Contains(view, "Bifrost CLI") {
 		t.Fatalf("expected summary to show Exit Bifrost CLI, got %q", view)
 	}
-	if strings.Contains(view, "start Codex CLI") || strings.Contains(view, "Quit") {
+	if strings.Contains(view, "Base URL     http://localhost:8080") || strings.Contains(view, "Virtual Key") || strings.Contains(view, "start Codex CLI") || strings.Contains(view, "Quit") {
 		t.Fatalf("did not expect old launch/quit labels, got %q", view)
+	}
+}
+
+func TestChooserWithSignInStartsAtAuthMethodWhenVirtualKeyMissing(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		BaseURL: "http://localhost:8080",
+		Harness: "codex",
+		Model:   "gpt-4o-mini",
+		Harnesses: []HarnessOption{{
+			ID:                    "codex",
+			Label:                 "Codex CLI",
+			Installed:             true,
+			SupportsModelOverride: true,
+		}},
+		SignIn: func(ctx context.Context, baseURL string) ([]VirtualKeyOption, error) {
+			return nil, nil
+		},
+	})
+
+	if m.phase != phaseAuthMethod {
+		t.Fatalf("expected auth method phase when sign-in is available and no virtual key is saved, got %v", m.phase)
 	}
 }
 
@@ -265,6 +303,7 @@ func TestChooserSummaryMasksVirtualKeyAfterSave(t *testing.T) {
 			SupportsModelOverride: true,
 		}},
 	})
+	m.phase = phaseConfig
 
 	view := m.View()
 	if !strings.Contains(view, "sk*******xyz") {
@@ -273,9 +312,107 @@ func TestChooserSummaryMasksVirtualKeyAfterSave(t *testing.T) {
 	if strings.Contains(view, "sk-abcdefxyz") {
 		t.Fatalf("expected summary not to show full virtual key after save, got %q", view)
 	}
+	if !strings.Contains(view, "Sign out") || !strings.Contains(view, "from CLI") {
+		t.Fatalf("expected signed-in summary to show sign out action, got %q", view)
+	}
 }
 
-func TestChooserSummaryVirtualKeyVisibleWhileEditing(t *testing.T) {
+func TestChooserShowsOnlyAuthOptionsWhenVirtualKeyMissing(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		BaseURL: "http://localhost:8080",
+		Harness: "codex",
+		Model:   "gpt-4o-mini",
+		Harnesses: []HarnessOption{{
+			ID:                    "codex",
+			Label:                 "Codex CLI",
+			Installed:             true,
+			SupportsModelOverride: true,
+		}},
+		SignIn: func(ctx context.Context, baseURL string) ([]VirtualKeyOption, error) {
+			return nil, nil
+		},
+	})
+
+	view := m.View()
+	for _, want := range []string{"Home", "Sign in with Bifrost", "Add virtual key manually", "Change Base URL", "Exit Bifrost CLI"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected unsigned chooser to show %q, got %q", want, view)
+		}
+	}
+	if strings.Contains(view, "Ready to launch") || strings.Contains(view, "Start") || strings.Contains(view, "Sign out") || strings.Contains(view, "╭") {
+		t.Fatalf("did not expect full summary while virtual key is missing, got %q", view)
+	}
+}
+
+func TestChooserSummarySignOutClearsVirtualKey(t *testing.T) {
+	cleared := false
+	m := newChooserModel(ChooserConfig{
+		BaseURL:    "http://localhost:8080",
+		VirtualKey: "sk-abcdefxyz",
+		Harness:    "codex",
+		Model:      "gpt-4o-mini",
+		Harnesses: []HarnessOption{{
+			ID:                    "codex",
+			Label:                 "Codex CLI",
+			Installed:             true,
+			SupportsModelOverride: true,
+		}},
+		SignOut: func() error {
+			cleared = true
+			return nil
+		},
+	})
+	m.phase = phaseConfig
+	m.summaryIdx = m.summaryIndexForAction(summaryActionSignOut)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(chooserModel)
+	if got.vkInput.Value() != "" {
+		t.Fatalf("expected sign out to clear virtual key, got %q", got.vkInput.Value())
+	}
+	if got.phase != phaseAuthMethod || !got.returnToSummary {
+		t.Fatalf("expected sign out to show auth options before returning to summary, phase=%v returnToSummary=%v", got.phase, got.returnToSummary)
+	}
+	if !cleared {
+		t.Fatal("expected sign out to clear persisted virtual key data")
+	}
+}
+
+func TestChooserAuthMethodExitQuits(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		BaseURL: "http://localhost:8080",
+		SignIn: func(ctx context.Context, baseURL string) ([]VirtualKeyOption, error) {
+			return nil, nil
+		},
+	})
+	m.phase = phaseAuthMethod
+	m.authMethodIdx = 3
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(chooserModel)
+	if !got.quit {
+		t.Fatal("expected auth method exit option to quit")
+	}
+}
+
+func TestChooserAuthMethodCanChangeBaseURL(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		BaseURL: "http://localhost:8080",
+		SignIn: func(ctx context.Context, baseURL string) ([]VirtualKeyOption, error) {
+			return nil, nil
+		},
+	})
+	m.phase = phaseAuthMethod
+	m.authMethodIdx = 2
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(chooserModel)
+	if got.phase != phaseBaseURL {
+		t.Fatalf("expected change base URL to open base URL phase, got %v", got.phase)
+	}
+}
+
+func TestChooserSummaryVirtualKeyOpensConnectOptions(t *testing.T) {
 	m := newChooserModel(ChooserConfig{
 		BaseURL:    "http://localhost:8080",
 		VirtualKey: "sk-abcdefxyz",
@@ -288,23 +425,66 @@ func TestChooserSummaryVirtualKeyVisibleWhileEditing(t *testing.T) {
 			SupportsModelOverride: true,
 		}},
 	})
+	m.phase = phaseConfig
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	got := next.(chooserModel)
-	if !got.summaryEditing || got.summaryEditAction != summaryActionVirtualKey {
-		t.Fatalf("expected v to edit virtual key, editing=%v action=%v", got.summaryEditing, got.summaryEditAction)
+	if got.phase != phaseAuthMethod || !got.returnToSummary {
+		t.Fatalf("expected v to open connect options, phase=%v returnToSummary=%v", got.phase, got.returnToSummary)
 	}
 
 	view := got.View()
-	if !strings.Contains(view, "sk-abcdefxyz") {
-		t.Fatalf("expected full virtual key to be visible while editing, got %q", view)
+	if !strings.Contains(view, "Sign in with Bifrost") || !strings.Contains(view, "Add virtual key manually") {
+		t.Fatalf("expected virtual key connect options, got %q", view)
+	}
+}
+
+func TestChooserSignInWithBifrostSingleVirtualKey(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		BaseURL: "http://localhost:8080",
+		SignIn: func(ctx context.Context, baseURL string) ([]VirtualKeyOption, error) {
+			if baseURL != "http://localhost:8080" {
+				t.Fatalf("unexpected baseURL %q", baseURL)
+			}
+			return []VirtualKeyOption{{ID: "vk_1", Name: "Engineering", Value: "sk-bf-123"}}, nil
+		},
+	})
+	m.phase = phaseAuthMethod
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(chooserModel)
+	if !got.signingIn || cmd == nil {
+		t.Fatalf("expected sign-in command to start, signingIn=%v cmdNil=%v", got.signingIn, cmd == nil)
 	}
 
+	msg := cmd().(signInMsg)
+	next, _ = got.Update(msg)
+	got = next.(chooserModel)
+	if got.phase != phaseHarness || got.vkInput.Value() != "sk-bf-123" {
+		t.Fatalf("expected single key to be selected, phase=%v vk=%q", got.phase, got.vkInput.Value())
+	}
+}
+
+func TestChooserSignInWithBifrostMultipleVirtualKeys(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		BaseURL: "http://localhost:8080",
+	})
+
+	next, _ := m.Update(signInMsg{keys: []VirtualKeyOption{
+		{ID: "vk_1", Name: "Engineering", Value: "sk-bf-eng"},
+		{ID: "vk_2", Name: "Support", Value: "sk-bf-support"},
+	}})
+	got := next.(chooserModel)
+	if got.phase != phaseVirtualKeySelect {
+		t.Fatalf("expected key picker, phase=%v", got.phase)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got = next.(chooserModel)
 	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got = next.(chooserModel)
-	view = got.View()
-	if !strings.Contains(view, "sk*******xyz") || strings.Contains(view, "sk-abcdefxyz") {
-		t.Fatalf("expected saved virtual key to be masked, got %q", view)
+	if got.phase != phaseHarness || got.vkInput.Value() != "sk-bf-support" {
+		t.Fatalf("expected selected key, phase=%v vk=%q", got.phase, got.vkInput.Value())
 	}
 }
 

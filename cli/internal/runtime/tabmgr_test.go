@@ -296,21 +296,29 @@ func TestBuildTabBarStringKeepsVersionVisibleWhenCommandHintIsLong(t *testing.T)
 	}
 }
 
-func TestNextInputTokenTreatsCtrlGAsTabModePrefix(t *testing.T) {
+func TestNextInputTokenTreatsCtrlTAsTabModePrefix(t *testing.T) {
 	t.Parallel()
 
 	token, consumed, isPrefix, complete := nextInputToken([]byte{tmuxSafePrefix})
 
 	if !complete || !isPrefix || consumed != 1 || len(token) != 1 || token[0] != tmuxSafePrefix {
-		t.Fatalf("expected ctrl+g to be parsed as tab-mode prefix, token=%q consumed=%d isPrefix=%v complete=%v", token, consumed, isPrefix, complete)
+		t.Fatalf("expected ctrl+t to be parsed as tab-mode prefix, token=%q consumed=%d isPrefix=%v complete=%v", token, consumed, isPrefix, complete)
 	}
 }
 
-func TestTabModeHintLabelUsesCtrlGInsideTmux(t *testing.T) {
+func TestTabModeHintLabelUsesCtrlTInsideTmux(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-501/default,123,0")
 
-	if got := tabModeHintLabel(); got != "^G" {
-		t.Fatalf("expected tmux tab mode hint to use ^G, got %q", got)
+	if got := tabModeHintLabel(); got != "^T" {
+		t.Fatalf("expected tmux tab mode hint to use ^T, got %q", got)
+	}
+}
+
+func TestTabModeHintLabelShowsBothPrefixesOutsideTmux(t *testing.T) {
+	t.Setenv("TMUX", "")
+
+	if got := tabModeHintLabel(); got != "^B/^T" {
+		t.Fatalf("expected regular tab mode hint to show both prefixes, got %q", got)
 	}
 }
 
@@ -452,7 +460,7 @@ func TestHandleCommandKeyEscapeClearsStickyErrorAndStaysInCommandMode(t *testing
 	}
 }
 
-func TestHandleCommandKeyEnterDoesNotResumeWhileStickyErrorIsShown(t *testing.T) {
+func TestHandleCommandKeyDismissKeyClearsStickyErrorAndStaysInCommandMode(t *testing.T) {
 	t.Parallel()
 
 	tm := &TabManager{
@@ -466,13 +474,41 @@ func TestHandleCommandKeyEnterDoesNotResumeWhileStickyErrorIsShown(t *testing.T)
 		tabs:         []*Tab{{id: 1, label: "Codex"}},
 	}
 
-	tm.handleCommandKey(nil, nil, nil, '\r')
+	tm.handleCommandKey(nil, nil, nil, tmuxSafePrefix)
 
 	if !tm.commandMode {
-		t.Fatal("expected sticky error to keep tab manager in command mode")
+		t.Fatal("expected dismiss key to keep tab manager in command mode after clearing sticky error")
 	}
-	if tm.noticeText != "oops" {
-		t.Fatalf("expected enter to leave sticky error untouched, got %q", tm.noticeText)
+	if tm.noticeText != "" {
+		t.Fatalf("expected dismiss key to clear sticky error notice, got %q", tm.noticeText)
+	}
+}
+
+func TestHandleCommandKeyActionClearsStickyErrorAndContinues(t *testing.T) {
+	t.Parallel()
+
+	tm := &TabManager{
+		stdout:       io.Discard,
+		rows:         24,
+		cols:         80,
+		commandMode:  true,
+		commandIdx:   0,
+		noticeText:   "oops",
+		noticeLevel:  TabNoticeError,
+		noticeSticky: true,
+		tabs: []*Tab{
+			{id: 1, label: "Codex"},
+			{id: 2, label: "Claude Code"},
+		},
+	}
+
+	tm.handleCommandKey(nil, nil, nil, 'l')
+
+	if tm.noticeText != "" {
+		t.Fatalf("expected action to clear sticky error notice, got %q", tm.noticeText)
+	}
+	if tm.commandIdx != 1 {
+		t.Fatalf("expected action to continue after clearing sticky error, commandIdx=%d", tm.commandIdx)
 	}
 }
 
@@ -639,16 +675,16 @@ func TestIsPrefixSequenceSupportsColonSuffix(t *testing.T) {
 		t.Fatal("expected ctrl+b repeat event to be recognized")
 	}
 
-	// Ctrl+G is the tmux-safe alternate prefix and must be recognized in its
-	// CSI-encoded forms too, not just as the raw 0x07 byte.
-	if !isPrefixSequence([]byte("\x1b[103;5:1u")) {
-		t.Fatal("expected ctrl+g press event (CSI u, tmux-safe prefix) to be recognized")
+	// Ctrl+T is the tmux-safe alternate prefix and must be recognized in its
+	// CSI-encoded forms too, not just as the raw 0x14 byte.
+	if !isPrefixSequence([]byte("\x1b[116;5:1u")) {
+		t.Fatal("expected ctrl+t press event (CSI u, tmux-safe prefix) to be recognized")
 	}
-	if isPrefixSequence([]byte("\x1b[103;5:3u")) {
-		t.Fatal("expected ctrl+g release event to be rejected")
+	if isPrefixSequence([]byte("\x1b[116;5:3u")) {
+		t.Fatal("expected ctrl+t release event to be rejected")
 	}
-	if !isPrefixSequence([]byte("\x1b[27;5;103~")) {
-		t.Fatal("expected ctrl+g modifyOtherKeys (CSI 27 ~) to be recognized")
+	if !isPrefixSequence([]byte("\x1b[27;5;116~")) {
+		t.Fatal("expected ctrl+t modifyOtherKeys (CSI 27 ~) to be recognized")
 	}
 }
 

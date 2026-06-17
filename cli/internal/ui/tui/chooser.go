@@ -48,6 +48,8 @@ type ChooserConfig struct {
 	ReservedRows  int           // rows reserved by the tab bar; subtracted from the available height
 	TabBarLine    func() string // returns the current tab bar content; rendered as the last line
 	FetchModels   func(ctx context.Context, baseURL, virtualKey string) ([]string, error)
+	SignIn        func(ctx context.Context, baseURL string) ([]VirtualKeyOption, error)
+	SignOut       func() error
 	Notify        func(message string, isError bool)
 	Input         io.Reader // optional stdin override; when nil, os.Stdin is used
 }
@@ -65,23 +67,35 @@ type ChooserResult struct {
 	Worktree        string
 }
 
+// VirtualKeyOption is a virtual key selectable from the Bifrost CLI handover flow.
+type VirtualKeyOption struct {
+	ID    string
+	Name  string
+	Value string
+}
+
 type chooserPhase int
 
 const (
 	phaseBaseURL chooserPhase = iota
+	phaseAuthMethod
 	phaseVirtualKey
+	phaseVirtualKeySelect
 	phaseHarness
 	phaseModel
 	phaseWorktree
 	phaseSummary
+	phaseConfig
 )
 
 type summaryAction int
 
 const (
 	summaryActionLaunch summaryAction = iota
+	summaryActionConfig
 	summaryActionBaseURL
 	summaryActionVirtualKey
+	summaryActionSignOut
 	summaryActionWorktree
 	summaryActionHarness
 	summaryActionModel
@@ -89,12 +103,18 @@ const (
 	summaryActionDocs
 	summaryActionIssues
 	summaryActionRepo
+	summaryActionBack
 	summaryActionQuit
 )
 
 type modelsMsg struct {
 	models []string
 	err    error
+}
+
+type signInMsg struct {
+	keys []VirtualKeyOption
+	err  error
 }
 
 type warmupDoneMsg struct{}
@@ -118,6 +138,9 @@ type chooserModel struct {
 	worktreeInput textInput.Model
 
 	harnessIdx          int
+	authMethodIdx       int
+	vkOptionIdx         int
+	vkOptions           []VirtualKeyOption
 	modelIdx            int
 	models              []string
 	modelManualSelected bool
@@ -125,6 +148,7 @@ type chooserModel struct {
 	filterInput textInput.Model
 	filtered    []int // indices into models
 	loading     bool
+	signingIn   bool
 	loadErr     string
 
 	summaryIdx          int
@@ -230,11 +254,17 @@ func newChooserModel(cfg ChooserConfig) chooserModel {
 		plainLayout:   prefersPlainChooserLayout(),
 	}
 
-	if strings.TrimSpace(cfg.BaseURL) != "" {
+	if strings.TrimSpace(cfg.BaseURL) != "" && strings.TrimSpace(cfg.VirtualKey) != "" {
 		m.phase = phaseHarness
 		m.baseInput.Blur()
+	} else if strings.TrimSpace(cfg.BaseURL) != "" {
+		m.phase = phaseAuthMethod
+		m.baseInput.Blur()
 	}
-	if strings.TrimSpace(cfg.Harness) != "" && strings.TrimSpace(cfg.Model) != "" && strings.TrimSpace(cfg.BaseURL) != "" {
+	if strings.TrimSpace(cfg.Harness) != "" &&
+		strings.TrimSpace(cfg.Model) != "" &&
+		strings.TrimSpace(cfg.BaseURL) != "" &&
+		(strings.TrimSpace(cfg.VirtualKey) != "" || cfg.SignIn == nil) {
 		m.phase = phaseSummary
 		m.models = []string{strings.TrimSpace(cfg.Model)}
 		m.modelIdx = 0
@@ -296,7 +326,9 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		canTriggerUpdate := strings.TrimSpace(m.cfg.UpdateVersion) != "" &&
 			m.phase != phaseBaseURL &&
+			m.phase != phaseAuthMethod &&
 			m.phase != phaseVirtualKey &&
+			m.phase != phaseVirtualKeySelect &&
 			m.phase != phaseModel &&
 			m.phase != phaseWorktree
 		if canTriggerUpdate && (s == "y" || s == "Y") {
@@ -322,8 +354,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.phase = phaseSummary
 					return m, nil
 				}
-				m.phase = phaseVirtualKey
-				m.vkInput.Focus()
+				m.phase = phaseAuthMethod
 				return m, nil
 			}
 			if s == "esc" && m.returnToSummary {
@@ -335,6 +366,67 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.baseInput, cmd = m.baseInput.Update(msg)
 			return m, cmd
+
+		case phaseAuthMethod:
+			if m.signingIn {
+				if s == "esc" {
+					m.signingIn = false
+					m.loadErr = ""
+					if m.returnToSummary {
+						m.phase = phaseSummary
+					}
+					return m, nil
+				}
+				return m, nil
+			}
+			if s == "up" || s == "k" || s == "down" || s == "j" {
+				if s == "up" || s == "k" {
+					if m.authMethodIdx > 0 {
+						m.authMethodIdx--
+					} else {
+						m.authMethodIdx = len(authMethodOptions()) - 1
+					}
+				} else {
+					if m.authMethodIdx < len(authMethodOptions())-1 {
+						m.authMethodIdx++
+					} else {
+						m.authMethodIdx = 0
+					}
+				}
+				return m, nil
+			}
+			if s == "enter" {
+				if m.authMethodIdx == 0 {
+					m.signingIn = true
+					m.loadErr = ""
+					return m, m.signInCmd()
+				}
+				if m.authMethodIdx == 2 {
+					m.phase = phaseBaseURL
+					m.returnToSummary = false
+					m.baseInput.Focus()
+					return m, nil
+				}
+				if m.authMethodIdx == 3 {
+					m.quit = true
+					return m, tea.Quit
+				}
+				m.phase = phaseVirtualKey
+				m.vkInput.Focus()
+				return m, nil
+			}
+			if s == "esc" {
+				if m.returnToSummary {
+					if strings.TrimSpace(m.vkInput.Value()) != "" {
+						m.returnToSummary = false
+						m.phase = phaseSummary
+					}
+					return m, nil
+				}
+				m.phase = phaseBaseURL
+				m.baseInput.Focus()
+				return m, nil
+			}
 
 		case phaseVirtualKey:
 			if s == "enter" {
@@ -354,8 +446,8 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.phase = phaseSummary
 					return m, nil
 				}
-				m.phase = phaseBaseURL
-				m.baseInput.Focus()
+				m.phase = phaseAuthMethod
+				m.vkInput.Blur()
 				return m, nil
 			}
 			if s == "f1" {
@@ -369,6 +461,48 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.vkInput, cmd = m.vkInput.Update(msg)
 			return m, cmd
+
+		case phaseVirtualKeySelect:
+			if s == "up" || s == "k" {
+				if m.vkOptionIdx > 0 {
+					m.vkOptionIdx--
+				} else {
+					m.vkOptionIdx = len(m.vkOptions)
+				}
+				return m, nil
+			}
+			if s == "down" || s == "j" {
+				if m.vkOptionIdx < len(m.vkOptions) {
+					m.vkOptionIdx++
+				} else {
+					m.vkOptionIdx = 0
+				}
+				return m, nil
+			}
+			if s == "enter" {
+				if m.vkOptionIdx >= 0 && m.vkOptionIdx < len(m.vkOptions) {
+					m.vkInput.SetValue(m.vkOptions[m.vkOptionIdx].Value)
+					if m.returnToSummary {
+						m.returnToSummary = false
+						m.phase = phaseSummary
+						return m, nil
+					}
+					m.phase = phaseHarness
+					return m, nil
+				}
+				m.phase = phaseVirtualKey
+				m.vkInput.Focus()
+				return m, nil
+			}
+			if s == "esc" {
+				if m.returnToSummary {
+					m.returnToSummary = false
+					m.phase = phaseSummary
+					return m, nil
+				}
+				m.phase = phaseAuthMethod
+				return m, nil
+			}
 
 		case phaseHarness:
 			if s == "up" || s == "k" {
@@ -408,8 +542,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.phase = phaseSummary
 					return m, nil
 				}
-				m.phase = phaseVirtualKey
-				m.vkInput.Focus()
+				m.phase = phaseAuthMethod
 				return m, nil
 			}
 
@@ -537,7 +670,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktreeInput, cmd = m.worktreeInput.Update(msg)
 			return m, cmd
 
-		case phaseSummary:
+		case phaseSummary, phaseConfig:
 			if m.summaryEditing {
 				switch s {
 				case "enter":
@@ -598,7 +731,16 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch s {
 			case "enter":
 				return m.performSummaryAction(m.currentSummaryAction())
+			case "c":
+				if m.phase == phaseSummary {
+					m.phase = phaseConfig
+					m.summaryIdx = 0
+					return m, nil
+				}
 			case "u":
+				if m.phase != phaseConfig {
+					return m, nil
+				}
 				m.summaryIdx = m.summaryIndexForAction(summaryActionBaseURL)
 				m.summaryEditing = true
 				m.summaryEditAction = summaryActionBaseURL
@@ -606,13 +748,17 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.baseInput.Focus()
 				return m, nil
 			case "v":
+				if m.phase != phaseConfig {
+					return m, nil
+				}
 				m.summaryIdx = m.summaryIndexForAction(summaryActionVirtualKey)
-				m.summaryEditing = true
-				m.summaryEditAction = summaryActionVirtualKey
-				m.summaryEditOriginal = m.vkInput.Value()
-				m.vkInput.Focus()
+				m.phase = phaseAuthMethod
+				m.returnToSummary = true
 				return m, nil
 			case "w":
+				if m.phase != phaseConfig {
+					return m, nil
+				}
 				if m.currentHarness().SupportsWorktree {
 					m.phase = phaseWorktree
 					m.returnToSummary = true
@@ -620,10 +766,16 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case "h":
+				if m.phase != phaseConfig {
+					return m, nil
+				}
 				m.phase = phaseHarness
 				m.returnToSummary = true
 				return m, nil
 			case "m":
+				if m.phase != phaseConfig {
+					return m, nil
+				}
 				if !m.currentHarness().SupportsModelOverride {
 					m.notify(m.currentHarness().Label+" manages its own model selection", true)
 					return m, nil
@@ -652,6 +804,11 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notify("opened GitHub repo", false)
 				return m, nil
 			case "esc":
+				if m.phase == phaseConfig {
+					m.phase = phaseSummary
+					m.summaryIdx = m.summaryIndexForAction(summaryActionConfig)
+					return m, nil
+				}
 				m.quit = true
 				return m, tea.Quit
 			}
@@ -675,6 +832,33 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelManualSelected = false
 		m.filterInput.SetValue("")
 		m.filterInput.Focus()
+
+	case signInMsg:
+		m.signingIn = false
+		if msg.err != nil {
+			m.loadErr = msg.err.Error()
+			m.notify(m.loadErr, true)
+			return m, nil
+		}
+		m.vkOptions = msg.keys
+		m.vkOptionIdx = 0
+		if len(m.vkOptions) == 0 {
+			m.loadErr = "no virtual keys assigned to this Bifrost account"
+			m.notify(m.loadErr, true)
+			return m, nil
+		}
+		if len(m.vkOptions) == 1 {
+			m.vkInput.SetValue(m.vkOptions[0].Value)
+			m.notify("signed in with Bifrost", false)
+			if m.returnToSummary {
+				m.returnToSummary = false
+				m.phase = phaseSummary
+				return m, nil
+			}
+			m.phase = phaseHarness
+			return m, nil
+		}
+		m.phase = phaseVirtualKeySelect
 	}
 
 	return m, nil
@@ -698,7 +882,7 @@ func (m chooserModel) View() string {
 		h = 24
 	}
 
-	hideLogo := m.returnToSummary && (m.phase == phaseHarness || m.phase == phaseModel || m.phase == phaseWorktree)
+	hideLogo := m.returnToSummary && (m.phase == phaseVirtualKeySelect || m.phase == phaseHarness || m.phase == phaseModel || m.phase == phaseWorktree)
 	logoBlock := ""
 	if !hideLogo {
 		logoBlock = logoColor.Render(logo.Render(w))
@@ -737,6 +921,24 @@ func (m chooserModel) View() string {
 			footer = hint.Render("enter: continue  ctrl+c: quit")
 		}
 
+	case phaseAuthMethod:
+		title = accent.Render("Home")
+		if m.signingIn {
+			body.WriteString(hint.Render("opening browser for Bifrost sign in..."))
+			footer = hint.Render("waiting for browser sign in")
+		} else {
+			for i, option := range authMethodOptions() {
+				cursor := "  "
+				style := label
+				if i == m.authMethodIdx {
+					cursor = accent.Render("> ")
+					style = lipgloss.NewStyle().Bold(true)
+				}
+				body.WriteString(cursor + style.Render(option) + "\n")
+			}
+			footer = hint.Render("up/down: move  enter: select")
+		}
+
 	case phaseVirtualKey:
 		title = accent.Render("Virtual Key") + label.Render(" (optional)")
 		body.WriteString(m.vkInput.View())
@@ -744,6 +946,34 @@ func (m chooserModel) View() string {
 			footer = hint.Render("enter: update  esc: cancel  f1: open dashboard")
 		} else {
 			footer = hint.Render("enter: continue  esc: back  f1: open dashboard")
+		}
+
+	case phaseVirtualKeySelect:
+		title = accent.Render("Choose Virtual Key")
+		for i, key := range m.vkOptions {
+			cursor := "  "
+			style := label
+			if i == m.vkOptionIdx {
+				cursor = accent.Render("> ")
+				style = lipgloss.NewStyle().Bold(true)
+			}
+			body.WriteString(cursor + style.Render(virtualKeyOptionLabel(key)) + "\n")
+		}
+		cursor := "  "
+		style := label
+		if m.vkOptionIdx == len(m.vkOptions) {
+			cursor = accent.Render("> ")
+			style = lipgloss.NewStyle().Bold(true)
+		}
+		body.WriteString(cursor + style.Render("Add virtual key manually") + "\n")
+		if m.returnToSummary {
+			footer = hint.Render("up/down: move  enter: select  esc: cancel")
+			bodyStr := body.String()
+			body.Reset()
+			body.WriteString(renderChooserPopup("Choose Virtual Key", bodyStr, w))
+			title = accent.Render("Bifrost CLI")
+		} else {
+			footer = hint.Render("up/down: move  enter: select  esc: back")
 		}
 
 	case phaseHarness:
@@ -815,13 +1045,43 @@ func (m chooserModel) View() string {
 	case phaseSummary:
 		ho := m.currentHarness()
 		baseURL := strings.TrimSpace(m.baseInput.Value())
+
+		title = accent.Render("Ready to launch")
+		renderSummaryLine := func(action summaryAction, name, value string) {
+			cursor := "  "
+			nameStyle := label
+			valueStyle := lipgloss.NewStyle()
+			if action == m.currentSummaryAction() {
+				cursor = accent.Render("> ")
+				nameStyle = lipgloss.NewStyle().Bold(true)
+				valueStyle = lipgloss.NewStyle().Bold(true)
+			}
+			body.WriteString(cursor + nameStyle.Render(fmt.Sprintf("%-12s", name)) + " " + valueStyle.Render(value) + "\n")
+		}
+		renderSummaryLine(summaryActionLaunch, "Start", ho.Label)
+		renderSummaryLine(summaryActionConfig, "CLI Config", "Base URL, virtual key, harness, model")
+		renderSummaryLine(summaryActionDashboard, "Dashboard", baseURL)
+		renderSummaryLine(summaryActionDocs, "Docs", docsURL)
+		renderSummaryLine(summaryActionIssues, "Report issue", issuesURL)
+		renderSummaryLine(summaryActionRepo, "Star", repoURL)
+		renderSummaryLine(summaryActionQuit, "Exit", "Bifrost CLI")
+
+		if m.summaryEditing {
+			footer = hint.Render("editing  enter: save  esc: cancel")
+		} else {
+			footer = hint.Render("up/down: move  enter: select  shortcuts: c/d/r/i/s/q")
+		}
+
+	case phaseConfig:
+		ho := m.currentHarness()
+		baseURL := strings.TrimSpace(m.baseInput.Value())
 		model := m.currentModel()
 		harnessStr := ho.Label
 		if ho.Version != "" {
 			harnessStr += " (" + ho.Version + ")"
 		}
 
-		title = accent.Render("Ready to launch")
+		title = accent.Render("CLI Config")
 		renderSummaryLine := func(action summaryAction, name, value string) {
 			cursor := "  "
 			nameStyle := label
@@ -853,11 +1113,14 @@ func (m chooserModel) View() string {
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("⚠ Gemini function calling is not compatible with") + "\n")
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("  Claude Code and may not work as intended") + "\n")
 		}
-		vkValue := maskVirtualKey(strings.TrimSpace(m.vkInput.Value()))
+		vkValue := summaryVirtualKeyValue(strings.TrimSpace(m.vkInput.Value()), m.cfg.SignIn != nil)
 		if m.summaryEditing && m.currentSummaryAction() == summaryActionVirtualKey {
 			vkValue = m.vkInput.View()
 		}
 		renderSummaryLine(summaryActionVirtualKey, "Virtual Key", vkValue)
+		if strings.TrimSpace(m.vkInput.Value()) != "" {
+			renderSummaryLine(summaryActionSignOut, "Sign out", "from CLI")
+		}
 		if ho.SupportsWorktree {
 			wtState := "no"
 			if wt := strings.TrimSpace(m.worktreeInput.Value()); wt != "" {
@@ -865,18 +1128,12 @@ func (m chooserModel) View() string {
 			}
 			renderSummaryLine(summaryActionWorktree, "Worktree", wtState)
 		}
-		body.WriteString("\n")
-		renderSummaryLine(summaryActionLaunch, "Start", ho.Label)
-		renderSummaryLine(summaryActionDashboard, "Dashboard", baseURL)
-		renderSummaryLine(summaryActionDocs, "Docs", docsURL)
-		renderSummaryLine(summaryActionIssues, "Report issue", issuesURL)
-		renderSummaryLine(summaryActionRepo, "Star", repoURL)
-		renderSummaryLine(summaryActionQuit, "Exit", "Bifrost CLI")
+		renderSummaryLine(summaryActionBack, "Back", "Ready")
 
 		if m.summaryEditing {
 			footer = hint.Render("editing  enter: save  esc: cancel")
 		} else {
-			footer = hint.Render("up/down: move  enter: select  shortcuts: u/v/h/m/d/r/i/s/q")
+			footer = hint.Render("up/down: move  enter: select  shortcuts: u/v/h/m/w/esc")
 		}
 	}
 
@@ -1007,6 +1264,33 @@ func maskVirtualKey(value string) string {
 	return string(runes[:2]) + strings.Repeat("*", len(runes)-5) + string(runes[len(runes)-3:])
 }
 
+func summaryVirtualKeyValue(value string, canSignIn bool) string {
+	value = strings.TrimSpace(value)
+	if value == "" && canSignIn {
+		return "Sign in with Bifrost"
+	}
+	return maskVirtualKey(value)
+}
+
+func authMethodOptions() []string {
+	return []string{"Sign in with Bifrost", "Add virtual key manually", "Change Base URL", "Exit Bifrost CLI"}
+}
+
+func virtualKeyOptionLabel(key VirtualKeyOption) string {
+	name := strings.TrimSpace(key.Name)
+	id := strings.TrimSpace(key.ID)
+	switch {
+	case name != "" && id != "":
+		return name + " (" + id + ")"
+	case name != "":
+		return name
+	case id != "":
+		return id
+	default:
+		return maskVirtualKey(key.Value)
+	}
+}
+
 // renderChooserPopup wraps chooser content in a bordered box so summary actions
 // can open as overlays instead of visually replacing the Ready screen.
 func renderChooserPopup(title, content string, width int) string {
@@ -1046,27 +1330,34 @@ func (m *chooserModel) notify(message string, isError bool) {
 // rendered, so arrow navigation follows the visible sequence.
 func (m chooserModel) summaryActions() []summaryAction {
 	ho := m.currentHarness()
+	if m.phase == phaseConfig {
+		actions := []summaryAction{
+			summaryActionBaseURL,
+			summaryActionHarness,
+		}
+		if ho.SupportsModelOverride {
+			actions = append(actions, summaryActionModel)
+		}
+		actions = append(actions, summaryActionVirtualKey)
+		if strings.TrimSpace(m.vkInput.Value()) != "" {
+			actions = append(actions, summaryActionSignOut)
+		}
+		if ho.SupportsWorktree {
+			actions = append(actions, summaryActionWorktree)
+		}
+		actions = append(actions, summaryActionBack)
+		return actions
+	}
+
 	actions := []summaryAction{
-		summaryActionBaseURL,
-		summaryActionHarness,
-	}
-	if ho.SupportsModelOverride {
-		actions = append(actions, summaryActionModel)
-	}
-	actions = append(actions,
-		summaryActionVirtualKey,
-	)
-	if ho.SupportsWorktree {
-		actions = append(actions, summaryActionWorktree)
-	}
-	actions = append(actions,
 		summaryActionLaunch,
+		summaryActionConfig,
 		summaryActionDashboard,
 		summaryActionDocs,
 		summaryActionIssues,
 		summaryActionRepo,
 		summaryActionQuit,
-	)
+	}
 	return actions
 }
 
@@ -1101,6 +1392,10 @@ func (m chooserModel) performSummaryAction(action summaryAction) (tea.Model, tea
 	case summaryActionLaunch:
 		m.done = true
 		return m, tea.Quit
+	case summaryActionConfig:
+		m.phase = phaseConfig
+		m.summaryIdx = 0
+		return m, nil
 	case summaryActionBaseURL:
 		m.summaryEditing = true
 		m.summaryEditAction = summaryActionBaseURL
@@ -1108,10 +1403,24 @@ func (m chooserModel) performSummaryAction(action summaryAction) (tea.Model, tea
 		m.baseInput.Focus()
 		return m, nil
 	case summaryActionVirtualKey:
-		m.summaryEditing = true
-		m.summaryEditAction = summaryActionVirtualKey
-		m.summaryEditOriginal = m.vkInput.Value()
-		m.vkInput.Focus()
+		m.phase = phaseAuthMethod
+		m.returnToSummary = true
+		return m, nil
+	case summaryActionSignOut:
+		m.vkInput.SetValue("")
+		m.phase = phaseAuthMethod
+		m.returnToSummary = true
+		if m.cfg.SignOut != nil {
+			if err := m.cfg.SignOut(); err != nil {
+				m.notify(err.Error(), true)
+				return m, nil
+			}
+		}
+		m.notify("signed out from CLI", false)
+		return m, nil
+	case summaryActionBack:
+		m.phase = phaseSummary
+		m.summaryIdx = m.summaryIndexForAction(summaryActionConfig)
 		return m, nil
 	case summaryActionWorktree:
 		if m.currentHarness().SupportsWorktree {
@@ -1434,5 +1743,20 @@ func (m chooserModel) fetchModelsCmd() tea.Cmd {
 		defer cancel()
 		models, err := fetch(ctx, baseURL, vk)
 		return modelsMsg{models: models, err: err}
+	}
+}
+
+// signInCmd returns a tea.Cmd that runs the browser-based Bifrost handover flow.
+func (m chooserModel) signInCmd() tea.Cmd {
+	baseURL := strings.TrimSpace(m.baseInput.Value())
+	signIn := m.cfg.SignIn
+	return func() tea.Msg {
+		if signIn == nil {
+			return signInMsg{err: fmt.Errorf("Bifrost sign in is not configured")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		keys, err := signIn(ctx, baseURL)
+		return signInMsg{keys: keys, err: err}
 	}
 }
