@@ -388,17 +388,53 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 
 	tokenHash := hashSHA256Hex(refreshToken)
 	rt, err := h.store.ConfigStore.GetOAuth2RefreshTokenByHash(ctx, tokenHash)
-	if err != nil || rt == nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "refresh token not found or revoked")
+	if errors.Is(err, configstore.ErrNotFound) {
+		// Token not found in the active set — check if it was previously issued
+		// and revoked. A revoked token being re-presented indicates the token
+		// family may be compromised (stolen token used before rotation). Revoke
+		// all active tokens in the family to limit the damage (RFC 9700 §2.2.2).
+		// Fail closed: if the lookup or the family revocation errors, surface
+		// server_error rather than reporting invalid_grant while leaving a
+		// potentially compromised family usable.
+		revoked, lookupErr := h.store.ConfigStore.GetOAuth2RefreshTokenByHashAny(ctx, tokenHash)
+		switch {
+		case lookupErr != nil && !errors.Is(lookupErr, configstore.ErrNotFound):
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to verify refresh token revocation state")
 			return
+		case revoked != nil:
+			if revokeErr := h.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, revoked.FamilyID); revokeErr != nil {
+				sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to revoke refresh token family")
+				return
+			}
 		}
+		// Unknown token or a revoked one we just contained — either way the grant
+		// is not usable.
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "refresh token not found or revoked")
+		return
+	}
+	if err != nil {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to look up refresh token")
 		return
 	}
 	if rt.ClientID != clientID {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "client_id mismatch")
 		return
+	}
+
+	// bf_sub liveness check: for VK-mode tokens, verify the VK still exists
+	// and is active. A deleted or disabled VK should not be able to silently
+	// obtain new access tokens via refresh. A transient lookup failure must stay
+	// retriable (server_error) — only a missing/inactive VK invalidates the grant.
+	if schemas.MCPAuthMode(rt.BfMode) == schemas.MCPAuthModeVK && h.store.ConfigStore != nil {
+		vk, vkErr := h.store.ConfigStore.GetVirtualKey(ctx, rt.BfSub)
+		if vkErr != nil && !errors.Is(vkErr, configstore.ErrNotFound) {
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to verify virtual key")
+			return
+		}
+		if errors.Is(vkErr, configstore.ErrNotFound) || vk == nil || !vk.IsActiveValue() {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "virtual key is no longer active")
+			return
+		}
 	}
 
 	// RFC 8707: resource (audience URI) is distinct from scope. When the client
