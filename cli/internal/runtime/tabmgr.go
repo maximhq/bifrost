@@ -557,6 +557,10 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 				continue
 			}
 
+			if tm.clearStickyErrorOnEscape(token) {
+				continue
+			}
+
 			// Mouse events must run before the scroll-mode catch-all so
 			// wheel notches reach handleWheelEvent instead of being
 			// swallowed by handleScrollKey as an unknown CSI sequence.
@@ -889,7 +893,8 @@ func parseCtrlDigit(seq []byte) int {
 	return -1
 }
 
-// isCtrlTab checks if a CSI sequence is Ctrl+Tab.
+// isCtrlTab checks if a CSI sequence is plain Ctrl+Tab. Ctrl+Shift+Tab is
+// distinct input for child CLIs such as Claude Code and must be forwarded.
 func isCtrlTab(seq []byte) bool {
 	if len(seq) < 4 || seq[0] != 0x1b || seq[1] != '[' {
 		return false
@@ -903,15 +908,19 @@ func isCtrlTab(seq []byte) bool {
 		if len(parts) < 2 || isReleaseEvent(parts[1]) {
 			return false
 		}
-		return parts[0] == "9" && modifierHasCtrl(parts[1])
+		return parts[0] == "9" && modifierIsCtrlOnly(parts[1])
 	case '~': // xterm: \x1b[27;5;9~
 		parts := strings.Split(body, ";")
 		if len(parts) < 3 || parts[0] != "27" || isReleaseEvent(parts[1]) {
 			return false
 		}
-		return parts[2] == "9" && modifierHasCtrl(parts[1])
+		return parts[2] == "9" && modifierIsCtrlOnly(parts[1])
 	}
 	return false
+}
+
+func modifierIsCtrlOnly(s string) bool {
+	return parseModifierValue(s) == 5
 }
 
 func modifierHasCtrl(s string) bool {
@@ -1030,9 +1039,12 @@ func decodeCSIu(seq []byte) []byte {
 
 	hasCtrl := ((mod - 1) & 4) != 0
 	hasAlt := ((mod - 1) & 2) != 0
+	hasShift := ((mod - 1) & 1) != 0
 
 	var ch []byte
 	switch {
+	case cp == '\t' && hasShift:
+		ch = []byte("\x1b[Z")
 	case hasCtrl && cp >= 'a' && cp <= 'z':
 		ch = []byte{byte(cp - 'a' + 1)}
 	case hasCtrl && cp >= 'A' && cp <= 'Z':
@@ -1403,6 +1415,17 @@ func (tm *TabManager) hasStickyErrorNotice() bool {
 	return tm.noticeText != "" && tm.noticeSticky && tm.noticeLevel == TabNoticeError
 }
 
+func (tm *TabManager) clearStickyErrorOnEscape(token []byte) bool {
+	if b, ok := decodeCommandByte(token); !ok || b != 0x1b {
+		return false
+	}
+	if !tm.hasStickyErrorNotice() {
+		return false
+	}
+	tm.clearNoticeAndStayInCommandMode()
+	return true
+}
+
 func (tm *TabManager) clearNoticeAndStayInCommandMode() {
 	hadNotice := tm.clearNotice()
 	if tm.hasTabs() {
@@ -1476,6 +1499,10 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 		}
 		tm.clearNoticeAndResume()
 	case b == 0x1b || b == prefix || b == tmuxSafePrefix:
+		if b == 0x1b && tm.hasStickyErrorNotice() {
+			tm.clearNoticeAndStayInCommandMode()
+			return nil
+		}
 		tm.mu.Lock()
 		if tm.quitConfirm {
 			tm.quitConfirm = false
@@ -1488,9 +1515,6 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 		}
 		tm.mu.Unlock()
 		if tm.hasStickyErrorNotice() {
-			if b == 0x1b {
-				tm.clearNoticeAndStayInCommandMode()
-			}
 			return nil
 		}
 		if !tm.hasTabs() {
