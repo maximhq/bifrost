@@ -2935,7 +2935,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -3004,7 +3004,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",

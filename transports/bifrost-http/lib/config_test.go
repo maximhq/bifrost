@@ -14447,7 +14447,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("NetworkConfig_GORMRoundTrip", func(t *testing.T) {
 		networkConfig := &schemas.NetworkConfig{
 			BaseURL:                        "https://api.custom.com",
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 		}
 
 		providerToSave := tables.TableProvider{
