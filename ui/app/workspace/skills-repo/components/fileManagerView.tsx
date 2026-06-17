@@ -30,6 +30,7 @@ import { Tree, type BaseNodeData, type TreeNode } from "@/components/ui/treeView
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { useUploadSkillFileMutation } from "@/lib/store/apis/skillsApi";
 import { SkillFileEntry } from "@/lib/types/skills";
+import { cn } from "@/lib/utils";
 import { validateFilePath, validateFilename, validateSkillFileSize, validateSourceType } from "@/lib/validators/skills";
 import {
 	AlertCircle,
@@ -46,9 +47,8 @@ import {
 	X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { formatFileSize } from "./helpers";
-import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { formatFileSize } from "./helpers";
 
 const FILE_SOURCE_OPTIONS = [
 	{ value: "text", label: "Via text", shortLabel: "Text" },
@@ -445,6 +445,8 @@ export function FileManagerSection({
 	bodySelected,
 	onSelectBody,
 	hasBodyError,
+	searchQuery: controlledSearchQuery,
+	onSearchChange,
 }: {
 	files: SkillFileEntry[];
 	onAddFile: (entry: SkillFileEntry) => void;
@@ -460,6 +462,10 @@ export function FileManagerSection({
 	onSelectBody?: () => void;
 	// When true, the SKILL.md label renders red to indicate missing body.
 	hasBodyError?: boolean;
+	// When provided, the search input is rendered by the parent and its value is
+	// controlled from there; the internal search bar is hidden.
+	searchQuery?: string;
+	onSearchChange?: (value: string) => void;
 }) {
 	const [uploadSkillFile] = useUploadSkillFileMutation();
 	const folderUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -476,7 +482,10 @@ export function FileManagerSection({
 	const [editingFileOriginal, setEditingFileOriginal] = useState<{
 		path: string;
 	} | null>(null);
-	const [searchQuery, setSearchQuery] = useState("");
+	const [internalSearchQuery, setInternalSearchQuery] = useState("");
+	const isSearchControlled = onSearchChange != null;
+	const searchQuery = isSearchControlled ? (controlledSearchQuery ?? "") : internalSearchQuery;
+	const setSearchQuery = isSearchControlled ? onSearchChange : setInternalSearchQuery;
 	const [addingFile, setAddingFile] = useState<{
 		folderPath: string;
 		sourceType: string;
@@ -505,6 +514,18 @@ export function FileManagerSection({
 		});
 	}, [files]);
 
+	// Expand all folders while searching so matching results stay visible.
+	useEffect(() => {
+		if (!searchQuery.trim()) return;
+		setExpandedNodes((prev) => {
+			const next: Record<string, boolean> = { ...prev, root: true };
+			folders.forEach((f) => {
+				next[f] = true;
+			});
+			return next;
+		});
+	}, [searchQuery, folders]);
+
 	const expandFolder = (folderPath: string) => {
 		const normalizedFolderPath = folderPath === "root" ? "" : folderPath;
 		const ancestors = normalizedFolderPath.split("/").filter(Boolean);
@@ -518,6 +539,23 @@ export function FileManagerSection({
 			return next;
 		});
 	};
+
+	// When selection is driven externally (e.g. a markdown link opens a file), the file
+	// can be buried in a collapsed folder. Expand its ancestors so the row is visible.
+	const selectedPath = selectedIndex != null ? files[selectedIndex]?.path : undefined;
+	useEffect(() => {
+		if (!selectedPath) return;
+		const ancestors = getFolderAncestors(selectedPath);
+		if (ancestors.length === 0) return;
+		setExpandedNodes((prev) => {
+			if (ancestors.every((folder) => prev[folder])) return prev;
+			const next: Record<string, boolean> = { ...prev, root: true };
+			ancestors.forEach((folder) => {
+				next[folder] = true;
+			});
+			return next;
+		});
+	}, [selectedPath]);
 
 	const isFolderUploading = folderUploadState !== null;
 
@@ -1066,11 +1104,11 @@ export function FileManagerSection({
 						onKeyDown={
 							!isRenaming && onSelectFile
 								? (e) => {
-										if (e.key === "Enter" || e.key === " ") {
-											e.preventDefault();
-											onSelectFile(index);
-										}
+									if (e.key === "Enter" || e.key === " ") {
+										e.preventDefault();
+										onSelectFile(index);
 									}
+								}
 								: undefined
 						}
 						role={!isRenaming && onSelectFile ? "button" : undefined}
@@ -1206,8 +1244,8 @@ export function FileManagerSection({
 		const folderMoveTargets = isRoot
 			? []
 			: availableFolderPaths.filter(
-					(folderPath) => folderPath !== item.path && !folderPath.startsWith(`${item.path}/`) && folderPath !== dirname(item.path),
-				);
+				(folderPath) => folderPath !== item.path && !folderPath.startsWith(`${item.path}/`) && folderPath !== dirname(item.path),
+			);
 
 		return (
 			<div
@@ -1423,33 +1461,24 @@ export function FileManagerSection({
 					{folderUploadError}
 				</div>
 			)}
-			<div className="mb-2">
-				<Input
-					value={searchQuery}
-					onChange={(e) => {
-						setSearchQuery(e.target.value);
-						if (e.target.value.trim()) {
-							// Expand all folders when searching so results are visible
-							setExpandedNodes((prev) => {
-								const next: Record<string, boolean> = { ...prev, root: true };
-								folders.forEach((f) => {
-									next[f] = true;
-								});
-								return next;
-							});
-						}
-					}}
-					placeholder="Search files..."
-					className="h-7 font-mono text-xs"
-					aria-label="Search files"
-				/>
-			</div>
-			<div className="min-w-max pr-2">
+			{!isSearchControlled && (
+				<div className="mb-2">
+					<Input
+						value={searchQuery}
+						onChange={(e) => setSearchQuery(e.target.value)}
+						placeholder="Search files..."
+						className="h-7 text-xs"
+						aria-label="Search files"
+					/>
+				</div>
+			)}
+			<div className="min-w-0 pr-2">
 				<Tree
 					data={treeData}
 					renderItem={renderItem}
 					indentSize={22}
 					levelsToExpandByDefault={1}
+					fitContainer
 					states={{ expandedNodes, setExpandedNodes }}
 				/>
 			</div>
