@@ -83,13 +83,13 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 
 export const DefaultNetworkConfig = {
 	base_url: "",
-	default_request_timeout_in_seconds: 30,
+	default_request_timeout_in_seconds: 300,
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
 	insecure_skip_verify: false,
 	ca_cert_pem: { value: "", env_var: "", from_env: false },
-	stream_idle_timeout_in_seconds: 60,
+	stream_idle_timeout_in_seconds: 120,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
 	allow_private_network: false,
