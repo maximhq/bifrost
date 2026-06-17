@@ -26,8 +26,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
-import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingEngineUsedLabels, Status } from "@/lib/constants/logs";
+import {
+	logAppDisplayName,
+	mapAppToClientApp,
+	mapUserAgentToApp,
+	RequestTypeColors,
+	RequestTypeLabels,
+	RoutingEngineUsedColors,
+	RoutingEngineUsedLabels,
+	Status,
+} from "@/lib/constants/logs";
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
@@ -35,7 +45,7 @@ import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -421,7 +431,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 										className={cn(
 											"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
 											RoutingEngineUsedColors[scope as keyof typeof RoutingEngineUsedColors] ??
-											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+												"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
 										)}
 									>
 										{RoutingEngineUsedLabels[scope as keyof typeof RoutingEngineUsedLabels] ?? scope}
@@ -536,24 +546,38 @@ export function LogDetailView({
 
 	const selectedPromptDisplayName = resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
+	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
+	const customAppIcons = useMemo(() => {
+		const icons: Record<string, string> = {};
+		for (const mapping of userAgentMappingsData?.mappings ?? []) {
+			if (mapping.app && mapping.logo && mapping.logo_mime) {
+				icons[mapping.app] = `data:${mapping.logo_mime};base64,${mapping.logo}`;
+			}
+		}
+		return icons;
+	}, [userAgentMappingsData?.mappings]);
+
 	const isContainer = isContainerOperation(log.object);
+	const detectedApp = log.app ? mapAppToClientApp(log.app) : log.user_agent ? mapUserAgentToApp(log.user_agent) : null;
+	const detectedAppIcon = log.app && detectedApp ? customAppIcons[log.app] || detectedApp.icon : detectedApp?.icon;
+	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const passthroughParams = isPassthrough
 		? (log.params as {
-			method?: string;
-			path?: string;
-			raw_query?: string;
-			status_code?: number;
-		})
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+			})
 		: null;
 
 	let toolsParameter = null;
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch { }
+		} catch {}
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -570,7 +594,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch { }
+		} catch {}
 		return 0;
 	})();
 
@@ -663,10 +687,7 @@ export function LogDetailView({
 									search={{ routing_rule_ids: [log.routing_rule.id] }}
 									data-testid="logdetails-header-routing-rule-link"
 								>
-									<Badge
-										variant="outline"
-										className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline"
-									>
+									<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline">
 										rule: {log.routing_rule.name}
 									</Badge>
 								</Link>
@@ -793,10 +814,11 @@ export function LogDetailView({
 						}
 						sub={
 							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-									: ""
-								}`
+								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
+										log.token_usage.completion_tokens_details?.reasoning_tokens
+											? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+											: ""
+									}`
 								: "—"
 						}
 						hasRightBorder
@@ -882,6 +904,28 @@ export function LogDetailView({
 							)}
 							{!isContainer && log.alias_model_family && (
 								<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
+							)}
+							{detectedApp && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="App"
+									value={
+										<div className="flex min-w-0 items-center gap-2" title={log.user_agent || undefined}>
+											{detectedAppIcon ? (
+												<img
+													className="rounded-sm"
+													src={detectedAppIcon}
+													alt={detectedAppLabel}
+													width={20}
+													height={20}
+													loading="lazy"
+													decoding="async"
+												/>
+											) : null}
+											<span className="truncate">{detectedAppLabel}</span>
+										</div>
+									}
+								/>
 							)}
 							<LogEntryDetailsView
 								className="w-full"
@@ -1098,7 +1142,10 @@ export function LogDetailView({
 											{log.routing_engines_used.map((engine) => (
 												<Badge
 													key={engine}
-													className={cn("border-0 py-1 uppercase", RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800")}
+													className={cn(
+														"border-0 py-1 uppercase",
+														RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800",
+													)}
 												>
 													<div className="flex items-center gap-2">
 														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.({ className: "h-3.5 w-3.5" })}
@@ -1732,11 +1779,11 @@ export function LogDetailView({
 							<div className="bg-card rounded-sm border p-5">
 								{(visibleRoles.size < allRoles.length
 									? log.input_history?.filter((m) => {
-										if (!m) return false;
-										const mainRole = ((m.role as string) || "user") as MessageRole;
-										const hasReasoning = !!extractChatReasoning(m);
-										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-									})
+											if (!m) return false;
+											const mainRole = ((m.role as string) || "user") as MessageRole;
+											const hasReasoning = !!extractChatReasoning(m);
+											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+										})
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;

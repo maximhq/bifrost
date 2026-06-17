@@ -20,6 +20,7 @@ const getValidatedStatus = (status: string): Status => {
 export const createMCPColumns = (
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>,
 	hasDeleteAccess: boolean,
+	customAppIcons: Record<string, string> = {},
 ): ColumnDef<MCPToolLogEntry>[] => [
 	{
 		accessorKey: "status",
@@ -77,9 +78,10 @@ export const createMCPColumns = (
 		size: 140,
 		cell: ({ row }) => {
 			const app = row.original.app ? mapAppToClientApp(row.original.app) : mapUserAgentToApp(row.original.user_agent);
+			const icon = row.original.app ? customAppIcons[row.original.app] || app.icon : app.icon;
 			return (
 				<div className="flex min-w-0 items-center gap-2" title={row.original.user_agent || undefined}>
-					{app.icon ? <img src={app.icon} alt={app.name} width={14} height={14} loading="lazy" decoding="async" /> : null}
+					{icon ? <img src={icon} alt={app.name} width={14} height={14} loading="lazy" decoding="async" /> : null}
 					<span className="truncate text-[12px]">{app.name}</span>
 				</div>
 			);

@@ -26,7 +26,7 @@ export default function FeatureFlagsView() {
 	}
 
 	return (
-		<div className="space-y-4 w-full">
+		<div className="w-full space-y-4">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Feature Flags</h2>
 				<p className="text-muted-foreground text-sm">
@@ -51,16 +51,11 @@ export default function FeatureFlagsView() {
 							{flags.length === 0 ? (
 								<TableRow data-testid="feature-flags-table-empty-state">
 									<TableCell colSpan={2} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">
-											No feature flags found. Flags are declared in code via{" "}
-											<code className="text-xs">featureflags.Register(...)</code>.
-										</span>
+										<span className="text-muted-foreground text-sm">No feature flags found.</span>
 									</TableCell>
 								</TableRow>
 							) : (
-								flags.map((flag) => (
-									<FeatureFlagRow key={flag.id} flag={flag} canUpdate={hasUpdateAccess} onToggle={handleToggle} />
-								))
+								flags.map((flag) => <FeatureFlagRow key={flag.id} flag={flag} canUpdate={hasUpdateAccess} onToggle={handleToggle} />)
 							)}
 						</TableBody>
 					</Table>
@@ -102,7 +97,7 @@ function FeatureFlagRow({ flag, canUpdate, onToggle }: FeatureFlagRowProps) {
 					)}
 				</div>
 			</TableCell>
-			<TableCell className="w-px align-top text-right">
+			<TableCell className="w-px text-right align-top">
 				<Switch
 					data-testid={`feature-flag-toggle-${flag.id}`}
 					size="md"
