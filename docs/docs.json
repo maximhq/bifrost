@@ -528,6 +528,7 @@
                 "icon": "file-code",
                 "pages": [
                   "deployment-guides/config-json",
+                  "deployment-guides/config-json/source-of-truth",
                   "deployment-guides/config-json/schema-reference",
                   "deployment-guides/config-json/client",
                   "deployment-guides/config-json/providers",
