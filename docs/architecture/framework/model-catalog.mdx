@@ -289,7 +289,8 @@ providers := modelCatalog.GetProvidersForModel("claude-3-5-sonnet")
 Validate if a model is allowed for a specific provider based on an allowed models list. This method is used internally by governance and load balancing plugins.
 
 ```go
-// ["*"] wildcard - uses catalog to determine support
+// ["*"] wildcard on a native provider - uses catalog to determine support
+// (custom providers allow any model with a wildcard)
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenRouter,
     "gpt-4o",
@@ -316,7 +317,7 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 
 **Behavior**:
 
-- **`["*"]` wildcard**: Delegates to `GetProvidersForModel` (includes cross-provider logic) - this is the "allow all via catalog" mode
+- **`["*"]` wildcard**: For **custom** (OpenAI-compatible) providers, allows any model unconditionally — the catalog can't enumerate a custom backend's models. For **native** providers, delegates to `GetProvidersForModel` (includes cross-provider logic) so a wildcard still only permits models the catalog knows the provider serves.
 - **Non-empty explicit list**: Checks for both direct matches and provider-prefixed entries
 - **Empty slice (`[]string{}` / empty `schemas.WhiteList`)**: Returns `false` (deny-all) - mirrors the config deny-by-default semantics
 
