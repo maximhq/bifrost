@@ -835,7 +835,7 @@ func TestCreateVirtualKey(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-test",
 		Name:     "Test Virtual Key",
-		Value:    "vk-test-value-123",
+		Value:    *schemas.NewSecretVar("vk-test-value-123"),
 		IsActive: schemas.Ptr(true),
 	}
 
@@ -846,7 +846,7 @@ func TestCreateVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "vk-test", result.ID)
 	assert.Equal(t, "Test Virtual Key", result.Name)
-	assert.Equal(t, "vk-test-value-123", result.Value)
+	assert.Equal(t, "vk-test-value-123", result.Value.GetValue())
 	assert.True(t, result.IsActiveValue())
 }
 
@@ -880,7 +880,7 @@ func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:          vkID,
 		Name:        "VK With References",
-		Value:       "vk-refs-value",
+		Value:       *schemas.NewSecretVar("vk-refs-value"),
 		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
@@ -908,7 +908,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 	vk1 := &tables.TableVirtualKey{
 		ID:       "vk-1",
 		Name:     "Same Name",
-		Value:    "vk-value-1",
+		Value:    *schemas.NewSecretVar("vk-value-1"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk1)
@@ -917,7 +917,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 	vk2 := &tables.TableVirtualKey{
 		ID:       "vk-2",
 		Name:     "Same Name", // Duplicate name
-		Value:    "vk-value-2",
+		Value:    *schemas.NewSecretVar("vk-value-2"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk2)
@@ -931,7 +931,7 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-lookup",
 		Name:     "Lookup Key",
-		Value:    "vk-unique-value-xyz",
+		Value:    *schemas.NewSecretVar("vk-unique-value-xyz"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -949,7 +949,7 @@ func TestUpdateVirtualKey(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-update",
 		Name:     "Original Name",
-		Value:    "vk-update-value",
+		Value:    *schemas.NewSecretVar("vk-update-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -974,7 +974,7 @@ func TestDeleteVirtualKey(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-delete",
 		Name:     "Delete Me",
-		Value:    "vk-delete-value",
+		Value:    *schemas.NewSecretVar("vk-delete-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -994,7 +994,7 @@ func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-scoped",
 		Name:     "Scoped VK",
-		Value:    "vk-scoped-value",
+		Value:    *schemas.NewSecretVar("vk-scoped-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	require.NoError(t, store.CreateVirtualKey(ctx, vk))
@@ -1048,7 +1048,7 @@ func TestDeleteVirtualKey_CleansUpMultiBudgetScopedModelConfigs(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-multibudget",
 		Name:     "MultiBudget VK",
-		Value:    "vk-multibudget-value",
+		Value:    *schemas.NewSecretVar("vk-multibudget-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	require.NoError(t, store.CreateVirtualKey(ctx, vk))
@@ -1171,7 +1171,7 @@ func TestCreateVirtualKeyProviderConfig(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-for-pc",
 		Name:     "VK For Provider Config",
-		Value:    "vk-pc-value",
+		Value:    *schemas.NewSecretVar("vk-pc-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -1214,7 +1214,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-with-keys",
 		Name:     "VK With Keys",
-		Value:    "vk-keys-value",
+		Value:    *schemas.NewSecretVar("vk-keys-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
@@ -1254,7 +1254,7 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-unresolved",
 		Name:     "VK Unresolved",
-		Value:    "vk-unresolved-value",
+		Value:    *schemas.NewSecretVar("vk-unresolved-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -1296,7 +1296,7 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-update-provider-cleanup",
 		Name:     "VK Update Provider Cleanup",
-		Value:    "vk-update-provider-cleanup-value",
+		Value:    *schemas.NewSecretVar("vk-update-provider-cleanup-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
@@ -1345,7 +1345,7 @@ func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-delete-provider-cleanup",
 		Name:     "VK Delete Provider Cleanup",
-		Value:    "vk-delete-provider-cleanup-value",
+		Value:    *schemas.NewSecretVar("vk-delete-provider-cleanup-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
@@ -1741,7 +1741,7 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:          integrationVKID,
 		Name:        "Integration Virtual Key",
-		Value:       "vk-integration-xyz",
+		Value:       *schemas.NewSecretVar("vk-integration-xyz"),
 		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
@@ -1792,7 +1792,7 @@ func TestGetVirtualKeysUsesInternalPagination(t *testing.T) {
 		vk := &tables.TableVirtualKey{
 			ID:        fmt.Sprintf("vk-page-%04d", i),
 			Name:      fmt.Sprintf("Virtual Key %04d", i),
-			Value:     fmt.Sprintf("vk-value-%04d", i),
+			Value:     *schemas.NewSecretVar(fmt.Sprintf("vk-value-%04d", i)),
 			IsActive:  schemas.Ptr(true),
 			CreatedAt: createdAt,
 			UpdatedAt: createdAt,

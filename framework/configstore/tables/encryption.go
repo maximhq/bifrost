@@ -10,8 +10,6 @@ const (
 	EncryptionStatusPlainText = "plain_text"
 	// EncryptionStatusEncrypted indicates the row's sensitive fields have been encrypted.
 	EncryptionStatusEncrypted = "encrypted"
-	// EncryptionStatusVault indicates the row's sensitive fields are stored as vault references.
-	EncryptionStatusVault = "vault"
 )
 
 // encryptSecretVar encrypts the Val field of an SecretVar in place using AES-256-GCM.

@@ -1342,7 +1342,7 @@ func TestEncryptPlaintextRows_SkipsAlreadyEncryptedVirtualKeys(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-already-enc",
 		Name:     "already-encrypted-vk",
-		Value:    "vk-secret-already",
+		Value:    *schemas.NewSecretVar("vk-secret-already"),
 		IsActive: bifrost.Ptr(true),
 	}
 	require.NoError(t, db.Create(vk).Error)

@@ -586,8 +586,8 @@ func restoreRedactedFromExisting(incoming, existing map[string]any) map[string]a
 func restoreRedactedValue(incoming, existing any) any {
 	switch val := incoming.(type) {
 	case map[string]any:
-		if isEnvVarObject(val) {
-			if schemas.NewEnvVar(marshalEnvVarObject(val)).ShouldPreserveStored() && existing != nil {
+		if isSecretVarObject(val) {
+			if schemas.NewSecretVar(marshalSecretVarObject(val)).ShouldPreserveStored() && existing != nil {
 				return existing
 			}
 			return val
@@ -617,8 +617,8 @@ func restoreRedactedValue(incoming, existing any) any {
 		// is a redaction artifact and not an intentional env reference. Empty strings are
 		// left as-is so clearing a value works.
 		if existingStr, ok := existing.(string); ok {
-			envVal := schemas.NewEnvVar(val)
-			if !envVal.IsFromEnv() && envVal.IsRedacted() {
+			secretVal := schemas.NewSecretVar(val)
+			if !secretVal.IsFromEnv() && !secretVal.IsFromVault() && secretVal.IsRedacted() {
 				return existingStr
 			}
 		}

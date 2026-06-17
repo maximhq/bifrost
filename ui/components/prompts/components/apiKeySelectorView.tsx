@@ -9,7 +9,7 @@ import {
 	ComboboxSeparator,
 } from "@/components/ui/combobox";
 import { Label } from "@/components/ui/label";
-import type { DBKey, VirtualKey } from "@/lib/types/governance";
+import { resolveVirtualKeyValue, type DBKey, type VirtualKey } from "@/lib/types/governance";
 import { useCallback, useMemo, useState } from "react";
 
 export function ApiKeySelectorView({
@@ -31,7 +31,7 @@ export function ApiKeySelectorView({
 
 	const allOptions = useMemo(() => {
 		const apiKeyOpts = providerKeys.map((k) => ({ label: k.name, value: k.key_id, group: "api" as const }));
-		const vkOpts = virtualKeys.map((vk) => ({ label: vk.name, value: vk.value, group: "virtual" as const }));
+		const vkOpts = virtualKeys.map((vk) => ({ label: vk.name, value: resolveVirtualKeyValue(vk.value), group: "virtual" as const }));
 		return [{ label: "Auto (default)", value: "__auto__", group: "api" as const }, ...apiKeyOpts, ...vkOpts];
 	}, [providerKeys, virtualKeys]);
 
