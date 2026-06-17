@@ -578,6 +578,7 @@ func TestConvertTraceToResourceSpan_OpenInferenceTool(t *testing.T) {
 		schemas.AttrBifrostMCPRequestType:  "chat_tool_call",
 		schemas.AttrBifrostMCPToolName:     "weather",
 		schemas.AttrBifrostToolDescription: "Get weather",
+		schemas.AttrBifrostToolDefinitions: `[{"type":"function","name":"weather","description":"Get weather","parameters":{"type":"object"}}]`,
 		schemas.AttrBifrostToolJSONSchema:  `{"type":"function","function":{"name":"weather"}}`,
 		schemas.AttrBifrostToolParameters:  `{"type":"object","properties":{"city":{"type":"string"}}}`,
 	}
