@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -362,6 +363,41 @@ func TestInitMultiProfileValidation(t *testing.T) {
 	t.Cleanup(func() { _ = plugin.Cleanup() })
 	if len(plugin.targets) != 2 {
 		t.Errorf("targets len = %d, want 2", len(plugin.targets))
+	}
+}
+
+func TestInitRejectsEmptyResourceAttributeKey(t *testing.T) {
+	raw := `{"profiles": [
+		{
+			"collector_url": "a:4317",
+			"trace_type": "genai_extension",
+			"protocol": "grpc",
+			"resource_attributes": {"   ": "staging"}
+		}
+	]}`
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	_, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+	if err == nil {
+		t.Fatal("expected invalid resource attribute key error")
+	}
+	if !strings.Contains(err.Error(), "profile 0: resource attribute key cannot be empty") {
+		t.Fatalf("error = %q, want empty resource attribute key", err)
+	}
+}
+
+func TestProfileMetricResourceAttributesRejectsEmptyKey(t *testing.T) {
+	_, err := profileMetricResourceAttributes(&Profile{
+		ResourceAttributes: map[string]string{"\t": "staging"},
+	})
+	if err == nil {
+		t.Fatal("expected invalid metric resource attribute key error")
+	}
+	if !strings.Contains(err.Error(), "metric resource attribute key cannot be empty") {
+		t.Fatalf("error = %q, want empty metric resource attribute key", err)
 	}
 }
 

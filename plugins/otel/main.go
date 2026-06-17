@@ -312,9 +312,9 @@ func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
 	return v.Redacted()
 }
 
-func profileResourceAttributes(profile *Profile) []*commonpb.KeyValue {
+func profileResourceAttributes(profile *Profile) ([]*commonpb.KeyValue, error) {
 	if profile == nil {
-		return nil
+		return nil, nil
 	}
 	attrs := make([]*commonpb.KeyValue, 0, len(profile.ResourceAttributes)+1)
 	keys := make([]string, 0, len(profile.ResourceAttributes))
@@ -325,16 +325,16 @@ func profileResourceAttributes(profile *Profile) []*commonpb.KeyValue {
 	for _, k := range keys {
 		key := strings.TrimSpace(k)
 		if key == "" {
-			continue
+			return nil, fmt.Errorf("resource attribute key cannot be empty")
 		}
 		attrs = append(attrs, kvStr(key, profile.ResourceAttributes[k]))
 	}
-	return attrs
+	return attrs, nil
 }
 
-func profileMetricResourceAttributes(profile *Profile) []attribute.KeyValue {
+func profileMetricResourceAttributes(profile *Profile) ([]attribute.KeyValue, error) {
 	if profile == nil {
-		return nil
+		return nil, nil
 	}
 	attrs := make([]attribute.KeyValue, 0, len(profile.ResourceAttributes)+1)
 	keys := make([]string, 0, len(profile.ResourceAttributes))
@@ -345,11 +345,11 @@ func profileMetricResourceAttributes(profile *Profile) []attribute.KeyValue {
 	for _, k := range keys {
 		key := strings.TrimSpace(k)
 		if key == "" {
-			continue
+			return nil, fmt.Errorf("metric resource attribute key cannot be empty")
 		}
 		attrs = append(attrs, attribute.String(key, profile.ResourceAttributes[k]))
 	}
-	return attrs
+	return attrs, nil
 }
 
 // otelTarget is the runtime state for a single configured profile: one trace client
@@ -480,16 +480,19 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	url := profile.CollectorURL.GetValue()
+	resourceAttributes, err := profileResourceAttributes(profile)
+	if err != nil {
+		return nil, fmt.Errorf("profile %d: %w", index, err)
+	}
 	target := &otelTarget{
 		serviceName:           serviceName,
 		url:                   url,
 		traceType:             profile.TraceType,
 		requestHeaders:        slices.Clone(profile.RequestHeaders),
 		disableContentLogging: profile.DisableContentLogging,
-		resourceAttributes:    profileResourceAttributes(profile),
+		resourceAttributes:    resourceAttributes,
 	}
 
-	var err error
 	switch profile.Protocol {
 	case ProtocolGRPC:
 		target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
@@ -515,6 +518,11 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			target.client.Close()
 			return nil, fmt.Errorf("profile %d: metrics_push_interval must be between 1 and 300 seconds, got %d", index, pushInterval)
 		}
+		metricResourceAttributes, err := profileMetricResourceAttributes(profile)
+		if err != nil {
+			target.client.Close()
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
 		metricsConfig := &MetricsConfig{
 			ServiceName:        serviceName,
 			Endpoint:           profile.MetricsEndpoint.GetValue(),
@@ -523,7 +531,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			TLSCACert:          profile.TLSCACert,
 			Insecure:           profile.Insecure,
 			PushInterval:       pushInterval,
-			ResourceAttributes: profileMetricResourceAttributes(profile),
+			ResourceAttributes: metricResourceAttributes,
 		}
 		target.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
 		if err != nil {
