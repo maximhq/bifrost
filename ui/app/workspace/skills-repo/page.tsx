@@ -1,6 +1,6 @@
 "use client";
 
-import { useQueryStates, parseAsBoolean, parseAsString } from "nuqs";
+import { parseAsBoolean, parseAsString, useQueryStates } from "nuqs";
 import { SkillCreateView } from "./components/skillCreatorView";
 import { SkillDetailView } from "./components/skillDetailsView";
 import { SkillsListView } from "./components/skillListView";
@@ -50,7 +50,7 @@ export default function SkillsRepoPage() {
 
 	// List view
 	return (
-		<div className="no-padding-parent flex w-full flex-col p-4">
+		<div className="no-padding-parent flex w-full flex-col p-4 h-[calc(100dvh_-_16px)]">
 			<SkillsListView onSelectSkill={handleSelectSkill} onCreateNew={() => setUrlState({ create: true, skillId: null, edit: false })} />
 		</div>
 	);
