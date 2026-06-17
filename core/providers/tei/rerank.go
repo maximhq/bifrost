@@ -24,6 +24,9 @@ func ToTEIRerankRequest(bifrostReq *schemas.BifrostRerankRequest) *teiRerankRequ
 	}
 
 	if bifrostReq.Params != nil {
+		teiReq.TopN = bifrostReq.Params.TopN
+		teiReq.MaxTokensPerDoc = bifrostReq.Params.MaxTokensPerDoc
+		teiReq.Priority = bifrostReq.Params.Priority
 		teiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		if bifrostReq.Params.ReturnDocuments != nil {
 			teiReq.ReturnText = bifrostReq.Params.ReturnDocuments
@@ -34,7 +37,7 @@ func ToTEIRerankRequest(bifrostReq *schemas.BifrostRerankRequest) *teiRerankRequ
 }
 
 // ToBifrostRerankResponse converts a TEI rerank response payload to Bifrost format.
-func ToBifrostRerankResponse(ranks []teiRank, documents []schemas.RerankDocument, returnDocuments bool) (*schemas.BifrostRerankResponse, error) {
+func ToBifrostRerankResponse(ranks []teiRank, documents []schemas.RerankDocument, returnDocuments bool, topN *int) (*schemas.BifrostRerankResponse, error) {
 	seenIndices := make(map[int]struct{}, len(ranks))
 	response := &schemas.BifrostRerankResponse{
 		Results: make([]schemas.RerankResult, 0, len(ranks)),
@@ -70,6 +73,10 @@ func ToBifrostRerankResponse(ranks []teiRank, documents []schemas.RerankDocument
 		}
 		return response.Results[i].RelevanceScore > response.Results[j].RelevanceScore
 	})
+
+	if topN != nil && *topN >= 0 && *topN < len(response.Results) {
+		response.Results = response.Results[:*topN]
+	}
 
 	return response, nil
 }

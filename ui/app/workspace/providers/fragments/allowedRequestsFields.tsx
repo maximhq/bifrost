@@ -53,6 +53,7 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		embedding: "/v2/embed",
 	},
 	tei: {
+		embedding: "/v1/embeddings",
 		rerank: "/rerank",
 	},
 };

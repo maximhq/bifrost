@@ -61,12 +61,7 @@ func (provider *TEIProvider) GetProviderKey() schemas.ModelProvider {
 // Rerank performs a rerank request using TEI's /rerank API.
 func (provider *TEIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToTEIRerankRequest(request), nil
-		})
+	jsonData, bifrostErr := buildTEIRerankRequestBody(ctx, request)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -77,15 +72,13 @@ func (provider *TEIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/rerank"))
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/rerank", schemas.RerankRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.TEI) {
-		req.SetBody(jsonData)
-	}
+	req.SetBody(jsonData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
@@ -114,7 +107,11 @@ func (provider *TEIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key
 	}
 
 	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
-	bifrostResponse, err := ToBifrostRerankResponse(teiResponse, request.Documents, returnDocuments)
+	var topN *int
+	if request.Params != nil {
+		topN = request.Params.TopN
+	}
+	bifrostResponse, err := ToBifrostRerankResponse(teiResponse, request.Documents, returnDocuments, topN)
 	if err != nil {
 		return nil, teiProviderResponseError("error converting rerank response", err, jsonData, body, sendBackRawRequest, sendBackRawResponse, ctx)
 	}
@@ -129,6 +126,47 @@ func (provider *TEIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key
 	}
 
 	return bifrostResponse, nil
+}
+
+func (provider *TEIProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
+}
+
+func buildTEIRerankRequestBody(ctx *schemas.BifrostContext, request *schemas.BifrostRerankRequest) ([]byte, *schemas.BifrostError) {
+	if !providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return ToTEIRerankRequest(request), nil
+			})
+	}
+
+	convertedBody := ToTEIRerankRequest(request)
+	if convertedBody == nil {
+		return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
+	}
+
+	jsonBody, err := providerUtils.MarshalSortedIndent(convertedBody, "", "  ")
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
+	if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		extraParams := convertedBody.GetExtraParams()
+		if len(extraParams) > 0 {
+			jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+			}
+		}
+	}
+
+	return jsonBody, nil
 }
 
 func parseTEIError(resp *fasthttp.Response) *schemas.BifrostError {

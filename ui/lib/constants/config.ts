@@ -50,7 +50,7 @@ export const ModelPlaceholders = {
 	xai: "e.g. grok-4-0709, grok-3-mini, grok-3, grok-2-vision-1212",
 	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
 	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
-	tei: "e.g. BAAI/bge-reranker-v2-m3",
+	tei: "e.g. Qwen/Qwen3-Embedding-0.6B, BAAI/bge-reranker-v2-m3",
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
@@ -205,7 +205,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"responses_stream",
 		"embedding",
 	],
-	tei: ["rerank"],
+	tei: ["embedding", "rerank"],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";

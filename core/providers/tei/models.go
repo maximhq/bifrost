@@ -4,6 +4,9 @@ package tei
 type teiRerankRequest struct {
 	Query               string                 `json:"query"`
 	Texts               []string               `json:"texts"`
+	TopN                *int                   `json:"top_n,omitempty"`
+	MaxTokensPerDoc     *int                   `json:"max_tokens_per_doc,omitempty"`
+	Priority            *int                   `json:"priority,omitempty"`
 	Truncate            *bool                  `json:"truncate,omitempty"`
 	TruncationDirection *string                `json:"truncation_direction,omitempty"`
 	RawScores           *bool                  `json:"raw_scores,omitempty"`
