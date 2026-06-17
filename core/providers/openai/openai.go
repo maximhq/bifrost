@@ -6984,6 +6984,7 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", request.ContainerID, request.FileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileDeleteRequest))
 		req.Header.SetMethod(http.MethodDelete)
+		req.Header.SetContentType("application/json")
 
 		if key.Value.GetValue() != "" {
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
