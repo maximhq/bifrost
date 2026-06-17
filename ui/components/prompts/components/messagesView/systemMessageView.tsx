@@ -1,12 +1,14 @@
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { RichTextarea } from "@/components/ui/custom/richTextarea";
-import { Markdown } from "@/components/ui/markdown";
 import { Message, SerializedMessage } from "@/lib/message";
 import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 import { isJson } from "@/lib/utils/validation";
 import { PencilIcon, XIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
+
+const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
 
 /**
  * Renders an editable system message block that supports role switching, rich-text editing, JSON editing with buffered changes, Jinja variable highlighting, and optional removal.

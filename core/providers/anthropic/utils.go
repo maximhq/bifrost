@@ -1105,6 +1105,12 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
 		}
 	}
+	// Check for cache diagnostics (diagnostics opt-in present)
+	if req.Diagnostics != nil {
+		if !hasProvider || features.Diagnostics {
+			headers = appendUniqueHeader(headers, AnthropicCacheDiagnosisBetaHeader)
+		}
+	}
 	// Check for cache control with scope in system message (only if not already found)
 	if !hasCachingScope && req.System != nil && req.System.ContentBlocks != nil {
 		for _, block := range req.System.ContentBlocks {
@@ -1184,6 +1190,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicTaskBudgetsBetaHeaderPrefix,
 	AnthropicEagerInputStreamingBetaHeaderPrefix,
 	AnthropicAdvisorBetaHeaderPrefix,
+	AnthropicCacheDiagnosisBetaHeaderPrefix,
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -1501,6 +1508,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
 	AnthropicAdvisorBetaHeaderPrefix:             func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
+	AnthropicCacheDiagnosisBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.Diagnostics },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

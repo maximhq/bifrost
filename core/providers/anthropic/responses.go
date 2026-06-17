@@ -298,6 +298,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				if state.Model != nil {
 					response.Model = *state.Model
 				}
+				// Forward cache diagnostics from message_start (cache-diagnosis-2026-04-07).
+				if chunk.Message.Diagnostics != nil {
+					response.Diagnostics = chunk.Message.Diagnostics
+				}
 				// Forward input usage from message_start so clients see cache metrics early
 				if chunk.Message.Usage != nil {
 					response.Usage = &schemas.ResponsesResponseUsage{
@@ -1649,6 +1653,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			} else if bifrostResp.ExtraFields.OriginalModelRequested != "" {
 				streamMessage.Model = bifrostResp.ExtraFields.OriginalModelRequested
 			}
+			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
+			if bifrostResp.Response.Diagnostics != nil {
+				streamMessage.Diagnostics = bifrostResp.Response.Diagnostics
+			}
 			streamResp.Message = streamMessage
 		}
 	case schemas.ResponsesStreamResponseTypeInProgress:
@@ -2433,6 +2441,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if req.CacheControl != nil {
 		params.ExtraParams["cache_control"] = req.CacheControl
 	}
+	if req.Diagnostics != nil {
+		params.ExtraParams["diagnostics"] = req.Diagnostics
+	}
 	if req.TopK != nil {
 		params.ExtraParams["top_k"] = *req.TopK
 	}
@@ -2790,6 +2801,28 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					delete(anthropicReq.ExtraParams, "cache_control")
 				}
 			}
+			if diagnosticsRaw, exists := anthropicReq.ExtraParams["diagnostics"]; exists {
+				parsed := false
+				switch v := diagnosticsRaw.(type) {
+				case *AnthropicDiagnostics:
+					anthropicReq.Diagnostics = v
+					parsed = true
+				case AnthropicDiagnostics:
+					anthropicReq.Diagnostics = &v
+					parsed = true
+				default:
+					if data, err := providerUtils.MarshalSorted(v); err == nil {
+						var d AnthropicDiagnostics
+						if sonic.Unmarshal(data, &d) == nil {
+							anthropicReq.Diagnostics = &d
+							parsed = true
+						}
+					}
+				}
+				if parsed {
+					delete(anthropicReq.ExtraParams, "diagnostics")
+				}
+			}
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
@@ -3075,6 +3108,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		bifrostResp.Speed = response.Usage.Speed
 	}
 
+	// Forward cache diagnostics (cache-diagnosis-2026-04-07) to the client.
+	if response.Diagnostics != nil {
+		bifrostResp.Diagnostics = response.Diagnostics
+	}
+
 	return bifrostResp
 }
 
@@ -3142,6 +3180,10 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 			anthropicResp.Usage = &AnthropicUsage{}
 		}
 		anthropicResp.Usage.Speed = bifrostResp.Speed
+	}
+
+	if bifrostResp.Diagnostics != nil {
+		anthropicResp.Diagnostics = bifrostResp.Diagnostics
 	}
 
 	return anthropicResp
