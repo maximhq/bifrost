@@ -92,6 +92,34 @@ func TestBudgetResolver_EvaluateRequest_ProviderBlocked(t *testing.T) {
 	assertVirtualKeyFound(t, result)
 }
 
+// TestBudgetResolver_EvaluateRequest_ListModelsBypassesProviderBlock verifies that a VK
+// with a restricted provider allowlist does NOT block a ListModelsRequest for a provider
+// outside its allowlist. List-models fans out across all configured providers and is
+// filtered per-VK in the PostHook, so provider gating must be skipped here (resolver.go:275).
+func TestBudgetResolver_EvaluateRequest_ListModelsBypassesProviderBlock(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Same Anthropic-only VK as TestBudgetResolver_EvaluateRequest_ProviderBlocked.
+	providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"claude-3-sonnet"}),
+	}
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	// OpenAI is not in the allowlist, but ListModelsRequest must not be provider-blocked.
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ListModelsRequest, false)
+
+	assert.NotEqual(t, DecisionProviderBlocked, result.Decision, "ListModelsRequest must bypass provider allowlist gating")
+	assertDecision(t, DecisionAllow, result)
+}
+
 // TestBudgetResolver_EvaluateRequest_ModelBlocked tests model filtering
 func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 	logger := NewMockLogger()
