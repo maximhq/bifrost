@@ -206,10 +206,14 @@ func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
 
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type TableVirtualKey struct {
-	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
-	Description     string                          `gorm:"type:text" json:"description,omitempty"`
-	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`           // The virtual key value
+	ID          string `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Name        string `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
+	Description string `gorm:"type:text" json:"description,omitempty"`
+	// Value is the virtual key value. Like TableKey.Value it is a SecretVar so it can be sourced
+	// from an env var ("env.X") or vault ("vault.X"); the reference is stored in the value column and
+	// resolved on read. ValueHash (below) is computed from the RESOLVED value so the x-bf-vk lookup
+	// and the governance in-memory keying match the plaintext the client presents.
+	Value           schemas.SecretVar               `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
 	IsActive        *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
@@ -243,6 +247,15 @@ type TableVirtualKey struct {
 // TableName sets the table name for each model
 func (TableVirtualKey) TableName() string { return "governance_virtual_keys" }
 
+// VaultPathKey implements schemas.VaultPathKeyer so the vault store/remove can compute the vault
+// base path for this model's value.
+func (vk *TableVirtualKey) VaultPathKey() string { return vk.ID }
+
+// VaultStoreSelfManaged marks TableVirtualKey as storing its own vault secret from within
+// BeforeSave, so the global vault callback skips it. BeforeSave must hash the RESOLVED value
+// before the vault store rewrites Value to a vault ref; that ordering is only reachable in the hook.
+func (vk *TableVirtualKey) VaultStoreSelfManaged() {}
+
 // IsActiveValue returns the effective IsActive bool, treating nil as true (DB default).
 func (vk *TableVirtualKey) IsActiveValue() bool {
 	if vk == nil {
@@ -263,12 +276,23 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 		return fmt.Errorf("virtual key cannot belong to both team and customer")
 	}
 
-	// Hash must be computed before encryption (from plaintext value)
-	if vk.Value != "" {
-		vk.ValueHash = encrypt.HashSHA256(vk.Value)
+	// Hash must be computed from the RESOLVED value (not the env/vault reference) so the x-bf-vk
+	// lookup and the governance in-memory keying match the plaintext the client presents.
+	if resolved := vk.Value.GetValue(); resolved != "" {
+		vk.ValueHash = encrypt.HashSHA256(resolved)
 	}
-	if encrypt.IsEnabled() && vk.Value != "" {
-		if err := encryptString(&vk.Value); err != nil {
+
+	// Store a plaintext-vault-sourced value into the vault and rewrite it to a vault ref before
+	// encryption, mirroring TableKey.BeforeSave. encryptSecretVar skips env/vault references.
+	if schemas.VaultStoreWriteEnabled() {
+		base := schemas.VaultBasePath(tx.Statement.Table, vk.ID)
+		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context, base, vk); err != nil {
+			return fmt.Errorf("failed to store virtual key secret to vault: %w", err)
+		}
+	}
+
+	if encrypt.IsEnabled() {
+		if err := encryptSecretVar(&vk.Value); err != nil {
 			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
 		}
 		vk.EncryptionStatus = EncryptionStatusEncrypted
@@ -284,7 +308,7 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 	switch vk.EncryptionStatus {
 	case EncryptionStatusEncrypted:
-		if err := decryptString(&vk.Value); err != nil {
+		if err := decryptSecretVar(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
 		}
 	}

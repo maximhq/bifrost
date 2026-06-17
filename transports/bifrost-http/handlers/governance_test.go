@@ -1040,7 +1040,7 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 			"vk-1": {
 				ID:          "vk-1",
 				Name:        "Production",
-				Value:       "sk-bf-old",
+				Value:       *schemas.NewSecretVar("sk-bf-old"),
 				Description: "existing description",
 				TeamID:      &teamID,
 				RateLimitID: &rateLimitID,
@@ -1076,11 +1076,11 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	}
 
 	updated := store.virtualKeys["vk-1"]
-	if updated.Value == "sk-bf-old" {
+	if updated.Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected virtual key value to rotate")
 	}
-	if !strings.HasPrefix(updated.Value, governance.VirtualKeyPrefix) {
-		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value)
+	if !strings.HasPrefix(updated.Value.GetValue(), governance.VirtualKeyPrefix) {
+		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value.GetValue())
 	}
 	if updated.ID != "vk-1" || updated.Name != "Production" || updated.Description != "existing description" {
 		t.Fatalf("rotation changed non-value fields: %#v", updated)
@@ -1105,8 +1105,8 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
-	if resp.VirtualKey.Value != updated.Value {
-		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value, updated.Value)
+	if resp.VirtualKey.Value.GetValue() != updated.Value.GetValue() {
+		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value.GetValue(), updated.Value.GetValue())
 	}
 }
 
@@ -1138,7 +1138,7 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 		updateErr: errors.New("database unavailable"),
 	}
@@ -1153,8 +1153,8 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 	if ctx.Response.StatusCode() != 500 {
 		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if store.virtualKeys["vk-1"].Value != "sk-bf-old" {
-		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value)
+	if store.virtualKeys["vk-1"].Value.GetValue() != "sk-bf-old" {
+		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value.GetValue())
 	}
 	if len(manager.reloadIDs) != 0 {
 		t.Fatalf("expected no reloads, got %#v", manager.reloadIDs)
@@ -1166,7 +1166,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store, reloadErr: errors.New("reload failed")}
@@ -1183,7 +1183,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 	if store.updates != 1 {
 		t.Fatalf("expected one update, got %d", store.updates)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected value to rotate before reload failure")
 	}
 	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
@@ -1199,8 +1199,8 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1220,7 +1220,7 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 	if len(manager.reloadIDs) != 2 || manager.reloadIDs[0] != "vk-1" || manager.reloadIDs[1] != "vk-2" {
 		t.Fatalf("expected reloads for vk-1 and vk-2, got %#v", manager.reloadIDs)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value == "sk-bf-old-2" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value.GetValue() == "sk-bf-old-2" {
 		t.Fatalf("expected successful IDs to rotate: %#v", store.virtualKeys)
 	}
 
@@ -1256,7 +1256,7 @@ func TestRotateVirtualKeys_RejectsInvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &mockRotateConfigStore{
 				virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-					"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
+					"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
 				},
 			}
 			manager := &mockRotateGovernanceManager{store: store}
@@ -1288,8 +1288,8 @@ func TestRotateVirtualKeys_TrimsAndDeduplicatesIDs(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1742,7 +1742,7 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	vk := &configstoreTables.TableVirtualKey{
 		ID:       vkID,
 		Name:     "Prod",
-		Value:    "sk-bf-e2e-secret",
+		Value:    *schemas.NewSecretVar("sk-bf-e2e-secret"),
 		IsActive: &active,
 		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 			{VirtualKeyID: vkID, Provider: "openai", AllowAllKeys: true, AllowedModels: schemas.WhiteList{"*"}},
