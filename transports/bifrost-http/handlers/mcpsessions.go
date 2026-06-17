@@ -125,6 +125,7 @@ func parseMCPSessionsListQuery(ctx *fasthttp.RequestCtx) (mcpSessionsListQuery, 
 	q := mcpSessionsListQuery{Limit: mcpSessionsDefaultLimit}
 	args := ctx.QueryArgs()
 	q.Filters.Search = strings.TrimSpace(string(args.Peek("q")))
+	q.Filters.Identity = strings.TrimSpace(string(args.Peek("identity")))
 	q.Filters.Statuses = parseCommaSeparated(string(args.Peek("status")))
 	q.Filters.AuthModes = parseCommaSeparated(string(args.Peek("auth_mode")))
 	q.Filters.MCPClientIDs = parseCommaSeparated(string(args.Peek("mcp_client_id")))
