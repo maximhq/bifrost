@@ -890,8 +890,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 12. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
 	truncateLabel := func(s string) string {
 		r := []rune(s)
-		if len(r) > 10 {
-			return string(r[:10])
+		if len(r) > 14 {
+			return string(r[:14])
 		}
 		return s
 	}

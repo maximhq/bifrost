@@ -724,6 +724,14 @@ func (s *RDBConfigStore) GetSkillByName(ctx context.Context, name string) (*tabl
 func (s *RDBConfigStore) ListSkillVersions(ctx context.Context, skillID string, params SkillVersionListQueryParams) ([]tables.TableSkillVersion, int64, error) {
 	var total int64
 	db := s.ScopedDB(ctx).Model(&tables.TableSkillVersion{}).Where("skill_id = ?", skillID)
+	if params.Search != "" {
+		needle := strings.ToLower(strings.TrimSpace(params.Search))
+		needle = strings.ReplaceAll(needle, `\`, `\\`)
+		needle = strings.ReplaceAll(needle, `%`, `\%`)
+		needle = strings.ReplaceAll(needle, `_`, `\_`)
+		like := "%" + needle + "%"
+		db = db.Where(`LOWER(version) LIKE ? ESCAPE '\'`, like)
+	}
 	if err := db.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}

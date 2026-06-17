@@ -35,8 +35,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
-	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
@@ -349,7 +349,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 		config, err := bifrost.account.GetConfigForProvider(providerKey)
 		if err != nil {
-			bifrost.logger.Warn("failed to get config for provider, skipping init: %v", err)
+			bifrost.logger.Warn("failed to get config for provider %s, skipping init: %v", providerKey, err)
 			continue
 		}
 		if config == nil {
@@ -4085,7 +4085,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get config for provider: %v", err)
+		return nil, fmt.Errorf("failed to get config for provider %s: %v", providerKey, err)
 	}
 	if config == nil {
 		return nil, fmt.Errorf("config is nil for provider %s", providerKey)

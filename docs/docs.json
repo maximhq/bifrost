@@ -634,6 +634,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.15",
+              "changelogs/v1.5.14",
               "changelogs/v1.5.13",
               "changelogs/v1.5.12",
               "changelogs/v1.5.11",
@@ -815,6 +817,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.10",
               "changelogs/ent-v1.4.9",
               "changelogs/ent-v1.4.8",
               "changelogs/ent-v1.4.7",
@@ -863,6 +866,7 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
+              "changelogs/cli-v0.10.6",
               "changelogs/cli-v0.10.5",
               "changelogs/cli-v0.10.4",
               {
@@ -880,6 +884,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.24",
               "changelogs/helm-v2.1.23",
               "changelogs/helm-v2.1.22",
               "changelogs/helm-v2.1.21",

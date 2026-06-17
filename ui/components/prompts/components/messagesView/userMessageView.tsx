@@ -1,14 +1,16 @@
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { RichTextarea } from "@/components/ui/custom/richTextarea";
-import { Markdown } from "@/components/ui/markdown";
 import { Message, SerializedMessage, type MessageContent } from "@/lib/message";
 import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 import { isJson } from "@/lib/utils/validation";
 import { Paperclip, PencilIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { fileToAttachment } from "../../utils/attachment";
 import { AttachmentDisplay } from "./attachmentViews";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
+
+const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
 
 /**
  * Render an interactive user message block that supports viewing and editing content, role switching, file attachments (via picker or drag-and-drop), and special handling for JSON and Jinja-variable content.

@@ -240,15 +240,33 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 
 dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment using pulse for hot reloading
 	@$(EXPOSE_ENV); \
-	set -m; \
+	set +m; \
+	ui_pid=""; \
+	pulse_pid=""; \
 	cleanup() { \
+		$(ECHO) "$(YELLOW)[make dev-pulse] cleanup started; ui_pid=$$ui_pid pulse_pid=$$pulse_pid$(NC)"; \
 		trap - EXIT INT TERM HUP; \
-		kill %1 %2 2>/dev/null || true; \
+		for pid in "$$ui_pid" "$$pulse_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev-pulse] sending TERM to pid $$pid and children: $${children:-none}$(NC)"; \
+				kill -TERM $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
 		sleep 1; \
-		kill -KILL %1 %2 2>/dev/null || true; \
+		for pid in "$$ui_pid" "$$pulse_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev-pulse] sending KILL to pid $$pid and remaining children: $${children:-none}$(NC)"; \
+				kill -KILL $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
+		$(ECHO) "$(YELLOW)[make dev-pulse] waiting for background jobs to exit...$(NC)"; \
 		wait 2>/dev/null || true; \
+		$(ECHO) "$(GREEN)[make dev-pulse] cleanup completed.$(NC)"; \
 	}; \
 	stop_dev() { \
+		$(ECHO) "$(YELLOW)[make dev-pulse] received shutdown signal; starting cleanup...$(NC)"; \
 		cleanup; \
 		exit 130; \
 	}; \
@@ -275,29 +293,24 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 	else \
 		(cd ui && npm run dev) & \
 	fi; \
+	ui_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] UI dev server started with pid $$ui_pid$(NC)"; \
 	sleep 3; \
 	$(ECHO) "$(YELLOW)Starting API server with UI proxy...$(NC)"; \
 	$(MAKE) setup-workspace >/dev/null; \
 	if [ -n "$(DEBUG)" ]; then \
 		$(ECHO) "$(CYAN)Starting with pulse + delve debugger on port 2345...$(NC)"; \
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
-		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
-			-host "$(HOST)" \
-			-port "$(PORT)" \
-			-log-style "$(LOG_STYLE)" \
-			-log-level "$(LOG_LEVEL)" \
-			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
+		PORT="$(PORT)" HOST="$(HOST)" LOG_STYLE="$(LOG_STYLE)" LOG_LEVEL="$(LOG_LEVEL)" BIFROST_UI_DEV=true \
+			$(if $(APP_DIR),APP_DIR="$(abspath $(APP_DIR))") pulse & \
 	else \
-		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
-			-host "$(HOST)" \
-			-port "$(PORT)" \
-			-log-style "$(LOG_STYLE)" \
-			-log-level "$(LOG_LEVEL)" \
-			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
+		PORT="$(PORT)" HOST="$(HOST)" LOG_STYLE="$(LOG_STYLE)" LOG_LEVEL="$(LOG_LEVEL)" BIFROST_UI_DEV=true \
+			$(if $(APP_DIR),APP_DIR="$(abspath $(APP_DIR))") pulse & \
 	fi; \
-	while [ "$$(jobs -r | wc -l | tr -d ' ')" -eq 2 ]; do sleep 1; done; \
+	pulse_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] pulse started with pid $$pulse_pid$(NC)"; \
+	while kill -0 "$$ui_pid" 2>/dev/null && kill -0 "$$pulse_pid" 2>/dev/null; do sleep 1; done; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] one of the dev processes exited; running cleanup...$(NC)"; \
 	cleanup; \
 	exit 1
 

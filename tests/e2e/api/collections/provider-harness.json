@@ -3654,6 +3654,2758 @@
           }
         }
       ]
+    },
+    {
+      "name": "14. No-Prefix Integration Routes (provider inference)",
+      "description": "Integration drop-in requests (/openai, /anthropic, /genai, /bedrock, /cohere, /langchain, /litellm, /pydanticai, /cursor) whose model carried a known Bifrost provider prefix, with that prefix removed from the body \"model\" field and the /models/<provider>/ URL segment. Exercises provider inference when callers omit the provider prefix. Native /v1/* and *_passthrough routes are excluded. Run with: make run-provider-harness-no-prefix-test",
+      "item": [
+        {
+          "name": "8. Criss-Cross (endpoint × provider × modality matrix)",
+          "description": "Every Bifrost drop-in request shape × every model provider × every supported modality.\n\nBifrost's `ParseModelString` (core/schemas/utils.go) splits the `provider/model-name` prefix and dispatches to the right backend; per-shape converters in `transports/bifrost-http/integrations/` normalize the incoming payload to `BifrostChatRequest` (or the equivalent for embeddings/audio/images) regardless of which provider serves it.\n\nSub-folders:\n- 8.1 Text Chat (non-streaming) — rows A-G × providers\n- 8.2 Text Chat (streaming) — same matrix with stream:true / :streamGenerateContent / converse-stream\n- 8.3 Embeddings — rows H-J × providers\n- 8.4 Audio — transcriptions (K-L) + speech (M-N)\n- 8.5 Image generation / editing — rows O-Q\n- 8.6 Feature combinations — tool calling, vision, JSON/structured output, reasoning\n\nCells where the provider doesn't support the modality (e.g., Anthropic embeddings, Bedrock audio input — see core/providers/*/{anthropic.go:1878-1923, bedrock.go:1936-1941}) are tagged `[SKIP]` and skipped at runtime unless `include_skip=1`.",
+          "item": [
+            {
+              "name": "8.1 Text Chat (non-streaming)",
+              "description": "Minimal `Hello` text-chat request across every endpoint shape × every model provider. Native /v1/chat/completions is the diagonal (provider/model strings only); rows B-G exercise the cross-shape conversion path (e.g., /anthropic/v1/messages with model=openai/gpt-5).",
+              "item": [
+                {
+                  "name": "8.1.C OpenAI drop-in /openai/v1/chat/completions × non-OpenAI providers",
+                  "description": "OpenAI ChatCompletion shape via the `/openai` drop-in prefix, routed to non-OpenAI backends via `provider/` model prefix. The OpenAI diagonal is already in §2 and 8.1.A; here we exercise the drop-in's converter against backends that need shape translation.",
+                  "item": [
+                    {
+                      "name": "anthropic/claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-pro\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-pro\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/global.anthropic.claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"global.anthropic.claude-opus-4-7\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.1.D OpenAI drop-in /openai/v1/responses × non-OpenAI providers",
+                  "description": "OpenAI Responses-API shape via `/openai` drop-in, routed to non-OpenAI backends. Responses-shape converter must round-trip through every provider's chat backend.",
+                  "item": [
+                    {
+                      "name": "anthropic/claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-pro\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-pro\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/global.anthropic.claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"global.anthropic.claude-opus-4-7\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o\",\n  \"input\": \"Hello\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.1.E Anthropic drop-in /anthropic/v1/messages × non-Anthropic providers",
+                  "description": "Anthropic Messages-API shape (requires `max_tokens`) routed to non-Anthropic backends. Tests Bifrost's Messages→BifrostChatRequest converter against every other provider.",
+                  "item": [
+                    {
+                      "name": "openai/gpt-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-5\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-pro\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-pro\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/global.anthropic.claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"global.anthropic.claude-opus-4-7\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.1.F GenAI drop-in /genai/v1beta/models/{model}:generateContent × non-Gemini providers",
+                  "description": "Google GenAI generateContent shape (`contents` / `parts` body, model in URL path) routed to non-Gemini backends. The provider/model prefix is part of the path; Bifrost's GenAI router (`integrations/router.go`) parses it before invoking the backend.",
+                  "item": [
+                    {
+                      "name": "openai/gpt-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-5:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-5:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-4o-mini:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-4o-mini:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "anthropic/claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/claude-opus-4-7:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "claude-opus-4-7:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/claude-haiku-4-5:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "claude-haiku-4-5:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-pro:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gemini-2.5-pro:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/claude-opus-4-7:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "claude-opus-4-7:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/global.anthropic.claude-opus-4-7",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/global.anthropic.claude-opus-4-7:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "global.anthropic.claude-opus-4-7:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/us.amazon.nova-lite-v1:0:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "us.amazon.nova-lite-v1:0:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-4o-mini:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-4o-mini:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Hello\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-4o:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-4o:generateContent"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "8.2 Text Chat (streaming)",
+              "description": "Streaming variants of the 8.1 matrix. OpenAI / Anthropic / Responses shapes use `stream: true` in the body; GenAI uses `:streamGenerateContent?alt=sse`; Bedrock uses the `/converse-stream` URL.\n\nThe folder-level test script (inherited by all items) asserts the Content-Type is a streaming type and that the body contains a recognized stream terminator (`[DONE]` for OpenAI SSE, `message_stop` / `message_delta` for Anthropic, `finishReason` for GenAI, `messageStop` for Bedrock).",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Streaming-specific assertion: header + full body consume + terminator check.",
+                      "// Runs in addition to the collection-level 2xx check. The collection-level content-shape test skips on streaming responses (see line ~34), so this fills the gap.",
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Streaming response with terminator', function () {",
+                      "  var ct = (pm.response.headers.get('content-type') || '').toLowerCase();",
+                      "  var isStreamCt = ct.indexOf('event-stream') !== -1 || ct.indexOf('eventstream') !== -1 || ct.indexOf('x-ndjson') !== -1;",
+                      "  pm.expect(isStreamCt, 'expected streaming content-type, got: ' + ct).to.be.true;",
+                      "  var body = pm.response.text() || '';",
+                      "  pm.expect(body.length, 'streaming body was empty').to.be.greaterThan(0);",
+                      "  var terms = ['[DONE]', 'message_stop', '\"type\":\"message_delta\"', 'response.completed', 'finishReason', 'messageStop', '\"event\":\"messageStop\"'];",
+                      "  var hit = terms.some(function (p) { return body.indexOf(p) !== -1; });",
+                      "  pm.expect(hit, 'no recognized stream terminator. First 200 chars: ' + body.slice(0, 200)).to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "item": [
+                {
+                  "name": "8.2.C OpenAI drop-in /openai/v1/chat/completions streaming × non-OpenAI providers",
+                  "description": "OpenAI streaming chat shape via drop-in, routed to non-OpenAI backends.",
+                  "item": [
+                    {
+                      "name": "anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.2.D OpenAI drop-in /openai/v1/responses streaming × non-OpenAI providers",
+                  "description": "OpenAI streaming Responses shape via drop-in, routed to non-OpenAI backends.",
+                  "item": [
+                    {
+                      "name": "anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/responses",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "responses"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.2.E Anthropic drop-in /anthropic/v1/messages streaming × non-Anthropic providers",
+                  "description": "Anthropic streaming Messages-API shape via drop-in, routed to non-Anthropic backends.",
+                  "item": [
+                    {
+                      "name": "openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Count to 5\" }],\n  \"stream\": true\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.2.F GenAI drop-in :streamGenerateContent × non-Gemini providers",
+                  "description": "Google GenAI streaming via `:streamGenerateContent?alt=sse`, routed to non-Gemini backends. Body unchanged from non-streaming generateContent; SSE is requested via the URL suffix + query.",
+                  "item": [
+                    {
+                      "name": "openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Count to 5\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-4o-mini:streamGenerateContent?alt=sse",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-4o-mini:streamGenerateContent"
+                          ],
+                          "query": [
+                            {
+                              "key": "alt",
+                              "value": "sse"
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Count to 5\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/claude-haiku-4-5:streamGenerateContent?alt=sse",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "claude-haiku-4-5:streamGenerateContent"
+                          ],
+                          "query": [
+                            {
+                              "key": "alt",
+                              "value": "sse"
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Count to 5\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gemini-2.5-flash:streamGenerateContent"
+                          ],
+                          "query": [
+                            {
+                              "key": "alt",
+                              "value": "sse"
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Count to 5\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/us.amazon.nova-lite-v1:0:streamGenerateContent?alt=sse",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "us.amazon.nova-lite-v1:0:streamGenerateContent"
+                          ],
+                          "query": [
+                            {
+                              "key": "alt",
+                              "value": "sse"
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Count to 5\" }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-4o-mini:streamGenerateContent?alt=sse",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-4o-mini:streamGenerateContent"
+                          ],
+                          "query": [
+                            {
+                              "key": "alt",
+                              "value": "sse"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "8.3 Embeddings",
+              "description": "Embedding endpoints × providers. Anthropic returns NewUnsupportedOperationError for Embedding (core/providers/anthropic/anthropic.go:1878-1923) — those cells are tagged `[SKIP]` and skipped unless `include_skip=1`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{embedding: [...]}]}` → list-data branch\n- GenAI: `{embedding: {values: [...]}}` → genai-embedding branch\n- Bedrock Titan: `{embedding: [...]}` → bedrock-titan-embedding branch\n- Vertex: `{predictions: [{embeddings: {values}}]}` → vertex-predictions branch",
+              "item": [
+                {
+                  "name": "8.3.I OpenAI drop-in /openai/v1/embeddings × non-OpenAI providers",
+                  "description": "OpenAI Embeddings shape via drop-in, routed to non-OpenAI backends.",
+                  "item": [
+                    {
+                      "name": "[SKIP] anthropic/claude-haiku-4-5 (no embedding endpoint)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"input\": \"Hello world\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/embeddings",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "embeddings"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/gemini-embedding-001",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-embedding-001\",\n  \"input\": \"Hello world\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/embeddings",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "embeddings"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/text-embedding-005",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"text-embedding-005\",\n  \"input\": \"Hello world\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/embeddings",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "embeddings"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/amazon.titan-embed-text-v2:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/embeddings",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "embeddings"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/text-embedding-ada-002",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"text-embedding-ada-002\",\n  \"input\": \"Hello world\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/embeddings",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "embeddings"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.3.J GenAI drop-in /genai/v1beta/models/{model}:embedContent × non-Gemini providers",
+                  "description": "Google GenAI embedContent shape (`content.parts`), model in URL path. Routed to non-Gemini embedding backends.",
+                  "item": [
+                    {
+                      "name": "openai/text-embedding-3-small",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/text-embedding-3-small:embedContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "text-embedding-3-small:embedContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "[SKIP] anthropic/claude-haiku-4-5 (no embedding endpoint)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/claude-haiku-4-5:embedContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "claude-haiku-4-5:embedContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/text-embedding-005",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/text-embedding-005:embedContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "text-embedding-005:embedContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/amazon.titan-embed-text-v2:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/amazon.titan-embed-text-v2:0:embedContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "amazon.titan-embed-text-v2:0:embedContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/text-embedding-ada-002",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/text-embedding-ada-002:embedContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "text-embedding-ada-002:embedContent"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "8.4 Audio (transcription + speech)",
+              "description": "Audio endpoints × providers. Most providers don't expose a dedicated audio endpoint through Bifrost — those cells are `[SKIP]`:\n- Anthropic: no audio (core/providers/anthropic/anthropic.go:1878-1923)\n- Vertex: no transcription (core/providers/vertex/vertex.go:1722-1729)\n- Bedrock: no transcription (core/providers/bedrock/bedrock.go:1936-1941); audio input rejected (core/providers/bedrock/utils.go:1058)\n- Gemini/Vertex TTS: no /v1/audio/speech equivalent\n\nTranscription tests require `tests/e2e/api/fixtures/sample.mp3` (small audio sample) at runtime — see Phase 7 verification.\n\nResponse shapes (validated by extended top-level detector):\n- Transcription JSON: `{text: \"...\"}` → audio-transcription branch\n- TTS binary: `audio/*` Content-Type → prelude's non-JSON early-return passes status-only check",
+              "item": [
+                {
+                  "name": "8.4.N OpenAI drop-in /openai/v1/audio/speech × non-OpenAI providers",
+                  "description": "OpenAI TTS shape via drop-in. Only Azure has a comparable backend.",
+                  "item": [
+                    {
+                      "name": "[SKIP] anthropic/claude-haiku-4-5 (no TTS)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "audio",
+                            "speech"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "[SKIP] gemini/gemini-2.5-flash (no /v1/audio/speech)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "audio",
+                            "speech"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "[SKIP] vertex/gemini-2.5-flash (no /v1/audio/speech)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "audio",
+                            "speech"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "[SKIP] bedrock/us.amazon.nova-lite-v1:0 (no TTS)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "audio",
+                            "speech"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-4o-mini-tts",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini-tts\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "audio",
+                            "speech"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "8.5 Image generation",
+              "description": "Image generation endpoints × providers. Anthropic returns NewUnsupportedOperationError for ImageGeneration (core/providers/anthropic/anthropic.go:1878-1923) — those cells are `[SKIP]`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{url|b64_json}]}` → list-data branch\n- Vertex Imagen: `{predictions: [{bytesBase64Encoded}]}` → vertex-predictions branch\n- Bedrock Titan/Nova: `{images: [\"base64\"]}` → bedrock-images branch\n\nOmits /v1/images/edits — needs a binary PNG fixture; will be added later if needed.",
+              "item": [
+                {
+                  "name": "8.5.P OpenAI drop-in /openai/v1/images/generations × non-OpenAI providers",
+                  "description": "OpenAI image-generation shape via drop-in, routed to non-OpenAI backends.",
+                  "item": [
+                    {
+                      "name": "[SKIP] anthropic/claude-haiku-4-5 (no image gen)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/images/generations",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "images",
+                            "generations"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "gemini/imagen-4.0-generate-001",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/images/generations",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "images",
+                            "generations"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "vertex/imagen-4.0-generate-001",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/images/generations",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "images",
+                            "generations"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "bedrock/amazon.titan-image-generator-v2:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"amazon.titan-image-generator-v2:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/images/generations",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "images",
+                            "generations"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "azure/gpt-image-2",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-image-2\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/openai/v1/images/generations",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "openai",
+                            "v1",
+                            "images",
+                            "generations"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "8.6 Feature combinations",
+              "description": "Feature-specific cross-shape tests: tool calling, vision (image input), JSON / structured output, reasoning / thinking.\n\nEach feature is tested across multiple endpoint shapes with multiple model providers, proving Bifrost's converters preserve feature semantics across shape boundaries (e.g., OpenAI `tools` array → Anthropic `tools` shape when routed to Claude; Anthropic `tools` shape → Gemini `function_declarations` when routed to Gemini).\n\nResponse-shape assertions (`tool_calls` / `tool_use` / `functionCall`) are already in the top-level detector.",
+              "item": [
+                {
+                  "name": "8.6.1 Tool calling × endpoint shapes × providers",
+                  "description": "Function-calling request. Each shape uses its native tool schema (OpenAI `tools[].function`, Anthropic `tools[].input_schema`, GenAI `tools[].function_declarations`, Bedrock `toolConfig.tools[].toolSpec`). The converter must translate to the backend's native tool shape and translate the response back.",
+                  "item": [
+                    {
+                      "name": "8.6.1.E /anthropic/v1/messages → openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 512,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What's the weather in SF?\" }],\n  \"tools\": [{ \"name\": \"get_weather\", \"description\": \"Get current weather\", \"input_schema\": { \"type\": \"object\", \"properties\": { \"city\": { \"type\": \"string\" } }, \"required\": [\"city\"] } }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.1.E /anthropic/v1/messages → gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"max_tokens\": 512,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What's the weather in SF?\" }],\n  \"tools\": [{ \"name\": \"get_weather\", \"description\": \"Get current weather\", \"input_schema\": { \"type\": \"object\", \"properties\": { \"city\": { \"type\": \"string\" } }, \"required\": [\"city\"] } }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.1.E /anthropic/v1/messages → bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"us.amazon.nova-lite-v1:0\",\n  \"max_tokens\": 512,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What's the weather in SF?\" }],\n  \"tools\": [{ \"name\": \"get_weather\", \"description\": \"Get current weather\", \"input_schema\": { \"type\": \"object\", \"properties\": { \"city\": { \"type\": \"string\" } }, \"required\": [\"city\"] } }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.1.F /genai → openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"What's the weather in SF?\" }] }],\n  \"tools\": [{ \"function_declarations\": [{ \"name\": \"get_weather\", \"description\": \"Get current weather\", \"parameters\": { \"type\": \"object\", \"properties\": { \"city\": { \"type\": \"string\" } }, \"required\": [\"city\"] } }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-4o-mini:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-4o-mini:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.1.F /genai → anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"What's the weather in SF?\" }] }],\n  \"tools\": [{ \"function_declarations\": [{ \"name\": \"get_weather\", \"description\": \"Get current weather\", \"parameters\": { \"type\": \"object\", \"properties\": { \"city\": { \"type\": \"string\" } }, \"required\": [\"city\"] } }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/claude-haiku-4-5:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "claude-haiku-4-5:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.1.F /genai → bedrock/us.amazon.nova-lite-v1:0",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"What's the weather in SF?\" }] }],\n  \"tools\": [{ \"function_declarations\": [{ \"name\": \"get_weather\", \"description\": \"Get current weather\", \"parameters\": { \"type\": \"object\", \"properties\": { \"city\": { \"type\": \"string\" } }, \"required\": [\"city\"] } }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/us.amazon.nova-lite-v1:0:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "us.amazon.nova-lite-v1:0:generateContent"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.6.2 Vision (image input) × endpoint shapes × providers",
+                  "description": "Vision request with a 1×1 transparent PNG (base64 inline). Each shape uses its native image-content schema:\n- OpenAI: `content: [{type:\"image_url\", image_url:{url:\"data:image/png;base64,...\"}}]`\n- Anthropic: `content: [{type:\"image\", source:{type:\"base64\", media_type, data}}]`\n- GenAI: `parts: [{inline_data:{mime_type, data}}]`\n- Bedrock: `content: [{image:{format, source:{bytes}}}]`",
+                  "item": [
+                    {
+                      "name": "8.6.2.E /anthropic/v1/messages → openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"type\": \"text\", \"text\": \"Describe in one word.\" }, { \"type\": \"image\", \"source\": { \"type\": \"base64\", \"media_type\": \"image/png\", \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" } }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.2.E /anthropic/v1/messages → gemini/gemini-2.5-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gemini-2.5-flash\",\n  \"max_tokens\": 800,\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"type\": \"text\", \"text\": \"Describe in one word.\" }, { \"type\": \"image\", \"source\": { \"type\": \"base64\", \"media_type\": \"image/png\", \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" } }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.2.F /genai → openai/gpt-4o-mini",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Describe in one word.\" }, { \"inline_data\": { \"mime_type\": \"image/png\", \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" } }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/gpt-4o-mini:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "gpt-4o-mini:generateContent"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "8.6.2.F /genai → anthropic/claude-haiku-4-5",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Describe in one word.\" }, { \"inline_data\": { \"mime_type\": \"image/png\", \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" } }] }]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/genai/v1beta/models/claude-haiku-4-5:generateContent",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "genai",
+                            "v1beta",
+                            "models",
+                            "claude-haiku-4-5:generateContent"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "8.6.4 Reasoning / thinking × providers",
+                  "description": "Reasoning/thinking activation via the request field appropriate for the model's native provider:\n- OpenAI o-series: `reasoning_effort: \"low\"`\n- Anthropic: `thinking: {type: \"enabled\", budget_tokens: 1024}`\n- Gemini 2.5+: `thinkingConfig: {thinkingBudget: 1024}` (or via Bifrost's OpenAI-shape `reasoning_effort` translation)\n\nBifrost's converter maps each field to the backend's native reasoning parameter.",
+                  "item": [
+                    {
+                      "name": "8.6.4.E /anthropic/v1/messages → openai/gpt-5 (thinking translated)",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"gpt-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"thinking\": { \"type\": \"enabled\", \"budget_tokens\": 1024 }\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/anthropic/v1/messages",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "anthropic",
+                            "v1",
+                            "messages"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "11. Cross-Provider Feature Tests",
+          "description": "Same feature exercised across multiple providers via Bifrost's unified routing. Each sub-folder is one capability; each request differs only by `model` (or path) to show that Bifrost translates the request shape per-provider.",
+          "item": [
+            {
+              "name": "Context Compaction cross-cut",
+              "item": [
+                {
+                  "name": "Compaction (Azure gpt-4o)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      },
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{openaiKey}}"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"{{azureDeployment}}\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses/compact",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses",
+                        "compact"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   ]
 }

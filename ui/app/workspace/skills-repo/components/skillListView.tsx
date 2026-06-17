@@ -65,7 +65,6 @@ import {
   FileText,
   MoreHorizontal,
   Package,
-  Pencil,
   Plus,
   Search,
   Trash2,
@@ -139,7 +138,7 @@ function MarketplacePopover() {
             >
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-medium">{item.label}</p>
-                <p className="text-[11px] font-mono text-muted-foreground truncate mt-0.5">
+                <p className="text-xs font-mono text-muted-foreground truncate mt-0.5">
                   {item.command}
                 </p>
               </div>
@@ -175,11 +174,9 @@ function SortableHeader({
   onToggle: (column: SortColumn) => void;
 }) {
   const isActive = sortBy === column;
-  const Icon = isActive
-    ? order === "desc"
-      ? ArrowDown
-      : ArrowUp
-    : ArrowUpDown;
+  let Icon = ArrowUpDown;
+  if (isActive && order === "desc") Icon = ArrowDown;
+  else if (isActive) Icon = ArrowUp;
   return (
     <Button
       variant="ghost"
@@ -270,19 +267,6 @@ function SkillActionsMenu({
               <Download className="h-4 w-4" />
             )}
             {isDownloading ? "Downloading..." : "Download ZIP"}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="cursor-pointer"
-            data-testid={`skill-edit-btn-${skill.name}`}
-            disabled={!hasEditAccess}
-            onSelect={(e) => {
-              e.preventDefault();
-              onEdit(skill.id);
-              setIsOpen(false);
-            }}
-          >
-            <Pencil className="h-4 w-4" />
-            Edit
           </DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
@@ -436,17 +420,17 @@ export function SkillsListView({
   if (total === 0 && !search && !isFetching) {
     return (
       <div
-        className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
+        className="flex h-full w-full flex-col items-center justify-center gap-4 py-16 text-center"
         data-testid="skills-repo-empty-state"
       >
         <div className="text-muted-foreground">
-          <BookOpenText className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
+          <BookOpenText className="h-24 w-24" strokeWidth={1} />
         </div>
         <div className="flex flex-col gap-1">
           <h1 className="text-muted-foreground text-xl font-medium">
             Create, version, and share Agent Skills from Bifrost
           </h1>
-          <div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+          <div className="text-muted-foreground mx-auto mt-2 max-w-xl text-sm font-normal">
             Manage SKILL.md instructions and supporting files in one place,
             publish immutable versions, and expose them as installable plugins
             for Claude Code, Codex, and other skill-aware clients.
@@ -483,7 +467,7 @@ export function SkillsListView({
   }
 
   return (
-    <div className="w-full min-h-0 flex-1 flex flex-col overflow-hidden">
+    <div className="w-full flex-1 flex flex-col">
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between mb-4">
         <div>
@@ -643,14 +627,14 @@ export function SkillsListView({
       </div>
 
       {/* Table */}
-      <div className="min-h-0 grow overflow-hidden rounded-sm border">
+      <div className="grow overflow-hidden rounded-sm border">
         <Table
           containerClassName="h-full overflow-auto"
           className="w-full table-fixed"
         >
           <TableHeader className="bg-muted sticky top-0 z-20">
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[240px]">
+              <TableHead className="w-60">
                 <SortableHeader
                   column="name"
                   label="Name"
@@ -660,9 +644,9 @@ export function SkillsListView({
                 />
               </TableHead>
               <TableHead>Description</TableHead>
-              <TableHead className="w-[140px]">Version</TableHead>
-              <TableHead className="w-[140px]">Files</TableHead>
-              <TableHead className="w-[170px]">
+              <TableHead className="w-36">Version</TableHead>
+              <TableHead className="w-36">Files</TableHead>
+              <TableHead className="w-44">
                 <SortableHeader
                   column="updated_at"
                   label="Updated"
@@ -672,7 +656,7 @@ export function SkillsListView({
                 />
               </TableHead>
               <TableHead
-                className={`bg-muted sticky right-0 z-30 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}
+                className={`bg-muted sticky right-0 z-30 w-14 text-right ${PIN_SHADOW_RIGHT}`}
               >
                 <span className="sr-only">Actions</span>
               </TableHead>
@@ -721,7 +705,7 @@ export function SkillsListView({
                       }
                     }}
                   >
-                    <TableCell className="w-[240px] max-w-[240px] overflow-hidden font-medium font-mono text-sm">
+                    <TableCell className="w-60 max-w-60 overflow-hidden font-medium font-mono text-sm">
                       <div className="max-w-full truncate" title={skill.name}>
                         {skill.name}
                       </div>

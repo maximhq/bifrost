@@ -24,7 +24,9 @@ export interface SkillFile {
   skill_version_id: string;
   path: string;
   source_type: "url" | "text" | "dataurl" | "upload";
+  content?: string; // text (hydrated from blob on read)
   source_url?: string;
+  dataurl?: string;
   storage_key?: string;
   blob_id?: string;
   mime_type: string;

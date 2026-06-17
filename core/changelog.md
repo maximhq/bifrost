@@ -1,6 +1,0 @@
-- feat: add OpenCode gateway providers (Go, Zen) (thanks [@neta79](https://github.com/neta79)!)
-- feat: add advisor tool compatibility for Claude
-- fix(bedrock): preserve tool_result order to match parallel tool_use blocks (thanks [@alexef](https://github.com/alexef)!)
-- fix: preserve request conversion for Gemini/Vertex batch requests
-- fix(bedrock): set TTL in cache points
-- fix: commit routing-pinned key ID to reserved BifrostContextKeyAPIKeyID after PreRequestHook unblock
