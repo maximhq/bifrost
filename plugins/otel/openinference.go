@@ -124,28 +124,86 @@ func appendOpenInferenceTokenAttributes(result []*KeyValue, attrs map[string]any
 }
 
 func openInferenceProviderAndSystem(attrs map[string]any) (provider, system string) {
-	value, ok := firstAttribute(attrs, schemas.AttrProviderName, schemas.AttrBifrostProviderName)
-	if !ok {
+	canonicalValue, canonicalOK := firstAttribute(attrs, schemas.AttrProviderName)
+	rawValue, rawOK := firstAttribute(attrs, schemas.AttrBifrostProviderName)
+	if !canonicalOK && !rawOK {
 		return "", ""
 	}
-	provider = fmt.Sprint(value)
-	switch provider {
-	case "bedrock", "aws.bedrock":
-		system = "amazon"
-	case "vertex", "gcp.vertex_ai":
-		system = "vertexai"
-	case "gemini", "gcp.gemini":
-		system = "google"
-	case "azure", "azure.ai.openai":
-		system = "openai"
-	case "mistral", "mistral_ai":
-		system = "mistralai"
-	case "xai", "x_ai":
-		system = "xai"
-	default:
-		system = provider
+
+	canonical := ""
+	if canonicalOK {
+		canonical = fmt.Sprint(canonicalValue)
 	}
+	raw := canonical
+	if rawOK {
+		raw = fmt.Sprint(rawValue)
+	}
+
+	provider = openInferenceProviderName(canonical, raw)
+	system = openInferenceSystemName(canonical, raw, provider)
 	return provider, system
+}
+
+func openInferenceProviderName(canonical, raw string) string {
+	switch canonical {
+	case "aws.bedrock":
+		return "aws"
+	case "gcp.vertex_ai", "gcp.gemini":
+		return "google"
+	case "azure.ai.openai":
+		return "azure"
+	case "mistral_ai":
+		return "mistralai"
+	case "x_ai":
+		return "xai"
+	}
+
+	switch raw {
+	case "bedrock":
+		return "aws"
+	case "vertex", "gemini":
+		return "google"
+	case "mistral":
+		return "mistralai"
+	case "xai":
+		return "xai"
+	default:
+		return raw
+	}
+}
+
+func openInferenceSystemName(canonical, raw, provider string) string {
+	switch canonical {
+	case "aws.bedrock":
+		return "amazon"
+	case "gcp.vertex_ai":
+		return "vertexai"
+	case "gcp.gemini":
+		return "google"
+	case "azure.ai.openai":
+		return "openai"
+	case "mistral_ai":
+		return "mistralai"
+	case "x_ai":
+		return "xai"
+	}
+
+	switch raw {
+	case "bedrock":
+		return "amazon"
+	case "vertex":
+		return "vertexai"
+	case "gemini":
+		return "google"
+	case "azure":
+		return "openai"
+	case "mistral":
+		return "mistralai"
+	case "xai":
+		return "xai"
+	default:
+		return provider
+	}
 }
 
 func openInferenceKind(trace *schemas.Trace, span *schemas.Span) string {

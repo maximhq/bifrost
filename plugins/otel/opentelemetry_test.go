@@ -435,11 +435,13 @@ func TestOpenInferenceKindAgent(t *testing.T) {
 
 func TestOpenInferenceProviderAndSystem(t *testing.T) {
 	tests := map[string][2]string{
-		"openai":        {"openai", "openai"},
-		"bedrock":       {"bedrock", "amazon"},
-		"gcp.vertex_ai": {"gcp.vertex_ai", "vertexai"},
-		"azure":         {"azure", "openai"},
-		"mistral":       {"mistral", "mistralai"},
+		"openai":  {"openai", "openai"},
+		"bedrock": {"aws", "amazon"},
+		"vertex":  {"google", "vertexai"},
+		"gemini":  {"google", "google"},
+		"azure":   {"azure", "openai"},
+		"mistral": {"mistralai", "mistralai"},
+		"xai":     {"xai", "xai"},
 	}
 
 	for raw, want := range tests {
@@ -449,12 +451,28 @@ func TestOpenInferenceProviderAndSystem(t *testing.T) {
 		}
 	}
 
+	canonicalTests := map[string][2]string{
+		"aws.bedrock":     {"aws", "amazon"},
+		"gcp.vertex_ai":   {"google", "vertexai"},
+		"gcp.gemini":      {"google", "google"},
+		"azure.ai.openai": {"azure", "openai"},
+		"mistral_ai":      {"mistralai", "mistralai"},
+		"x_ai":            {"xai", "xai"},
+	}
+
+	for canonical, want := range canonicalTests {
+		provider, system := openInferenceProviderAndSystem(map[string]any{schemas.AttrProviderName: canonical})
+		if provider != want[0] || system != want[1] {
+			t.Errorf("openInferenceProviderAndSystem(canonical %q) = (%q, %q), want (%q, %q)", canonical, provider, system, want[0], want[1])
+		}
+	}
+
 	provider, system := openInferenceProviderAndSystem(map[string]any{
 		schemas.AttrProviderName:        "aws.bedrock",
 		schemas.AttrBifrostProviderName: "bedrock",
 	})
-	if provider != "aws.bedrock" || system != "amazon" {
-		t.Errorf("canonical provider preferred = (%q, %q), want (%q, %q)", provider, system, "aws.bedrock", "amazon")
+	if provider != "aws" || system != "amazon" {
+		t.Errorf("canonical provider preferred = (%q, %q), want (%q, %q)", provider, system, "aws", "amazon")
 	}
 }
 
