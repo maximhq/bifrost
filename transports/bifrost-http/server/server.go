@@ -161,6 +161,11 @@ type BifrostHTTPServer struct {
 	WSTicketStore        *handlers.WSTicketStore
 	TempTokens           *temptoken.Service
 	TempTokenSweepWorker *temptoken.SweepWorker
+	// OAuth2IdentityResolver scopes a user-mode /mcp request to the user's own
+	// tools. Optional; wired at server init when user-mode identity resolution
+	// is available, otherwise left nil (user-mode requests fall back to the
+	// global server).
+	OAuth2IdentityResolver handlers.OAuth2IdentityResolver
 
 	wsPool *bfws.Pool
 }
@@ -1403,6 +1408,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Going ahead with API handlers
 	handlers.NewOAuth2DiscoveryHandler(s.Config).RegisterRoutes(s.Router, middlewares...)
 	handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens).RegisterRoutes(s.Router)
+	oauth2ConsentHandler := handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
