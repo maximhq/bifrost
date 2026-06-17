@@ -21,13 +21,14 @@ import (
 
 // MetricsConfig holds configuration for the OTEL metrics exporter
 type MetricsConfig struct {
-	ServiceName  string
-	Endpoint     string
-	Headers      map[string]string
-	Protocol     Protocol
-	TLSCACert    string
-	Insecure     bool // Skip TLS when true; ignored if TLSCACert is set
-	PushInterval int  // in seconds
+	ServiceName        string
+	Endpoint           string
+	Headers            map[string]string
+	Protocol           Protocol
+	TLSCACert          string
+	Insecure           bool // Skip TLS when true; ignored if TLSCACert is set
+	PushInterval       int  // in seconds
+	ResourceAttributes []attribute.KeyValue
 }
 
 // MetricsExporter handles OTEL metrics export
@@ -203,6 +204,9 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 			semconv.ServiceInstanceID(instanceID),
 		),
 	)
+	if err == nil && len(config.ResourceAttributes) > 0 {
+		res, err = resource.Merge(res, resource.NewSchemaless(config.ResourceAttributes...))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}

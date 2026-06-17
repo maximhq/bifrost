@@ -2206,6 +2206,13 @@
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
           "default": false
         },
+        "resource_attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Profile-scoped OTEL resource attributes applied only to this export profile. These override process-level OTEL_RESOURCE_ATTRIBUTES for matching keys."
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {

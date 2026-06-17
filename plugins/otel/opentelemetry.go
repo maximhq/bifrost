@@ -72,7 +72,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name and trace type. Span filtering and instance attributes are shared
 // across profiles; destination-specific semantic conventions are added during conversion.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, traceType TraceType, disableContentLogging bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, traceType TraceType, disableContentLogging bool, resourceAttributes ...[]*KeyValue) *ResourceSpan {
 	shouldExport := func(span *schemas.Span) bool {
 		if !p.pluginSpanFilter.ShouldExportSpan(span) {
 			return false
@@ -138,7 +138,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 	}
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
-			Attributes: p.getResourceAttributes(serviceName),
+			Attributes: p.getResourceAttributes(serviceName, resourceAttributes...),
 		},
 		ScopeSpans: []*ScopeSpan{{
 			Scope: p.getInstrumentationScope(serviceName),
@@ -196,15 +196,33 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, attributes []*Key
 }
 
 // getResourceAttributes returns the resource attributes for the OTEL span
-func (p *OtelPlugin) getResourceAttributes(serviceName string) []*KeyValue {
-	attrs := []*KeyValue{
-		kvStr("service.name", serviceName),
-		kvStr("service.version", p.bifrostVersion),
-		kvStr("telemetry.sdk.name", "bifrost"),
-		kvStr("telemetry.sdk.language", "go"),
+func (p *OtelPlugin) getResourceAttributes(serviceName string, profileAttrs ...[]*KeyValue) []*KeyValue {
+	attrs := make([]*KeyValue, 0, 4+len(p.attributesFromEnvironment))
+	indexByKey := make(map[string]int)
+	appendAttr := func(kv *KeyValue) {
+		if kv == nil || kv.Key == "" {
+			return
+		}
+		if idx, ok := indexByKey[kv.Key]; ok {
+			attrs[idx] = kv
+			return
+		}
+		indexByKey[kv.Key] = len(attrs)
+		attrs = append(attrs, kv)
 	}
-	// Add environment attributes
-	attrs = append(attrs, p.attributesFromEnvironment...)
+
+	appendAttr(kvStr("service.name", serviceName))
+	appendAttr(kvStr("service.version", p.bifrostVersion))
+	appendAttr(kvStr("telemetry.sdk.name", "bifrost"))
+	appendAttr(kvStr("telemetry.sdk.language", "go"))
+	for _, kv := range p.attributesFromEnvironment {
+		appendAttr(kv)
+	}
+	for _, group := range profileAttrs {
+		for _, kv := range group {
+			appendAttr(kv)
+		}
+	}
 	return attrs
 }
 

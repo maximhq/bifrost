@@ -36,6 +36,7 @@ interface StoredOtelProfile {
 	metrics_push_interval?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
+	resource_attributes?: Record<string, string>;
 }
 
 // StoredOtelConfig is either the canonical { profiles: [...] } wrapper or a legacy single
@@ -93,6 +94,7 @@ const emptyProfile = (): ProfileForm => ({
 	metrics_push_interval: 15,
 	request_headers: [],
 	disable_content_logging: false,
+	resource_attributes: {},
 });
 
 // toProfileForm normalizes a stored profile into the EnvVar-based form representation.
@@ -110,6 +112,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
+	resource_attributes: p?.resource_attributes ?? {},
 });
 
 // buildDefaults handles both stored shapes: the { profiles: [...] } wrapper and the legacy
@@ -406,6 +409,30 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 							<FormItem className="w-full">
 								<FormControl>
 									<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} useEnvVarInput />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`${base}.resource_attributes`}
+						render={({ field }) => (
+							<FormItem className="w-full">
+								<FormLabel>Resource Attributes <span className="text-muted-foreground font-normal">(Optional)</span></FormLabel>
+								<FormDescription>
+									Profile-scoped OTEL resource attributes. These override matching process-level resource attributes only for this
+                  export profile.
+								</FormDescription>
+								<FormControl>
+									<HeadersTable
+										value={field.value || {}}
+										onChange={field.onChange}
+										disabled={!hasOtelAccess}
+										label="Resource Attributes"
+										keyPlaceholder="Attribute name"
+										valuePlaceholder="Attribute value"
+									/>
 								</FormControl>
 								<FormMessage />
 							</FormItem>

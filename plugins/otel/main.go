@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -76,6 +77,10 @@ type Profile struct {
 	Protocol     Protocol          `json:"protocol"`
 	TLSCACert    string            `json:"tls_ca_cert,omitempty"`
 	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+
+	// ResourceAttributes are profile-scoped OTEL resource attributes. They are applied only
+	// to this profile's ResourceSpan, after global OTEL_RESOURCE_ATTRIBUTES.
+	ResourceAttributes map[string]string `json:"resource_attributes,omitempty"`
 
 	// Metrics push configuration
 	MetricsEnabled      bool            `json:"metrics_enabled"`
@@ -211,6 +216,7 @@ type profileForStorage struct {
 	MetricsPushInterval   int               `json:"metrics_push_interval,omitempty"`
 	RequestHeaders        []string          `json:"request_headers,omitempty"`
 	DisableContentLogging bool              `json:"disable_content_logging,omitempty"`
+	ResourceAttributes    map[string]string `json:"resource_attributes,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -246,6 +252,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			MetricsPushInterval:   p.MetricsPushInterval,
 			RequestHeaders:        p.RequestHeaders,
 			DisableContentLogging: p.DisableContentLogging,
+			ResourceAttributes:    p.ResourceAttributes,
 		})
 	}
 	return sonic.Marshal(out)
@@ -305,6 +312,46 @@ func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
 	return v.Redacted()
 }
 
+func profileResourceAttributes(profile *Profile) []*commonpb.KeyValue {
+	if profile == nil {
+		return nil
+	}
+	attrs := make([]*commonpb.KeyValue, 0, len(profile.ResourceAttributes)+1)
+	keys := make([]string, 0, len(profile.ResourceAttributes))
+	for k := range profile.ResourceAttributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		attrs = append(attrs, kvStr(key, profile.ResourceAttributes[k]))
+	}
+	return attrs
+}
+
+func profileMetricResourceAttributes(profile *Profile) []attribute.KeyValue {
+	if profile == nil {
+		return nil
+	}
+	attrs := make([]attribute.KeyValue, 0, len(profile.ResourceAttributes)+1)
+	keys := make([]string, 0, len(profile.ResourceAttributes))
+	for k := range profile.ResourceAttributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		attrs = append(attrs, attribute.String(key, profile.ResourceAttributes[k]))
+	}
+	return attrs
+}
+
 // otelTarget is the runtime state for a single configured profile: one trace client
 // plus an optional metrics exporter, along with the per-profile identity (service name)
 // used when converting traces for this destination.
@@ -316,6 +363,7 @@ type otelTarget struct {
 	metricsExporter       *MetricsExporter
 	requestHeaders        []string
 	disableContentLogging bool
+	resourceAttributes    []*commonpb.KeyValue
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -438,6 +486,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		traceType:             profile.TraceType,
 		requestHeaders:        slices.Clone(profile.RequestHeaders),
 		disableContentLogging: profile.DisableContentLogging,
+		resourceAttributes:    profileResourceAttributes(profile),
 	}
 
 	var err error
@@ -467,13 +516,14 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			return nil, fmt.Errorf("profile %d: metrics_push_interval must be between 1 and 300 seconds, got %d", index, pushInterval)
 		}
 		metricsConfig := &MetricsConfig{
-			ServiceName:  serviceName,
-			Endpoint:     profile.MetricsEndpoint.GetValue(),
-			Headers:      headers,
-			Protocol:     profile.Protocol,
-			TLSCACert:    profile.TLSCACert,
-			Insecure:     profile.Insecure,
-			PushInterval: pushInterval,
+			ServiceName:        serviceName,
+			Endpoint:           profile.MetricsEndpoint.GetValue(),
+			Headers:            headers,
+			Protocol:           profile.Protocol,
+			TLSCACert:          profile.TLSCACert,
+			Insecure:           profile.Insecure,
+			PushInterval:       pushInterval,
+			ResourceAttributes: profileMetricResourceAttributes(profile),
 		}
 		target.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
 		if err != nil {
@@ -650,7 +700,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		go func(t *otelTarget) {
 			defer wg.Done()
 			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.traceType, t.disableContentLogging)
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.traceType, t.disableContentLogging, t.resourceAttributes)
 				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
 					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
 				}

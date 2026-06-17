@@ -181,7 +181,11 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 				"collector_url": "env.OTEL_URL",
 				"trace_type": "genai_extension",
 				"protocol": "grpc",
-				"headers": {"Authorization": "env.OTEL_TOKEN", "X-Tenant": "acme"}
+				"headers": {"Authorization": "env.OTEL_TOKEN", "X-Tenant": "acme"},
+				"resource_attributes": {
+					"deployment.environment.name": "staging",
+					"openinference.project.name": "phoenix-a"
+				}
 			},
 			{
 				"service_name": "svc-b",
@@ -240,6 +244,12 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 	}
 	if back.Profiles[0].Headers["X-Tenant"] != "acme" {
 		t.Errorf("round-trip profile 0 literal header lost: %q", back.Profiles[0].Headers["X-Tenant"])
+	}
+	if back.Profiles[0].ResourceAttributes["deployment.environment.name"] != "staging" {
+		t.Errorf("round-trip profile 0 resource attribute lost: %q", back.Profiles[0].ResourceAttributes["deployment.environment.name"])
+	}
+	if back.Profiles[0].ResourceAttributes["openinference.project.name"] != "phoenix-a" {
+		t.Errorf("round-trip profile 0 project resource attribute lost: %q", back.Profiles[0].ResourceAttributes["openinference.project.name"])
 	}
 	if back.Profiles[1].CollectorURL.GetValue() != "http://collector-b:4318/v1/traces" {
 		t.Errorf("round-trip profile 1 collector_url = %q, want http://collector-b:4318/v1/traces", back.Profiles[1].CollectorURL.GetValue())

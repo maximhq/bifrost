@@ -69,6 +69,31 @@ func TestConvertTraceToResourceSpan_PluginSpanFilter(t *testing.T) {
 	}
 }
 
+func TestConvertTraceToResourceSpan_ProfileResourceAttributes(t *testing.T) {
+	p := &OtelPlugin{
+		attributesFromEnvironment: []*commonpb.KeyValue{
+			kvStr("openinference.project.name", "global-project"),
+			kvStr("deployment.environment.name", "staging"),
+		},
+	}
+	root := makeSpan("aaaa", "", "request", schemas.SpanKindHTTPRequest)
+	trace := &schemas.Trace{
+		TraceID:  "00000000000000000000000000000001",
+		RootSpan: root,
+		Spans:    []*schemas.Span{root},
+	}
+
+	rs := p.convertTraceToResourceSpan("svc", trace, nil, TraceTypeOpenInference, false, []*commonpb.KeyValue{
+		kvStr("deployment.environment.name", "production"),
+		kvStr("openinference.project.name", "phoenix-project"),
+	})
+	attrs := otelAttributes(rs.Resource.Attributes)
+
+	assertOTELStringAttribute(t, attrs, "service.name", "svc")
+	assertOTELStringAttribute(t, attrs, "deployment.environment.name", "production")
+	assertOTELStringAttribute(t, attrs, "openinference.project.name", "phoenix-project")
+}
+
 func TestConvertTraceToResourceSpan_ContentLogging(t *testing.T) {
 	const (
 		input  = `[{"role":"user","content":"hello"}]`
