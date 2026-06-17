@@ -161,6 +161,7 @@ type BifrostHTTPServer struct {
 	WSTicketStore        *handlers.WSTicketStore
 	TempTokens           *temptoken.Service
 	TempTokenSweepWorker *temptoken.SweepWorker
+	OAuth2SweepWorker    *oauth2SweepWorker
 	OAuth2ConsentHandler *handlers.OAuth2ConsentHandler
 
 	wsPool *bfws.Pool
@@ -1404,6 +1405,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Going ahead with API handlers
 	handlers.NewOAuth2DiscoveryHandler(s.Config).RegisterRoutes(s.Router, middlewares...)
 	handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens).RegisterRoutes(s.Router)
+	handlers.NewOAuth2SessionsHandler(s.Config).RegisterRoutes(s.Router, middlewares...)
 	if s.OAuth2ConsentHandler == nil {
 		s.OAuth2ConsentHandler = handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, nil)
 	}
@@ -1748,6 +1750,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Start(s.Ctx)
 		}
+		s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore)
+		if s.OAuth2SweepWorker != nil {
+			s.OAuth2SweepWorker.start(s.Ctx)
+		}
 		// Hand the service to the OAuth provider so InitiateUserOAuthFlow mints
 		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
 		if s.Config.OAuthProvider != nil {
@@ -1765,6 +1771,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			if s.TempTokenSweepWorker != nil {
 				s.TempTokenSweepWorker.Stop()
 				s.TempTokenSweepWorker = nil
+			}
+			if s.OAuth2SweepWorker != nil {
+				s.OAuth2SweepWorker.stop()
+				s.OAuth2SweepWorker = nil
 			}
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
@@ -1795,6 +1805,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
+		}
+		if s.OAuth2SweepWorker != nil {
+			s.OAuth2SweepWorker.stop()
+			s.OAuth2SweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
@@ -1829,6 +1843,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
+		}
+		if s.OAuth2SweepWorker != nil {
+			s.OAuth2SweepWorker.stop()
+			s.OAuth2SweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
@@ -1928,6 +1946,11 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.TempTokenSweepWorker != nil {
 				logger.Info("stopping temp-token sweep worker...")
 				s.TempTokenSweepWorker.Stop()
+			}
+			if s.OAuth2SweepWorker != nil {
+				logger.Info("stopping oauth2 sweep worker...")
+				s.OAuth2SweepWorker.stop()
+				s.OAuth2SweepWorker = nil
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

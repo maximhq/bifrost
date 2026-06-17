@@ -458,6 +458,30 @@ func (m *MockConfigStore) ConsumeOAuth2AuthorizeRequest(ctx context.Context, req
 func (m *MockConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error {
 	return nil
 }
+func (m *MockConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
+	return nil
+}
+func (m *MockConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
+	return nil
+}
+func (m *MockConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) ListOAuth2Sessions(ctx context.Context) ([]configstore.OAuth2SessionRow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) RevokeOAuth2Session(ctx context.Context, id string) error {
+	return nil
+}
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }

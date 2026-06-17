@@ -675,12 +675,33 @@ type ConfigStore interface {
 
 	// OAuth2 refresh tokens
 	GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error)
+	// GetOAuth2RefreshTokenByHashAny returns the row including revoked tokens,
+	// used to detect token reuse attacks and trigger family revocation.
+	GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error)
 	// ConsumeOAuth2AuthorizeRequest atomically marks the authorize request as
 	// code_issued and creates the refresh token — if either fails the client can retry.
 	ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error
 	// RotateOAuth2RefreshToken atomically revokes the old token and creates the
 	// new one — if either fails the old token stays active and the client can retry.
 	RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error
+	// RevokeOAuth2RefreshTokensByFamilyID revokes all active tokens in a family
+	// when a stolen-token reuse is detected (RFC 9700 §2.2.2).
+	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
+	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
+	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
+	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
+	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
+	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh
+	// token and were registered before the grace cutoff. Run after the refresh
+	// token sweep so clients are not collected while their tokens are still
+	// retained for reuse detection.
+	SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error)
+	// ListOAuth2Sessions returns active downstream grants for the Connected Clients UI.
+	ListOAuth2Sessions(ctx context.Context) ([]OAuth2SessionRow, error)
+	// GetOAuth2SessionByID returns a single active grant row for permission checks.
+	GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error)
+	// RevokeOAuth2Session revokes a specific downstream grant by refresh token ID.
+	RevokeOAuth2Session(ctx context.Context, id string) error
 
 	// Cleanup
 	Close(ctx context.Context) error
