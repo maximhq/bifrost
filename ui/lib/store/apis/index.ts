@@ -11,6 +11,7 @@ export * from "./mcpApi";
 export * from "./mcpLogsApi";
 export * from "./mcpPerUserHeadersApi";
 export * from "./mcpSessionsApi";
+export * from "./oauth2ConsentApi";
 export * from "./pluginsApi";
 export * from "./providersApi";
 export * from "./promptsApi";
