@@ -787,6 +787,9 @@ type AuthMiddleware struct {
 	wsTicketStore     *WSTicketStore
 	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
 	tempTokensEnabled atomic.Bool
+	// metricsRequireAuth, when true, keeps /metrics behind the auth middleware. Default false:
+	// /metrics is public (Prometheus scrapers can't carry admin auth), like /health.
+	metricsRequireAuth atomic.Bool
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
@@ -814,10 +817,12 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
 		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
+		am.metricsRequireAuth.Store(clientConfig.MetricsRequireAuth)
 	} else {
 		emptyRoutes := []string{}
 		am.whitelistedRoutes.Store(&emptyRoutes)
 		am.tempTokensEnabled.Store(false)
+		am.metricsRequireAuth.Store(false)
 	}
 
 	return am, nil
@@ -830,6 +835,11 @@ func (m *AuthMiddleware) UpdateAuthConfig(authConfig *configstore.AuthConfig) {
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
 func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
+}
+
+// UpdateMetricsRequireAuth updates whether the /metrics endpoint requires auth.
+func (m *AuthMiddleware) UpdateMetricsRequireAuth(requireAuth bool) {
+	m.metricsRequireAuth.Store(requireAuth)
 }
 
 // UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
@@ -904,7 +914,6 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/scim/oauth/callback",
 		"/api/scim/oauth/refresh",
 		"/api/scim/oauth/logout",
-		"/health",
 		"/api/version",
 	}
 	whitelistedPrefixes := []string{
@@ -927,6 +936,12 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/.well-known/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
+		// The Prometheus scrape endpoint is operational telemetry; Prometheus scrapers can't carry
+		// admin auth, so /metrics is public by default (like /health). Operators who consider the
+		// metric labels sensitive can set client config metrics_require_auth=true to gate it.
+		if url == "/metrics" {
+			return !m.metricsRequireAuth.Load()
+		}
 		if slices.Contains(systemWhitelistedRoutes, url) ||
 			slices.IndexFunc(whitelistedPrefixes, func(prefix string) bool {
 				return strings.HasPrefix(url, prefix)

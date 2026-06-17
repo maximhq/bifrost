@@ -903,6 +903,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
 		s.AuthMiddleware.UpdateTempTokenAuthEnabled(config.MCPEnableTempTokenAuth)
+		s.AuthMiddleware.UpdateMetricsRequireAuth(config.MetricsRequireAuth)
 	}
 	// Refresh the CORS middleware's immutable snapshot so its requests pick up the
 	// new AllowedOrigins/AllowedHeaders/DumpErrorsInConsoleLogs without racing the
