@@ -4008,6 +4008,39 @@ func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
 	assert.False(t, hasThinking, "Nova models should NOT use thinking field")
 }
 
+// TestNovaReasoningEffortClamped verifies efforts above Nova's enum (xhigh/max)
+// are clamped to "high" so Nova doesn't 400 on an invalid maxReasoningEffort.
+func TestNovaReasoningEffortClamped(t *testing.T) {
+	cases := map[string]string{
+		"xhigh":   "high",
+		"max":     "high",
+		"high":    "high",
+		"medium":  "medium",
+		"minimal": "low",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: "amazon.nova-pro-v1",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(in)}},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			cfg, ok := result.AdditionalModelRequestFields.Get("reasoningConfig")
+			require.True(t, ok, "expected reasoningConfig")
+			cfgMap, ok := cfg.(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, want, cfgMap["maxReasoningEffort"], "effort %q should map to %q", in, want)
+		})
+	}
+}
+
 // TestStandaloneCachePointBlockHandling tests that standalone cachePoint content blocks
 // (those with only cachePoint field and no type) are properly converted.
 func TestStandaloneCachePointBlockHandling(t *testing.T) {

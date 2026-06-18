@@ -64,8 +64,12 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
-	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+	// capModel is the canonical model used for capability gating (resolves aliases).
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	if !schemas.BedrockModelSupportsCachePoints(capModel) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
+	} else if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
 	}
 
 	return bedrockReq, nil
