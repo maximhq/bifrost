@@ -1952,6 +1952,11 @@
                       "description": "Enable LLM Observability (default: true)",
                       "default": true
                     },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)",
+                      "default": false
+                    },
                     "disable_content_logging": {
                       "type": "boolean",
                       "description": "Disable logging of message content to Datadog (default: false)",
