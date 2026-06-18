@@ -4041,6 +4041,53 @@ func TestNovaReasoningEffortClamped(t *testing.T) {
 	}
 }
 
+// TestReasoningSignatureEchoedOnlyWhenNonEmpty verifies that an empty reasoning
+// signature is dropped before sending to Bedrock (MiniMax emits ""), while a real
+// signature is preserved (Anthropic requires it). Keyed on the value, not the model.
+func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
+	cases := map[string]struct {
+		in   *string
+		want *string
+	}{
+		"empty signature dropped":  {in: schemas.Ptr(""), want: nil},
+		"nil signature dropped":    {in: nil, want: nil},
+		"real signature preserved": {in: schemas.Ptr("ErUBCkYI"), want: schemas.Ptr("ErUBCkYI")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: "anthropic.claude-sonnet-4-5",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+					{
+						Role:    schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ok")},
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ReasoningDetails: []schemas.ChatReasoningDetails{
+								{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("thinking"), Signature: tc.in},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			var got *string
+			for _, m := range result.Messages {
+				for _, b := range m.Content {
+					if b.ReasoningContent != nil && b.ReasoningContent.ReasoningText != nil {
+						got = b.ReasoningContent.ReasoningText.Signature
+					}
+				}
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // TestStandaloneCachePointBlockHandling tests that standalone cachePoint content blocks
 // (those with only cachePoint field and no type) are properly converted.
 func TestStandaloneCachePointBlockHandling(t *testing.T) {
