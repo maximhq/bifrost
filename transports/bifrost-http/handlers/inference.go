@@ -2876,6 +2876,11 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
 		return
 	}
+	// Decode percent-encoding so ARN ids (e.g. Bedrock job ARNs containing a
+	// slash sent as %2F) reach the provider raw, not double-encoded.
+	if decoded, err := url.PathUnescape(batchID); err == nil {
+		batchID = decoded
+	}
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -2922,6 +2927,11 @@ func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
 		return
 	}
+	// Decode percent-encoding so ARN ids (e.g. Bedrock job ARNs containing a
+	// slash sent as %2F) reach the provider raw, not double-encoded.
+	if decoded, err := url.PathUnescape(batchID); err == nil {
+		batchID = decoded
+	}
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -2967,6 +2977,11 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 	if batchID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
 		return
+	}
+	// Decode percent-encoding so ARN ids (e.g. Bedrock job ARNs containing a
+	// slash sent as %2F) reach the provider raw, not double-encoded.
+	if decoded, err := url.PathUnescape(batchID); err == nil {
+		batchID = decoded
 	}
 
 	// Get provider from query parameters
