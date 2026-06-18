@@ -1040,6 +1040,10 @@
                       "type": "boolean",
                       "description": "Enable Datadog LLM Observability (default: true)"
                     },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)"
+                    },
                     "disable_content_logging": {
                       "type": "boolean",
                       "description": "When true, sensitive content (prompts, completions, embeddings) is excluded from traces (default: false)"
