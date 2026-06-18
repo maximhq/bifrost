@@ -2939,12 +2939,9 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 // alias config when the request's model was resolved via alias mapping and the
 // alias defines them.
 func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "logs_recreate_filter_customers_matview_multivalue"
+	migrationName := "logs_add_canonical_model_columns"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
