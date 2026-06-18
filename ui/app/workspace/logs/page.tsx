@@ -480,9 +480,17 @@ export default function LogsPage() {
 			latency: "Latency",
 			tokens: "Tokens",
 			cost: "Cost",
+			virtual_key: "Virtual Key",
+			routing_rule: "Routing Rule",
+			team: "Team",
+			customer: "Customer",
+			user: "User",
+			business_unit: "Business Unit",
 		}),
 		[],
 	);
+
+	const DEFAULT_HIDDEN_COLUMNS = useMemo(() => ["virtual_key", "routing_rule", "team", "customer", "user", "business_unit"], []);
 
 	const {
 		entries: columnEntries,
@@ -496,6 +504,8 @@ export default function LogsPage() {
 	} = useColumnConfig({
 		columnIds,
 		paramName: "cols",
+		storageKey: "bifrost.logs.cols",
+		defaultHidden: DEFAULT_HIDDEN_COLUMNS,
 		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
 	});
 
