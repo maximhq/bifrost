@@ -1452,10 +1452,15 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		request.Params.Store = schemas.Ptr(false)
 	}
 
+	url := provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest)
+	if IsChatGPTPassthrough(ctx) {
+		url = ChatGPTCodexURL
+	}
+
 	return HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
+		url,
 		request,
 		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -1631,11 +1636,16 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		request.Params.Store = schemas.Ptr(false)
 	}
 
+	streamURL := provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest)
+	if IsChatGPTPassthrough(ctx) {
+		streamURL = ChatGPTCodexURL
+	}
+
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
+		streamURL,
 		request,
 		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
