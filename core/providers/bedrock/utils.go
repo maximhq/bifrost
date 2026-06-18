@@ -791,6 +791,20 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 	return messages, systemMessages, nil
 }
 
+// reasoningSignatureForBedrock returns sig only when it is a non-empty string.
+// A valid reasoning signature is a non-empty crypto token (Anthropic always emits
+// one, and Bedrock requires it on those reasoning blocks). Other families emit an
+// empty signature (MiniMax sends "") or none (Nova); echoing
+// reasoningContent.reasoningText.signature:"" back 400s with "This model doesn't
+// support the reasoningContent.reasoningText.signature field". Returning nil lets
+// omitempty drop the field (a non-nil *string to "" would still serialize as "").
+func reasoningSignatureForBedrock(sig *string) *string {
+	if sig == nil || *sig == "" {
+		return nil
+	}
+	return sig
+}
+
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
 // Bedrock accepts ("5m" | "1h"); anything else (e.g. Anthropic's "1m") is dropped to the default.
 func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
@@ -856,7 +870,7 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      detail.Text,
-							Signature: detail.Signature,
+							Signature: reasoningSignatureForBedrock(detail.Signature),
 						},
 					},
 				})
