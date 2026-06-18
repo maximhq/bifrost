@@ -1445,7 +1445,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
-	if provider.disableStore {
+	if provider.disableStore || IsChatGPTPassthrough(ctx) {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
@@ -1624,7 +1624,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
-	if provider.disableStore {
+	if provider.disableStore || IsChatGPTPassthrough(ctx) {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}

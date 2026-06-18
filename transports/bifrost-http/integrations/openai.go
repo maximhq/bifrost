@@ -756,6 +756,17 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				if isAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
+				if authHeader := string(ctx.Request.Header.Peek("Authorization")); strings.HasPrefix(authHeader, "Bearer ") {
+					token := strings.TrimPrefix(authHeader, "Bearer ")
+					if _, ok := openai.ParseChatGPTJWT(token); ok {
+						bifrostCtx.SetValue(schemas.BifrostContextKeyChatGPTPassthrough, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyURLPath, openai.ChatGPTCodexURL)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+							"Authorization": {"Bearer " + token},
+						})
+					}
+				}
 				return nil
 			},
 		})
