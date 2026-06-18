@@ -1135,7 +1135,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 // round-trips correctly through JSON marshaling.
 func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	nc := NetworkConfig{
-		DefaultRequestTimeoutInSeconds: 30,
+		DefaultRequestTimeoutInSeconds: 300,
 		StreamIdleTimeoutInSeconds:     120,
 	}
 
