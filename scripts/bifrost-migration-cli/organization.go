@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/maximhq/bifrost/scripts/litellm-to-bifrost/litellm"
+	"github.com/maximhq/bifrost/scripts/bifrost-migration-cli/litellm"
 )
 
 // rateLimitResetWindow is the Bifrost reset duration for migrated rate limits.

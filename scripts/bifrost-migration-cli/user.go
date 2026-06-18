@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/maximhq/bifrost/scripts/litellm-to-bifrost/litellm"
+	"github.com/maximhq/bifrost/scripts/bifrost-migration-cli/litellm"
 )
 
 // UserPlan is the planned Bifrost user (POST /api/users) plus the LiteLLM team

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/maximhq/bifrost/scripts/litellm-to-bifrost/litellm"
+	"github.com/maximhq/bifrost/scripts/bifrost-migration-cli/litellm"
 )
 
 // Secrets are redacted by the LiteLLM management API (/credentials masks the
