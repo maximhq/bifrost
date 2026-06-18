@@ -247,6 +247,7 @@ run_mode() {
             --env-var "vk_inactive_value=$VK_INACTIVE_VALUE"
             --env-var "mcp_issuer=http://localhost:$PORT"
             --timeout-script 60000 --timeout 120000
+            --ignore-redirects
             -r "$REPORTERS")
         [[ "$REPORTERS" == *"html"* ]] && cmd+=(--reporter-html-export "${report_prefix}.html")
         [[ "$REPORTERS" == *"json"* ]] && cmd+=(--reporter-json-export "${report_prefix}.json")
