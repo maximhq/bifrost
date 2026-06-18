@@ -401,7 +401,7 @@ false
 {{- if hasKey $providerConfig.network_config "enforce_http2" }}
 {{- $_ := set $networkConfig "enforce_http2" $providerConfig.network_config.enforce_http2 }}
 {{- end }}
-{{- if $providerConfig.network_config.beta_header_overrides }}
+{{- if hasKey $providerConfig.network_config "beta_header_overrides" }}
 {{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
 {{- end }}
 {{- if hasKey $providerConfig.network_config "allow_private_network" }}

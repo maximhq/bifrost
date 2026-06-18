@@ -288,6 +288,7 @@ bifrost:
         retry_backoff_initial_ms: 200
         retry_backoff_max_ms: 10000
         allow_private_network: true
+        beta_header_overrides: {}
       concurrency_and_buffer_size:
         concurrency: 50
         buffer_size: 100
@@ -347,6 +348,7 @@ assert_field_value 'providers.openai.network_config.max_retries' '.providers.ope
 assert_field_value 'providers.openai.network_config.retry_backoff_initial' '.providers.openai.network_config.retry_backoff_initial' '200'
 assert_field_value 'providers.openai.network_config.retry_backoff_max' '.providers.openai.network_config.retry_backoff_max' '10000'
 assert_field_value 'providers.openai.network_config.allow_private_network' '.providers.openai.network_config.allow_private_network' 'true'
+assert_field 'providers.openai.network_config.beta_header_overrides (explicit empty map preserved)' '.providers.openai.network_config.beta_header_overrides'
 
 # Concurrency config
 assert_field_value 'providers.openai.concurrency_and_buffer_size.concurrency' '.providers.openai.concurrency_and_buffer_size.concurrency' '50'
