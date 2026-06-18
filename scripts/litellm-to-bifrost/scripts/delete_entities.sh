@@ -3,7 +3,7 @@
 # delete_entities.sh — delete ALL entities from a running LiteLLM instance.
 # Covers, in dependency order: virtual keys, teams, organizations, budgets,
 # (DB-backed) models and credentials. Use this to reset a LiteLLM instance before
-# re-running the org->customer migration (go run ./scripts/migration/litellm).
+# re-running the org->customer migration (go run ./scripts/litellm-to-bifrost).
 #
 # Deletion order matters: keys and teams belong to organizations, so they are
 # removed first; budgets orphaned by org deletion are swept up afterwards.
