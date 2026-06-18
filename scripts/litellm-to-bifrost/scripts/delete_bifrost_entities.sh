@@ -15,7 +15,7 @@
 #   DRY_RUN=1 ./delete_bifrost_entities.sh              # list what would be deleted, delete nothing
 #   DELETE_VKS=0 ./delete_bifrost_entities.sh           # skip virtual keys (default: 1)
 #   DELETE_MODEL_CONFIGS=0 ./delete_bifrost_entities.sh # skip model configs
-#   DELETE_TEAMS=0 ./delete_bifrost__entities.sh        # skip teams
+#   DELETE_TEAMS=0 ./delete_bifrost_entities.sh        # skip teams
 #   DELETE_CUSTOMERS=0 ./delete_bifrost_entities.sh     # skip customers
 #   DELETE_USERS=0 ./delete_bifrost_entities.sh         # skip users
 #   DELETE_KEYS=0 ./delete_bifrost_entities.sh          # skip provider keys

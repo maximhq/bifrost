@@ -219,7 +219,10 @@ add_model "custom pricing"   '{"model_name":"custom-priced-model","litellm_param
 add_model "access groups"    '{"model_name":"gpt-4o-restricted","litellm_params":{"model":"openai/gpt-4o","api_key":"os.environ/OPENAI_API_KEY"},"model_info":{"access_groups":["beta-users","internal"],"tags":["production","team-platform"]}}'
 
 echo
-echo "Seeding complete: ${added} model(s) ${DRY_RUN:+(dry-run) }processed, ${failed} failed."
+
+dry_run_msg=""
+[[ "${DRY_RUN}" == "1" ]] && dry_run_msg="(dry-run) "
+echo "Seeding complete: ${added} model(s) ${dry_run_msg}processed, ${failed} failed."
 
 [[ "${failed}" -gt 0 ]] && exit 1
 exit 0
