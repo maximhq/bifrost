@@ -3338,6 +3338,15 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			},
 		}
 
+		// Surface the AWS job message (e.g. a validation failure reason) so
+		// callers see why a job failed without dropping to the AWS CLI.
+		if bedrockResp.Message != "" {
+			result.Errors = &schemas.BatchErrors{
+				Object: "list",
+				Data:   []schemas.BatchError{{Message: bedrockResp.Message}},
+			}
+		}
+
 		if bedrockResp.InputDataConfig != nil {
 			result.InputFileID = bedrockResp.InputDataConfig.S3InputDataConfig.S3Uri
 		}
