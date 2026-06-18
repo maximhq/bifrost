@@ -1400,6 +1400,14 @@ func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
 }
 
+// BedrockModelSupportsExtendedCacheTTL reports whether the Bedrock model supports
+// the 1h (extended) prompt-caching TTL. This is Anthropic-only; other cache-point
+// models (e.g. Nova) support caching but only the default 5m TTL and 400 with
+// "Extended TTL prompt caching is only supported for Anthropic models".
+func BedrockModelSupportsExtendedCacheTTL(model string) bool {
+	return IsAnthropicModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
