@@ -79,7 +79,7 @@ function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): n
 			case "h": total += n * 3600; break;
 		}
 	}
-	return Math.round(total);
+	return Math.ceil(total);
 }
 
 export default function MCPClientSheet({
@@ -832,7 +832,8 @@ export default function MCPClientSheet({
 																	return;
 																}
 																const n = Number(e.target.value);
-																field.onChange(Number.isInteger(n) ? n : Math.trunc(n));
+																if (!Number.isInteger(n)) return;
+																field.onChange(n);
 															}}
 															min="0"
 															step="1"
