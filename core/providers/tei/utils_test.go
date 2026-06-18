@@ -131,7 +131,7 @@ func TestTEIProviderRerank(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, 70)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
 	resp, bifrostErr := provider.Rerank(ctx, schemas.Key{
-		Value: *schemas.NewEnvVar("test-key"),
+		Value: *schemas.NewSecretVar("test-key"),
 	}, &schemas.BifrostRerankRequest{
 		Model: "BAAI/bge-reranker-v2-m3",
 		Query: "capital",
