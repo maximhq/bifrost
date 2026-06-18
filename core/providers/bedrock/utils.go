@@ -374,7 +374,9 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				effort := *bifrostReq.Params.Reasoning.Effort
 				typeStr := "enabled"
 				switch effort {
-				case "high":
+				case "high", "xhigh", "max":
+					// Nova's maxReasoningEffort enum tops out at "high"; clamp xhigh/max.
+					effort = "high"
 					if bedrockReq.InferenceConfig != nil {
 						bedrockReq.InferenceConfig.MaxTokens = nil
 						bedrockReq.InferenceConfig.Temperature = nil
@@ -2337,5 +2339,35 @@ func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
 			}
 		}
 		req.ToolConfig.Tools = req.ToolConfig.Tools[:nt]
+	}
+}
+
+// downgradeExtendedCacheTTLInBedrockRequest drops the 1h (extended) cache TTL to
+// the default for models that support cache points but not extended TTL (e.g. Nova),
+// which otherwise 400 with "Extended TTL prompt caching is only supported for
+// Anthropic models". Only 1h TTLs are touched; cache points themselves are kept.
+func downgradeExtendedCacheTTLInBedrockRequest(req *BedrockConverseRequest) {
+	downgrade := func(cp *BedrockCachePoint) {
+		if cp != nil && cp.TTL != nil && *cp.TTL == string(BedrockCacheWriteTTL1h) {
+			cp.TTL = nil
+		}
+	}
+	for i := range req.Messages {
+		for j := range req.Messages[i].Content {
+			downgrade(req.Messages[i].Content[j].CachePoint)
+			if req.Messages[i].Content[j].ToolResult != nil {
+				for k := range req.Messages[i].Content[j].ToolResult.Content {
+					downgrade(req.Messages[i].Content[j].ToolResult.Content[k].CachePoint)
+				}
+			}
+		}
+	}
+	for i := range req.System {
+		downgrade(req.System[i].CachePoint)
+	}
+	if req.ToolConfig != nil {
+		for i := range req.ToolConfig.Tools {
+			downgrade(req.ToolConfig.Tools[i].CachePoint)
+		}
 	}
 }
