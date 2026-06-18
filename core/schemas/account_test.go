@@ -457,6 +457,114 @@ func TestResolveFamilyPrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveCanonicalModelPrecedence(t *testing.T) {
+	// Helper to build a BifrostContext carrying a ResolvedAlias.
+	withAlias := func(ra *ResolvedAlias) *BifrostContext {
+		bc := NewBifrostContext(nil, NoDeadline)
+		if ra != nil {
+			bc.SetValue(BifrostContextKeyResolvedAlias, ra)
+		}
+		return bc
+	}
+
+	cases := []struct {
+		name     string
+		ra       *ResolvedAlias
+		fallback string
+		want     string
+	}{
+		{
+			name: "tier 1: explicit ModelName wins over ModelID",
+			ra: &ResolvedAlias{
+				Key: "best-claude",
+				Config: &AliasConfig{
+					ModelID:   "12345-azure-deployment",
+					ModelName: Ptr("claude-opus-4-8"),
+				},
+			},
+			fallback: "12345-azure-deployment",
+			want:     "claude-opus-4-8",
+		},
+		{
+			name: "tier 2: ModelID used when ModelName absent",
+			ra: &ResolvedAlias{
+				Key: "best-claude",
+				Config: &AliasConfig{
+					ModelID: "claude-opus-4-8-20251101",
+				},
+			},
+			fallback: "best-claude",
+			want:     "claude-opus-4-8-20251101",
+		},
+		{
+			name: "opaque ModelID is returned as-is when ModelName absent (legacy/passthrough alias)",
+			ra: &ResolvedAlias{
+				Key: "best-claude",
+				Config: &AliasConfig{
+					ModelID: "12345-azure-deployment",
+				},
+			},
+			fallback: "best-claude",
+			want:     "12345-azure-deployment",
+		},
+		{
+			name: "alias Key is NOT consulted — a Key that smells like a version must not leak into gating",
+			ra: &ResolvedAlias{
+				Key: "opus-4-8-fast", // intentionally version-looking; must be ignored
+				Config: &AliasConfig{
+					ModelID: "12345-azure-deployment",
+				},
+			},
+			fallback: "12345-azure-deployment",
+			want:     "12345-azure-deployment", // ModelID, never the Key
+		},
+		{
+			name: "ModelFamily is NOT consulted — present family must not change the resolved string",
+			ra: &ResolvedAlias{
+				Key: "x",
+				Config: &AliasConfig{
+					ModelID:     "claude-opus-4-8",
+					ModelFamily: Ptr(ModelFamilyAnthropic),
+				},
+			},
+			fallback: "x",
+			want:     "claude-opus-4-8",
+		},
+		{
+			name: "empty ModelName pointer is treated as absent (falls through to ModelID)",
+			ra: &ResolvedAlias{
+				Key: "x",
+				Config: &AliasConfig{
+					ModelID:   "claude-opus-4-8",
+					ModelName: Ptr(""),
+				},
+			},
+			fallback: "x",
+			want:     "claude-opus-4-8",
+		},
+		{
+			name:     "nil Config falls back to fallbackModel (defensive)",
+			ra:       &ResolvedAlias{Key: "x", Config: nil},
+			fallback: "claude-opus-4-8",
+			want:     "claude-opus-4-8",
+		},
+		{
+			name:     "no alias matched: fallbackModel returned verbatim — byte-identical to pre-refactor gating input",
+			ra:       nil,
+			fallback: "claude-opus-4-8",
+			want:     "claude-opus-4-8",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ResolveCanonicalModel(withAlias(c.ra), c.fallback)
+			if got != c.want {
+				t.Fatalf("ResolveCanonicalModel: got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestModelFamilyIsValid(t *testing.T) {
 	valid := []ModelFamily{
 		ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,

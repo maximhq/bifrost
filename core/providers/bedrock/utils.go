@@ -223,6 +223,9 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	if bifrostReq.Params == nil {
 		return nil
 	}
+
+	// capModel is the canonical model used only for Anthropic capability gating
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params); inferenceConfig != nil {
 		bedrockReq.InferenceConfig = inferenceConfig
@@ -292,7 +295,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				tokenBudget = anthropic.MinimumReasoningMaxTokens
 			}
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+				if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "adaptive",
 					})
@@ -392,7 +395,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
+				if anthropic.SupportsAdaptiveThinking(capModel) {
 					// Opus 4.6+: adaptive thinking + output_config.effort
 					effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 					thinkingConfig := map[string]any{
@@ -400,7 +403,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					}
 					if bifrostReq.Params.Reasoning.Display != nil {
 						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
-					} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
 						thinkingConfig["display"] = "summarized"
 					}
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -419,7 +422,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 		} else {
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if !anthropic.IsFableFamily(bifrostReq.Model) {
+				if !anthropic.IsFableFamily(capModel) {
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "disabled",
 					})

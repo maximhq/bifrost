@@ -474,7 +474,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					return nil, fmt.Errorf("failed to delete model field: %w", err)
 				}
 			} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
+				reqBody, err := gemini.ToGeminiChatCompletionRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -533,7 +533,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) && jsonBody != nil {
-		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, request.Model)
+		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, capModel)
 		if remapErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 		}
@@ -541,7 +542,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 		// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
 		var stripErr error
-		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, request.Model)
+		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, capModel)
 		if stripErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
 		}
@@ -813,15 +814,16 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		// Remap unsupported tool versions for Vertex streaming (handles raw passthrough bodies)
 		if jsonData != nil {
+			capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
 			var remapErr error
-			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex, request.Model)
+			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex, capModel)
 			if remapErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 			}
 
 			// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
 			var stripErr error
-			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, request.Model)
+			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, capModel)
 			if stripErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
 			}
@@ -871,7 +873,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
+				reqBody, err := gemini.ToGeminiChatCompletionRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -1139,7 +1141,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequest(request)
+				reqBody, err := gemini.ToGeminiResponsesRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -1366,7 +1368,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequest(request)
+				reqBody, err := gemini.ToGeminiResponsesRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -3984,7 +3986,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return gemini.ToGeminiResponsesRequest(request)
+				return gemini.ToGeminiResponsesRequest(ctx, request)
 			},
 		)
 		if bifrostErr != nil {

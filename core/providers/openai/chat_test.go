@@ -407,7 +407,7 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 				},
 			}
 
-			req.filterOpenAISpecificParameters()
+			req.filterOpenAISpecificParameters(req.Model)
 
 			if req.Reasoning == nil || req.Reasoning.Effort == nil {
 				t.Fatal("expected reasoning effort to be set")
