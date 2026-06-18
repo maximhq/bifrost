@@ -86,6 +86,9 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		return nil, nil
 	}
 
+	// capModel is the canonical model used for capability gating in the raw-body
+	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
 		return providerUtils.EnrichError(
 			ctx,
@@ -175,7 +178,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			// request.Model is the alias-resolved model id; pass it so
 			// computer-use / text-editor / bash tools get normalized to the
 			// canonical {type, name} pair Anthropic expects for the model's generation.
-			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, request.Model)
+			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, capModel)
 			if err != nil {
 				return nil, newErr(err.Error(), nil, jsonBody)
 			}
@@ -188,7 +191,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
-		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, request.Model)
+		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, capModel)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
