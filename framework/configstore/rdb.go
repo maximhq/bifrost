@@ -1957,7 +1957,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	return s.DB().Transaction(func(tx *gorm.DB) error {
 		// Check if a client with the same name already exists
 		if _, err := s.GetMCPClientByName(ctx, clientConfig.Name); err == nil {
-			return fmt.Errorf("MCP client with name '%s' already exists", clientConfig.Name)
+			return fmt.Errorf("MCP client with name %q %w", clientConfig.Name, ErrAlreadyExists)
 		}
 		// Create a deep copy to avoid modifying the original
 		clientConfigCopy, err := deepCopy(*clientConfig)
