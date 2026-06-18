@@ -4239,7 +4239,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      block.Text,
-							Signature: block.Signature,
+							Signature: reasoningSignatureForBedrock(block.Signature),
 						},
 					},
 				}
@@ -4308,7 +4308,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      block.Text,
-							Signature: block.Signature,
+							Signature: reasoningSignatureForBedrock(block.Signature),
 						},
 					}
 				}
