@@ -408,6 +408,30 @@ func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 	return ""
 }
 
+// ResolveCanonicalModel returns the model string that capability/version gating
+// should run against for the current attempt, walking the alias hierarchy:
+// canonical ModelName → wire ModelID → fallbackModel.
+//
+// Precedence here means "first present tier wins" — a present ModelName is
+// authoritative and we do not fall through to ModelID on it. The ModelName tier
+// is what makes Claude-on-Azure work: there the wire ModelID is an opaque
+// deployment id, but the admin-configured ModelName carries the real
+// "claude-opus-4-8" string the substring checks need.
+//
+// When no alias is resolved in ctx, fallbackModel (typically request.Model) is
+// returned unchanged, preserving pre-refactor behavior.
+func ResolveCanonicalModel(ctx *BifrostContext, fallbackModel string) string {
+	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil {
+		if ra.Config.ModelName != nil && *ra.Config.ModelName != "" {
+			return *ra.Config.ModelName
+		}
+		if ra.Config.ModelID != "" {
+			return ra.Config.ModelID
+		}
+	}
+	return fallbackModel
+}
+
 // IsAnthropicModelFamily reports whether the current attempt resolves to the
 // Anthropic model family. Thin wrapper over ResolveFamily so provider code
 // reads uniformly at the many call sites that branch on Anthropic vs
