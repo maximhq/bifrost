@@ -6,6 +6,10 @@ icon: "plug"
 
 All providers are configured under `providers` in `config.json`. Each provider entry contains a `keys` array where every key has a `name`, `value`, `models`, and `weight`, plus optional provider-specific config objects.
 
+<Note>
+In DB-backed deployments, provider entries from `config.json` are reconciled into the config store at startup. The default `source_of_truth: "split"` mode preserves UI/API edits while matching file-backed providers are unchanged. With `source_of_truth: "config.json"`, a present `providers` section is authoritative and prunes DB-only providers or keys. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+</Note>
+
 **Supplying credentials:**
 
 Use the `env.` prefix to reference environment variables - never put API keys directly in `config.json`:
