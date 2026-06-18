@@ -66,6 +66,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		...createInitialState(customer),
 		isDirty: false,
 	});
+	const [nameError, setNameError] = useState<string | null>(null);
 
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
 
@@ -82,6 +83,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			const init = createInitialState(customer);
 			setInitialState(init);
 			setFormData({ ...init, isDirty: false });
+			setNameError(null);
 		}
 	}, [open, customer]);
 
@@ -177,6 +179,9 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	);
 
 	const updateField = <K extends keyof CustomerFormData>(field: K, value: CustomerFormData[K]) => {
+		if (field === "name") {
+			setNameError(null);
+		}
 		setFormData((prev) => ({ ...prev, [field]: value }));
 	};
 
@@ -244,7 +249,11 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 			onOpenChange(false);
 			onSuccess?.();
-		} catch (error) {
+		} catch (error: any) {
+			if (error?.status === 409) {
+				setNameError(getErrorMessage(error));
+				return;
+			}
 			toast.error(getErrorMessage(error));
 		}
 	};
@@ -285,6 +294,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 										maxLength={50}
 										onChange={(e) => updateField("name", e.target.value)}
 									/>
+									{nameError && <p className="text-destructive text-sm">{nameError}</p>}
 									<p className="text-muted-foreground text-sm">This name will be used to identify the customer account.</p>
 								</div>
 							</div>

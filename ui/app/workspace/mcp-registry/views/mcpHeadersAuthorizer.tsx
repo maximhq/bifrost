@@ -20,6 +20,7 @@ interface MCPHeadersAuthorizerProps {
 	onClose: () => void;
 	onSuccess: () => void;
 	onError: (error: string) => void;
+	onConflict?: (error: string) => void;
 	// Full payload the parent has already assembled. The dialog adds
 	// user_headers (collected inline) and POSTs once.
 	payload: CreateMCPClientRequest;
@@ -34,6 +35,7 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 	onClose,
 	onSuccess,
 	onError,
+	onConflict,
 	payload,
 	perUserHeaderKeys,
 }) => {
@@ -70,6 +72,12 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 		} catch (err) {
 			if (cancelledRef.current) return;
 			const errMsg = getErrorMessage(err);
+			if ((err as any)?.status === 409) {
+				setStatus("input");
+				setErrorMessage(null);
+				onConflict?.(errMsg);
+				return;
+			}
 			setStatus("failed");
 			setErrorMessage(errMsg);
 			onError(errMsg);
