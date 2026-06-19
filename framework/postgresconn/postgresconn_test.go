@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -42,6 +43,70 @@ func TestValidateRejectsNonPositiveConnMaxLifetime(t *testing.T) {
 	cfg.ConnMaxLifetime = "0s"
 
 	require.ErrorContains(t, Validate(cfg, true), "postgres conn_max_lifetime must be positive")
+}
+
+func TestBuildDSNQuotesValuesForPasswordCommandParsing(t *testing.T) {
+	cfg := validConfig()
+	cfg.Host = schemas.NewEnvVar("127.0.0.1")
+	cfg.User = schemas.NewEnvVar("service-account@example-project.iam")
+	cfg.Password = schemas.NewEnvVar("")
+	cfg.PasswordCommand = &PasswordCommandConfig{Command: "printf", Args: []string{"unused-iam-auth"}}
+
+	pgxConfig, err := pgx.ParseConfig(BuildDSN(cfg))
+
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1", pgxConfig.Host)
+	require.Equal(t, "service-account@example-project.iam", pgxConfig.User)
+	require.Equal(t, "", pgxConfig.Password)
+	require.Equal(t, "bifrost", pgxConfig.Database)
+}
+
+func TestBuildDSNQuotesSpecialCharacters(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*Config)
+		validate func(*testing.T, *pgx.ConnConfig)
+	}{
+		{
+			name: "single quote",
+			mutate: func(cfg *Config) {
+				cfg.User = schemas.NewEnvVar("service'account")
+			},
+			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
+				require.Equal(t, "service'account", pgxConfig.User)
+			},
+		},
+		{
+			name: "backslash",
+			mutate: func(cfg *Config) {
+				cfg.Host = schemas.NewEnvVar(`C:\postgres\socket`)
+			},
+			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
+				require.Equal(t, `C:\postgres\socket`, pgxConfig.Host)
+			},
+		},
+		{
+			name: "backslash and single quote",
+			mutate: func(cfg *Config) {
+				cfg.DBName = schemas.NewEnvVar(`bifrost\tenant's`)
+			},
+			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
+				require.Equal(t, `bifrost\tenant's`, pgxConfig.Database)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(cfg)
+
+			pgxConfig, err := pgx.ParseConfig(BuildDSN(cfg))
+
+			require.NoError(t, err)
+			tt.validate(t, pgxConfig)
+		})
+	}
 }
 
 func TestCloseNilDBDoesNotPanic(t *testing.T) {

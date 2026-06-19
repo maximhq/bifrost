@@ -93,8 +93,8 @@ func BuildDSN(config *Config) string {
 		password = config.Password.GetValue()
 	}
 	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		config.Host.GetValue(), config.Port.GetValue(), config.User.GetValue(),
-		password, config.DBName.GetValue(), config.SSLMode.GetValue())
+		quoteLibpqValue(config.Host.GetValue()), quoteLibpqValue(config.Port.GetValue()), quoteLibpqValue(config.User.GetValue()),
+		quoteLibpqValue(password), quoteLibpqValue(config.DBName.GetValue()), quoteLibpqValue(config.SSLMode.GetValue()))
 }
 
 // Open opens a *gorm.DB against the configured Postgres instance.
@@ -242,6 +242,12 @@ func passwordCommandError(err error, stderr string) error {
 		return fmt.Errorf("postgres password_command failed: %w", err)
 	}
 	return fmt.Errorf("postgres password_command failed: %w: %s", err, stderr)
+}
+
+func quoteLibpqValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `'`, `\'`)
+	return "'" + value + "'"
 }
 
 // validatePasswordCommand checks that password_command is a direct executable invocation.
