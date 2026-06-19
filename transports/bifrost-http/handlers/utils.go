@@ -231,8 +231,8 @@ func matchesWildcardPattern(origin string, pattern string) bool {
 		return false
 	}
 
-	wildcardRegexpCache.LoadOrStore(pattern, re)
-	return re.MatchString(origin)
+	actual, _ := wildcardRegexpCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp).MatchString(origin)
 }
 
 // ParseModel parses a model string in the format "provider/model" or "provider/nested/model"
