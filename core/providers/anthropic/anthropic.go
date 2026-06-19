@@ -1330,6 +1330,16 @@ func HandleAnthropicResponsesStream(
 					responseChan, postHookSpanFinalizer)
 				continue
 			}
+			// Attach the upstream raw to exactly one bifrost response. Default to the last,
+			// but for the message_start expansion ([created, in_progress]) attach it to
+			// response.created
+			rawIdx := len(responses) - 1
+			for j, r := range responses {
+				if r != nil && r.Type == schemas.ResponsesStreamResponseTypeCreated {
+					rawIdx = j
+					break
+				}
+			}
 			// Handle each response in the slice
 			for i, response := range responses {
 				if response != nil {
@@ -1347,8 +1357,7 @@ func HandleAnthropicResponsesStream(
 					lastChunkTime = time.Now()
 					chunkIndex++
 
-					// Only add raw response to the last chunk of the incoming event
-					if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) && i == len(responses)-1 {
+					if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) && i == rawIdx {
 						response.ExtraFields.RawResponse = eventData
 					}
 
