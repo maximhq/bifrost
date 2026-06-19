@@ -57,18 +57,34 @@ func TestToBifrostListModelsResponse_AllowlistWithInferenceProviderSegment(t *te
 }
 
 // Allowlist entries prefixed with the "auto" policy must not be re-prefixed
-// with an inference provider either: "auto" is owned by no provider pass, so
-// the entry is skipped in every pass. It stays routable via requests because
-// splitIntoModelProvider recognizes "auto" as a valid policy segment.
+// with an inference provider: "auto" is owned by no provider pass (the listing
+// loop iterates INFERENCE_PROVIDERS, which excludes it). To keep the entry from
+// being dropped entirely, it is emitted exactly once during the canonical first
+// pass and skipped in every other pass, so it surfaces in the listing without
+// being duplicated once per provider. The "auto/" prefix is preserved, so it
+// stays routable: splitIntoModelProvider recognizes "auto" as a valid policy.
 func TestToBifrostListModelsResponse_AllowlistWithAutoPolicySegment(t *testing.T) {
 	t.Parallel()
 
-	response := &HuggingFaceListModelsResponse{Models: nil}
 	allowlist := schemas.WhiteList{"auto/deepseek-ai/DeepSeek-V4-Pro"}
 
-	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, allowlist, nil, nil, false)
-	require.NotNil(t, result)
-	assert.Empty(t, result.Data, "an auto-policy entry must not be re-prefixed with an inference provider")
+	t.Run("canonical first pass emits the auto-policy entry exactly once", func(t *testing.T) {
+		t.Parallel()
+		response := &HuggingFaceListModelsResponse{Models: nil}
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, INFERENCE_PROVIDERS[0], allowlist, nil, nil, false)
+		require.NotNil(t, result)
+		require.Len(t, result.Data, 1)
+		assert.Equal(t, "huggingface/auto/deepseek-ai/DeepSeek-V4-Pro", result.Data[0].ID,
+			"the auto-policy entry keeps its prefix and is not re-wrapped with an inference provider")
+	})
+
+	t.Run("non-canonical passes do not duplicate the auto-policy entry", func(t *testing.T) {
+		t.Parallel()
+		response := &HuggingFaceListModelsResponse{Models: nil}
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, allowlist, nil, nil, false)
+		require.NotNil(t, result)
+		assert.Empty(t, result.Data, "a non-canonical pass must not re-emit the auto-policy entry")
+	})
 }
 
 // Entries without an inference-provider segment keep the existing backfill

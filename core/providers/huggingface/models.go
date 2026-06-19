@@ -74,13 +74,26 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 		// or the "auto" policy. Prepending another segment here duplicates the
 		// provider in the compound ID and breaks request routing (#4215).
 		if first, _, found := strings.Cut(rawID, "/"); found && isKnownInferenceProviderOrPolicy(first) {
-			if !strings.EqualFold(first, string(inferenceProvider)) {
-				// The entry belongs to a different inference provider's listing
-				// (or names the "auto" policy, which no pass owns); skip it here
-				// to avoid duplicating the entry once per inference provider.
+			switch {
+			case strings.EqualFold(first, string(auto)):
+				// "auto" is owned by no inference-provider pass: the model
+				// listing loop iterates INFERENCE_PROVIDERS, which excludes it.
+				// Emit the entry exactly once, during the canonical first pass,
+				// so a routable auto-policy allowlist entry still surfaces in
+				// the listing instead of being dropped from every pass. Every
+				// other pass skips it to avoid duplicating it once per provider.
+				if len(INFERENCE_PROVIDERS) == 0 || inferenceProvider != INFERENCE_PROVIDERS[0] {
+					continue
+				}
+				m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
+			case !strings.EqualFold(first, string(inferenceProvider)):
+				// The entry belongs to a different inference provider's listing;
+				// it is emitted in that provider's pass. Skip it here to avoid
+				// duplicating the entry once per inference provider.
 				continue
+			default:
+				m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
 			}
-			m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
 		} else {
 			// Re-wrap the backfill ID to include the inferenceProvider segment
 			m.ID = fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, rawID)
