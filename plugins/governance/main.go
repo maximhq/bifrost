@@ -1260,16 +1260,19 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	// If its skip key selection - in that case we need to skip virtual key selection too
-	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
+	// Extract virtual key using utility functions
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+
+	// SkipKeySelection (e.g. Claude Code OAuth/max mode) bypasses governance only when no VK
+	// was supplied, preserving keyless OAuth users; with a VK present, run full governance.
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) &&
+		virtualKeyValue == "" {
 		return req, nil, nil
 	}
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
-	// Extract governance headers and virtual key using utility functions
-	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
