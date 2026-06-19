@@ -124,11 +124,23 @@ func TestRequestWithSettableExtraParams_AllProviderRequestTypes(t *testing.T) {
 		{"BedrockConverseRequest", &bedrock.BedrockConverseRequest{}},
 		{"BedrockTextCompletionRequest", &bedrock.BedrockTextCompletionRequest{}},
 		{"BedrockTitanEmbeddingRequest", &bedrock.BedrockTitanEmbeddingRequest{}},
+		{"BedrockCohereEmbeddingRequest", &bedrock.BedrockCohereEmbeddingRequest{}},
 		{"BedrockImageGenerationRequest", &bedrock.BedrockImageGenerationRequest{}},
+		{"BedrockImageVariationRequest", &bedrock.BedrockImageVariationRequest{}},
+		{"BedrockImageEditRequest", &bedrock.BedrockImageEditRequest{}},
+		{"StabilityAIImageGenerationRequest", &bedrock.StabilityAIImageGenerationRequest{}},
+		{"StabilityAIImageEditRequest", &bedrock.StabilityAIImageEditRequest{}},
+		{"BedrockInvokeRequest", &bedrock.BedrockInvokeRequest{}},
+		{"BedrockRerankRequest", &bedrock.BedrockRerankRequest{}},
 		{"GeminiGenerationRequest", &gemini.GeminiGenerationRequest{}},
+		{"GeminiBatchEmbeddingRequest", &gemini.GeminiBatchEmbeddingRequest{}},
 		{"GeminiEmbeddingRequest", &gemini.GeminiEmbeddingRequest{}},
+		{"GeminiImagenRequest", &gemini.GeminiImagenRequest{}},
+		{"GeminiVideoGenerationRequest", &gemini.GeminiVideoGenerationRequest{}},
 		{"CohereChatRequest", &cohere.CohereChatRequest{}},
+		{"CohereCountTokensRequest", &cohere.CohereCountTokensRequest{}},
 		{"CohereEmbeddingRequest", &cohere.CohereEmbeddingRequest{}},
+		{"CohereRerankRequest", &cohere.CohereRerankRequest{}},
 	}
 
 	for _, tt := range tests {
