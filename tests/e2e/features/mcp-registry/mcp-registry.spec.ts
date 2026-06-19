@@ -11,6 +11,42 @@ import {
 
 const hasSSEHeaders = Boolean(process.env.MCP_SSE_HEADERS)
 
+async function completeOAuthFlow(page: { context: () => any; request: any }, flow: {
+  authorize_url: string
+  oauth_config_id: string
+  complete_url?: string
+  status_url?: string
+}) {
+  const popup = await page.context().newPage()
+  await popup.goto(flow.authorize_url)
+  await popup.locator('#user').fill('demo-user')
+  await popup.getByRole('button', { name: /Sign in/i }).click()
+  await popup.waitForLoadState('networkidle').catch(() => {})
+  await popup.close().catch(() => {})
+
+  const statusUrl = flow.status_url ?? `/api/oauth/config/${flow.oauth_config_id}/status`
+  let authorized = false
+  for (let i = 0; i < 30; i++) {
+    const statusResponse = await page.request.get(statusUrl)
+    if (!statusResponse.ok()) {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      continue
+    }
+    const statusBody = await statusResponse.json().catch(() => null)
+    if (statusBody?.status === 'authorized') {
+      authorized = true
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+
+  expect(authorized).toBe(true)
+
+  const completeUrl = flow.complete_url ?? `/api/mcp/client/${flow.oauth_config_id}/complete-oauth`
+  const completeResponse = await page.request.post(completeUrl)
+  expect(completeResponse.ok()).toBe(true)
+}
+
 // Track created clients for cleanup
 const createdClients: string[] = []
 
@@ -384,6 +420,7 @@ test.describe('MCP Registry', () => {
       await expect(mcpRegistryPage.sheet).toBeVisible()
 
       await mcpRegistryPage.selectAuthType('oauth')
+      await mcpRegistryPage.expandOAuthAdvancedIfCollapsed()
 
       // All fields are optional — auto-discovered from server metadata
       await expect(mcpRegistryPage.oauthClientIdInput).toBeVisible()
@@ -398,25 +435,9 @@ test.describe('MCP Registry', () => {
       const clientData = createOAuthClientData()
       createdClients.push(clientData.name)
 
-      const created = await mcpRegistryPage.createClient(clientData)
-      expect(created).toBe(true)
-
-      // OAuth Authorization dialog appears — click "Open Authorization Window"
-      const openWindowBtn = mcpRegistryPage.page.locator('[data-testid="oauth-open-window-btn"]')
-      await expect(openWindowBtn).toBeVisible({ timeout: 10000 })
-
-      const [popup] = await Promise.all([
-        mcpRegistryPage.page.waitForEvent('popup'),
-        openWindowBtn.click(),
-      ])
-
-      // Complete login in popup (oauth-demo-server login form)
-      await popup.waitForLoadState()
-      await popup.locator('#user').fill('demo-user')
-      await popup.getByRole('button', { name: /Sign in/i }).click()
-
-      // Popup redirects to Bifrost callback then closes
-      await popup.waitForEvent('close', { timeout: 15000 }).catch(() => {})
+      const flow = await mcpRegistryPage.createOAuthClient(clientData)
+      await completeOAuthFlow(mcpRegistryPage.page, flow)
+      await mcpRegistryPage.goto()
 
       // Client should now be connected and visible in table
       const exists = await mcpRegistryPage.clientExists(clientData.name)
@@ -430,6 +451,7 @@ test.describe('MCP Registry', () => {
       await expect(mcpRegistryPage.sheet).toBeVisible()
 
       await mcpRegistryPage.selectAuthType('per_user_oauth')
+      await mcpRegistryPage.expandOAuthAdvancedIfCollapsed()
 
       await expect(mcpRegistryPage.oauthClientIdInput).toBeVisible()
       await expect(mcpRegistryPage.oauthClientSecretInput).toBeVisible()
@@ -443,26 +465,9 @@ test.describe('MCP Registry', () => {
       const clientData = createPerUserOAuthClientData()
       createdClients.push(clientData.name)
 
-      const created = await mcpRegistryPage.createClient(clientData)
-      expect(created).toBe(true)
-
-      // "Test OAuth Configuration" dialog appears. Per-user OAuth opens the
-      // authorization popup directly from this confirmation click.
-      const confirmBtn = mcpRegistryPage.page.locator('[data-testid="per-user-oauth-confirm"]')
-      await expect(confirmBtn).toBeVisible({ timeout: 10000 })
-
-      const [popup] = await Promise.all([
-        mcpRegistryPage.page.waitForEvent('popup'),
-        confirmBtn.click(),
-      ])
-
-      // Complete login in popup (oauth-demo-server login form)
-      await popup.waitForLoadState()
-      await popup.locator('#user').fill('demo-user')
-      await popup.getByRole('button', { name: /Sign in/i }).click()
-
-      // Popup redirects to Bifrost callback then closes
-      await popup.waitForEvent('close', { timeout: 15000 }).catch(() => {})
+      const flow = await mcpRegistryPage.createOAuthClient(clientData)
+      await completeOAuthFlow(mcpRegistryPage.page, flow)
+      await mcpRegistryPage.goto()
 
       // Client should be visible in table
       const exists = await mcpRegistryPage.clientExists(clientData.name)
