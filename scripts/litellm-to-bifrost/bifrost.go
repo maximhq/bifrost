@@ -253,21 +253,21 @@ func (c *BifrostClient) FindCustomerByName(ctx context.Context, name string) (id
 func (c *BifrostClient) CreateUser(ctx context.Context, in *BifrostCreateUserRequest) (string, error) {
 	body, status, err := c.doRequest(ctx, http.MethodPost, "/api/users", in)
 	if err != nil {
-		return "", fmt.Errorf("create user %q: %w", in.Email, err)
+		return "", fmt.Errorf("create user %q: %w", maskEmail(in.Email), err)
 	}
 
 	if status == http.StatusConflict {
 		id, ok, ferr := c.FindUserByEmail(ctx, in.Email)
 		if ferr != nil {
-			return "", fmt.Errorf("create user %q: already exists but lookup failed: %w", in.Email, ferr)
+			return "", fmt.Errorf("create user %q: already exists but lookup failed: %w", maskEmail(in.Email), ferr)
 		}
 		if !ok {
-			return "", fmt.Errorf("create user %q: conflict but no matching user found", in.Email)
+			return "", fmt.Errorf("create user %q: conflict but no matching user found", maskEmail(in.Email))
 		}
 		return id, nil
 	}
 	if status < 200 || status >= 300 {
-		return "", fmt.Errorf("create user %q: status %d: %s", in.Email, status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("create user %q: status %d: %s", maskEmail(in.Email), status, strings.TrimSpace(string(body)))
 	}
 
 	var out struct {
@@ -279,7 +279,7 @@ func (c *BifrostClient) CreateUser(ctx context.Context, in *BifrostCreateUserReq
 		return "", fmt.Errorf("decode created user: %w", err)
 	}
 	if out.User.ID == "" {
-		return "", fmt.Errorf("create user %q: empty id in response", in.Email)
+		return "", fmt.Errorf("create user %q: empty id in response", maskEmail(in.Email))
 	}
 	return out.User.ID, nil
 }
@@ -351,7 +351,7 @@ func (c *BifrostClient) CreateModelConfig(ctx context.Context, in ModelConfigPla
 // FindUserByEmail resolves a Bifrost user id by exact email via
 // GET /api/users?search=. Returns ok=false (no error) when none matches.
 func (c *BifrostClient) FindUserByEmail(ctx context.Context, email string) (id string, ok bool, err error) {
-	body, err := c.getJSON(ctx, "/api/users?search="+url.QueryEscape(email), fmt.Sprintf("find user %q", email))
+	body, err := c.getJSON(ctx, "/api/users?search="+url.QueryEscape(email), fmt.Sprintf("find user %q", maskEmail(email)))
 	if err != nil {
 		return "", false, err
 	}

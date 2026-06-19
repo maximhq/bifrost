@@ -57,7 +57,9 @@ type MigrationRunConfig struct {
 }
 
 func requireEnv(key string) string {
-	if val, ok := os.LookupEnv(key); ok {
+	val, ok := os.LookupEnv(key)
+	val = strings.TrimSpace(val)
+	if ok && val != "" {
 		return val
 	}
 	log.Fatalf("%s is required.", key)
@@ -254,38 +256,38 @@ func runUsers(ctx context.Context, cfg MigrationRunConfig) error {
 	for _, p := range plans {
 		userID, err := cfg.BifrostClient.CreateUser(ctx, &BifrostCreateUserRequest{Name: p.Name, Email: p.Email})
 		if err != nil {
-			log.Printf("FAIL user %q: %v", p.Email, err)
+			log.Printf("FAIL user %q: %v", maskEmail(p.Email), err)
 			failed++
 			continue
 		}
 		migrated++
-		log.Printf("OK   user %q -> %q", p.Email, userID)
+		log.Printf("OK   user %q -> %q", maskEmail(p.Email), userID)
 
 		for _, srcTeamID := range p.SourceTeamIDs {
 			alias := aliasByTeamID[srcTeamID]
 			if alias == "" {
-				log.Printf("WARN user %q: team %q not found / has no alias; skipping link", p.Email, srcTeamID)
+				log.Printf("WARN user %q: team %q not found / has no alias; skipping link", maskEmail(p.Email), srcTeamID)
 				linkSkipped++
 				continue
 			}
 			teamID, ok, err := cfg.BifrostClient.FindTeamByName(ctx, alias)
 			if err != nil {
-				log.Printf("WARN user %q: resolving team %q: %v; skipping link", p.Email, alias, err)
+				log.Printf("WARN user %q: resolving team %q: %v; skipping link", maskEmail(p.Email), alias, err)
 				linkSkipped++
 				continue
 			}
 			if !ok {
-				log.Printf("WARN user %q: team %q not migrated yet; skipping link", p.Email, alias)
+				log.Printf("WARN user %q: team %q not migrated yet; skipping link", maskEmail(p.Email), alias)
 				linkSkipped++
 				continue
 			}
 			if err := cfg.BifrostClient.AddTeamMember(ctx, teamID, userID); err != nil {
-				log.Printf("FAIL link user %q -> team %q: %v", p.Email, alias, err)
+				log.Printf("FAIL link user %q -> team %q: %v", maskEmail(p.Email), alias, err)
 				failed++
 				continue
 			}
 			links++
-			log.Printf("OK   link user %q -> team %q", p.Email, alias)
+			log.Printf("OK   link user %q -> team %q", maskEmail(p.Email), alias)
 		}
 	}
 
@@ -296,11 +298,19 @@ func runUsers(ctx context.Context, cfg MigrationRunConfig) error {
 	return nil
 }
 
+func maskEmail(email string) string {
+	at := strings.Index(email, "@")
+	if at <= 1 {
+		return "***"
+	}
+	return email[:1] + "***" + email[at:]
+}
+
 // printUserReport logs the planned users (with their team links) and everything
 // the transform could not carry.
 func printUserReport(plans []UserPlan, r UserMigrationReport) {
 	for _, p := range plans {
-		log.Printf("PLAN user %q (%s) -> teams=%v", p.Name, p.Email, p.SourceTeamIDs)
+		log.Printf("PLAN user %q (%s) -> teams=%v", p.Name, maskEmail(p.Email), p.SourceTeamIDs)
 	}
 	logReportSection("skipped (no email; Bifrost requires one)", r.SkippedNoEmail)
 	logReportSection("dropped roles (no LiteLLM->Bifrost role mapping)", r.DroppedRoles)

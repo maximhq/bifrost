@@ -122,22 +122,42 @@ func resolveProviderKeyConfigs(names []string, keyModelIdx map[string][]Provider
 		return allProvidersAllKeys(allProviders), nil
 	}
 
+	providerSet := make(map[string]bool, len(allProviders))
+	for _, p := range allProviders {
+		providerSet[p] = true
+	}
+
 	// perProvider accumulates UUIDs of keys to attach, keyed by provider.
 	perProvider := map[string]map[string]bool{} // provider → set of keyIDs
+	fullWildcard := map[string]bool{}            // provider → granted via "<provider>/*"
 	var provOrder []string
 	var unmapped []string
 
+	ensureProvider := func(p string) {
+		if perProvider[p] == nil {
+			perProvider[p] = map[string]bool{}
+			provOrder = append(provOrder, p)
+		}
+	}
+
 	for _, n := range names {
+		if n != "*" && trimModelPrefix(n) == "*" {
+			provider, _, _ := strings.Cut(n, "/")
+			if !providerSet[provider] {
+				unmapped = append(unmapped, n)
+				continue
+			}
+			ensureProvider(provider)
+			fullWildcard[provider] = true
+			continue
+		}
 		refs := keyModelIdx[n]
 		if len(refs) == 0 {
 			unmapped = append(unmapped, n)
 			continue
 		}
 		for _, r := range refs {
-			if perProvider[r.Provider] == nil {
-				perProvider[r.Provider] = map[string]bool{}
-				provOrder = append(provOrder, r.Provider)
-			}
+			ensureProvider(r.Provider)
 			perProvider[r.Provider][r.KeyID] = true
 		}
 	}
@@ -152,10 +172,11 @@ func resolveProviderKeyConfigs(names []string, keyModelIdx map[string][]Provider
 
 	configs := make([]VKProviderConfig, 0, len(provOrder))
 	for _, p := range provOrder {
-		configs = append(configs, VKProviderConfig{
-			Provider: p,
-			KeyIDs:   keysSorted(perProvider[p]),
-		})
+		keyIDs := []string{"*"}
+		if !fullWildcard[p] {
+			keyIDs = keysSorted(perProvider[p])
+		}
+		configs = append(configs, VKProviderConfig{Provider: p, KeyIDs: keyIDs})
 	}
 	return configs, unmapped
 }
