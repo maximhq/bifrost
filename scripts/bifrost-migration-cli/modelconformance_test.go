@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/scripts/litellm-to-bifrost/litellm"
+	"github.com/maximhq/bifrost/scripts/bifrost-migration-cli/litellm"
 )
 
 // ---- live test harness -----------------------------------------------------

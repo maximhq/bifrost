@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/maximhq/bifrost/scripts/litellm-to-bifrost/litellm"
+	"github.com/maximhq/bifrost/scripts/bifrost-migration-cli/litellm"
 )
 
 // VKProviderConfig is the planned per-provider key attachment for a VK.

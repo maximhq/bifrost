@@ -9,11 +9,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maximhq/bifrost/scripts/litellm-to-bifrost/litellm"
+	"github.com/maximhq/bifrost/scripts/bifrost-migration-cli/litellm"
+)
+
+var (
+	version = "dev"
+	commit  = "none"
 )
 
 // main parses CLI flags and runs all LiteLLM entity migrations in order.
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Printf("bifrost-migration-cli %s (%s)\n", version, commit)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 

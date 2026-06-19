@@ -1,4 +1,4 @@
-module github.com/maximhq/bifrost/scripts/litellm-to-bifrost
+module github.com/maximhq/bifrost/scripts/bifrost-migration-cli
 
 go 1.26.4
 
