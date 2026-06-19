@@ -313,14 +313,23 @@
                 "icon": "road-barrier",
                 "pages": [
                   "enterprise/guardrails",
-                  "enterprise/guardrails/secrets-detection",
-                  "enterprise/guardrails/custom-regex",
-                  "integrations/guardrails/aws-bedrock",
-                  "integrations/guardrails/azure-content-safety",
-                  "integrations/guardrails/google-model-armor",
-                  "integrations/guardrails/crowdstrike-aidr",
-                  "integrations/guardrails/grayswan",
-                  "integrations/guardrails/patronus-ai"
+                  "enterprise/guardrails/redaction",
+                  {
+                    "group": "Providers",
+                    "icon": "shield-check",
+                    "pages": [
+                      "enterprise/guardrails/secrets-detection",
+                      "enterprise/guardrails/custom-regex",
+                      "integrations/guardrails/presidio",
+                      "integrations/guardrails/azure-language-pii",
+                      "integrations/guardrails/aws-bedrock",
+                      "integrations/guardrails/azure-content-safety",
+                      "integrations/guardrails/google-model-armor",
+                      "integrations/guardrails/crowdstrike-aidr",
+                      "integrations/guardrails/grayswan",
+                      "integrations/guardrails/patronus-ai"
+                    ]
+                  }
                 ]
               },
               "enterprise/audit-logs",
@@ -521,6 +530,8 @@
             "pages": [
               "enterprise/guardrails/secrets-detection",
               "enterprise/guardrails/custom-regex",
+              "integrations/guardrails/presidio",
+              "integrations/guardrails/azure-language-pii",
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/google-model-armor",

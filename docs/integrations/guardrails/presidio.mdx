@@ -1,0 +1,160 @@
+---
+title: "Microsoft Presidio"
+description: "Use Microsoft Presidio Analyzer with Bifrost Guardrails for configurable PII detection, blocking, and redaction."
+icon: "microsoft"
+---
+
+## Overview
+
+Bifrost Enterprise supports **Microsoft Presidio** as a guardrail provider for PII detection. Bifrost sends selected request or response text to a Presidio Analyzer service, then applies the configured action: detect, block, or redact.
+
+Use Presidio when you want a self-hosted or privately deployed PII analyzer with configurable entity filters and score thresholds.
+
+## How It Works
+
+1. You deploy or provide a Presidio Analyzer endpoint.
+2. You create a guardrail provider with `provider_name: "presidio"`.
+3. You optionally choose Presidio entity types and a score threshold.
+4. You attach the provider to one or more guardrail rules.
+5. Bifrost sends text blocks to Presidio's `/analyze` endpoint.
+6. Bifrost applies the configured `action`.
+
+Presidio currently evaluates text content. It does not inspect image pixels or arbitrary binary file contents.
+
+## Capabilities
+
+- PII detection through Presidio Analyzer
+- Optional entity filtering with `entities`
+- Optional score threshold with `score_threshold`
+- `detect_only`, `block`, and `redact` actions
+- Bifrost-managed redaction strategies and modes
+- Supported-entities lookup through the configured Analyzer service
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `analyzer_url` | string | Yes | - | Base URL for the Presidio Analyzer service. Bifrost appends `/analyze`. |
+| `api_key` | string | No | - | Optional API key. Supports `env.PRESIDIO_API_KEY`. |
+| `language` | string | No | `en` | Language sent to Presidio Analyzer. |
+| `score_threshold` | number | No | `0.5` | Minimum Presidio score to keep, from `0` to `1`. |
+| `entities` | array | No | all supported entities | Presidio entity types to detect. |
+| `action` | enum | No | `detect_only` | `detect_only`, `block`, or `redact`. |
+| `redaction_strategy` | enum | No | `replace` | `replace`, `mask`, or `hash`. Used when `action` is `redact`. |
+| `redaction_mode` | enum | No | `runtime` | `runtime`, `logs_only`, or `runtime_reversible`. Used when `action` is `redact`. |
+| `timeout` | integer | No | provider default | Provider execution timeout in seconds. |
+
+For the full redaction behavior matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
+## Configuration
+
+<Tabs group="presidio-config">
+<Tab title="Web UI">
+
+1. Go to **Guardrails** > **Providers**.
+2. Select **Microsoft Presidio**.
+3. Click **Add Configuration**.
+4. Enter your Analyzer URL.
+5. Optionally set an API key, language, score threshold, and entity filters.
+6. Choose an action. Select **Redact** to enable Bifrost-managed redaction.
+7. If redacting, choose the redaction strategy and mode.
+8. Save the configuration and attach it to a guardrail rule.
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/presidio \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "presidio-pii-redaction",
+    "enabled": true,
+    "config": {
+      "analyzer_url": "https://presidio.company.com",
+      "api_key": "env.PRESIDIO_API_KEY",
+      "language": "en",
+      "score_threshold": 0.75,
+      "entities": ["EMAIL_ADDRESS", "PHONE_NUMBER", "PERSON"],
+      "action": "redact",
+      "redaction_strategy": "replace",
+      "redaction_mode": "runtime_reversible"
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 30,
+        "provider_name": "presidio",
+        "policy_name": "presidio-pii-redaction",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "analyzer_url": "https://presidio.company.com",
+          "api_key": "env.PRESIDIO_API_KEY",
+          "language": "en",
+          "score_threshold": 0.75,
+          "entities": ["EMAIL_ADDRESS", "PHONE_NUMBER", "PERSON"],
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 30
+        provider_name: "presidio"
+        policy_name: "presidio-pii-redaction"
+        enabled: true
+        timeout: 10
+        config:
+          analyzer_url: "https://presidio.company.com"
+          api_key: "env.PRESIDIO_API_KEY"
+          language: "en"
+          score_threshold: 0.75
+          entities:
+            - "EMAIL_ADDRESS"
+            - "PHONE_NUMBER"
+            - "PERSON"
+          action: "redact"
+          redaction_strategy: "replace"
+          redaction_mode: "runtime_reversible"
+```
+
+</Tab>
+</Tabs>
+
+## Entity Filters
+
+Leave `entities` empty to let Presidio return all entities supported by your Analyzer configuration. Set `entities` when you want a narrower policy, for example only `EMAIL_ADDRESS` and `PHONE_NUMBER`.
+
+Bifrost can fetch supported entities from:
+
+```text
+GET {analyzer_url}/supportedentities?language={language}
+```
+
+That entity catalog powers the multi-select experience in the UI when the configured Analyzer is reachable.
+
+## Operational Notes
+
+- Presidio offsets are converted into Go byte ranges before redaction.
+- `score_threshold: 0` is valid and is sent explicitly to Presidio.
+- The default action is `detect_only`, so set `action: "redact"` or `action: "block"` when you want enforcement.
+- Redaction modes affect Bifrost runtime payloads, Bifrost logs, and trace-export connectors as described in [Guardrail Redaction](/enterprise/guardrails/redaction).
