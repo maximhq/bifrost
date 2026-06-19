@@ -16,7 +16,7 @@ func TestMatchesWildcardPattern(t *testing.T) {
 		{"subdomain no match", "https://app.other.com", "https://*.example.com", false},
 
 		// Scheme-less wildcard
-		{"scheme-less match", "https://api.mysite.io", "*.mysite.io", false}, // scheme prefix prevents full match
+		{"scheme-less no match with scheme prefix", "https://api.mysite.io", "*.mysite.io", false},
 		{"scheme-less exact subdomain", "sub.mysite.io", "*.mysite.io", true},
 
 		// Wildcard should not match dots (no nested subdomains)
