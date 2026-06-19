@@ -1576,6 +1576,69 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
 	assert.NotNil(t, result)
 }
 
+// TestPreLLMHook_SkipKeySelection covers the OAuth/max-mode bypass condition: governance is
+// skipped only when SkipKeySelection is set AND no virtual key is present (keyless OAuth users),
+// while a SkipKeySelection request that carries a VK is fully governed.
+func TestPreLLMHook_SkipKeySelection(t *testing.T) {
+	logger := NewMockLogger()
+	// Valid VK whose budget is already exceeded, so enforcement is observable when it runs.
+	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*vkBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	// IsVkMandatory=true so the keyless control case (no skip, no VK) is rejected — this is what
+	// proves the skip+no-VK case bypasses rather than merely passing checks.
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(true)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name               string
+		skipKeySelection   bool
+		virtualKey         string
+		expectShortCircuit bool
+		msgContains        string
+	}{
+		{name: "skip + no VK bypasses governance (keyless OAuth)", skipKeySelection: true, virtualKey: "", expectShortCircuit: false},
+		{name: "no skip + no VK is enforced (VK required)", skipKeySelection: false, virtualKey: "", expectShortCircuit: true, msgContains: "virtual key is required"},
+		{name: "skip + valid VK is enforced (budget exceeded)", skipKeySelection: true, virtualKey: "sk-bf-test", expectShortCircuit: true, msgContains: "budget exceeded"},
+		{name: "skip + unknown VK is enforced (not found)", skipKeySelection: true, virtualKey: "sk-bf-unknown", expectShortCircuit: true, msgContains: "not found"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
+			if tc.virtualKey != "" {
+				parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyVirtualKey, tc.virtualKey)
+			}
+			ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+			if tc.skipKeySelection {
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			}
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4",
+				},
+			}
+
+			result, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			assert.NoError(t, err)
+			if tc.expectShortCircuit {
+				require.NotNil(t, shortCircuit, "expected governance to short-circuit")
+				assert.Contains(t, shortCircuit.Error.Error.Message, tc.msgContains)
+			} else {
+				assert.Nil(t, shortCircuit, "expected governance to be bypassed")
+				assert.NotNil(t, result)
+			}
+		})
+	}
+}
+
 func TestPreLLMHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
