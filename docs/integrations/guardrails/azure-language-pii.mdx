@@ -1,0 +1,180 @@
+---
+title: "Azure AI Language PII"
+description: "Use Azure AI Language PII detection with Bifrost Guardrails for configurable PII detection, blocking, and redaction."
+icon: "microsoft"
+---
+
+## Overview
+
+Bifrost Enterprise supports **Azure AI Language PII** as a guardrail provider for detecting personally identifiable information in request and response text.
+
+This provider is separate from [Azure Content Safety](/integrations/guardrails/azure-content-safety). Azure Content Safety focuses on harmful content, jailbreaks, and blocklists. Azure AI Language PII focuses on PII entity recognition.
+
+## How It Works
+
+1. You create an Azure AI Language resource.
+2. You create a Bifrost guardrail provider with `provider_name: "azure-pii"`.
+3. You optionally choose PII categories, language, model version, and domain.
+4. You attach the provider to one or more guardrail rules.
+5. Bifrost calls Azure Language PII analysis for selected request or response text.
+6. Bifrost applies the configured `action`.
+
+Azure AI Language PII currently evaluates text content. It does not inspect image pixels or arbitrary binary file contents.
+
+## Capabilities
+
+- PII detection through Azure AI Language
+- Category filtering with `pii_categories`
+- Optional `phi` domain for protected health information scenarios
+- API key, default credential, and Entra ID authentication
+- `detect_only`, `block`, and `redact` actions
+- Bifrost-managed redaction strategies and modes
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `endpoint` | string | Yes | - | Azure AI Language endpoint. Supports `env.AZURE_LANGUAGE_ENDPOINT`. |
+| `auth_type` | enum | No | `api_key` | `api_key`, `default_credential`, or `entra_id`. |
+| `api_key` | string | Conditional | - | Required when `auth_type` is `api_key`. Supports `env.AZURE_LANGUAGE_KEY`. |
+| `client_id` | string | Conditional | - | Required when `auth_type` is `entra_id`. |
+| `client_secret` | string | Conditional | - | Required when `auth_type` is `entra_id`. |
+| `tenant_id` | string | Conditional | - | Required when `auth_type` is `entra_id`. |
+| `scopes` | array | No | Azure default | OAuth scopes for token authentication. |
+| `api_version` | string | No | `2026-05-01` | Azure Language API version. |
+| `language` | string | No | `en` | Document language. |
+| `model_version` | string | No | `latest` | Azure model version. |
+| `domain` | enum | No | `none` | `none` or `phi`. |
+| `pii_categories` | array | No | all categories | Azure PII categories to detect. |
+| `action` | enum | No | `detect_only` | `detect_only`, `block`, or `redact`. |
+| `redaction_strategy` | enum | No | `replace` | `replace`, `mask`, or `hash`. Used when `action` is `redact`. |
+| `redaction_mode` | enum | No | `runtime` | `runtime`, `logs_only`, or `runtime_reversible`. Used when `action` is `redact`. |
+| `logging_opt_out` | boolean | No | Azure default | Requests Azure not to log input text when supported by the service. |
+| `string_index_type` | string | No | `UnicodeCodePoint` | Must be `UnicodeCodePoint`; other Azure offset modes are rejected. |
+| `timeout` | integer | No | provider default | Provider execution timeout in seconds. |
+
+For the full redaction behavior matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
+## Configuration
+
+<Tabs group="azure-language-pii-config">
+<Tab title="Web UI">
+
+1. Go to **Guardrails** > **Providers**.
+2. Select **Azure AI Language PII**.
+3. Click **Add Configuration**.
+4. Enter the endpoint and authentication settings.
+5. Optionally choose PII categories, language, model version, and domain.
+6. Choose an action. Select **Redact** to enable Bifrost-managed redaction.
+7. If redacting, choose the redaction strategy and mode.
+8. Save the configuration and attach it to a guardrail rule.
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/azure-pii \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "azure-language-pii-redaction",
+    "enabled": true,
+    "config": {
+      "endpoint": "env.AZURE_LANGUAGE_ENDPOINT",
+      "auth_type": "api_key",
+      "api_key": "env.AZURE_LANGUAGE_KEY",
+      "language": "en",
+      "domain": "none",
+      "pii_categories": ["Email", "PhoneNumber", "USSocialSecurityNumber"],
+      "action": "redact",
+      "redaction_strategy": "replace",
+      "redaction_mode": "runtime_reversible",
+      "logging_opt_out": true
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 31,
+        "provider_name": "azure-pii",
+        "policy_name": "azure-language-pii-redaction",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "endpoint": "env.AZURE_LANGUAGE_ENDPOINT",
+          "auth_type": "api_key",
+          "api_key": "env.AZURE_LANGUAGE_KEY",
+          "language": "en",
+          "domain": "none",
+          "pii_categories": ["Email", "PhoneNumber", "USSocialSecurityNumber"],
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible",
+          "logging_opt_out": true
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 31
+        provider_name: "azure-pii"
+        policy_name: "azure-language-pii-redaction"
+        enabled: true
+        timeout: 10
+        config:
+          endpoint: "env.AZURE_LANGUAGE_ENDPOINT"
+          auth_type: "api_key"
+          api_key: "env.AZURE_LANGUAGE_KEY"
+          language: "en"
+          domain: "none"
+          pii_categories:
+            - "Email"
+            - "PhoneNumber"
+            - "USSocialSecurityNumber"
+          action: "redact"
+          redaction_strategy: "replace"
+          redaction_mode: "runtime_reversible"
+          logging_opt_out: true
+```
+
+</Tab>
+</Tabs>
+
+## Authentication Modes
+
+| `auth_type` | Required fields | Notes |
+|-------------|-----------------|-------|
+| `api_key` | `endpoint`, `api_key` | Simple key-based authentication. |
+| `default_credential` | `endpoint` | Uses Azure default credentials, such as managed identity or Azure CLI credentials. |
+| `entra_id` | `endpoint`, `client_id`, `client_secret`, `tenant_id` | Uses an Entra ID service principal. |
+
+## Category Filters
+
+Leave `pii_categories` empty to let Azure evaluate all supported categories for the selected language, model, and domain. Set `pii_categories` when you want a narrower policy, such as `Email`, `PhoneNumber`, or `USSocialSecurityNumber`.
+
+<Note>
+Bifrost requires `string_index_type: "UnicodeCodePoint"` because Azure's returned offsets must map correctly back to Bifrost's text ranges. Other Azure string index modes are rejected during configuration validation.
+</Note>
+
+## Operational Notes
+
+- The default action is `detect_only`, so set `action: "redact"` or `action: "block"` when you want enforcement.
+- `domain: "phi"` enables Azure's protected health information domain where supported by the service.
+- `logging_opt_out` controls Azure service-side logging behavior; it is separate from Bifrost's own content logging settings.
+- Redaction modes affect Bifrost runtime payloads, Bifrost logs, and trace-export connectors as described in [Guardrail Redaction](/enterprise/guardrails/redaction).
+

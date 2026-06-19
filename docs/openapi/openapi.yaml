@@ -941,6 +941,8 @@ paths:
     $ref: './paths/management/logging.yaml#/logs'
   /api/logs/{id}:
     $ref: './paths/management/logging.yaml#/logs-by-id'
+  /api/logs/{id}/reveal:
+    $ref: './paths/management/logging.yaml#/logs-reveal'
   /api/logs/sessions/{session_id}:
     $ref: './paths/management/logging.yaml#/logs-sessions-by-id'
   /api/logs/sessions/{session_id}/summary:
@@ -1620,6 +1622,8 @@ components:
       $ref: './schemas/management/logging.yaml#/SearchLogsResponse'
     LogStats:
       $ref: './schemas/management/logging.yaml#/LogStats'
+    LogRevealResponse:
+      $ref: './schemas/management/logging.yaml#/LogRevealResponse'
     DeleteLogsRequest:
       $ref: './schemas/management/logging.yaml#/DeleteLogsRequest'
     RecalculateCostRequest:

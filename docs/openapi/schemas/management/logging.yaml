@@ -55,6 +55,9 @@ LogEntry:
       type: string
     raw_response:
       type: string
+    has_reversible_redaction:
+      type: boolean
+      description: Whether this log has a reversible guardrail redaction mapping available for reveal
     created_at:
       type: string
       format: date-time
@@ -437,6 +440,18 @@ SearchLogsResponse:
     has_logs:
       type: boolean
       description: Whether any logs exist in the system
+
+LogRevealResponse:
+  type: object
+  description: Reversible guardrail redaction reveal response for a log
+  properties:
+    mapping:
+      type: object
+      additionalProperties:
+        type: string
+      description: Placeholder-to-original-value mapping for reversible redactions in this log
+  required:
+    - mapping
 
 PaginationOptions:
   type: object
