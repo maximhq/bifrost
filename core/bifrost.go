@@ -3733,6 +3733,16 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 //	    ConnectionType: schemas.MCPConnectionTypeHTTP,
 //	    ConnectionString: &url,
 //	})
+// ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
+// no longer auto-connects, so callers invoke this after all plugins are registered
+// (so every PreMCPConnectionHook participates in the connection). No-op if MCP is
+// not configured.
+func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context) {
+	if bifrost.MCPManager != nil {
+		bifrost.MCPManager.ConnectConfiguredClients(ctx)
+	}
+}
+
 func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
