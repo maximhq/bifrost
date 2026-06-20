@@ -584,6 +584,20 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	)
 }
 
+// normalizeCachedUsage folds the accumulated cached read/write token counts into
+// the top-level prompt and total counters. Anthropic reports these per-request
+// totals only after the full stream, so the streaming accumulator must apply the
+// same fold before billing - including on a mid-stream cancel/timeout. The += is
+// not idempotent; callers guard with a flag to apply it exactly once.
+func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
+	if usage == nil || usage.PromptTokensDetails == nil {
+		return
+	}
+	cached := usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
+	usage.PromptTokens += cached
+	usage.TotalTokens += cached
+}
+
 // HandleAnthropicChatCompletionStreaming handles streaming for Anthropic-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE event format.
 func HandleAnthropicChatCompletionStreaming(
@@ -722,6 +736,29 @@ func HandleAnthropicChatCompletionStreaming(
 		var finishReason *string
 
 		usage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream cancel/timeout
+		// can bill for tokens already processed Mutated in place below;
+		// the deferred HandleStreamCancellation/Timeout reads it from context.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+		// Fold cached tokens into prompt/total exactly once at stream end. The EOF
+		// path calls normalizeUsage() after the loop; on a mid-stream cancel/timeout
+		// the deferred call below runs first (LIFO, registered after the cancellation
+		// handler at the top of the goroutine) so HandleStreamCancellation/Timeout
+		// bills the normalized totals.
+		usageNormalized := false
+		normalizeUsage := func() {
+			if usageNormalized {
+				return
+			}
+			usageNormalized = true
+			normalizeCachedUsage(usage)
+		}
+		defer func() {
+			if ctx.Err() != nil {
+				normalizeUsage()
+			}
+		}()
 
 		// Check for structured output tool name and track state
 		var structuredOutputToolName string
@@ -924,10 +961,7 @@ func HandleAnthropicChatCompletionStreaming(
 				break
 			}
 		}
-		if usage.PromptTokensDetails != nil {
-			usage.PromptTokens = usage.PromptTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
-			usage.TotalTokens = usage.TotalTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
-		}
+		normalizeUsage()
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, modelName, 0)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)

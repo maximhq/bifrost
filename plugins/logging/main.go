@@ -163,6 +163,30 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 }
 
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
+// applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
+// entry from the usage the provider already processed before the failure
+// (carried on BifrostError.ExtraFields.BilledUsage). Token usage is only filled
+// when stream accumulation didn't already capture it, but cost is (re)computed
+// whenever it is still missing - independent of whether tokens were already
+// parsed, since a streaming error can populate usage without a cost.
+func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostContext, entry *logstore.Log, billed *schemas.BifrostLLMUsage, requestType schemas.RequestType) {
+	if billed == nil {
+		return
+	}
+	if entry.TokenUsageParsed == nil {
+		entry.TokenUsageParsed = billed
+		entry.PromptTokens = billed.PromptTokens
+		entry.CompletionTokens = billed.CompletionTokens
+		entry.TotalTokens = billed.TotalTokens
+	}
+	if entry.Cost == nil && p.pricingManager != nil {
+		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+		if cost := p.pricingManager.CalculateCostForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); cost > 0 {
+			entry.Cost = &cost
+		}
+	}
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -1044,6 +1068,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 			}
 		}
+		// The request failed/was cancelled but the provider still
+		// processed tokens (carried on BilledUsage). Record cost + tokens so the
+		// logs DB reflects what we were actually billed, mirroring the governance
+		// budget.
+		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)

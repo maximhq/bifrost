@@ -1756,6 +1756,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
@@ -1805,6 +1806,27 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
 	APP_DIR_VAL="$(or $(APP_DIR),tests/integrations/python)"; \
 	VIEWER_PORT_VAL="$(or $(VIEWER_PORT),8090)"; \
+	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; \
+	if [ "$(DB_VERIFY)" != "0" ]; then \
+		if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
+			DBVERIFY_READY=1; \
+		else \
+			$(ECHO) "$(YELLOW)Installing dbverify reporter deps...$(NC)"; \
+			if (cd tests/e2e/api && npm install --silent); then \
+				DBVERIFY_READY=1; \
+			else \
+				$(ECHO) "$(YELLOW)dbverify dep install failed; cost checks disabled for this run (set DB_VERIFY=0 to silence)$(NC)"; \
+			fi; \
+		fi; \
+		if [ "$$DBVERIFY_READY" = "1" ]; then \
+			export NODE_PATH="$(CURDIR)/tests/e2e/api/node_modules$${NODE_PATH:+:$$NODE_PATH}"; \
+			DBVERIFY_REPORTER=",dbverify"; \
+			LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+			export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
+			DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
+			$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		fi; \
+	fi; \
 	STARTED_BY_US=0; \
 	cleanup() { \
 		if [ -f tmp/harness-monitor.pid ]; then \
@@ -1931,7 +1953,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
-					--reporters cli,json \
+					--reporters cli,json$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
 					--reporter-json-export "tmp/newman-report-$$p.json" 2>&1 | sed "s/^/[$$p] /" \
 			) > "tmp/newman-cli-$$p.log" 2>&1 & \
 			BG_PID=$$!; \
@@ -2014,7 +2036,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
 				--reporter-json-export tmp/newman-report.json \
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \
@@ -2038,7 +2060,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
 				--reporter-json-export tmp/newman-report.json \
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \

@@ -42,6 +42,13 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostForUsage computes the dollar cost from a bare usage object when
+// no full BifrostResponse is available — used to bill partial usage carried on
+// a failed/cancelled request (BifrostError.ExtraFields.BilledUsage).
+func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // UpsertModelPricingAttributes writes additional_attributes for every row
 // matching (model, provider) and reloads the pricing cache.
 func (mc *ModelCatalog) UpsertModelPricingAttributes(ctx context.Context, model string, provider schemas.ModelProvider, attrs map[string]string) (int64, error) {

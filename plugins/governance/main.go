@@ -1347,11 +1347,23 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
 		}
 
+		// Attempt number distinguishes physical provider calls within one
+		// logical request so each token-consuming attempt bills exactly once.
+		// Set by core on every retry iteration.
+		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			// Recover so a billing panic (e.g. an unexpected nil deref) can never
+			// crash the process and lose in-memory counters.
+			defer func() {
+				if r := recover(); r != nil {
+					p.logger.Error("recovered from panic in governance postHookWorker: %v", r)
+				}
+			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, attemptNumber, pricingScopes)
 		}()
 	}
 
@@ -1603,9 +1615,10 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, pricingScopes *modelcatalog.PricingLookupScopes) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes) {
 	// Determine if request was successful
 	success := (result != nil)
+	billedReason := "success"
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
@@ -1616,6 +1629,17 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
 		}
 		tokensUsed := 0
+		// The request failed/was cancelled but the provider still
+		// processed tokens (carried on BifrostError.ExtraFields.BilledUsage).
+		// Bill those tokens — Anthropic charges us for them regardless.
+		if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+			billedUsage := bifrostErr.ExtraFields.BilledUsage
+			tokensUsed = billedUsage.TotalTokens
+			billedReason = "partial_usage_on_error"
+			if p.modelCatalog != nil {
+				cost = p.modelCatalog.CalculateCostForUsage(billedUsage, provider, model, requestType, pricingScopes)
+			}
+		}
 		if result != nil {
 			switch {
 			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
@@ -1645,17 +1669,19 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
-			VirtualKey:   virtualKey,
-			Provider:     provider,
-			Model:        model,
-			Success:      success,
-			TokensUsed:   int64(tokensUsed),
-			Cost:         cost,
-			RequestID:    requestID,
-			UserID:       userID,
-			IsStreaming:  isStreaming,
-			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0 || cost > 0,
+			VirtualKey:    virtualKey,
+			Provider:      provider,
+			Model:         model,
+			Success:       success,
+			TokensUsed:    int64(tokensUsed),
+			Cost:          cost,
+			RequestID:     requestID,
+			UserID:        userID,
+			IsStreaming:   isStreaming,
+			IsFinalChunk:  isFinalChunk,
+			HasUsageData:  tokensUsed > 0 || cost > 0,
+			AttemptNumber: attemptNumber,
+			BilledReason:  billedReason,
 		}
 
 		// Queue usage update asynchronously using tracker
