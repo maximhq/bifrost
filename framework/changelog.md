@@ -1,0 +1,6 @@
+- feat: dashboard export endpoint
+- feat: add Virtual Key Rankings tab in dashboard
+- feat: add business unit & user names and ids to tracing
+- fix: return 409 for Conflict errors
+- fix: canonical_model_view migration
+- chore: upgraded core to v1.5.22
