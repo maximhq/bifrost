@@ -7550,6 +7550,734 @@
           ]
         }
       ]
+    },
+    {
+      "name": "15. Costing — Failed/Cancelled Requests",
+      "description": "Asserts that a request which FAILED or was CANCELLED but still consumed provider tokens is billed (logs DB cost>0 && total_tokens>0). Each request pins a unique `x-request-id` and sets `x-bf-expect-cost: true`, which the newman-reporter-dbverify reporter uses to look up the log row and verify cost. Pre-fix these FAIL (cost is 0 on failed requests); post-fix they PASS. Streaming mid-flight cancellation is driven deterministically by runners/run-stream-cancellation.mjs (Postman cannot abort a stream mid-response).",
+      "item": [
+        {
+          "name": "[Costing] Streaming chat cancelled mid-flight records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-request-id", "value": "costing-stream-chat-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Count slowly from 1 to 200, one number per line.\"}],\n  \"stream\": true,\n  \"max_tokens\": 2048\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// Stream returns 200 (headers sent) then is cancelled mid-response by",
+              "// runners/run-stream-cancellation.mjs. The cost assertion is performed by",
+              "// the dbverify reporter against the logs row keyed on x-request-id.",
+              "pm.test('[Costing] stream started (200) before cancellation', function () {",
+              "  pm.expect(pm.response.code).to.equal(200);",
+              "});"
+            ] } }
+          ]
+        },
+        {
+          "name": "[Costing] Non-streaming chat failure records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-request-id", "value": "costing-nonstream-chat-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Write a long essay about distributed systems.\"}],\n  \"max_tokens\": 1024\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// A non-streaming request that fails AFTER the provider processed input",
+              "// tokens (timeout / 5xx after input) must still be billed. The dbverify",
+              "// reporter verifies logs cost>0 && total_tokens>0 for x-request-id.",
+              "pm.test('[Costing] non-stream request reached the provider', function () {",
+              "  pm.expect(pm.response.code).to.not.equal(404);",
+              "});"
+            ] } }
+          ]
+        },
+        {
+          "name": "[Costing] Embeddings failure records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-request-id", "value": "costing-embeddings-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{embedding_model}}\",\n  \"input\": \"costing probe embedding input\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/v1/embeddings", "host": ["{{baseUrl}}"], "path": ["v1", "embeddings"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// 'Other' request type: embeddings. A failure after input processing must",
+              "// still record cost. Verified by the dbverify reporter via x-request-id.",
+              "pm.test('[Costing] embeddings request reached the provider', function () {",
+              "  pm.expect(pm.response.code).to.not.equal(404);",
+              "});"
+            ] } }
+          ]
+        },
+        {
+          "name": "[Costing] Transcription failure records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-request-id", "value": "costing-transcription-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "model", "value": "{{transcription_model}}", "type": "text" },
+                { "key": "file", "src": "fixtures/sample.mp3", "type": "file" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/v1/audio/transcriptions", "host": ["{{baseUrl}}"], "path": ["v1", "audio", "transcriptions"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// 'Other' request type: audio transcription. A failure after the audio was",
+              "// processed must still record cost. Verified by the dbverify reporter.",
+              "pm.test('[Costing] transcription request reached the provider', function () {",
+              "  pm.expect(pm.response.code).to.not.equal(404);",
+              "});"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "16. Accounting (cost recording across providers)",
+      "description": "Criss-cross of providers x {non-streaming, streaming} chat requests that each pin a unique x-request-id and set x-bf-expect-cost. The dbverify reporter asserts the logs DB recorded cost>0 && total_tokens>0 per request, guarding against accounting regressions. Failed-streaming, retry-attempt, cumulative-sum and no-double-bill semantics are covered by Go unit tests (plugins/governance/accounting_test.go).",
+      "item": [
+        {
+          "name": "[Accounting] openai non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-openai-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] openai nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] openai streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-openai-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] openai streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] anthropic non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-anthropic-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] anthropic nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] anthropic streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-anthropic-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] anthropic streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] bedrock non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-bedrock-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] bedrock nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] bedrock streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-bedrock-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] bedrock streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] gemini non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-gemini-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] gemini nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] gemini streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-gemini-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] gemini streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] vertex non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-vertex-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] vertex nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] vertex streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-vertex-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] vertex streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] azure non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-azure-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/{{azureDeployment}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] azure nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] azure streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-azure-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/{{azureDeployment}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] azure streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

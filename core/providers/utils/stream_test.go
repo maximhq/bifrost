@@ -229,6 +229,71 @@ func TestCheckFirstStreamChunk_CtxCancelUnblocksWrapper(t *testing.T) {
 	}
 }
 
+func TestAttachBilledUsageFromContext_KeepsUsageWithOnlyDetails(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	usage := &schemas.BifrostLLMUsage{
+		// top-level counters all zero, but cache details are present
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 5},
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+	bifrostErr := &schemas.BifrostError{}
+	attachBilledUsageFromContext(ctx, bifrostErr)
+
+	if bifrostErr.ExtraFields.BilledUsage == nil {
+		t.Fatal("BilledUsage should be attached when cache details are present")
+	}
+	if bifrostErr.ExtraFields.BilledUsage.PromptTokensDetails == nil ||
+		bifrostErr.ExtraFields.BilledUsage.PromptTokensDetails.CachedReadTokens != 5 {
+		t.Fatalf("cached read tokens not preserved: %+v", bifrostErr.ExtraFields.BilledUsage)
+	}
+}
+
+func TestAttachBilledUsageFromContext_CopiesUsage(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 10,
+		TotalTokens:  10,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens: 3,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: 4,
+			},
+		},
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+	bifrostErr := &schemas.BifrostError{}
+	attachBilledUsageFromContext(ctx, bifrostErr)
+
+	// Mutating the original (top-level AND nested pointers) must not change the
+	// billed snapshot - BilledUsage is meant to be a fully decoupled record.
+	usage.PromptTokens = 999
+	usage.PromptTokensDetails.CachedReadTokens = 999
+	usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = 999
+
+	billed := bifrostErr.ExtraFields.BilledUsage
+	if billed.PromptTokens != 10 {
+		t.Fatalf("BilledUsage aliases the context handle: got %d, want 10", billed.PromptTokens)
+	}
+	if billed.PromptTokensDetails.CachedReadTokens != 3 {
+		t.Fatalf("BilledUsage aliases nested details: got %d, want 3", billed.PromptTokensDetails.CachedReadTokens)
+	}
+	if billed.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m != 4 {
+		t.Fatalf("BilledUsage aliases deeply-nested details: got %d, want 4", billed.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m)
+	}
+}
+
+func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{})
+	bifrostErr := &schemas.BifrostError{}
+	attachBilledUsageFromContext(ctx, bifrostErr)
+	if bifrostErr.ExtraFields.BilledUsage != nil {
+		t.Fatal("BilledUsage should stay nil when nothing measurable accumulated")
+	}
+}
+
 func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
 	// Error with code but no message should be treated as an error
 	stream := make(chan *schemas.BifrostStreamChunk, 2)

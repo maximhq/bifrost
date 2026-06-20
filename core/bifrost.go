@@ -3702,6 +3702,7 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 //	    ConnectionType: schemas.MCPConnectionTypeHTTP,
 //	    ConnectionString: &url,
 //	})
+//
 // ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
 // no longer auto-connects, so callers invoke this after all plugins are registered
 // (so every PreMCPConnectionHook participates in the connection). No-op if MCP is
@@ -6414,6 +6415,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			case <-req.Context.Done():
 				// Client no longer listening, log and continue
 				bifrost.logger.Debug("Client context cancelled while sending error response")
+				// The provider already produced this error (possibly after
+				// processing input tokens). tryRequest returned on ctx.Done and will
+				// never receive it, so bill/log it here. Non-streaming only.
+				bifrost.billAbandonedTerminal(req, nil, bifrostError)
 			case <-time.After(5 * time.Second):
 				// Timeout to prevent indefinite blocking
 				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
@@ -6443,6 +6448,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				case <-req.Context.Done():
 					// Client no longer listening, log and continue
 					bifrost.logger.Debug("Client context cancelled while sending response")
+					// The provider already produced this non-streaming result
+					// (consuming tokens). tryRequest returned on ctx.Done and will never
+					// receive it, so bill/log it here.
+					bifrost.billAbandonedTerminal(req, result, nil)
 				case <-time.After(5 * time.Second):
 					// Timeout to prevent indefinite blocking
 					bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
@@ -6452,6 +6461,32 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	}
 
 	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
+}
+
+// billAbandonedTerminal runs terminal post-LLM hooks for a NON-STREAMING request
+// whose client stopped waiting (tryRequest returned on ctx.Done) after the
+// provider had already produced a result or error. Without this, tokens the
+// provider consumed are never billed or logged (non-streaming
+// cancellation). Safety:
+//   - The channel rendezvous guarantees tryRequest did NOT also receive this
+//     value (a value cannot be both delivered and land in the no-receiver
+//     ctx.Done branch), so post-hooks never run twice for one call.
+//   - The governance tracker additionally dedupes on RequestID+attempt.
+//   - Streaming requests are excluded: their provider goroutine already runs
+//     terminal post-hooks via HandleStreamCancellation.
+func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+	if req == nil || req.Context == nil || IsStreamRequestType(req.RequestType) {
+		return
+	}
+	pipeline := bifrost.getPluginPipeline()
+	defer bifrost.releasePluginPipeline(pipeline)
+	pluginCount := len(*bifrost.llmPlugins.Load())
+	if bifrostErr != nil {
+		_, _ = pipeline.RunPostLLMHooks(req.Context, nil, bifrostErr, pluginCount)
+	} else if result != nil {
+		_, _ = pipeline.RunPostLLMHooks(req.Context, result, nil, pluginCount)
+	}
+	drainAndAttachPluginLogs(req.Context)
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
