@@ -629,3 +629,11 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		done:      make(chan struct{}),
 	}
 }
+
+// NewTestCatalogWithParams is like NewTestCatalog but also seeds per-model
+// supported parameters, letting tests exercise parameter-dropping logic.
+func NewTestCatalogWithParams(baseModelIndex map[string]string, supportedParams map[string][]string) *ModelCatalog {
+	mc := NewTestCatalog(baseModelIndex)
+	mc.datasheet = datasheet.NewTestStoreWithParams(baseModelIndex, supportedParams)
+	return mc
+}
