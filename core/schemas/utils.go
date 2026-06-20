@@ -749,7 +749,42 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
 				}
+				if len(toolCall.ExtraContent) > 0 {
+					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
+				}
 				copy.ChatAssistantMessage.ToolCalls[i] = copyToolCall
+			}
+		}
+
+		// Deep copy ReasoningDetails
+		if original.ChatAssistantMessage.ReasoningDetails != nil {
+			copy.ChatAssistantMessage.ReasoningDetails = make([]ChatReasoningDetails, len(original.ChatAssistantMessage.ReasoningDetails))
+			for i, rd := range original.ChatAssistantMessage.ReasoningDetails {
+				copyRD := ChatReasoningDetails{
+					Index: rd.Index,
+					Type:  rd.Type,
+				}
+				if rd.ID != nil {
+					copyID := *rd.ID
+					copyRD.ID = &copyID
+				}
+				if rd.Summary != nil {
+					copySummary := *rd.Summary
+					copyRD.Summary = &copySummary
+				}
+				if rd.Text != nil {
+					copyText := *rd.Text
+					copyRD.Text = &copyText
+				}
+				if rd.Signature != nil {
+					copySig := *rd.Signature
+					copyRD.Signature = &copySig
+				}
+				if rd.Data != nil {
+					copyData := *rd.Data
+					copyRD.Data = &copyData
+				}
+				copy.ChatAssistantMessage.ReasoningDetails[i] = copyRD
 			}
 		}
 	}
