@@ -29,9 +29,10 @@ const (
 )
 
 // parseBedrockInvokeUsageFromHeaders extracts token counts from Bedrock invoke
-// response headers. Returns nil when neither header is present or parsable.
-// Header lookup is case-insensitive to tolerate non-canonical capitalisation
-// from intermediate proxies.
+// response headers. Returns nil when both headers are absent, both fail to
+// parse, or both resolve to zero; a legitimate zero in one header is preserved
+// when the other is non-zero. Header lookup is case-insensitive to tolerate
+// non-canonical capitalisation from intermediate proxies.
 func parseBedrockInvokeUsageFromHeaders(headers map[string]string) *schemas.BifrostLLMUsage {
 	if len(headers) == 0 {
 		return nil
