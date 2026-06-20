@@ -23,6 +23,7 @@ const formSchema = z.object({
 	allowed_requests: allowedRequestsSchema,
 	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	is_key_less: z.boolean().optional(),
+	allow_private_network: z.boolean().optional(),
 });
 
 type FormData = z.infer<typeof formSchema>;
@@ -79,6 +80,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			},
 			request_path_overrides: undefined,
 			is_key_less: false,
+			allow_private_network: false,
 		},
 	});
 
@@ -99,6 +101,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			},
 			network_config: {
 				base_url: data.base_url,
+				allow_private_network: data.allow_private_network ?? false,
 				default_request_timeout_in_seconds: 30,
 				max_retries: 0,
 				retry_backoff_initial: 500,
@@ -194,6 +197,32 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 								</FormItem>
 							)}
 						/>
+						<FormField
+							control={form.control}
+							name="allow_private_network"
+							render={({ field }) => (
+								<FormItem>
+									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+										<div className="space-y-0.5">
+											<label htmlFor="allow-private-network" className="text-sm font-medium">
+												Allow Private Network
+											</label>
+											<p className="text-muted-foreground text-sm">
+												Allow connecting to private network IPs (e.g. 192.168.x.x, 10.x.x.x). Link-local addresses remain blocked.
+											</p>
+										</div>
+										<Switch
+											id="allow-private-network"
+											size="md"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasProviderCreateAccess}
+											data-testid="custom-provider-allow-private-network-switch"
+										/>
+									</div>
+								</FormItem>
+							)}
+						/>
 						{!isKeyLessDisabled && (
 							<FormField
 								control={form.control}
@@ -227,16 +256,11 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							disabled={!hasProviderCreateAccess}
 						/>
 					</div>
-					<div className="w-full ml-auto flex flex-row gap-2 bg-card sticky bottom-0 border-t px-8 py-4">
+					<div className="bg-card sticky bottom-0 ml-auto flex w-full flex-row gap-2 border-t px-8 py-4">
 						<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
 							Cancel
 						</Button>
-						<Button
-							type="submit"
-							isLoading={isAddingProvider}
-							disabled={!hasProviderCreateAccess}
-							data-testid="custom-provider-save-btn"
-						>
+						<Button type="submit" isLoading={isAddingProvider} disabled={!hasProviderCreateAccess} data-testid="custom-provider-save-btn">
 							Add
 						</Button>
 					</div>

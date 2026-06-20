@@ -59,7 +59,7 @@ export function LogsDataTable({
 	const tableContainerRef = useRef<HTMLDivElement>(null);
 	const calculatedPageSize = useTablePageSize(tableContainerRef);
 
-	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
+	const fixedColumnIds = useMemo(() => new Set<string>(["actions"]), []);
 
 	// Measure actual header cell widths for pixel-perfect pin offsets
 	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
@@ -177,10 +177,12 @@ export function LogsDataTable({
 						<TableRow className="hover:bg-transparent">
 							<TableCell colSpan={columns.length} className="h-12 text-center">
 								<div className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
-									{loading ? <>
-										<RefreshCw className="h-4 w-4 animate-spin" />
-										Loading logs...
-									</> : polling ? (
+									{loading ? (
+										<>
+											<RefreshCw className="h-4 w-4 animate-spin" />
+											Loading logs...
+										</>
+									) : polling ? (
 										<>
 											<RefreshCw className="h-4 w-4 animate-spin" />
 											Waiting for new logs...

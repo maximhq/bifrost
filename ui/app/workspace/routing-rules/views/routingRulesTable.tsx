@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,10 +24,72 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
 import { useDeleteRoutingRuleMutation, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule, RoutingTarget } from "@/lib/types/routingRules";
-import { getPriorityBadgeClass, getScopeLabel, truncateCELExpression } from "@/lib/utils/routingRules";
-import { ChevronLeft, ChevronRight, Edit, Search, Trash2 } from "lucide-react";
+import { getScopeLabel } from "@/lib/utils/labels";
+import { getPriorityBadgeClass, truncateCELExpression } from "@/lib/utils/routingRules";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+
+function RoutingRuleActionsMenu({
+	rule,
+	canUpdate,
+	canDelete,
+	onEdit,
+	onDelete,
+}: {
+	rule: RoutingRule;
+	canUpdate: boolean;
+	canDelete: boolean;
+	onEdit: (rule: RoutingRule) => void;
+	onDelete: (ruleId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Actions for routing rule ${rule.name}`}
+					data-testid={`routing-rule-actions-${rule.id}-btn`}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					className="cursor-pointer"
+					disabled={!canUpdate}
+					data-testid={`routing-rule-edit-${rule.id}-btn`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(rule);
+						setIsOpen(false);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					className="cursor-pointer"
+					disabled={!canDelete}
+					data-testid={`routing-rule-delete-${rule.id}-btn`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(rule.id);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
 
 interface RoutingRulesTableProps {
 	rules: RoutingRule[] | undefined;
@@ -70,7 +133,7 @@ export function RoutingRulesTable({
 			await deleteRoutingRule(deleteRuleId).unwrap();
 			toast.success("Routing rule deleted successfully");
 			setDeleteRuleId(null);
-		} catch (error: any) {
+		} catch (error: unknown) {
 			toast.error(getErrorMessage(error));
 		}
 	};
@@ -178,41 +241,31 @@ export function RoutingRulesTable({
 											size="md"
 											disabled={!canUpdate}
 											onAsyncCheckedChange={async (checked) => {
-												await updateRoutingRule({ id: rule.id, data: { enabled: checked } })
+												await updateRoutingRule({
+													id: rule.id,
+													data: { enabled: checked },
+												})
 													.unwrap()
 													.then(() => {
 														toast.success(`Rule ${checked ? "enabled" : "disabled"} successfully`);
 													})
 													.catch((err) => {
-														toast.error("Failed to update rule", { description: getErrorMessage(err) });
+														toast.error("Failed to update rule", {
+															description: getErrorMessage(err),
+														});
 													});
 											}}
 										/>
 									</TableCell>
 									<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-										<div className="flex items-center justify-end gap-2">
-											{canUpdate && (
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() => onEdit(rule)}
-													aria-label="Edit routing rule"
-													data-testid={`routing-rule-edit-${rule.id}-btn`}
-												>
-													<Edit className="h-4 w-4" />
-												</Button>
-											)}
-											{canDelete && (
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() => setDeleteRuleId(rule.id)}
-													aria-label="Delete routing rule"
-													data-testid={`routing-rule-delete-${rule.id}-btn`}
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
-											)}
+										<div className="flex items-center justify-end">
+											<RoutingRuleActionsMenu
+												rule={rule}
+												canUpdate={canUpdate}
+												canDelete={canDelete}
+												onEdit={onEdit}
+												onDelete={setDeleteRuleId}
+											/>
 										</div>
 									</TableCell>
 								</TableRow>

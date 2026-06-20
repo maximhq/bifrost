@@ -51,6 +51,18 @@ type BifrostListModelsRequest struct {
 	// Unfiltered: If true, the response will include all models for the provider, regardless of the allowed models (internal bifrost use only, not sent to the provider)
 	Unfiltered bool `json:"-"`
 
+	// KeyID: If non-nil, scope the call to a single key (matched by Key.ID).
+	// Lets callers cache list-models output per-key for fine-grained
+	// invalidation. Internal bifrost use only; not sent to the provider.
+	//
+	// Matching runs against the already-filtered set of supported keys for the
+	// provider — keys that are disabled (Enabled == false) or fail validation
+	// are excluded before the lookup, so a KeyID referring to such a key
+	// produces the same "no key found" error as a KeyID that does not exist
+	// at all. Callers needing to distinguish those cases must check the raw
+	// account configuration themselves.
+	KeyID *string `json:"-"`
+
 	// ExtraParams: Additional provider-specific query parameters
 	// This allows for flexibility to pass any custom parameters that specific providers might support
 	ExtraParams map[string]interface{} `json:"-"`
@@ -138,6 +150,7 @@ type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
+	NormalizedName      *string            `json:"normalized_name,omitempty"` // Human-readable name derived from the datasheet base_model (e.g. "Claude Sonnet 4.5")
 	Alias               *string            `json:"alias,omitempty"` // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
 	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`
@@ -151,6 +164,11 @@ type Model struct {
 	DefaultParameters   *DefaultParameters `json:"default_parameters,omitempty"`
 	HuggingFaceID       *string            `json:"hugging_face_id,omitempty"`
 	Description         *string            `json:"description,omitempty"`
+
+	// AdditionalAttributes carries editorial per-model metadata stored on the
+	// governance_model_pricing row (e.g. description, tags). Preserved across
+	// the 24-hour pricing sync.
+	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 
 	OwnedBy          *string  `json:"owned_by,omitempty"`
 	SupportedMethods []string `json:"supported_methods,omitempty"`

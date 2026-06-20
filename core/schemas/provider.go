@@ -63,6 +63,7 @@ type NetworkConfig struct {
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
+	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -86,6 +87,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
+		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -104,6 +106,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
+	nc.AllowPrivateNetwork = alias.AllowPrivateNetwork
 
 	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
 	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
@@ -175,6 +178,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
+		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -190,13 +194,10 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
+		AllowPrivateNetwork:        nc.AllowPrivateNetwork,
 	}
 	if nc.CACertPEM != nil {
-		if nc.CACertPEM.IsFromEnv() {
-			alias.CACertPEM = nc.CACertPEM.EnvVar
-		} else {
-			alias.CACertPEM = nc.CACertPEM.GetValue()
-		}
+		alias.CACertPEM = EnvVarAsString(nc.CACertPEM)
 	}
 
 	return json.Marshal(alias)
@@ -259,38 +260,53 @@ type ProxyConfig struct {
 	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
-
+// MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
+// EnvVar fields are stored as plain strings (env.* token or literal). For HTTP API responses
+// use json.Marshal on *ProxyConfig so clients receive value/env_var/from_env objects.
+func (pc *ProxyConfig) MarshalForStorage() ([]byte, error) {
+	if pc == nil {
+		return []byte("null"), nil
+	}
+	type proxyConfigStorage struct {
+		Type      ProxyType `json:"type"`
+		URL       string    `json:"url,omitempty"`
+		Username  string    `json:"username,omitempty"`
+		Password  string    `json:"password,omitempty"`
+		CACertPEM string    `json:"ca_cert_pem,omitempty"`
+	}
+	alias := proxyConfigStorage{Type: pc.Type}
+	if pc.URL != nil {
+		alias.URL = EnvVarAsString(pc.URL)
+	}
+	if pc.Username != nil {
+		alias.Username = EnvVarAsString(pc.Username)
+	}
+	if pc.Password != nil {
+		alias.Password = EnvVarAsString(pc.Password)
+	}
+	if pc.CACertPEM != nil {
+		alias.CACertPEM = EnvVarAsString(pc.CACertPEM)
+	}
+	return json.Marshal(alias)
+}
 
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
-	redactedConfig := ProxyConfig{Type: pc.Type}
-	if pc.URL != nil {
-		if pc.URL.IsFromEnv() {
-			redactedConfig.URL = pc.URL.Redacted()
-		} else {
-			redactedConfig.URL = pc.URL
-		}
+	if pc == nil {
+		return nil
 	}
-	if pc.Username != nil {
-		if pc.Username.IsFromEnv() {
-			redactedConfig.Username = pc.Username.Redacted()
-		} else {
-			redactedConfig.Username = pc.Username
-		}
+	redactedConfig := ProxyConfig{Type: pc.Type}
+	if pc.CACertPEM != nil && pc.CACertPEM.IsSet() {
+		redactedConfig.CACertPEM = pc.CACertPEM.FullyRedacted()
+	}
+	if pc.URL != nil && pc.URL.IsSet() {
+		redactedConfig.URL = pc.URL.Redacted()
+	}
+	if pc.Username != nil && pc.Username.IsSet() {
+		redactedConfig.Username = pc.Username.Redacted()
 	}
 	if pc.Password != nil && pc.Password.IsSet() {
-		if pc.Password.IsFromEnv() {
-			redactedConfig.Password = pc.Password.Redacted()
-		} else {
-			redactedConfig.Password = NewEnvVar("<REDACTED>")
-		}
-	}
-	if pc.CACertPEM != nil && pc.CACertPEM.IsSet() {
-		if pc.CACertPEM.IsFromEnv() {
-			redactedConfig.CACertPEM = pc.CACertPEM.Redacted()
-		} else {
-			redactedConfig.CACertPEM = NewEnvVar("<REDACTED>")
-		}
+		redactedConfig.Password = pc.Password.FullyRedacted()
 	}
 	return &redactedConfig
 }
@@ -307,6 +323,7 @@ type AllowedRequests struct {
 	Responses             bool `json:"responses"`
 	ResponsesStream       bool `json:"responses_stream"`
 	CountTokens           bool `json:"count_tokens"`
+	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
 	OCR                   bool `json:"ocr"`
@@ -379,6 +396,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ResponsesStream
 	case CountTokensRequest:
 		return ar.CountTokens
+	case CompactionRequest:
+		return ar.Compaction
 	case EmbeddingRequest:
 		return ar.Embedding
 	case RerankRequest:
@@ -590,6 +609,8 @@ type Provider interface {
 	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// CountTokens performs a count tokens request
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
+	// Compaction compacts a conversation context window (OpenAI-only; other providers return unsupported)
+	Compaction(ctx *BifrostContext, key Key, request *BifrostCompactionRequest) (*BifrostCompactionResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query

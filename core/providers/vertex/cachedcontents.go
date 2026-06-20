@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -114,35 +115,46 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		return nil, providerUtils.NewBifrostOperationError("model is required for cached content create", nil)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, providerUtils.NewConfigurationError("region is not set")
 	}
 
-	body := vertexCachedContent{
-		Model:             expandVertexModelPath(request.Model, projectID, region),
-		SystemInstruction: request.SystemInstruction,
-		Contents:          request.Contents,
-		Tools:             request.Tools,
-		ToolConfig:        request.ToolConfig,
-	}
-	if request.DisplayName != nil {
-		body.DisplayName = *request.DisplayName
-	}
-	if request.TTL != nil {
-		body.TTL = *request.TTL
-	}
-	if request.ExpireTime != nil {
-		body.ExpireTime = *request.ExpireTime
-	}
+	model := expandVertexModelPath(request.Model, projectID, region)
+	jsonBody, useRaw := providerUtils.CheckAndGetRawRequestBody(ctx, request)
+	if useRaw && len(jsonBody) > 0 {
+		var err error
+		jsonBody, err = sjson.SetBytes(jsonBody, "model", model)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to set cached content model", err)
+		}
+	} else {
+		body := vertexCachedContent{
+			Model:             model,
+			SystemInstruction: request.SystemInstruction,
+			Contents:          request.Contents,
+			Tools:             request.Tools,
+			ToolConfig:        request.ToolConfig,
+		}
+		if request.DisplayName != nil {
+			body.DisplayName = *request.DisplayName
+		}
+		if request.TTL != nil {
+			body.TTL = *request.TTL
+		}
+		if request.ExpireTime != nil {
+			body.ExpireTime = *request.ExpireTime
+		}
 
-	jsonBody, err := sonic.Marshal(body)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to marshal cached content create body", err)
+		var err error
+		jsonBody, err = sonic.Marshal(body)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to marshal cached content create body", err)
+		}
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -198,13 +210,13 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentListRequest) (*schemas.BifrostCachedContentListResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -280,13 +292,13 @@ func (provider *VertexProvider) CachedContentList(ctx *schemas.BifrostContext, k
 }
 
 func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentRetrieveRequest) (*schemas.BifrostCachedContentRetrieveResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -360,13 +372,13 @@ func (provider *VertexProvider) CachedContentRetrieve(ctx *schemas.BifrostContex
 }
 
 func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentUpdateRequest) (*schemas.BifrostCachedContentUpdateResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	body := vertexCachedContent{}
@@ -380,9 +392,13 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 		updateMaskFields = append(updateMaskFields, "expireTime")
 	}
 
-	jsonBody, marshalErr := sonic.Marshal(body)
-	if marshalErr != nil {
-		return nil, 0, providerUtils.NewBifrostOperationError("failed to marshal cached content update body", marshalErr)
+	jsonBody, useRaw := providerUtils.CheckAndGetRawRequestBody(ctx, request)
+	if !useRaw || len(jsonBody) == 0 {
+		var marshalErr error
+		jsonBody, marshalErr = sonic.Marshal(body)
+		if marshalErr != nil {
+			return nil, 0, providerUtils.NewBifrostOperationError("failed to marshal cached content update body", marshalErr)
+		}
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -466,13 +482,13 @@ func (provider *VertexProvider) CachedContentUpdate(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	req := fasthttp.AcquireRequest()

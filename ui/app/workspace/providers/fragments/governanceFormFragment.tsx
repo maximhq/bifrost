@@ -1,9 +1,10 @@
 import { Button } from "@/components/ui/button";
-import { Form, FormField, FormItem } from "@/components/ui/form";
+import { Form } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
+import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { DottedSeparator } from "@/components/ui/separator";
-import { resetDurationOptions } from "@/lib/constants/governance";
+import { Switch } from "@/components/ui/switch";
 import {
 	getErrorMessage,
 	useDeleteProviderGovernanceMutation,
@@ -11,6 +12,7 @@ import {
 	useUpdateProviderGovernanceMutation,
 } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
+import { CreateBudgetRequest, ProviderGovernance } from "@/lib/types/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
@@ -22,14 +24,17 @@ interface GovernanceFormFragmentProps {
 	provider: ModelProvider;
 }
 
+const budgetLineSchema = z.object({
+	id: z.string().optional(),
+	max_limit: z.number({ error: "Budget limit must be a number" }).nonnegative("Budget limit cannot be negative").optional(),
+	reset_duration: z.string().min(1, "Reset duration is required"),
+});
+
 const formSchema = z.object({
-	// Budget
-	budgetMaxLimit: z.number().nonnegative().optional(),
-	budgetResetDuration: z.string().optional(),
-	// Token limits
+	budgets: z.array(budgetLineSchema),
+	calendarAligned: z.boolean(),
 	tokenMaxLimit: z.number().int().nonnegative().optional(),
 	tokenResetDuration: z.string().optional(),
-	// Request limits
 	requestMaxLimit: z.number().int().nonnegative().optional(),
 	requestResetDuration: z.string().optional(),
 });
@@ -37,13 +42,29 @@ const formSchema = z.object({
 type FormData = z.infer<typeof formSchema>;
 
 const DEFAULT_GOVERNANCE_FORM_VALUES: FormData = {
-	budgetMaxLimit: undefined,
-	budgetResetDuration: "1M",
+	budgets: [],
+	calendarAligned: false,
 	tokenMaxLimit: undefined,
 	tokenResetDuration: "1h",
 	requestMaxLimit: undefined,
 	requestResetDuration: "1h",
 };
+
+function governanceToFormValues(provGov: ProviderGovernance | undefined): FormData {
+	if (!provGov) return DEFAULT_GOVERNANCE_FORM_VALUES;
+	return {
+		budgets: (provGov.budgets ?? []).map((b) => ({
+			id: b.id,
+			max_limit: b.max_limit,
+			reset_duration: b.reset_duration,
+		})),
+		calendarAligned: provGov.calendar_aligned ?? false,
+		tokenMaxLimit: provGov.rate_limit?.token_max_limit ?? undefined,
+		tokenResetDuration: provGov.rate_limit?.token_reset_duration || "1h",
+		requestMaxLimit: provGov.rate_limit?.request_max_limit ?? undefined,
+		requestResetDuration: provGov.rate_limit?.request_reset_duration || "1h",
+	};
+}
 
 export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps) {
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
@@ -56,72 +77,54 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const [updateProviderGovernance, { isLoading: isUpdating }] = useUpdateProviderGovernanceMutation();
 	const [deleteProviderGovernance, { isLoading: isDeleting }] = useDeleteProviderGovernanceMutation();
 
-	// Find governance data for this provider
 	const providerGovernance = providerGovernanceData?.providers?.find((p) => p.provider === provider.name);
-	const hasExistingGovernance = !!(providerGovernance?.budget || providerGovernance?.rate_limit);
+	const hasExistingGovernance = !!((providerGovernance?.budgets?.length ?? 0) > 0 || providerGovernance?.rate_limit);
 
 	const form = useForm<FormData>({
 		resolver: zodResolver(formSchema),
 		defaultValues: DEFAULT_GOVERNANCE_FORM_VALUES,
 	});
 
-	// Update form values when provider governance data is loaded (polling)
+	const watchedBudgets = form.watch("budgets");
+	const watchedCalendarAligned = form.watch("calendarAligned");
+
 	useEffect(() => {
-		// Never reset form during polling if user is editing
 		if (providerGovernance && !form.formState.isDirty) {
-			form.reset({
-				budgetMaxLimit: providerGovernance.budget?.max_limit ?? undefined,
-				budgetResetDuration: providerGovernance.budget?.reset_duration || "1M",
-				tokenMaxLimit: providerGovernance.rate_limit?.token_max_limit ?? undefined,
-				tokenResetDuration: providerGovernance.rate_limit?.token_reset_duration || "1h",
-				requestMaxLimit: providerGovernance.rate_limit?.request_max_limit ?? undefined,
-				requestResetDuration: providerGovernance.rate_limit?.request_reset_duration || "1h",
-			});
+			form.reset(governanceToFormValues(providerGovernance));
 		}
 	}, [providerGovernance, form]);
 
-	// Reset form when provider changes
 	useEffect(() => {
-		// Never reset form if user is editing - just skip the reset
-		if (form.formState.isDirty) {
-			return;
-		}
+		if (form.formState.isDirty) return;
 		const newProvGov = providerGovernanceData?.providers?.find((p) => p.provider === provider.name);
-		form.reset({
-			budgetMaxLimit: newProvGov?.budget?.max_limit ?? undefined,
-			budgetResetDuration: newProvGov?.budget?.reset_duration || "1M",
-			tokenMaxLimit: newProvGov?.rate_limit?.token_max_limit ?? undefined,
-			tokenResetDuration: newProvGov?.rate_limit?.token_reset_duration || "1h",
-			requestMaxLimit: newProvGov?.rate_limit?.request_max_limit ?? undefined,
-			requestResetDuration: newProvGov?.rate_limit?.request_reset_duration || "1h",
-		});
+		form.reset(governanceToFormValues(newProvGov));
 	}, [provider.name, form]);
 
 	const onSubmit = async (data: FormData) => {
 		try {
-			// Determine if we need to send empty objects to signal removal
-			const hadBudget = !!providerGovernance?.budget;
-			const hasBudget = data.budgetMaxLimit !== undefined;
+			const validBudgets = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
+			const hadBudgets = (providerGovernance?.budgets?.length ?? 0) > 0;
 			const hadRateLimit = !!providerGovernance?.rate_limit;
 			const hasRateLimit = data.tokenMaxLimit !== undefined || data.requestMaxLimit !== undefined;
 
-			let budgetPayload: { max_limit?: number; reset_duration?: string } | undefined;
-			if (hasBudget) {
-				budgetPayload = {
-					max_limit: data.budgetMaxLimit,
-					reset_duration: data.budgetResetDuration || "1M",
-				};
-			} else if (hadBudget) {
-				budgetPayload = {};
+			let budgetsPayload: CreateBudgetRequest[] | undefined;
+			if (validBudgets.length > 0) {
+				budgetsPayload = validBudgets.map((b) => ({
+					id: b.id,
+					max_limit: b.max_limit!,
+					reset_duration: b.reset_duration,
+				}));
+			} else if (hadBudgets) {
+				budgetsPayload = [];
 			}
 
 			let rateLimitPayload:
 				| {
-					token_max_limit?: number | null;
-					token_reset_duration?: string | null;
-					request_max_limit?: number | null;
-					request_reset_duration?: string | null;
-				}
+						token_max_limit?: number | null;
+						token_reset_duration?: string | null;
+						request_max_limit?: number | null;
+						request_reset_duration?: string | null;
+				  }
 				| undefined;
 			if (hasRateLimit) {
 				rateLimitPayload = {
@@ -137,14 +140,13 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 			await updateProviderGovernance({
 				provider: provider.name,
 				data: {
-					budget: budgetPayload,
+					budgets: budgetsPayload,
+					...(budgetsPayload !== undefined ? { calendar_aligned: data.calendarAligned } : {}),
 					rate_limit: rateLimitPayload,
 				},
 			}).unwrap();
 
 			toast.success("Governance configuration saved successfully");
-
-			// Reset form with the saved values to update the initial state for change detection
 			form.reset(data);
 		} catch (error) {
 			toast.error("Failed to update provider governance", {
@@ -165,93 +167,76 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 		}
 	};
 
-	// Always show the form
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
 				{/* Budget Configuration */}
-				<div className="space-y-4">
-					<Label className="text-sm font-medium">Budget Configuration</Label>
-					<FormField
-						control={form.control}
-						name="budgetMaxLimit"
-						render={({ field }) => (
-							<FormItem>
-								<NumberAndSelect
-									id="providerBudgetMaxLimit"
-									labelClassName="font-normal"
-									label="Maximum Spend (USD)"
-									value={field.value}
-									selectValue={form.watch("budgetResetDuration") || "1M"}
-									onChangeNumber={(value) => field.onChange(value)}
-									onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
-									options={resetDurationOptions}
-								/>
-							</FormItem>
-						)}
-					/>
-				</div>
+				<MultiBudgetLines
+					data-testid="provider-governance-budgets"
+					lines={watchedBudgets as BudgetLineEntry[]}
+					onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
+				/>
+
+				{/* Calendar Alignment — only shown when there are budgets */}
+				{watchedBudgets.length > 0 && (
+					<div className="flex items-center justify-between gap-4">
+						<div className="space-y-1">
+							<Label className="text-sm" htmlFor="provider-calendar-aligned">
+								Align to calendar cycle
+							</Label>
+							<p className="text-muted-foreground text-xs">
+								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+							</p>
+						</div>
+						<Switch
+							id="provider-calendar-aligned"
+							data-testid="provider-governance-calendar-aligned-switch"
+							checked={watchedCalendarAligned}
+							onCheckedChange={(checked) => form.setValue("calendarAligned", checked, { shouldDirty: true })}
+						/>
+					</div>
+				)}
 
 				<DottedSeparator />
 
 				{/* Rate Limiting Configuration */}
 				<div className="space-y-4">
 					<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
-
-					<FormField
-						control={form.control}
-						name="tokenMaxLimit"
-						render={({ field }) => (
-							<FormItem>
-								<NumberAndSelect
-									id="providerTokenMaxLimit"
-									labelClassName="font-normal"
-									label="Maximum Tokens"
-									value={field.value}
-									selectValue={form.watch("tokenResetDuration") || "1h"}
-									onChangeNumber={(value) => field.onChange(value)}
-									onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
-									options={resetDurationOptions}
-								/>
-							</FormItem>
-						)}
+					<NumberAndSelect
+						id="providerTokenMaxLimit"
+						labelClassName="font-normal"
+						label="Maximum Tokens"
+						value={form.watch("tokenMaxLimit")}
+						selectValue={form.watch("tokenResetDuration") || "1h"}
+						onChangeNumber={(value) => form.setValue("tokenMaxLimit", value, { shouldDirty: true })}
+						onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
 					/>
-
-					<FormField
-						control={form.control}
-						name="requestMaxLimit"
-						render={({ field }) => (
-							<FormItem>
-								<NumberAndSelect
-									id="providerRequestMaxLimit"
-									labelClassName="font-normal"
-									label="Maximum Requests"
-									value={field.value}
-									selectValue={form.watch("requestResetDuration") || "1h"}
-									onChangeNumber={(value) => field.onChange(value)}
-									onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
-									options={resetDurationOptions}
-								/>
-							</FormItem>
-						)}
+					<NumberAndSelect
+						id="providerRequestMaxLimit"
+						labelClassName="font-normal"
+						label="Maximum Requests"
+						value={form.watch("requestMaxLimit")}
+						selectValue={form.watch("requestResetDuration") || "1h"}
+						onChangeNumber={(value) => form.setValue("requestMaxLimit", value, { shouldDirty: true })}
+						onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
 					/>
 				</div>
 
-				{/* Current Usage Display - only when editing existing */}
-				{hasExistingGovernance && (providerGovernance?.budget || providerGovernance?.rate_limit) && (
+				{/* Current Usage — only shown when governance exists */}
+				{hasExistingGovernance && (
 					<>
 						<DottedSeparator />
 						<div className="space-y-4">
 							<Label className="text-sm font-medium">Current Usage</Label>
 							<div className="bg-muted/50 grid grid-cols-2 gap-4 rounded-lg p-4">
-								{providerGovernance?.budget && (
-									<div className="space-y-1">
-										<p className="text-muted-foreground text-xs">Budget Usage</p>
+								{providerGovernance?.budgets?.map((b) => (
+									<div key={b.id} className="space-y-1">
+										<p className="text-muted-foreground text-xs">Budget ({b.reset_duration})</p>
 										<p className="text-sm font-medium">
-											${providerGovernance.budget.current_usage.toFixed(2)} / ${providerGovernance.budget.max_limit.toFixed(2)}
+											${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}
 										</p>
 									</div>
-								)}
+								))}
 								{providerGovernance?.rate_limit?.token_max_limit && (
 									<div className="space-y-1">
 										<p className="text-muted-foreground text-xs">Token Usage</p>
@@ -276,7 +261,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				)}
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 mb-6">
+				<div className="mb-6 flex justify-end space-x-2">
 					<Button
 						type="button"
 						variant="outline"
@@ -285,11 +270,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					>
 						Remove configuration
 					</Button>
-					<Button
-						type="submit"
-						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdating}
-						isLoading={isUpdating}
-					>
+					<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdating} isLoading={isUpdating}>
 						Save Governance Configuration
 					</Button>
 				</div>

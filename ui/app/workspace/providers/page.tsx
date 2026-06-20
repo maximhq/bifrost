@@ -17,8 +17,8 @@ import {
 import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
+import { AlertCircle } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -240,15 +240,17 @@ export default function Providers() {
 									})}
 								</div>
 							)}
-							<div className="pb-4">
-								<AddProviderDropdown
-									disabled={!hasProviderCreateAccess}
-									existingInSidebar={existingInSidebarNames}
-									knownProviders={knownProviders}
-									onSelectKnownProvider={handleSelectKnownProvider}
-									onAddCustomProvider={() => setShowCustomProviderSheet(true)}
-								/>
-							</div>
+							{hasProviderCreateAccess ? (
+								<div className="pb-4">
+									<AddProviderDropdown
+										disabled={!hasProviderCreateAccess}
+										existingInSidebar={existingInSidebarNames}
+										knownProviders={knownProviders}
+										onSelectKnownProvider={handleSelectKnownProvider}
+										onAddCustomProvider={() => setShowCustomProviderSheet(true)}
+									/>
+								</div>
+							) : null}
 						</div>
 					</div>
 				</TooltipProvider>

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -46,50 +47,146 @@ func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
 	return r.RawRequestBody
 }
 
+// BifrostCompactionRequest is the request for the context compaction endpoint (POST /v1/responses/compact).
+// It is a strict subset of BifrostResponsesRequest — tools, sampling params, and streaming are not supported.
+type BifrostCompactionRequest struct {
+	Provider             ModelProvider          `json:"provider"`
+	Model                string                 `json:"model"`
+	Input                []ResponsesMessage     `json:"input,omitempty"`
+	Instructions         *string                `json:"instructions,omitempty"`
+	PreviousResponseID   *string                `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention *string                `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          *BifrostServiceTier    `json:"service_tier,omitempty"`
+	Fallbacks            []Fallback             `json:"fallbacks,omitempty"`
+	ExtraParams          map[string]interface{} `json:"-"`
+	RawRequestBody       []byte                 `json:"-"`
+}
+
+func (r *BifrostCompactionRequest) GetRawRequestBody() []byte {
+	return r.RawRequestBody
+}
+
+// BifrostCompactionResponse is the response from the context compaction endpoint.
+// object is always "response.compaction". output contains user messages plus one encrypted compaction item.
+type BifrostCompactionResponse struct {
+	ID        *string            `json:"id,omitempty"`
+	Object    string             `json:"object"` // always "response.compaction"
+	Model     string             `json:"model,omitempty"`
+	CreatedAt int                `json:"created_at"`
+	Output    []ResponsesMessage `json:"output"`
+	Usage     *ResponsesResponseUsage    `json:"usage,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+func (resp *BifrostCompactionResponse) WithDefaults() *BifrostCompactionResponse {
+	if resp == nil {
+		return nil
+	}
+	result := &BifrostCompactionResponse{
+		ID:          resp.ID,
+		Object:      "response.compaction",
+		Model:       resp.Model,
+		CreatedAt:   resp.CreatedAt,
+		Usage:       resp.Usage,
+		ExtraFields: resp.ExtraFields,
+	}
+	if result.CreatedAt == 0 {
+		result.CreatedAt = int(time.Now().Unix())
+	}
+	if resp.Output != nil {
+		result.Output = resp.Output
+	} else {
+		result.Output = []ResponsesMessage{}
+	}
+	return result
+}
+
 type BifrostResponsesResponse struct {
 	ID     *string `json:"id,omitempty"` // used for internal conversions
 	Object string  `json:"object"`       // "response"
 
-	Background         *bool                               `json:"background,omitempty"`
-	Conversation       *ResponsesResponseConversation      `json:"conversation,omitempty"`
-	CreatedAt          int                                 `json:"created_at"`   // Unix timestamp when Response was created
-	CompletedAt        *int                                `json:"completed_at"` // Unix timestamp when Response was completed
-	Error              *ResponsesResponseError             `json:"error"`
-	Include            []string                            `json:"include,omitempty"`  // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	IncompleteDetails  *ResponsesResponseIncompleteDetails `json:"incomplete_details"` // Details about why the response is incomplete
-	Instructions       *ResponsesResponseInstructions      `json:"instructions"`
-	MaxOutputTokens    *int                                `json:"max_output_tokens"`
-	MaxToolCalls       *int                                `json:"max_tool_calls"`
-	Metadata           *map[string]any                     `json:"metadata,omitempty"`
-	Model              string                              `json:"model"`
-	Output             []ResponsesMessage                  `json:"output"`
-	ParallelToolCalls  *bool                               `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID *string                             `json:"previous_response_id"`
-	Prompt             *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
-	PromptCacheKey     *string                             `json:"prompt_cache_key"` // Prompt cache key
-	PresencePenalty    *float64                            `json:"presence_penalty,omitempty"`
-	FrequencyPenalty   *float64                            `json:"frequency_penalty,omitempty"`
-	Reasoning          *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
-	SafetyIdentifier   *string                             `json:"safety_identifier"` // Safety identifier
-	ServiceTier        *string                             `json:"service_tier"`
-	Status             *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
-	StreamOptions      *ResponsesStreamOptions             `json:"stream_options,omitempty"`
-	StopReason         *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
-	Store              *bool                               `json:"store,omitempty"`
-	Temperature        *float64                            `json:"temperature,omitempty"`
-	Text               *ResponsesTextConfig                `json:"text,omitempty"`
-	TopLogProbs        *int                                `json:"top_logprobs,omitempty"`
-	TopP               *float64                            `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice         *ResponsesToolChoice                `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools              []ResponsesTool                     `json:"tools"`                 // Tools to use
-	Truncation         *string                             `json:"truncation,omitempty"`
-	Usage              *ResponsesResponseUsage             `json:"usage"`
-	ExtraFields        BifrostResponseExtraFields          `json:"extra_fields"`
+	Background           *bool                               `json:"background,omitempty"`
+	Conversation         *ResponsesResponseConversation      `json:"conversation,omitempty"`
+	CreatedAt            int                                 `json:"created_at"`   // Unix timestamp when Response was created
+	CompletedAt          *int                                `json:"completed_at"` // Unix timestamp when Response was completed
+	Error                *ResponsesResponseError             `json:"error"`
+	Include              []string                            `json:"include,omitempty"`  // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	IncompleteDetails    *ResponsesResponseIncompleteDetails `json:"incomplete_details"` // Details about why the response is incomplete
+	Instructions         *ResponsesResponseInstructions      `json:"instructions"`
+	MaxOutputTokens      *int                                `json:"max_output_tokens"`
+	MaxToolCalls         *int                                `json:"max_tool_calls"`
+	Metadata             *map[string]any                     `json:"metadata,omitempty"`
+	Model                string                              `json:"model"`
+	Output               []ResponsesMessage                  `json:"output"`
+	ParallelToolCalls    *bool                               `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID   *string                             `json:"previous_response_id"`
+	Prompt               *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
+	PromptCacheKey       *string                             `json:"prompt_cache_key"` // Prompt cache key
+	PromptCacheRetention *string                             `json:"prompt_cache_retention,omitempty"`
+	PresencePenalty      *float64                            `json:"presence_penalty,omitempty"`
+	FrequencyPenalty     *float64                            `json:"frequency_penalty,omitempty"`
+	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
+	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
+	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
+	Speed                *string                             `json:"speed,omitempty"` // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	Status               *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
+	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
+	StopReason           *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	Store                *bool                               `json:"store,omitempty"`
+	Temperature          *float64                            `json:"temperature,omitempty"`
+	Text                 *ResponsesTextConfig                `json:"text,omitempty"`
+	TopLogProbs          *int                                `json:"top_logprobs,omitempty"`
+	TopP                 *float64                            `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice           *ResponsesToolChoice                `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools                []ResponsesTool                     `json:"tools"`                 // Tools to use
+	Truncation           *string                             `json:"truncation,omitempty"`
+	Usage                *ResponsesResponseUsage             `json:"usage"`
+	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
+	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// CacheDiagnostics is the Anthropic cache-diagnosis response payload
+// (cache-diagnosis-2026-04-07 beta). CacheMissReason is null while the comparison
+// is still pending and, when set, identifies the first prompt-cache prefix
+// divergence point. A nil *CacheDiagnostics means no divergence / not requested.
+type CacheDiagnostics struct {
+	CacheMissReason *CacheMissReason `json:"cache_miss_reason"`
+}
+
+// CacheMissReason identifies the first cache-prefix divergence point. The
+// *_changed types also carry CacheMissedInputTokens; previous_message_not_found
+// and unavailable do not.
+type CacheMissReason struct {
+	Type                   string `json:"type"`
+	CacheMissedInputTokens *int   `json:"cache_missed_input_tokens,omitempty"`
+}
+
+// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle).
+func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
+	type Alias BifrostResponsesResponse
+	aux := &struct {
+		CreatedAt   float64  `json:"created_at"`
+		CompletedAt *float64 `json:"completed_at"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	r.CreatedAt = int(aux.CreatedAt)
+	if aux.CompletedAt != nil {
+		v := int(*aux.CompletedAt)
+		r.CompletedAt = &v
+	}
+	return nil
 }
 
 // BackfillParams populates response fields from the request that are needed
@@ -139,6 +236,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	result.IncompleteDetails = resp.IncompleteDetails
 	result.PreviousResponseID = resp.PreviousResponseID
 	result.PromptCacheKey = resp.PromptCacheKey
+	result.PromptCacheRetention = resp.PromptCacheRetention
 	result.SafetyIdentifier = resp.SafetyIdentifier
 	result.MaxToolCalls = resp.MaxToolCalls
 	result.Instructions = resp.Instructions
@@ -175,7 +273,17 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	// Response configuration - defaults: standard behavior
 	result.Store = orDefault(resp.Store, true)
 	result.Background = orDefault(resp.Background, false)
-	result.ServiceTier = orDefault(resp.ServiceTier, "auto")
+
+	if resp.ServiceTier != nil {
+		switch *resp.ServiceTier {
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority:
+			result.ServiceTier = resp.ServiceTier
+		default:
+			result.ServiceTier = new(BifrostServiceTierAuto)
+		}
+	} else {
+		result.ServiceTier = new(BifrostServiceTierAuto)
+	}
 	result.Truncation = orDefault(resp.Truncation, "disabled")
 	result.ParallelToolCalls = orDefault(resp.ParallelToolCalls, true)
 
@@ -243,29 +351,30 @@ func orDefault[T any](src *T, defaultVal T) *T {
 }
 
 type ResponsesParameters struct {
-	Background         *bool                         `json:"background,omitempty"`
-	Conversation       *string                       `json:"conversation,omitempty"`
-	Include            []string                      `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	Instructions       *string                       `json:"instructions,omitempty"`
-	MaxOutputTokens    *int                          `json:"max_output_tokens,omitempty"`
-	MaxToolCalls       *int                          `json:"max_tool_calls,omitempty"`
-	Metadata           *map[string]any               `json:"metadata,omitempty"`
-	ParallelToolCalls  *bool                         `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID *string                       `json:"previous_response_id,omitempty"`
-	PromptCacheKey     *string                       `json:"prompt_cache_key,omitempty"`  // Prompt cache key
-	Reasoning          *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
-	SafetyIdentifier   *string                       `json:"safety_identifier,omitempty"` // Safety identifier
-	ServiceTier        *string                       `json:"service_tier,omitempty"`
-	StreamOptions      *ResponsesStreamOptions       `json:"stream_options,omitempty"`
-	Store              *bool                         `json:"store,omitempty"`
-	Temperature        *float64                      `json:"temperature,omitempty"`
-	Text               *ResponsesTextConfig          `json:"text,omitempty"`
-	TopLogProbs        *int                          `json:"top_logprobs,omitempty"`
-	TopP               *float64                      `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice         *ResponsesToolChoice          `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools              []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
-	Truncation         *string                       `json:"truncation,omitempty"`
-	User               *string                       `json:"user,omitempty"`
+	Background           *bool                         `json:"background,omitempty"`
+	Conversation         *string                       `json:"conversation,omitempty"`
+	Include              []string                      `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	Instructions         *string                       `json:"instructions,omitempty"`
+	MaxOutputTokens      *int                          `json:"max_output_tokens,omitempty"`
+	MaxToolCalls         *int                          `json:"max_tool_calls,omitempty"`
+	Metadata             *map[string]any               `json:"metadata,omitempty"`
+	ParallelToolCalls    *bool                         `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID   *string                       `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                       `json:"prompt_cache_key,omitempty"` // Prompt cache key
+	PromptCacheRetention *string                       `json:"prompt_cache_retention,omitempty"`
+	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
+	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"` // Safety identifier
+	ServiceTier          *BifrostServiceTier           `json:"service_tier,omitempty"`
+	StreamOptions        *ResponsesStreamOptions       `json:"stream_options,omitempty"`
+	Store                *bool                         `json:"store,omitempty"`
+	Temperature          *float64                      `json:"temperature,omitempty"`
+	Text                 *ResponsesTextConfig          `json:"text,omitempty"`
+	TopLogProbs          *int                          `json:"top_logprobs,omitempty"`
+	TopP                 *float64                      `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice           *ResponsesToolChoice          `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools                []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
+	Truncation           *string                       `json:"truncation,omitempty"`
+	User                 *string                       `json:"user,omitempty"`
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -281,10 +390,11 @@ type ResponsesTextConfig struct {
 }
 
 type ResponsesTextConfigFormat struct {
-	Type       string                               `json:"type"`             // "text" | "json_schema" | "json_object"
-	Name       *string                              `json:"name,omitempty"`   // Name of the format
-	JSONSchema *ResponsesTextConfigFormatJSONSchema `json:"schema,omitempty"` // when type == "json_schema"
-	Strict     *bool                                `json:"strict,omitempty"`
+	Type        string                               `json:"type"`                  // "text" | "json_schema" | "json_object"
+	Name        *string                              `json:"name,omitempty"`        // Name of the format
+	Description *string                              `json:"description,omitempty"` // Description of the schema
+	JSONSchema  *ResponsesTextConfigFormatJSONSchema `json:"schema,omitempty"`      // when type == "json_schema"
+	Strict      *bool                                `json:"strict,omitempty"`
 }
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
@@ -330,6 +440,227 @@ type ResponsesTextConfigFormatJSONSchema struct {
 	Nullable         *bool       `json:"nullable,omitempty"`         // Nullable indicator (OpenAPI 3.0 style)
 	Enum             []string    `json:"enum,omitempty"`             // Enum values
 	PropertyOrdering []string    `json:"propertyOrdering,omitempty"` // Ordering of properties, specific to Gemini
+}
+
+// JSONSchemaFromMap builds a ResponsesTextConfigFormatJSONSchema from a raw interface{}
+func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	s := &ResponsesTextConfigFormatJSONSchema{}
+	if t, ok := m["type"].(string); ok {
+		s.Type = Ptr(t)
+	}
+	if props, ok := m["properties"].(map[string]interface{}); ok {
+		p := map[string]any(props)
+		s.Properties = &p
+	}
+	if req, ok := m["required"].([]interface{}); ok {
+		strs := make([]string, 0, len(req))
+		for _, r := range req {
+			if str, ok := r.(string); ok {
+				strs = append(strs, str)
+			}
+		}
+		s.Required = strs
+	} else if req, ok := m["required"].([]string); ok {
+		s.Required = req
+	}
+	if desc, ok := m["description"].(string); ok {
+		s.Description = Ptr(desc)
+	}
+	if title, ok := m["title"].(string); ok {
+		s.Title = Ptr(title)
+	}
+	if ref, ok := m["$ref"].(string); ok {
+		s.Ref = Ptr(ref)
+	}
+	if defs, ok := m["$defs"].(map[string]interface{}); ok {
+		d := map[string]any(defs)
+		s.Defs = &d
+	}
+	if defs, ok := m["definitions"].(map[string]interface{}); ok {
+		d := map[string]any(defs)
+		s.Definitions = &d
+	}
+	if items, ok := m["items"].(map[string]interface{}); ok {
+		it := map[string]any(items)
+		s.Items = &it
+	}
+	if b, ok := m["additionalProperties"].(bool); ok {
+		s.AdditionalProperties = &AdditionalPropertiesStruct{AdditionalPropertiesBool: Ptr(b)}
+	} else if ap, ok := m["additionalProperties"].(map[string]interface{}); ok {
+		s.AdditionalProperties = &AdditionalPropertiesStruct{AdditionalPropertiesMap: OrderedMapFromMap(ap)}
+	}
+	if f, ok := m["format"].(string); ok {
+		s.Format = Ptr(f)
+	}
+	if p, ok := m["pattern"].(string); ok {
+		s.Pattern = Ptr(p)
+	}
+	if enums, ok := m["enum"].([]interface{}); ok {
+		strs := make([]string, 0, len(enums))
+		for _, e := range enums {
+			if str, ok := e.(string); ok {
+				strs = append(strs, str)
+			}
+		}
+		s.Enum = strs
+	}
+	if n, ok := m["nullable"].(bool); ok {
+		s.Nullable = Ptr(n)
+	}
+	if extractSliceOfMaps := func(key string) []map[string]any {
+		raw, ok := m[key].([]interface{})
+		if !ok {
+			return nil
+		}
+		out := make([]map[string]any, 0, len(raw))
+		for _, item := range raw {
+			if mp, ok := item.(map[string]interface{}); ok {
+				out = append(out, mp)
+			}
+		}
+		return out
+	}; true {
+		if ao := extractSliceOfMaps("anyOf"); len(ao) > 0 {
+			s.AnyOf = ao
+		}
+		if oo := extractSliceOfMaps("oneOf"); len(oo) > 0 {
+			s.OneOf = oo
+		}
+		if ao := extractSliceOfMaps("allOf"); len(ao) > 0 {
+			s.AllOf = ao
+		}
+	}
+
+	if n, ok := m["minItems"].(float64); ok {
+		x := int64(n)
+		s.MinItems = Ptr(x)
+	}
+	if n, ok := m["maxItems"].(float64); ok {
+		x := int64(n)
+		s.MaxItems = Ptr(x)
+	}
+	if n, ok := m["minimum"].(float64); ok {
+		s.Minimum = Ptr(n)
+	}
+	if n, ok := m["maximum"].(float64); ok {
+		s.Maximum = Ptr(n)
+	}
+	if n, ok := m["minLength"].(float64); ok {
+		x := int64(n)
+		s.MinLength = Ptr(x)
+	}
+	if n, ok := m["maxLength"].(float64); ok {
+		x := int64(n)
+		s.MaxLength = Ptr(x)
+	}
+	if d, ok := m["default"]; ok {
+		s.Default = d
+	}
+	if po, ok := m["propertyOrdering"].([]interface{}); ok {
+		strs := make([]string, 0, len(po))
+		for _, v := range po {
+			if str, ok := v.(string); ok {
+				strs = append(strs, str)
+			}
+		}
+		s.PropertyOrdering = strs
+	}
+	return s
+}
+
+// ToMap reconstructs the raw schema map from a ResponsesTextConfigFormatJSONSchema.
+func (s *ResponsesTextConfigFormatJSONSchema) ToMap() interface{} {
+	if s == nil {
+		return nil
+	}
+	if s.Schema != nil {
+		return *s.Schema
+	}
+	m := make(map[string]interface{})
+	if s.Type != nil {
+		m["type"] = *s.Type
+	}
+	if s.Properties != nil {
+		m["properties"] = *s.Properties
+	}
+	if len(s.Required) > 0 {
+		m["required"] = s.Required
+	}
+	if s.Description != nil {
+		m["description"] = *s.Description
+	}
+	if s.Title != nil {
+		m["title"] = *s.Title
+	}
+	if s.Ref != nil {
+		m["$ref"] = *s.Ref
+	}
+	if s.Defs != nil {
+		m["$defs"] = *s.Defs
+	}
+	if s.Definitions != nil {
+		m["definitions"] = *s.Definitions
+	}
+	if s.Items != nil {
+		m["items"] = *s.Items
+	}
+	if s.AdditionalProperties != nil {
+		if s.AdditionalProperties.AdditionalPropertiesBool != nil {
+			m["additionalProperties"] = *s.AdditionalProperties.AdditionalPropertiesBool
+		} else if s.AdditionalProperties.AdditionalPropertiesMap != nil {
+			m["additionalProperties"] = s.AdditionalProperties.AdditionalPropertiesMap
+		}
+	}
+	if s.Format != nil {
+		m["format"] = *s.Format
+	}
+	if s.Pattern != nil {
+		m["pattern"] = *s.Pattern
+	}
+	if len(s.Enum) > 0 {
+		m["enum"] = s.Enum
+	}
+	if s.Nullable != nil {
+		m["nullable"] = *s.Nullable
+	}
+	if s.Default != nil {
+		m["default"] = s.Default
+	}
+	if len(s.AnyOf) > 0 {
+		m["anyOf"] = s.AnyOf
+	}
+	if len(s.OneOf) > 0 {
+		m["oneOf"] = s.OneOf
+	}
+	if len(s.AllOf) > 0 {
+		m["allOf"] = s.AllOf
+	}
+	if s.MinItems != nil {
+		m["minItems"] = *s.MinItems
+	}
+	if s.MaxItems != nil {
+		m["maxItems"] = *s.MaxItems
+	}
+	if s.Minimum != nil {
+		m["minimum"] = *s.Minimum
+	}
+	if s.Maximum != nil {
+		m["maximum"] = *s.Maximum
+	}
+	if s.MinLength != nil {
+		m["minLength"] = *s.MinLength
+	}
+	if s.MaxLength != nil {
+		m["maxLength"] = *s.MaxLength
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 type ResponsesResponseConversation struct {
@@ -455,6 +786,29 @@ type ResponsesResponseUsage struct {
 	TotalTokens         int                            `json:"total_tokens"`          // Total number of tokens used
 	Cost                *BifrostCost                   `json:"cost,omitempty"`        // Only for the providers which support cost calculation
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`  // iterations field is sent by anthropic
+
+	// xAI-specific usage fields
+	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
+	NumServerSideToolsUsed     *int                                 `json:"num_server_side_tools_used,omitempty"`
+	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
+	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
+	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
+}
+
+// ResponsesServerSideToolUsageDetails holds per-tool call counts returned by xAI.
+type ResponsesServerSideToolUsageDetails struct {
+	WebSearchCalls       int `json:"web_search_calls"`
+	XSearchCalls         int `json:"x_search_calls"`
+	CodeInterpreterCalls int `json:"code_interpreter_calls"`
+	FileSearchCalls      int `json:"file_search_calls"`
+	MCPCalls             int `json:"mcp_calls"`
+	DocumentSearchCalls  int `json:"document_search_calls"`
+}
+
+// ResponsesContextDetails holds the per-context token breakdown returned by xAI.
+type ResponsesContextDetails struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 type ResponsesResponseInputTokens struct {
@@ -556,6 +910,8 @@ const (
 	ResponsesMessageTypeReasoning            ResponsesMessageType = "reasoning"
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
+	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -564,6 +920,10 @@ type ResponsesMessage struct {
 	ID     *string               `json:"id,omitempty"` // Common ID field for most item types
 	Type   *ResponsesMessageType `json:"type,omitempty"`
 	Status *string               `json:"status,omitempty"` // "in_progress" | "completed" | "incomplete" | "interpreting" | "failed"
+	// Phase labels an assistant message as intermediate "commentary" or completed "final_answer".
+	// Required on gpt-5.3-codex+ history replay; dropping it causes significant performance degradation.
+	// See https://developers.openai.com/api/docs/guides/prompt-guidance
+	Phase *string `json:"phase,omitempty"`
 
 	Role    *ResponsesMessageRoleType `json:"role,omitempty"`
 	Content *ResponsesMessageContent  `json:"content,omitempty"`
@@ -608,8 +968,9 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 	if rc.ContentBlocks != nil {
 		return MarshalSorted(rc.ContentBlocks)
 	}
-	// If both are nil, return null
-	return MarshalSorted(nil)
+	// Empty content: emit "" rather than null. The OpenAI Responses API rejects
+	// null content (it must be a string or array), and "" is a valid string.
+	return MarshalSorted("")
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
@@ -743,8 +1104,8 @@ type ResponsesOutputMessageContentRefusal struct {
 }
 
 type ResponsesToolMessage struct {
-	CallID    *string                           `json:"call_id,omitempty"` // Common call ID for tool calls and outputs
-	Name      *string                           `json:"name,omitempty"`    // Common name field for tool calls
+	CallID    *string                           `json:"call_id,omitempty"`   // Common call ID for tool calls and outputs
+	Name      *string                           `json:"name,omitempty"`      // Common name field for tool calls
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
@@ -763,6 +1124,19 @@ type ResponsesToolMessage struct {
 	// MCP-specific
 	*ResponsesMCPListTools
 	*ResponsesMCPApprovalResponse
+
+	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
+	*ResponsesAdvisorCall
+}
+
+// ResponsesAdvisorCall carries the Anthropic advisor_tool_result content
+// (a discriminated union) alongside an advisor_call. Anthropic-only.
+type ResponsesAdvisorCall struct {
+	ResultType       string  `json:"result_type,omitempty"`       // "advisor_result" | "advisor_redacted_result" | "advisor_tool_result_error"
+	Text             *string `json:"advisor_text,omitempty"`      // advisor_result variant
+	EncryptedContent *string `json:"advisor_encrypted_content,omitempty"` // advisor_redacted_result variant
+	ErrorCode        *string `json:"advisor_error_code,omitempty"`        // advisor_tool_result_error variant
+	StopReason       *string `json:"advisor_stop_reason,omitempty"`       // present when max_tokens is set on the tool
 }
 
 type ResponsesToolMessageActionStruct struct {
@@ -1372,6 +1746,8 @@ const (
 	ResponsesToolTypeMemory             ResponsesToolType = "memory"
 	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
 	ResponsesToolTypeNamespace          ResponsesToolType = "namespace"
+	ResponsesToolTypeXSearch            ResponsesToolType = "x_search"
+	ResponsesToolTypeAdvisor            ResponsesToolType = "advisor"
 )
 
 // normalizeResponsesToolType maps versioned/provider-specific tool type strings
@@ -1400,6 +1776,9 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 		return ResponsesToolTypeCodeInterpreter
 	case strings.HasPrefix(s, "memory") && t != ResponsesToolTypeMemory:
 		return ResponsesToolTypeMemory
+	case strings.HasPrefix(s, "advisor") && t != ResponsesToolTypeAdvisor:
+		// Covers "advisor_20260301" and future dated versions.
+		return ResponsesToolTypeAdvisor
 	default:
 		return t
 	}
@@ -1407,7 +1786,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 
 // ResponsesTool represents a tool
 type ResponsesTool struct {
-	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11"
+	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11" | "x_search"
 	Name        *string           `json:"name,omitempty"`        // Common name field (Function, Custom tools)
 	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
 
@@ -1435,6 +1814,8 @@ type ResponsesTool struct {
 	*ResponsesToolWebSearchPreview
 	*ResponsesToolToolSearch
 	*ResponsesToolNamespace
+	*ResponsesToolXSearch
+	*ResponsesToolAdvisor
 }
 
 // mergeJSONFields merges all top-level fields from src into dst using sjson,
@@ -1568,6 +1949,14 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeNamespace:
 		if t.ResponsesToolNamespace != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolNamespace)
+		}
+	case ResponsesToolTypeXSearch:
+		if t.ResponsesToolXSearch != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolXSearch)
+		}
+	case ResponsesToolTypeAdvisor: // Anthropic advisor server tool
+		if t.ResponsesToolAdvisor != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolAdvisor)
 		}
 	}
 	if err != nil {
@@ -1743,6 +2132,20 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolNamespace = &namespaceTool
+
+	case ResponsesToolTypeXSearch:
+		var xSearchTool ResponsesToolXSearch
+		if err := Unmarshal(data, &xSearchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolXSearch = &xSearchTool
+
+	case ResponsesToolTypeAdvisor: // Anthropic advisor server tool
+		var advisorTool ResponsesToolAdvisor
+		if err := Unmarshal(data, &advisorTool); err != nil {
+			return err
+		}
+		t.ResponsesToolAdvisor = &advisorTool
 	}
 
 	return nil
@@ -2164,9 +2567,44 @@ type ResponsesToolWebFetch struct {
 	MaxContentTokens *int                           `json:"max_content_tokens,omitempty"`
 }
 
+// ResponsesToolAdvisorCaching toggles advisor-side prompt caching.
+type ResponsesToolAdvisorCaching struct {
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "5m" | "1h"
+}
+
+// ResponsesToolAdvisor carries the Anthropic advisor_20260301 server-tool
+// config. Anthropic-only; ignored by providers that don't support it.
+type ResponsesToolAdvisor struct {
+	Model     string                       `json:"model,omitempty"`      // advisor model id (required by Anthropic)
+	MaxUses   *int                         `json:"max_uses,omitempty"`   // per-request cap on advisor calls
+	MaxTokens *int                         `json:"max_tokens,omitempty"` // caps advisor output per call; minimum 1024
+	Caching   *ResponsesToolAdvisorCaching `json:"caching,omitempty"`    // advisor-side prompt caching toggle
+}
+
 // ResponsesToolNamespace represents a namespace tool that groups related function tools.
 type ResponsesToolNamespace struct {
 	Tools []ResponsesTool `json:"tools,omitempty"`
+}
+
+// ResponsesToolXSearch represents the xAI-native x_search server-side tool.
+// All fields are optional; when omitted xAI searches without restrictions.
+// See https://docs.x.ai/developers/tools/x-search#x-search-parameters
+type ResponsesToolXSearch struct {
+	// AllowedXHandles restricts search to posts from these X accounts (max 10).
+	// Mutually exclusive with ExcludedXHandles.
+	AllowedXHandles []string `json:"allowed_x_handles,omitempty"`
+	// ExcludedXHandles excludes posts from these X accounts from results.
+	// Mutually exclusive with AllowedXHandles.
+	ExcludedXHandles []string `json:"excluded_x_handles,omitempty"`
+	// FromDate is the start date for tweet search (ISO 8601 date or datetime string).
+	FromDate *string `json:"from_date,omitempty"`
+	// ToDate is the end date for tweet search (ISO 8601 date or datetime string).
+	ToDate *string `json:"to_date,omitempty"`
+	// EnableImageUnderstanding controls whether images in tweets are analyzed.
+	EnableImageUnderstanding *bool `json:"enable_image_understanding,omitempty"`
+	// EnableVideoUnderstanding controls whether videos in tweets are analyzed.
+	EnableVideoUnderstanding *bool `json:"enable_video_understanding,omitempty"`
 }
 
 // ======================================================= Streaming Structs =======================================================
@@ -2255,14 +2693,23 @@ type BifrostResponsesStreamResponse struct {
 
 	OutputIndex *int              `json:"output_index,omitempty"`
 	Item        *ResponsesMessage `json:"item"`
+	// SummaryIndex identifies which summary block within an item a delta belongs to.
+	// Emitted on response.reasoning_summary_text.{delta,done} and
+	// response.reasoning_summary_part.{added,done}.
+	// See https://platform.openai.com/docs/api-reference/responses-streaming
+	SummaryIndex *int `json:"summary_index,omitempty"`
 
 	ContentIndex *int                          `json:"content_index,omitempty"`
 	ItemID       *string                       `json:"item_id,omitempty"`
 	Part         *ResponsesMessageContentBlock `json:"part,omitempty"`
 
-	Delta     *string                                    `json:"delta,omitempty"`
-	Signature *string                                    `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
-	LogProbs  []ResponsesOutputMessageContentTextLogProb `json:"logprobs"`
+	Delta     *string `json:"delta,omitempty"`
+	Signature *string `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	// Obfuscation is random padding added to delta events to normalize payload size as a
+	// side-channel mitigation. Toggle via StreamOptions.IncludeObfuscation.
+	// See https://platform.openai.com/docs/api-reference/responses-streaming
+	Obfuscation *string                                    `json:"obfuscation,omitempty"`
+	LogProbs    []ResponsesOutputMessageContentTextLogProb `json:"logprobs"`
 
 	Text *string `json:"text,omitempty"` // Full text of the output item, comes with event "response.output_text.done"
 
@@ -2305,15 +2752,21 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 
 	// Copy nested response (applies defaults)
 	result.Response = resp.Response.WithDefaults()
+	// OpenAI Responses API requires usage=null on response.created; final usage is on response.completed only
+	if resp.Type == ResponsesStreamResponseTypeCreated && result.Response != nil {
+		result.Response.Usage = nil
+	}
 
 	// Copy all streaming-specific fields
 	result.OutputIndex = resp.OutputIndex
 	result.Item = resp.Item
+	result.SummaryIndex = resp.SummaryIndex
 	result.ContentIndex = resp.ContentIndex
 	result.ItemID = resp.ItemID
 	result.Part = resp.Part
 	result.Delta = resp.Delta
 	result.Signature = resp.Signature
+	result.Obfuscation = resp.Obfuscation
 	result.Text = resp.Text
 	result.Refusal = resp.Refusal
 	result.Arguments = resp.Arguments

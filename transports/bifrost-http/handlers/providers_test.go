@@ -50,6 +50,22 @@ func (m *mockModelsManager) GetUnfilteredModelsForProvider(provider schemas.Mode
 	return result
 }
 
+func (m *mockModelsManager) UpsertModelPricingAttributes(_ context.Context, _ []ModelPricingAttributesEntry) error {
+	return nil
+}
+
+func (m *mockModelsManager) OnKeyAdded(_ context.Context, _ schemas.ModelProvider, _ schemas.Key) error {
+	return nil
+}
+
+func (m *mockModelsManager) OnKeyUpdated(_ context.Context, _ schemas.ModelProvider, _ schemas.Key) error {
+	return nil
+}
+
+func (m *mockModelsManager) OnKeyDeleted(_ context.Context, _ schemas.ModelProvider, _ string) error {
+	return nil
+}
+
 // providerHandlerForTest builds a handler with fixed provider config and model sets.
 func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
 	return &ProviderHandler{
@@ -390,7 +406,7 @@ func TestListModelDetails_UnknownKeysDoNotFilter(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
@@ -421,7 +437,7 @@ func TestListModelDetails_SkipsUnknownKeysAndFiltersWithValid(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
@@ -458,7 +474,7 @@ func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
@@ -494,7 +510,7 @@ func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")

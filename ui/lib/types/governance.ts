@@ -8,7 +8,6 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
-	calendar_aligned?: boolean; // When true, resets at clean calendar boundaries (day/week/month/year start)
 }
 
 export interface RateLimit {
@@ -30,6 +29,8 @@ export interface Team {
 	name: string;
 	customer_id?: string;
 	rate_limit_id?: string;
+	// Team-wide: applies to all team budgets and the team rate limit
+	calendar_aligned?: boolean;
 	// Populated relationships
 	customer?: Customer;
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
@@ -39,11 +40,11 @@ export interface Team {
 export interface Customer {
 	id: string;
 	name: string;
-	budget_id?: string;
 	rate_limit_id?: string;
+	calendar_aligned?: boolean;
 	// Populated relationships
 	teams?: Team[];
-	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 }
 
@@ -84,16 +85,14 @@ export interface VirtualKey {
 	config_hash?: string; // Present when config is synced from config.json
 }
 
-// Provider config budgets don't have calendar_aligned (it's a VK-level field)
-export type ProviderConfigBudget = Omit<Budget, "calendar_aligned">;
-
 export interface VirtualKeyProviderConfig {
 	id?: number;
 	provider: string;
 	weight: number | null;
 	allowed_models: string[];
+	blacklisted_models: string[];
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
-	budgets?: ProviderConfigBudget[];
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
@@ -136,7 +135,8 @@ export interface VirtualKeyProviderConfigRequest {
 	provider: string;
 	weight?: number | null;
 	allowed_models?: string[];
-	budgets?: ProviderConfigBudgetRequest[];
+	blacklisted_models?: string[];
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -146,13 +146,11 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	provider: string;
 	weight?: number | null;
 	allowed_models?: string[];
-	budgets?: ProviderConfigBudgetRequest[];
+	blacklisted_models?: string[];
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
-
-// VK-level budgets don't include calendar_aligned (it's a VK-level field, not per-budget)
-export type VirtualKeyBudgetRequest = Omit<CreateBudgetRequest, "calendar_aligned">;
 
 // Request types for API calls
 export interface CreateVirtualKeyRequest {
@@ -162,7 +160,7 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	budgets?: VirtualKeyBudgetRequest[];
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
@@ -173,12 +171,23 @@ export interface UpdateVirtualKeyRequest {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
-	team_id?: string;
-	customer_id?: string;
-	budgets?: VirtualKeyBudgetRequest[];
+	team_id?: string | null;
+	customer_id?: string | null;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	reset_budget_usage?: boolean;
+}
+
+export interface BulkRotateVirtualKeysRequest {
+	ids: string[];
+}
+
+export interface BulkRotateVirtualKeysResponse {
+	message: string;
+	virtual_keys: VirtualKey[];
+	errors?: Record<string, string>;
 }
 
 export interface CreateTeamRequest {
@@ -186,6 +195,7 @@ export interface CreateTeamRequest {
 	customer_id?: string;
 	budgets?: CreateBudgetRequest[]; // Multi-budget: each must have a unique reset_duration
 	rate_limit?: CreateRateLimitRequest;
+	calendar_aligned?: boolean; // Team-wide: applies to all team budgets and the team rate limit
 }
 
 export interface UpdateTeamRequest {
@@ -193,33 +203,34 @@ export interface UpdateTeamRequest {
 	customer_id?: string;
 	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface CreateCustomerRequest {
 	name: string;
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
+	budget?: CreateBudgetRequest; // deprecated: use budgets
 	rate_limit?: CreateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateCustomerRequest {
 	name?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // nil=no change, []=remove all
+	budget?: UpdateBudgetRequest;   // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface CreateBudgetRequest {
+	id?: string;
 	max_limit: number; // In dollars
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
-	calendar_aligned?: boolean; // Snap resets to calendar boundaries (day/week/month/year)
 }
-
-// Provider config budget requests don't include calendar_aligned (it's a VK-level field)
-export type ProviderConfigBudgetRequest = Omit<CreateBudgetRequest, "calendar_aligned">;
 
 export interface UpdateBudgetRequest {
 	max_limit?: number;
 	reset_duration?: string;
-	calendar_aligned?: boolean; // When switching to true, current usage is reset to 0
 }
 
 export interface CreateRateLimitRequest {
@@ -250,6 +261,8 @@ export interface GetVirtualKeysParams {
 	customer_id?: string;
 	team_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
+	exclude_assigned_virtual_keys?: boolean;
+	for_user_assignment?: boolean;
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";
 	export?: boolean;
@@ -340,10 +353,14 @@ export interface ModelConfig {
 	id: string;
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
-	budget_id?: string;
+	scope?: string; // "global" (default) or "virtual_key"
+	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
+	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
+	calendar_aligned?: boolean; // Snap budget resets to calendar boundaries (inherited from VK for vk scope)
 	rate_limit_id?: string;
 	// Populated relationships
-	budget?: Budget;
+	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
+	budget?: Budget; // Deprecated: superseded by budgets (kept for back-compat reads)
 	rate_limit?: RateLimit;
 	created_at: string;
 	updated_at: string;
@@ -353,14 +370,16 @@ export interface ModelConfig {
 export interface CreateModelConfigRequest {
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
-	budget?: CreateBudgetRequest;
+	scope?: string; // Defaults to "global" if omitted
+	scope_id?: string; // Required for non-global scopes (e.g. the virtual key ID)
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateModelConfigRequest {
 	model_name?: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Full desired set; reconciled against existing
 	rate_limit?: UpdateRateLimitRequest;
 }
 
@@ -368,6 +387,8 @@ export interface GetModelConfigsParams {
 	limit?: number;
 	offset?: number;
 	search?: string;
+	scope?: string;
+	provider?: string;
 }
 
 // Response types for model configs
@@ -399,6 +420,8 @@ export interface PricingOverridePatch {
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
+	input_cost_per_token_fast?: number;
+	output_cost_per_token_fast?:number;
 	// 128k tier
 	input_cost_per_token_above_128k_tokens?: number;
 	output_cost_per_token_above_128k_tokens?: number;
@@ -512,15 +535,16 @@ export interface GetPricingOverridesResponse {
 // Provider governance - for extending provider with budget/rate limit
 export interface ProviderGovernance {
 	provider: string;
-	budget_id?: string;
-	rate_limit_id?: string;
-	budget?: Budget;
+	budget?: Budget; // deprecated: use budgets
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateProviderGovernanceRequest {
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface GetProviderGovernanceResponse {

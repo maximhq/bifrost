@@ -11,6 +11,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -80,11 +81,14 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerKey, model, normalizedBody, err := resolveRealtimeClientSecretTarget(route, body)
+	providerKey, model, normalizedBody, err := resolveRealtimeClientSecretTarget(ctx, h.config, route, body)
 	if err != nil {
 		SendBifrostError(ctx, err)
 		return
 	}
+
+	logger.Info("[realtime-client-secrets] request: path=%s provider=%s model=%s endpoint_type=%s",
+		string(ctx.Path()), providerKey, model, route.EndpointType)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	defer cancel()
@@ -150,9 +154,14 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 
 	resp, bifrostErr := sessionProvider.CreateRealtimeClientSecret(bifrostCtx, key, route.EndpointType, normalizedBody)
 	if bifrostErr != nil {
+		logger.Error("[realtime-client-secrets] upstream error: provider=%s model=%s error=%s",
+			providerKey, model, bifrostErr.Error)
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
+
+	logger.Info("[realtime-client-secrets] upstream success: provider=%s model=%s status=%d",
+		providerKey, model, resp.StatusCode)
 	cacheRealtimeEphemeralKeyMapping(
 		h.handlerStore.GetKVStore(),
 		resp.Body,
@@ -208,7 +217,7 @@ func (h *RealtimeClientSecretsHandler) realtimeSessionRoutes() []schemas.Realtim
 	return routes
 }
 
-func resolveRealtimeClientSecretTarget(route schemas.RealtimeSessionRoute, body []byte) (schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
+func resolveRealtimeClientSecretTarget(ctx *fasthttp.RequestCtx, config *lib.Config, route schemas.RealtimeSessionRoute, body []byte) (schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
 	root, err := schemas.ParseRealtimeClientSecretBody(body)
 	if err != nil {
 		return "", "", nil, err
@@ -221,6 +230,18 @@ func resolveRealtimeClientSecretTarget(route schemas.RealtimeSessionRoute, body 
 
 	defaultProvider := route.DefaultProvider
 	providerKey, model := schemas.ParseModelString(rawModel, defaultProvider)
+	// Model catalog auto-resolution for bare model names on /v1 client secret routes
+	if defaultProvider == "" && providerKey == "" && model != "" {
+		selected, candidates := modelcatalogresolver.ResolveProviderFromCatalog(nil, config.ModelCatalog, model)
+		if selected != "" {
+			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
+				Model:            model,
+				ResolvedProvider: selected,
+				AllProviders:     candidates,
+			})
+			providerKey = selected
+		}
+	}
 	if defaultProvider == "" && providerKey == "" {
 		return "", "", nil, newRealtimeClientSecretHandlerError(
 			fasthttp.StatusBadRequest,

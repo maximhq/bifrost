@@ -14,6 +14,8 @@ config:
         schema:
           type: string
           enum: ["true", "false"]
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -38,6 +40,8 @@ config:
         application/json:
           schema:
             $ref: '../../schemas/management/config.yaml#/UpdateConfigRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Configuration updated successfully
@@ -57,6 +61,8 @@ version:
     description: Returns the current Bifrost version information.
     tags:
       - Configuration
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -72,6 +78,8 @@ proxy-config:
     description: Retrieves the current global proxy configuration.
     tags:
       - Configuration
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -100,6 +108,8 @@ proxy-config:
         application/json:
           schema:
             $ref: '../../schemas/management/config.yaml#/ProxyConfig'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Proxy configuration updated successfully
@@ -119,6 +129,8 @@ force-sync-pricing:
     description: Triggers an immediate pricing sync and resets the pricing sync timer.
     tags:
       - Configuration
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Pricing sync triggered successfully

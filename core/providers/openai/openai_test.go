@@ -37,14 +37,15 @@ func TestOpenAI(t *testing.T) {
 		TranscriptionFallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "whisper-1"},
 		},
-		SpeechSynthesisModel: "gpt-4o-mini-tts",
-		ReasoningModel:       "o4-mini", // o4-mini properly returns both reasoning items and message output
-		ImageGenerationModel: "gpt-image-1",
-		ImageEditModel:       "gpt-image-1",
-		ImageVariationModel:  "", // dall-e-2 is deprecated and no other OpenAI model supports image variations
-		VideoGenerationModel: "sora-2",
-		ChatAudioModel:       "gpt-4o-mini-audio-preview",
-		PassthroughModel:     "gpt-4o",
+		SpeechSynthesisModel:    "gpt-4o-mini-tts",
+		ReasoningModel:          "o4-mini", // o4-mini properly returns both reasoning items and message output
+		ImageGenerationModel:    "gpt-image-1",
+		ImageEditModel:          "gpt-image-1",
+		ImageVariationModel:     "", // dall-e-2 is deprecated and no other OpenAI model supports image variations
+		VideoGenerationModel:    "sora-2",
+		ChatAudioModel:          "gpt-audio-mini",
+		PassthroughModel:        "gpt-4o",
+		ExternalCompactionModel: "gpt-4o",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			TextCompletionStream:       true,
@@ -94,6 +95,7 @@ func TestOpenAI(t *testing.T) {
 			FileContent:                true,
 			FileBatchInput:             true,
 			CountTokens:                true,
+			ExternalCompaction:         true,
 			ChatAudio:                  true,
 			StructuredOutputs:          true, // Structured outputs with nullable enum support
 			ContainerCreate:            true,

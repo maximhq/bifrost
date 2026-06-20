@@ -199,6 +199,7 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *schemas.Bifrost
 			Provider:       provider,
 			RequestedModel: requestedModel,
 			ResolvedModel:  resolvedModel,
+			RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 			Data:           data,
 			RawRequest:     &rawRequest,
 		}, nil
@@ -211,6 +212,7 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *schemas.Bifrost
 		Provider:       provider,
 		RequestedModel: requestedModel,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
 }

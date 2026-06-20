@@ -7,6 +7,52 @@ import (
 	"time"
 )
 
+type traceAttributeTestTracer struct {
+	NoOpTracer
+	gotTraceID string
+	gotSpanID  *string
+	gotHandle  SpanHandle
+	gotKey     string
+	gotValue   any
+}
+
+func (t *traceAttributeTestTracer) GetSpanHandleByID(traceID string, spanID *string) SpanHandle {
+	t.gotTraceID = traceID
+	t.gotSpanID = spanID
+	t.gotHandle = struct{}{}
+	return t.gotHandle
+}
+
+func (t *traceAttributeTestTracer) SetAttribute(handle SpanHandle, key string, value any) {
+	if handle != t.gotHandle {
+		return
+	}
+	t.gotKey = key
+	t.gotValue = value
+}
+
+func TestBifrostContext_SetTraceAttribute_UsesRootSpanHandle(t *testing.T) {
+	tracer := &traceAttributeTestTracer{}
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.SetValue(BifrostContextKeyTracer, tracer)
+	ctx.SetValue(BifrostContextKeyTraceID, "trace-123")
+
+	ctx.SetTraceAttribute("custom.root_attr", "root-value")
+
+	if tracer.gotTraceID != "trace-123" {
+		t.Fatalf("trace ID = %q, want trace-123", tracer.gotTraceID)
+	}
+	if tracer.gotSpanID != nil {
+		t.Fatalf("span ID = %v, want nil for root span lookup", tracer.gotSpanID)
+	}
+	if tracer.gotKey != "custom.root_attr" {
+		t.Fatalf("attribute key = %q, want custom.root_attr", tracer.gotKey)
+	}
+	if tracer.gotValue != "root-value" {
+		t.Fatalf("attribute value = %v, want root-value", tracer.gotValue)
+	}
+}
+
 func TestNewBifrostContext_NoGoroutineLeakWithBackgroundAndNoDeadline(t *testing.T) {
 	// Get baseline goroutine count
 	runtime.GC()
@@ -327,6 +373,40 @@ func TestPluginLog_PoolReuse(t *testing.T) {
 	logs := ctx.DrainPluginLogs()
 	if len(logs) != 100 {
 		t.Errorf("expected 100 logs from pool reuse, got %d", len(logs))
+	}
+}
+
+// TestRoot_UnwrapsChainedValueDelegates verifies Root() walks the entire
+// delegate chain. A naive single-step unwrap would return an intermediate
+// pooled scope, which loses the async-safety guarantee as soon as that
+// intermediate scope is recycled.
+func TestRoot_UnwrapsChainedValueDelegates(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+
+	a := "outer"
+	b := "inner"
+	outer := root.WithPluginScope(&a)
+	// Manually build a second scoped context whose delegate is the first
+	// scoped context — simulates a plugin that derives its own scope from
+	// an already-scoped ctx.
+	inner := &BifrostContext{
+		parent:        outer.parent,
+		done:          outer.done,
+		pluginScope:   &b,
+		valueDelegate: outer,
+	}
+
+	got := inner.Root()
+	if got != root {
+		t.Fatalf("Root() did not walk the chain to the request root: got %p, want %p", got, root)
+	}
+	if got.valueDelegate != nil {
+		t.Fatalf("Root() returned a context with a non-nil valueDelegate: %+v", got)
+	}
+
+	// Sanity: Root() on a non-scoped context returns itself.
+	if root.Root() != root {
+		t.Fatal("Root() on a non-scoped context should return the receiver")
 	}
 }
 

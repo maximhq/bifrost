@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -147,9 +146,13 @@ func (chm *ClientHealthMonitor) performHealthCheck() {
 	clientState, exists := chm.manager.clientMap[chm.clientID]
 	var isDisabled bool
 	var conn *client.Client
+	var clientName string
 	if exists && clientState != nil {
 		conn = clientState.Conn
 		isDisabled = clientState.State == schemas.MCPConnectionStateDisabled
+		if clientState.ExecutionConfig != nil {
+			clientName = clientState.ExecutionConfig.Name
+		}
 	}
 	chm.manager.mu.RUnlock()
 
@@ -171,20 +174,23 @@ func (chm *ClientHealthMonitor) performHealthCheck() {
 		err = fmt.Errorf("no active connection")
 	} else {
 		// Perform health check with timeout
-		ctx, cancel := context.WithTimeout(context.Background(), chm.timeout)
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), chm.timeout)
 		defer cancel()
 
+		// Mark the request as bifrost-generated for health checks so plugins/hooks can
+		// distinguish these internal pings/list_tools probes from caller-initiated requests.
+		// runPingWithHooks / runListToolsWithHooks wrap this ctx, so the marker propagates.
+		ctx := schemas.NewBifrostContext(timeoutCtx, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
+
 		if chm.isPingAvailable {
-			err = conn.Ping(ctx)
+			err = chm.runPingWithHooks(ctx, conn, clientName)
 		} else {
-			listRequest := mcp.ListToolsRequest{
-				PaginatedRequest: mcp.PaginatedRequest{
-					Request: mcp.Request{
-						Method: string(mcp.MethodToolsList),
-					},
-				},
-			}
-			_, err = conn.ListTools(ctx, listRequest)
+			// Health-check fallback uses list_tools as a liveness probe when the server
+			// doesn't support ping. The plugin gate fires (plugins can observe / mutate /
+			// short-circuit) but the resulting tools are DISCARDED — periodic tool sync
+			// owns tool state, this path is liveness-only.
+			_, _, err = chm.manager.runListToolsWithHooks(ctx, conn, clientName)
 		}
 	}
 

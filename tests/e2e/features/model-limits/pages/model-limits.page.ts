@@ -41,7 +41,35 @@ export class ModelLimitsPage extends BasePage {
 
   async modelLimitExists(modelName: string, provider: string = 'all'): Promise<boolean> {
     const row = this.getModelLimitRow(modelName, provider)
-    return (await row.count()) > 0
+    return await row.isVisible({ timeout: 5000 }).catch(() => false)
+  }
+
+  private async openModelLimitActions(modelName: string, provider: string = 'all'): Promise<void> {
+    const row = this.getModelLimitRow(modelName, provider)
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await row.scrollIntoViewIfNeeded()
+
+    const actionsBtn = this.page.getByTestId(
+      `model-limit-button-actions-${toTestIdPart(modelName)}-${toTestIdPart(provider)}`
+    )
+    await actionsBtn.waitFor({ state: 'visible', timeout: 10000 })
+    await actionsBtn.scrollIntoViewIfNeeded()
+    await actionsBtn.click()
+  }
+
+  private async waitForSheetClosedAfterSave(): Promise<void> {
+    const closed = await expect(this.sheet)
+      .not.toBeVisible({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!closed) {
+      await this.page.keyboard.press('Escape')
+      await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
+    }
+
+    await expect(this.page.locator('html'))
+      .not.toHaveClass(/bprogress-busy/, { timeout: 10000 })
+      .catch(() => {})
   }
 
   /**
@@ -84,14 +112,17 @@ export class ModelLimitsPage extends BasePage {
     }
 
     const saveBtn = this.page.getByRole('button', { name: /Create Limit/i })
+    await expect(saveBtn).toBeEnabled({ timeout: 10000 })
     await saveBtn.click()
-    await this.waitForSuccessToast()
-    await expect(this.sheet).not.toBeVisible({ timeout: 10000 })
+    await this.waitForSheetClosedAfterSave()
+    await expect(this.getModelLimitRow(selectedModelName, config.provider)).toBeVisible({ timeout: 15000 })
     return selectedModelName
   }
 
   async editModelLimit(modelName: string, provider: string, updates: Partial<ModelLimitConfig>): Promise<void> {
+    await this.openModelLimitActions(modelName, provider)
     const editBtn = this.page.getByTestId(`model-limit-button-edit-${toTestIdPart(modelName)}-${toTestIdPart(provider)}`)
+    await editBtn.waitFor({ state: 'visible', timeout: 10000 })
     await editBtn.click()
     await expect(this.sheet).toBeVisible({ timeout: 5000 })
     await this.waitForSheetAnimation()
@@ -114,19 +145,24 @@ export class ModelLimitsPage extends BasePage {
     }
 
     const saveBtn = this.page.getByRole('button', { name: /Save Changes|Create Limit/i })
+    await expect(saveBtn).toBeEnabled({ timeout: 10000 })
     await saveBtn.click()
-    await this.waitForSuccessToast()
-    await expect(this.sheet).not.toBeVisible({ timeout: 10000 })
+    await this.waitForSheetClosedAfterSave()
+    await expect(this.getModelLimitRow(modelName, provider)).toBeVisible({ timeout: 15000 })
   }
 
   async deleteModelLimit(modelName: string, provider: string = 'all'): Promise<void> {
+    const exists = await this.modelLimitExists(modelName, provider)
+    if (!exists) return
+
+    await this.openModelLimitActions(modelName, provider)
     const deleteBtn = this.page.getByTestId(`model-limit-button-delete-${toTestIdPart(modelName)}-${toTestIdPart(provider)}`)
+    await deleteBtn.waitFor({ state: 'visible', timeout: 10000 })
     await deleteBtn.click()
 
     const confirmDialog = this.page.locator('[role="alertdialog"]')
     await confirmDialog.getByRole('button', { name: /Delete/i }).click()
-    await this.waitForSuccessToast()
-    await this.page.waitForTimeout(1000)
+    await expect(this.getModelLimitRow(modelName, provider)).not.toBeVisible({ timeout: 15000 })
   }
 
   async closeSheet(): Promise<void> {

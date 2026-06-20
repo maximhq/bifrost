@@ -4,8 +4,8 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import DashboardPage from "./page";
 
 function RouteComponent() {
-	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
-	if (!hasObservabilityAccess) {
+	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
+	if (!hasDashboardAccess) {
 		return <NoPermissionView entity="dashboard" />;
 	}
 	return <DashboardPage />;

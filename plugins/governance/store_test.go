@@ -591,6 +591,86 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	assert.False(t, found, "VK should not be found after delete")
 }
 
+// TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer is a regression test
+// for a double-counting bug on new VKs: the create handler keeps mutating the caller's
+// TableVirtualKey after the store call (hydrateVKGovernance reassigns Budgets/RateLimit/RateLimitID
+// from VK-scoped model configs for serialization), so if the store kept that pointer the
+// model-config-owned IDs would leak onto the tracked VK's hierarchy fields and the usage tracker
+// would count each request twice (VK-scoped-model + VK-hierarchy). The stored VK must be a
+// decoupled clone.
+func TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	// A freshly-created VK loaded from DB carries no legacy rate-limit/budget — its
+	// governance lives in a VK-scoped model config, so RateLimitID is nil and Budgets empty.
+	// It does carry a provider config (with no per-provider governance of its own yet).
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	store.CreateVirtualKeyInMemory(context.Background(), vk)
+
+	// Simulate hydrateVKGovernance mutating the caller's pointer after the store call: it
+	// reassigns the top-level fields AND mutates the provider-config element IN PLACE
+	// (pc := &vk.ProviderConfigs[i]; pc.Budgets = ...), injecting the model-config-owned
+	// rate-limit/budget identity. The in-place element write is the case greptile flagged:
+	// a shallow clone shares the ProviderConfigs backing array and would leak it.
+	hydratedRL := buildRateLimit("mc-rl", 6, 6)
+	vk.RateLimit = hydratedRL
+	vk.RateLimitID = &hydratedRL.ID
+	vk.Budgets = []configstoreTables.TableBudget{*buildBudget("mc-b", 200.0, "1h")}
+
+	pcRL := buildRateLimit("mc-pc-rl", 10, 10)
+	vk.ProviderConfigs[0].RateLimit = pcRL
+	vk.ProviderConfigs[0].RateLimitID = &pcRL.ID
+	vk.ProviderConfigs[0].Budgets = []configstoreTables.TableBudget{*buildBudget("mc-pc-b", 50.0, "1h")}
+
+	// The tracked VK must NOT reflect those post-create mutations, otherwise the
+	// VK-hierarchy usage path would double-count alongside the VK-scoped-model path.
+	tracked, found := store.GetVirtualKey(context.Background(), "sk-bf-test")
+	require.True(t, found)
+	require.NotNil(t, tracked)
+	assert.Nil(t, tracked.RateLimit, "tracked VK rate limit must stay decoupled from caller mutation")
+	assert.Nil(t, tracked.RateLimitID, "tracked VK rate limit ID must stay decoupled from caller mutation")
+	assert.Empty(t, tracked.Budgets, "tracked VK budgets must stay decoupled from caller mutation")
+
+	// Per-provider entries must stay decoupled too — this is the ProviderConfigs slice
+	// aliasing greptile flagged (in-place element mutation through the shared backing array).
+	require.Len(t, tracked.ProviderConfigs, 1)
+	assert.Nil(t, tracked.ProviderConfigs[0].RateLimit, "tracked provider-config rate limit must stay decoupled")
+	assert.Nil(t, tracked.ProviderConfigs[0].RateLimitID, "tracked provider-config rate limit ID must stay decoupled")
+	assert.Empty(t, tracked.ProviderConfigs[0].Budgets, "tracked provider-config budgets must stay decoupled")
+}
+
+func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 25.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-old", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	updated := *vk
+	updated.Value = "sk-bf-new"
+	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil, nil)
+
+	oldVK, oldFound := store.GetVirtualKey(context.Background(), "sk-bf-old")
+	assert.False(t, oldFound)
+	assert.Nil(t, oldVK)
+
+	newVK, newFound := store.GetVirtualKey(context.Background(), "sk-bf-new")
+	require.True(t, newFound)
+	require.NotNil(t, newVK)
+	assert.Equal(t, "vk1", newVK.ID)
+	require.Len(t, newVK.Budgets, 1)
+	assert.Equal(t, 25.0, newVK.Budgets[0].CurrentUsage)
+}
+
 // TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests tests atomic rate limit usage updates
 func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	logger := NewMockLogger()
@@ -974,6 +1054,88 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	assert.Equal(t, 100.0, status.BudgetPercentUsed)
 }
 
+// TestGetBudgetAndRateLimitStatus_VKScopedModelConfig tests that a VK-scoped model config
+// budget (scope=virtual_key, model="*", provider="openai") is visible to GetBudgetAndRateLimitStatus.
+// This is the regression introduced when the provider-governance migration relocated per-VK
+// provider budgets from vk.ProviderConfigs into governance_model_configs; the status reader
+// was not updated to look in the new location and always returned 0.0%.
+func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-test-id"
+	vkValue := "vk-test-value"
+	providerName := "openai"
+
+	// Budget at 120% (exceeded) — mirrors the real bug scenario.
+	budget := buildBudgetWithUsage("vk-model-budget", 0.001, 0.0012, "1h")
+
+	// VK-scoped wildcard model config: scope=virtual_key, model="*", provider="openai".
+	// This is exactly the shape the provider-governance migration writes.
+	mc := buildVKScopedModelConfig("mc-vk-openai", configstoreTables.ModelConfigAllModels, &providerName, vkID, budget, nil)
+
+	vk := buildVirtualKey(vkID, vkValue, "test-vk", true)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	store.virtualKeys.Store(vkValue, vk)
+
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), vk, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Greater(t, status.BudgetPercentUsed, 100.0, "VK-scoped model budget at 120%% must be visible to routing status")
+}
+
+// TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider tests that a
+// VK-scoped model config for one provider does not bleed into status for another provider.
+func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-test-id"
+	vkValue := "vk-test-value"
+	providerName := "openai"
+
+	budget := buildBudgetWithUsage("vk-model-budget", 0.001, 0.0012, "1h") // exceeded for openai
+	mc := buildVKScopedModelConfig("mc-vk-openai", configstoreTables.ModelConfigAllModels, &providerName, vkID, budget, nil)
+	vk := buildVirtualKey(vkID, vkValue, "test-vk", true)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	store.virtualKeys.Store(vkValue, vk)
+
+	// Query for anthropic — should not see the openai-scoped budget.
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "claude-3-5-sonnet", schemas.ModelProvider("anthropic"), vk, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Equal(t, 0.0, status.BudgetPercentUsed, "openai VK-scoped budget must not appear for anthropic requests")
+}
+
+// TestGetBudgetAndRateLimitStatus_GlobalModelConfig tests that a global model+provider
+// config budget is visible to GetBudgetAndRateLimitStatus.
+func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
+	logger := NewMockLogger()
+	providerName := "openai"
+
+	budget := buildBudgetWithUsage("global-model-budget", 100.0, 75.0, "1h") // 75%
+	mc := buildModelConfig("mc-global-openai", "gpt-5", &providerName, budget, nil)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), nil, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Equal(t, 75.0, status.BudgetPercentUsed, "global model+provider budget must be visible to routing status")
+}
+
 // TestGovernanceStore_RoutingRules_MultipleScopes tests rules with multiple scopes
 func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 	logger := NewMockLogger()
@@ -1161,6 +1323,142 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 	assert.Equal(t, program, program2)
+}
+
+// TestGetTeamNameAndGetCustomerName verifies the display-name accessors the
+// enterprise layer uses as the log-stamping fallback when its edge-driven name
+// caches miss: known entities return their name, unknown/empty ids return "".
+func TestGetTeamNameAndGetCustomerName(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	store.CreateTeamInMemory(context.Background(), buildTeam("team-1", "Platform", nil))
+	store.CreateCustomerInMemory(context.Background(), buildCustomer("cust-1", "ACME", nil))
+
+	assert.Equal(t, "Platform", store.GetTeamName(context.Background(), "team-1"))
+	assert.Equal(t, "ACME", store.GetCustomerName(context.Background(), "cust-1"))
+
+	assert.Empty(t, store.GetTeamName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetCustomerName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetTeamName(context.Background(), ""))
+	assert.Empty(t, store.GetCustomerName(context.Background(), ""))
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_CreateInMemory verifies that
+// CreateCustomerInMemory stamps IsCalendarAligned on the in-memory budget and
+// rate limit so ResetExpiredBudgetsInMemory uses the calendar-aligned reset path.
+func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	budgetID := "cust-bud-1"
+	rlID := "cust-rl-1"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      100.0,
+		ResetDuration: "1M",
+		LastReset:     time.Now(),
+	}
+	rl := &configstoreTables.TableRateLimit{
+		ID:               rlID,
+		TokenMaxLimit:    ptrInt64(1000),
+		TokenLastReset:   time.Now(),
+		RequestLastReset: time.Now(),
+	}
+	customer := buildCustomer("cust-1", "ACME", budget)
+	customer.CalendarAligned = true
+	customer.RateLimit = rl
+	customer.RateLimitID = &rlID
+
+	store.CreateCustomerInMemory(context.Background(), customer)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok, "budget should be in memory after create")
+	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
+	require.True(t, ok)
+	assert.True(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be true when customer.CalendarAligned=true")
+
+	rawRL, ok := store.rateLimits.Load(rlID)
+	require.True(t, ok, "rate limit should be in memory after create")
+	storedRL, ok := rawRL.(*configstoreTables.TableRateLimit)
+	require.True(t, ok)
+	assert.True(t, storedRL.IsCalendarAligned, "rate_limit.IsCalendarAligned should be true when customer.CalendarAligned=true")
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False verifies that
+// IsCalendarAligned is false when the customer does not have calendar alignment enabled.
+func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	budgetID := "cust-bud-2"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      50.0,
+		ResetDuration: "1d",
+		LastReset:     time.Now(),
+	}
+	customer := buildCustomer("cust-2", "Globex", budget)
+	customer.CalendarAligned = false
+
+	store.CreateCustomerInMemory(context.Background(), customer)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok)
+	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
+	require.True(t, ok)
+	assert.False(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be false when customer.CalendarAligned=false")
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory verifies that
+// UpdateCustomerInMemory re-stamps IsCalendarAligned on the budget and rate limit
+// so an in-flight toggle (false→true) takes effect immediately in memory.
+func TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory(t *testing.T) {
+	logger := NewMockLogger()
+
+	budgetID := "cust-bud-3"
+	rlID := "cust-rl-3"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      200.0,
+		ResetDuration: "1M",
+		LastReset:     time.Now(),
+	}
+	rl := &configstoreTables.TableRateLimit{
+		ID:               rlID,
+		TokenMaxLimit:    ptrInt64(500),
+		TokenLastReset:   time.Now(),
+		RequestLastReset: time.Now(),
+	}
+	customer := buildCustomer("cust-3", "Initech", budget)
+	customer.CalendarAligned = false
+	customer.RateLimit = rl
+	customer.RateLimitID = &rlID
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Customers: []configstoreTables.TableCustomer{*customer},
+		Budgets:   []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// Budget and rate limit should start as non-calendar-aligned
+	rawBudget, _ := store.budgets.Load(budgetID)
+	assert.False(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned)
+
+	// Toggle calendar_aligned to true and update in memory
+	customer.CalendarAligned = true
+	store.UpdateCustomerInMemory(context.Background(), customer, nil)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok)
+	assert.True(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned, "budget.IsCalendarAligned should be true after update with CalendarAligned=true")
+
+	rawRL, ok := store.rateLimits.Load(rlID)
+	require.True(t, ok)
+	assert.True(t, rawRL.(*configstoreTables.TableRateLimit).IsCalendarAligned, "rate_limit.IsCalendarAligned should be true after update with CalendarAligned=true")
 }
 
 // Utility functions for tests

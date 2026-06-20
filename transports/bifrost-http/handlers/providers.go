@@ -30,6 +30,18 @@ type ModelsManager interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
+	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+}
+
+// ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
+// (model, provider) is the natural key on governance_model_pricing.
+type ModelPricingAttributesEntry struct {
+	Model                string            `json:"model"`
+	Provider             string            `json:"provider"`
+	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -128,6 +140,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -270,6 +283,12 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		if err := validateRetryBackoff(payload.NetworkConfig); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 			return
+		}
+		if payload.NetworkConfig.BaseURL != "" {
+			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+				return
+			}
 		}
 	}
 	// Check if provider already exists
@@ -439,6 +458,12 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 		return
 	}
+	if nc.BaseURL != "" {
+		if err := bifrost.ValidateExternalURL(nc.BaseURL, nc.AllowPrivateNetwork); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+			return
+		}
+	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
 	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
@@ -595,13 +620,14 @@ type ListModelsResponse struct {
 
 // ModelDetailsResponse represents a model with capability metadata.
 type ModelDetailsResponse struct {
-	Name             string                `json:"name"`
-	Provider         string                `json:"provider"`
-	ContextLength    *int                  `json:"context_length,omitempty"`
-	MaxInputTokens   *int                  `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens  *int                  `json:"max_output_tokens,omitempty"`
-	Architecture     *schemas.Architecture `json:"architecture,omitempty"`
-	AccessibleByKeys []string              `json:"accessible_by_keys,omitempty"`
+	Name                 string                `json:"name"`
+	Provider             string                `json:"provider"`
+	ContextLength        *int                  `json:"context_length,omitempty"`
+	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
+	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
+	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
+	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
 }
 
 // ListModelDetailsResponse represents the response for listing detailed models.
@@ -615,6 +641,7 @@ type modelListQuery struct {
 	Query      string
 	KeyIDs     []string
 	Limit      int
+	Offset     int
 	Unfiltered bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
@@ -676,6 +703,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
 //   - unfiltered: If true, bypass provider-level model pool restrictions only
 //   - limit: Maximum number of results to return (default: 20)
+//   - offset: Number of results to skip (for pagination)
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -712,6 +740,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
 			details.Architecture = capabilities.Architecture
+			details.AdditionalAttributes = capabilities.AdditionalAttributes
 		}
 		responseModels = append(responseModels, details)
 	}
@@ -748,6 +777,11 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultL
 	if len(queryArgs.Peek("limit")) > 0 {
 		if limit, err := queryArgs.GetUint("limit"); err == nil {
 			query.Limit = limit
+		}
+	}
+	if len(queryArgs.Peek("offset")) > 0 {
+		if offset, err := queryArgs.GetUint("offset"); err == nil {
+			query.Offset = offset
 		}
 	}
 
@@ -801,12 +835,21 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 		})
 	}
 
+	slices.Sort(providers)
+
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
 	}
 
 	total := len(models)
+	if query.Offset > 0 {
+		if query.Offset >= len(models) {
+			models = models[:0]
+		} else {
+			models = models[query.Offset:]
+		}
+	}
 	if query.Limit > 0 && query.Limit < len(models) {
 		models = models[:query.Limit]
 	}
@@ -1192,4 +1235,32 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 		}
 	}
 	return nil
+}
+
+// upsertModelCatalogEntries handles PUT /api/models/catalog — batch-upserts
+// the additional_attributes JSON on the pricing rows keyed by
+// (model, provider). Every requested (model, provider) must already exist in
+// governance_model_pricing; the whole batch is rejected atomically if any
+// entry is missing. An entry with an empty AdditionalAttributes map clears
+// the column for that (model, provider).
+func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
+	var payload []ModelPricingAttributesEntry
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		return
+	}
+	for i := range payload {
+		payload[i].Model = strings.TrimSpace(payload[i].Model)
+		payload[i].Provider = strings.TrimSpace(payload[i].Provider)
+		if payload[i].Model == "" || payload[i].Provider == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "model and provider are required for every catalog entry")
+			return
+		}
+	}
+
+	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

@@ -4,8 +4,8 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import MCPToolGroupsPage from "./page";
 
 function RouteComponent() {
-	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
-	if (!hasMCPGatewayAccess) {
+	const hasMCPToolGroupsAccess = useRbac(RbacResource.MCPToolGroups, RbacOperation.View);
+	if (!hasMCPToolGroupsAccess) {
 		return <NoPermissionView entity="MCP tool groups" />;
 	}
 	return <MCPToolGroupsPage />;

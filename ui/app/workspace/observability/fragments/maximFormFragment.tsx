@@ -1,7 +1,8 @@
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { RequestHeadersTextarea } from "@/components/ui/requestHeadersTextarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { maximFormSchema, type MaximFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -15,6 +16,7 @@ interface MaximFormFragmentProps {
 		enabled?: boolean;
 		api_key?: string;
 		log_repo_id?: string;
+		request_headers?: string[];
 	};
 	onSave: (config: MaximFormSchema) => Promise<void>;
 	onDelete?: () => void;
@@ -36,6 +38,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 			maxim_config: {
 				api_key: initialConfig?.api_key ?? "",
 				log_repo_id: initialConfig?.log_repo_id ?? "",
+				request_headers: initialConfig?.request_headers ?? [],
 			},
 		},
 	});
@@ -52,6 +55,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 			maxim_config: {
 				api_key: initialConfig?.api_key ?? "",
 				log_repo_id: initialConfig?.log_repo_id ?? "",
+				request_headers: initialConfig?.request_headers ?? [],
 			},
 		});
 	}, [form, initialConfig]);
@@ -106,6 +110,32 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								</FormItem>
 							)}
 						/>
+
+						<FormField
+							control={form.control}
+							name="maxim_config.request_headers"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Request Headers <span className="text-muted-foreground font-normal">(Optional)</span></FormLabel>
+									<FormDescription>
+										Comma-separated list of request headers to capture and attach as trace tags. Supports exact names and wildcard
+										patterns (e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> captures
+										all headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization).
+									</FormDescription>
+									<FormControl>
+										<RequestHeadersTextarea
+											className="h-24"
+											placeholder="X-Tenant-ID, X-Request-Source, x-custom-*"
+											disabled={!hasMaximAccess}
+											value={field.value ?? []}
+											onChange={field.onChange}
+											data-testid="request-headers-textarea"
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
 					</div>
 				</div>
 
@@ -150,6 +180,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 									maxim_config: {
 										api_key: initialConfig?.api_key ?? "",
 										log_repo_id: initialConfig?.log_repo_id ?? "",
+										request_headers: initialConfig?.request_headers ?? [],
 									},
 								});
 							}}
@@ -160,15 +191,11 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button
-										type="submit"
-										disabled={!hasMaximAccess || !form.formState.isDirty}
-										isLoading={isSaving}
-									>
+									<Button type="submit" disabled={!hasMaximAccess || !form.formState.isDirty} isLoading={isSaving}>
 										Save Maxim Configuration
 									</Button>
 								</TooltipTrigger>
-								{(!form.formState.isDirty) && (
+								{!form.formState.isDirty && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty

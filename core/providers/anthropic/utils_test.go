@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -577,6 +578,143 @@ func TestConvertChatResponseFormatToAnthropicOutputFormat(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesSchemaRefs(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/$defs/Document",
+		},
+	}
+	defs := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+				"authors": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"$ref": "#/$defs/Person",
+					},
+				},
+			},
+			"required": []interface{}{"title", "authors"},
+		},
+		"Person": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":  map[string]interface{}{"type": "string"},
+				"email": map[string]interface{}{"type": []interface{}{"string", "null"}},
+			},
+			"required": []interface{}{"name", "email"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:       &schemaType,
+				Properties: &properties,
+				Required:   []string{"record"},
+				Defs:       &defs,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	if output["type"] != "json_schema" {
+		t.Fatalf("expected json_schema type, got %v", output["type"])
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("expected additionalProperties=false, got %v", schema["additionalProperties"])
+	}
+	if _, ok := schema["$defs"].(map[string]interface{}); !ok {
+		t.Fatalf("expected $defs to be preserved, got %v", schema["$defs"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/$defs/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinitions(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/definitions/Document",
+		},
+	}
+	definitions := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"title"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:        &schemaType,
+				Properties:  &properties,
+				Required:    []string{"record"},
+				Definitions: &definitions,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if _, ok := schema["definitions"].(map[string]interface{}); !ok {
+		t.Fatalf("expected definitions to be preserved, got %v", schema["definitions"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/definitions/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
 func TestValidateToolsForProvider(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -621,10 +759,9 @@ func TestValidateToolsForProvider(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			name:      "Bedrock rejects web_search",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			provider:  schemas.Bedrock,
-			expectErr: true,
+			name:     "Bedrock allows web_search (nova_grounding via Responses path)",
+			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			provider: schemas.Bedrock,
 		},
 		{
 			name:      "Bedrock rejects web_fetch",
@@ -710,6 +847,54 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 				MCPServers: []AnthropicMCPServerV2{{URL: "http://example.com"}},
 			},
 			expectHeaders: []string{AnthropicMCPClientBetaHeader},
+		},
+		{
+			name:     "Anthropic gets advisor header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			expectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Vertex skips advisor header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Bedrock skips advisor header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Azure skips advisor header",
+			provider: schemas.Azure,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
 		},
 		{
 			name:     "Vertex gets compaction header",
@@ -1343,6 +1528,31 @@ func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
 }
 
 func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
+	t.Run("diagnostics_gated_via_feature_map", func(t *testing.T) {
+		// diagnostics enables cache diagnostics (cache-diagnosis-2026-04-07,
+		// diagnostics.previous_message_id) — Claude API only. Only Anthropic direct
+		// keeps it; every other provider strips it fail-closed via Diagnostics=false.
+		const body = `{"model":"claude-opus-4-7","diagnostics":{"previous_message_id":null}}`
+		// Anthropic keeps it.
+		result, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Anthropic, "claude-opus-4-7")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "diagnostics") {
+			t.Errorf("expected diagnostics to be kept for Anthropic, got: %s", string(result))
+		}
+		// Azure, Bedrock, Vertex strip it.
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.Vertex} {
+			result, err := StripUnsupportedFieldsFromRawBody([]byte(body), provider, "claude-opus-4-7")
+			if err != nil {
+				t.Fatalf("unexpected error for %s: %v", provider, err)
+			}
+			if providerUtils.JSONFieldExists(result, "diagnostics") {
+				t.Errorf("expected diagnostics to be stripped for %s, got: %s", provider, string(result))
+			}
+		}
+	})
+
 	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
 		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
 		// inference_geo (no InferenceGeo), mcp_servers (no MCP), container.skills
@@ -1538,6 +1748,64 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		}
 		if !providerUtils.JSONFieldExists(result, "container.skills") {
 			t.Errorf("expected container.skills preserved on Skills=true provider, got: %s", string(result))
+		}
+	})
+
+	t.Run("advisor_tool_model_prefix_stripped", func(t *testing.T) {
+		// Clients that read Bifrost's model catalog (e.g. Claude Code's /advisor)
+		// embed "anthropic/<id>" in the advisor tool's model field. Anthropic's
+		// upstream rejects that with `tools.N.model: anthropic/...`. The sanitizer
+		// should rewrite to the bare id.
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"tools":[
+				{"name":"Bash","description":"x","input_schema":{"type":"object"}},
+				{"type":"advisor_20260301","name":"advisor","model":"anthropic/claude-opus-4-7"}
+			]
+		}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "tools.1.model").String(); got != "claude-opus-4-7" {
+			t.Errorf("expected tools.1.model to be stripped to 'claude-opus-4-7', got %q (full: %s)", got, string(result))
+		}
+		// Function tool without a model field must be untouched.
+		if providerUtils.JSONFieldExists(result, "tools.0.model") {
+			t.Errorf("unexpected model field on function tool: %s", string(result))
+		}
+	})
+
+	t.Run("advisor_tool_bare_model_passes_through", func(t *testing.T) {
+		// Bare model ids must not be rewritten — ParseModelString only splits on
+		// known-provider prefixes, so "claude-opus-4-7" stays as-is.
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"tools":[{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-7"}]
+		}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "tools.0.model").String(); got != "claude-opus-4-7" {
+			t.Errorf("expected bare model id to pass through unchanged, got %q", got)
+		}
+	})
+
+	t.Run("advisor_tool_unknown_prefix_passes_through", func(t *testing.T) {
+		// Namespaced model ids that aren't a Bifrost provider prefix (e.g.
+		// "meta-llama/Llama-3.1-8B") must be preserved verbatim. ParseModelString
+		// already encodes this rule; the test pins the behavior at the tool level.
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"tools":[{"type":"advisor_20260301","name":"advisor","model":"some-namespace/custom-model"}]
+		}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "tools.0.model").String(); got != "some-namespace/custom-model" {
+			t.Errorf("expected unknown-prefix model to pass through, got %q", got)
 		}
 	})
 }
@@ -1998,16 +2266,24 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		model    string
 		expected bool
 	}{
+		{"claude-opus-4-8-20260601", true},
+		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7-20260401", true},
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6-20250514", true},
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6-20250514", true},
 		{"claude-sonnet-4.6-20250514", true},
+		// Fable/Mythos family: adaptive thinking is always on.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
 		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
+		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
 		{"", false},
 	}
 
@@ -2021,16 +2297,171 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 	}
 }
 
+// TestIsFableFamily pins the Fable/Mythos family predicate. These models share
+// Opus 4.7+'s adaptive-only / no-sampling surface and additionally reject
+// thinking:{type:"disabled"}.
+func TestIsFableFamily(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
+		{"anthropic.claude-mythos-5-v1", true},
+		// Not Fable/Mythos.
+		{"claude-opus-4-8", false},
+		{"claude-opus-4-7", false},
+		{"claude-sonnet-4-6", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsFableFamily(tt.model); got != tt.expected {
+				t.Errorf("IsFableFamily(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsAdaptiveOnlyThinkingModel covers the union gate used for the thinking
+// and sampling-parameter surfaces: Opus 4.7+ OR the Fable/Mythos family.
+func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Opus 4.7+.
+		{"claude-opus-4-8", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.8-20260601", true},
+		// Fable/Mythos.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
+		{"claude-opus-4-6", false},
+		{"claude-sonnet-4-6", false},
+		// Other.
+		{"claude-opus-4-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsAdaptiveOnlyThinkingModel(tt.model); got != tt.expected {
+				t.Errorf("IsAdaptiveOnlyThinkingModel(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSupportsFastMode pins the helper against Anthropic's fast-mode docs.
+// TestSupportsMidConversationSystem pins the helper against Anthropic docs:
+// available on the Anthropic API only, Opus 4.8+ only, no beta header required.
+func TestSupportsMidConversationSystem(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		model    string
+		expected bool
+	}{
+		// Supported: Anthropic provider + Opus 4.8.
+		{schemas.Anthropic, "claude-opus-4-8", true},
+		{schemas.Anthropic, "claude-opus-4.8-20260601", true},
+		{schemas.Anthropic, "claude-opus-4-8-20260601", true},
+		// Not supported: Bedrock and Vertex even with Opus 4.8.
+		{schemas.Bedrock, "global.anthropic.claude-opus-4-8", false},
+		{schemas.Vertex, "claude-opus-4-8", false},
+		// Not supported: Anthropic but Opus 4.7 (feature is 4.8+ only).
+		{schemas.Anthropic, "claude-opus-4-7", false},
+		{schemas.Anthropic, "claude-opus-4.7-20260401", false},
+		// Not supported: other model families.
+		{schemas.Anthropic, "claude-sonnet-4-8", false},
+		{schemas.Anthropic, "claude-haiku-4-8", false},
+		// Supported: Fable/Mythos family (Anthropic provider). Fable post-dates
+		// Opus 4.8 and supports mid-conversation system messages.
+		{schemas.Anthropic, "claude-fable-5", true},
+		{schemas.Anthropic, "claude-mythos-5", true},
+		// Not supported off the Anthropic provider, even for Fable.
+		{schemas.Bedrock, "claude-fable-5", false},
+		{schemas.Vertex, "claude-fable-5", false},
+		// Defensive cases.
+		{schemas.Anthropic, "", false},
+		{"", "claude-opus-4-8", false},
+	}
+
+	for _, tt := range tests {
+		name := string(tt.provider) + "/" + tt.model
+		t.Run(name, func(t *testing.T) {
+			got := SupportsMidConversationSystem(tt.provider, tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsMidConversationSystem(%q, %q) = %v, want %v", tt.provider, tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// Supported: Opus 4.6, Opus 4.7, Opus 4.8. All other models return false.
+func TestSupportsFastMode(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Supported models.
+		{"claude-opus-4-6", true},
+		{"claude-opus-4.6-20250514", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.7-20260401", true},
+		{"claude-opus-4-8", true},
+		{"claude-opus-4.8-20260601", true},
+		// Bedrock / Vertex prefixed IDs.
+		{"global.anthropic.claude-opus-4-6", true},
+		{"global.anthropic.claude-opus-4-7", true},
+		{"global.anthropic.claude-opus-4-8", true},
+		// Not supported — other model families.
+		{"claude-sonnet-4-6", false},
+		{"claude-haiku-4-5", false},
+		{"claude-opus-4-5", false},
+		{"claude-opus-4-1", false},
+		// Fable/Mythos do NOT support fast mode (Opus 4.6/4.7/4.8 only).
+		{"claude-fable-5", false},
+		{"claude-mythos-5", false},
+		{"claude-mythos-preview", false},
+		// Defensive cases.
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := SupportsFastMode(tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsFastMode(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestSupportsEffortParameter pins the helper against the explicit doc list
 // at https://platform.claude.com/docs/en/build-with-claude/effort:
-// "Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
 func TestSupportsEffortParameter(t *testing.T) {
 	tests := []struct {
 		model    string
 		expected bool
 	}{
 		// Supported per docs.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
+		{"claude-opus-4-8", true},
+		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7", true},
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6", true},
@@ -2041,8 +2472,10 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
 		// Bedrock + Vertex IDs for supported models keep the substring shape.
+		{"anthropic.claude-opus-4-8-v1", true},
 		{"anthropic.claude-opus-4-7-v1", true},
 		{"global.anthropic.claude-sonnet-4-6", true},
+		{"claude-opus-4-8@20260601", true},
 		{"claude-opus-4-7@20260401", true},
 		// Not supported - the failing case from the upstream 400.
 		{"claude-haiku-4-5", false},
@@ -2110,6 +2543,15 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 		{
 			name:  "sonnet 4.6 keeps effort",
 			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "opus 4.8 keeps effort",
+			model: "claude-opus-4-8",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
@@ -2317,6 +2759,166 @@ func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	}
 }
 
+func TestAddMissingBetaHeadersToContext_CacheDiagnostics(t *testing.T) {
+	tests := []struct {
+		name            string
+		provider        schemas.ModelProvider
+		req             *AnthropicMessageRequest
+		expectHeaders   []string
+		unexpectHeaders []string
+	}{
+		{
+			name:          "Anthropic gets cache-diagnosis header when diagnostics set",
+			provider:      schemas.Anthropic,
+			req:           &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			expectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "Bedrock does not get cache-diagnosis header (Diagnostics=false)",
+			provider:        schemas.Bedrock,
+			req:             &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "Vertex does not get cache-diagnosis header (Diagnostics=false)",
+			provider:        schemas.Vertex,
+			req:             &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "Azure does not get cache-diagnosis header (Diagnostics=false)",
+			provider:        schemas.Azure,
+			req:             &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "no cache-diagnosis header when diagnostics is nil",
+			provider:        schemas.Anthropic,
+			req:             &AnthropicMessageRequest{},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			AddMissingBetaHeadersToContext(ctx, tt.req, tt.provider)
+
+			var headers []string
+			if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+				headers = extraHeaders[AnthropicBetaHeader]
+			}
+
+			for _, expected := range tt.expectHeaders {
+				if !slices.Contains(headers, expected) {
+					t.Errorf("expected header %q not found in %v", expected, headers)
+				}
+			}
+			for _, unexpected := range tt.unexpectHeaders {
+				if slices.Contains(headers, unexpected) {
+					t.Errorf("unexpected header %q found in %v", unexpected, headers)
+				}
+			}
+		})
+	}
+}
+
+func TestDiagnostics_ResponsesRequestRoundTrip(t *testing.T) {
+	// The diagnostics opt-in must survive the AnthropicMessageRequest -> Bifrost
+	// -> AnthropicMessageRequest round-trip as a typed field (parity with
+	// cache_control), not get dropped into ungated ExtraParams.
+	prev := "msg_prev_123"
+	cases := []struct {
+		name string
+		diag *AnthropicDiagnostics
+		want string // expected previous_message_id raw JSON
+	}{
+		{"with_previous_id", &AnthropicDiagnostics{PreviousMessageID: &prev}, `"msg_prev_123"`},
+		{"first_turn_null", &AnthropicDiagnostics{}, `null`}, // opt-in: previous_message_id must serialize as null, not be omitted
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &AnthropicMessageRequest{Model: "claude-opus-4-8", MaxTokens: 1024, Diagnostics: tc.diag}
+			bifrostReq := req.ToBifrostResponsesRequest(nil)
+			if bifrostReq == nil || bifrostReq.Params == nil {
+				t.Fatal("ToBifrostResponsesRequest returned nil")
+			}
+			back, err := ToAnthropicResponsesRequest(nil, bifrostReq)
+			if err != nil {
+				t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+			}
+			if back.Diagnostics == nil {
+				t.Fatal("diagnostics dropped on round-trip")
+			}
+			out, err := sonic.Marshal(back)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := gjson.GetBytes(out, "diagnostics.previous_message_id")
+			if !got.Exists() {
+				t.Fatalf("diagnostics.previous_message_id missing from %s", string(out))
+			}
+			if got.Raw != tc.want {
+				t.Errorf("previous_message_id = %s, want %s", got.Raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestDiagnostics_ResponseRoundTrip(t *testing.T) {
+	const raw = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-8",` +
+		`"content":[{"type":"text","text":"hi"}],` +
+		`"diagnostics":{"cache_miss_reason":{"type":"system_changed","cache_missed_input_tokens":41850}}}`
+	var resp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Diagnostics == nil || resp.Diagnostics.CacheMissReason == nil {
+		t.Fatal("diagnostics not parsed onto AnthropicMessageResponse")
+	}
+	if resp.Diagnostics.CacheMissReason.Type != "system_changed" {
+		t.Errorf("type = %q, want system_changed", resp.Diagnostics.CacheMissReason.Type)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	bifrostResp := resp.ToBifrostResponsesResponse(ctx)
+	if bifrostResp == nil || bifrostResp.Diagnostics == nil {
+		t.Fatal("diagnostics dropped in ToBifrostResponsesResponse")
+	}
+	back := ToAnthropicResponsesResponse(ctx, bifrostResp)
+	if back == nil || back.Diagnostics == nil || back.Diagnostics.CacheMissReason == nil {
+		t.Fatal("diagnostics dropped in ToAnthropicResponsesResponse")
+	}
+	if got := back.Diagnostics.CacheMissReason.CacheMissedInputTokens; got == nil || *got != 41850 {
+		t.Errorf("cache_missed_input_tokens not preserved: %+v", back.Diagnostics.CacheMissReason)
+	}
+}
+
+func TestDiagnostics_ChatResponseRoundTrip(t *testing.T) {
+	// Chat path promotes the diagnostics opt-in on the request, so the response
+	// payload must round-trip too rather than be silently dropped.
+	const raw = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-8",` +
+		`"content":[{"type":"text","text":"hi"}],` +
+		`"diagnostics":{"cache_miss_reason":{"type":"tools_changed","cache_missed_input_tokens":128}}}`
+	var resp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	bifrostResp := resp.ToBifrostChatResponse(ctx)
+	if bifrostResp == nil || bifrostResp.Diagnostics == nil {
+		t.Fatal("diagnostics dropped in ToBifrostChatResponse")
+	}
+	back := ToAnthropicChatResponse(bifrostResp)
+	if back == nil || back.Diagnostics == nil || back.Diagnostics.CacheMissReason == nil {
+		t.Fatal("diagnostics dropped in ToAnthropicChatResponse")
+	}
+	if back.Diagnostics.CacheMissReason.Type != "tools_changed" {
+		t.Errorf("type = %q, want tools_changed", back.Diagnostics.CacheMissReason.Type)
+	}
+}
+
 // TestComputerUseGeneration verifies the (model -> generation) classifier
 // covers every Claude model that Anthropic explicitly maps to a computer-use
 // beta header version, plus the fallback for unknown / non-Claude models.
@@ -2325,6 +2927,9 @@ func TestComputerUseGeneration(t *testing.T) {
 		model string
 		want  string
 	}{
+		{"claude-opus-4-8", ComputerUseGen20251124},
+		{"claude-opus-4.8", ComputerUseGen20251124},
+		{"claude-opus-4-8-20260601", ComputerUseGen20251124},
 		{"claude-opus-4-7", ComputerUseGen20251124},
 		{"claude-opus-4.7", ComputerUseGen20251124},
 		{"Claude-Opus-4-7", ComputerUseGen20251124},
@@ -2334,6 +2939,11 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"claude-sonnet-4.6", ComputerUseGen20251124},
 		{"claude-opus-4-5", ComputerUseGen20251124},
 		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
+		// Fable/Mythos family uses the new generation, like Opus 4.8.
+		{"claude-fable-5", ComputerUseGen20251124},
+		{"claude-mythos-5", ComputerUseGen20251124},
+		{"claude-mythos-preview", ComputerUseGen20251124},
+		{"global.anthropic.claude-fable-5", ComputerUseGen20251124},
 		{"claude-sonnet-4-5", ComputerUseGen20250124},
 		{"claude-sonnet-4-5-20250929", ComputerUseGen20250124},
 		{"claude-haiku-4-5", ComputerUseGen20250124},
@@ -2426,7 +3036,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			name:  "sonnet-4-5 with old-gen tools (no-op)",
+			name:  "sonnet-4-5 with old-gen tools upgrades text_editor to new-gen",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
@@ -2435,7 +3045,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},
@@ -2454,7 +3064,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			name:  "sonnet-4-5 with new-gen tools auto-downgrades",
+			name:  "sonnet-4-5 with new-gen tools downgrades computer but keeps new-gen text_editor",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},
@@ -2463,7 +3073,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},
@@ -2629,6 +3239,166 @@ func TestIsClaudeCodeRequest(t *testing.T) {
 			got := IsClaudeCodeRequest(ctx)
 			if got != tc.expected {
 				t.Errorf("IsClaudeCodeRequest() = %v, want %v (userAgent=%v)", got, tc.expected, tc.userAgent)
+			}
+		})
+	}
+}
+
+// TestBudgetTokensNeverExceedsMaxTokens verifies the strict budget_tokens < max_tokens
+// invariant required by both Anthropic and Bedrock for all effort levels.
+func TestBudgetTokensNeverExceedsMaxTokens(t *testing.T) {
+	const minBudget = MinimumReasoningMaxTokens // 1024
+	maxTokensValues := []int{1025, 4096, 16000, 32000, 64000, 128000}
+	efforts := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+	for _, maxTok := range maxTokensValues {
+		for _, effort := range efforts {
+			t.Run(fmt.Sprintf("effort=%s/maxTokens=%d", effort, maxTok), func(t *testing.T) {
+				budget, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, minBudget, maxTok)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if budget >= maxTok {
+					t.Errorf("effort=%q maxTokens=%d: budget_tokens=%d violates strict budget_tokens < max_tokens",
+						effort, maxTok, budget)
+				}
+			})
+		}
+	}
+}
+
+// TestBudgetTokensMaxEffortCapsBelowMaxTokens specifically pins the "max" effort
+// behavior: ratio=1.0 would produce budget==maxTokens without the cap, which both
+// Anthropic and Bedrock reject ("max_tokens must be greater than thinking.budget_tokens").
+func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
+	const minBudget = MinimumReasoningMaxTokens
+
+	cases := []struct {
+		maxTokens  int
+		wantBudget int
+	}{
+		{maxTokens: 16000, wantBudget: 15999},
+		{maxTokens: 32000, wantBudget: 31999},
+		{maxTokens: 64000, wantBudget: 63999},
+		{maxTokens: 128000, wantBudget: 127999},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("maxTokens=%d", tc.maxTokens), func(t *testing.T) {
+			budget, err := providerUtils.GetBudgetTokensFromReasoningEffort("max", minBudget, tc.maxTokens)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if budget != tc.wantBudget {
+				t.Errorf("max effort with maxTokens=%d: got budget=%d, want %d",
+					tc.maxTokens, budget, tc.wantBudget)
+			}
+		})
+	}
+}
+
+func TestStripEmptyThinkingBlocks(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantUnchanged bool
+		wantMsgConts  []int // expected content-array length per message; -1 = string content, skip
+	}{
+		{
+			name:         "strips block with empty thinking and empty signature",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":""}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips block with non-empty thinking but empty signature (OpenAI/Gemini cross-provider replay)",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"I need to solve this step by step","signature":""}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "keeps valid Anthropic block with non-empty thinking and signature",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"I am reasoning about the answer","signature":"abc123"}]}]}`,
+			wantMsgConts: []int{1},
+		},
+		{
+			// Blocks where thinking="" are also stripped — Anthropic rejects them with
+			// "each thinking block must contain thinking", even if the signature is valid.
+			name:         "strips block with empty thinking even if signature is non-empty",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:          "no thinking blocks, body returned unchanged",
+			input:         `{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name:         "mixed: strips invalid, keeps valid thinking and text blocks",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"some reasoning","signature":""},{"type":"thinking","thinking":"valid","signature":"sig1"},{"type":"text","text":"answer"}]}]}`,
+			wantMsgConts: []int{2},
+		},
+		{
+			name:          "redacted_thinking type is not affected",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"}]}]}`,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name: "multiple messages: strips invalid in first, keeps valid in second",
+			input: `{"messages":[` +
+				`{"role":"assistant","content":[{"type":"thinking","thinking":"reason","signature":""}]},` +
+				`{"role":"assistant","content":[{"type":"thinking","thinking":"valid","signature":"sig1"},{"type":"text","text":"hi"}]}` +
+				`]}`,
+			wantMsgConts: []int{0, 2},
+		},
+		{
+			name:          "no messages field, body returned unchanged",
+			input:         `{"model":"claude-opus-4-8","max_tokens":1024}`,
+			wantUnchanged: true,
+		},
+		{
+			name:         "string content (not array) is skipped without error",
+			input:        `{"messages":[{"role":"user","content":"hello world"}]}`,
+			wantMsgConts: []int{-1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripEmptyThinkingBlocks([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantUnchanged && string(out) != tt.input {
+				t.Errorf("expected body unchanged\ngot:  %s\nwant: %s", string(out), tt.input)
+			}
+			if tt.wantMsgConts == nil {
+				return
+			}
+
+			var result struct {
+				Messages []struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"messages"`
+			}
+			if jsonErr := json.Unmarshal(out, &result); jsonErr != nil {
+				t.Fatalf("output is not valid JSON: %v", jsonErr)
+			}
+			for mi, wantLen := range tt.wantMsgConts {
+				if mi >= len(result.Messages) {
+					t.Fatalf("message index %d out of range (%d messages in output)", mi, len(result.Messages))
+				}
+				if wantLen == -1 {
+					continue
+				}
+				var blocks []json.RawMessage
+				if jsonErr := json.Unmarshal(result.Messages[mi].Content, &blocks); jsonErr != nil {
+					t.Fatalf("messages[%d].content is not a JSON array: %v", mi, jsonErr)
+				}
+				if len(blocks) != wantLen {
+					t.Errorf("messages[%d] content block count: got %d, want %d\noutput: %s",
+						mi, len(blocks), wantLen, string(out))
+				}
 			}
 		})
 	}

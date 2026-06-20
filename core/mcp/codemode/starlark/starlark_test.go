@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/mark3labs/mcp-go/client"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
@@ -37,6 +38,22 @@ func (m *testClientManager) GetClientByName(clientName string) *schemas.MCPClien
 
 func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return m.tools
+}
+
+func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
+	return nil
+}
+
+func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipeline) {}
+func (m *testClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+	return nil, func() {}, nil
+}
+func (m *testClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op codemcp.MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, err := op(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
+	}
+	return resp, nil
 }
 
 func TestStarlarkToGo(t *testing.T) {

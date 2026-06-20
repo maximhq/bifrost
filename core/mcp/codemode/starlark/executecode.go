@@ -12,7 +12,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
-	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
@@ -461,159 +460,108 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		},
 	}
 
-	// Create BifrostMCPRequest
+	// Create BifrostMCPRequest. ClientName is set explicitly so the plugin gate
+	// can attribute short-circuit responses without re-parsing the prefixed name.
 	mcpRequest := &schemas.BifrostMCPRequest{
 		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ClientName:                   clientName,
 		ChatAssistantMessageToolCall: &toolCallReq,
 	}
 
-	// Check if plugin pipeline is available
-	if s.pluginPipelineProvider == nil {
-		// Should never happen, but just in case
-		s.logger.Warn("%s Plugin pipeline provider is nil", codemcp.CodeModeLogPrefix)
-		return nil, fmt.Errorf("plugin pipeline provider is nil")
+	// Acquire a connection through the shared ClientManager abstraction outside
+	// the gate, mirroring the gateway's exec.go:prepareToolExecution → gate
+	// ordering. Connection lifecycle is the caller's concern; the gate's op
+	// closure only performs the wire CallTool.
+	conn, release, err := s.clientManager.AcquireClientConn(nestedCtx, client)
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 
-	// Get plugin pipeline and run hooks
-	pipeline := s.pluginPipelineProvider()
-	if pipeline == nil {
-		// Should never happen, but just in case
-		s.logger.Warn("%s Plugin pipeline is nil", codemcp.CodeModeLogPrefix)
-		return nil, fmt.Errorf("plugin pipeline is nil")
-	}
-	defer s.releasePluginPipeline(pipeline)
-
-	// Run PreMCPHooks
-	preReq, shortCircuit, preCount := pipeline.RunMCPPreHooks(nestedCtx, mcpRequest)
-
-	// Handle short-circuit cases
-	if shortCircuit != nil {
-		if shortCircuit.Response != nil {
-			finalResp, _ := pipeline.RunMCPPostHooks(nestedCtx, shortCircuit.Response, nil, preCount)
-			if finalResp != nil {
-				if finalResp.ChatMessage != nil {
-					return extractResultFromChatMessage(finalResp.ChatMessage), nil
-				}
-				if finalResp.ResponsesMessage != nil {
-					result, err := extractResultFromResponsesMessage(finalResp.ResponsesMessage)
-					if err != nil {
-						return nil, err
-					}
-					if result != nil {
-						return result, nil
-					}
-				}
-			}
-			return nil, fmt.Errorf("plugin short-circuit returned invalid response")
-		}
-		if shortCircuit.Error != nil {
-			pipeline.RunMCPPostHooks(nestedCtx, nil, shortCircuit.Error, preCount)
-			if shortCircuit.Error.Error != nil {
-				return nil, fmt.Errorf("%s", shortCircuit.Error.Error.Message)
-			}
-			return nil, fmt.Errorf("plugin short-circuit error")
-		}
-	}
-
-	// If pre-hooks modified the request, extract updated args
-	if preReq != nil && preReq.ChatAssistantMessageToolCall != nil {
-		toolCallReq = *preReq.ChatAssistantMessageToolCall
-		if toolCallReq.Function.Arguments != "" {
-			if err := sonic.Unmarshal([]byte(toolCallReq.Function.Arguments), &args); err != nil {
-				s.logger.Warn("%s Failed to parse modified tool arguments, using original: %v", codemcp.CodeModeLogPrefix, err)
-			}
-		}
-	}
-
-	// Execute tool
-	startTime := time.Now()
-	toolNameToCall := originalToolName
-
-	callRequest := mcp.CallToolRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodToolsCall),
-		},
-		Params: mcp.CallToolParams{
-			Name:      toolNameToCall,
-			Arguments: args,
-		},
-		Header: utils.GetHeadersForToolExecution(nestedCtx, client),
+	reqHeaders, err := s.credStore.RequestHeaders(nestedCtx, client.ExecutionConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	toolExecutionTimeout := s.getToolExecutionTimeout()
-	toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
-	defer cancel()
 
-	var toolResponse *mcp.CallToolResult
-	var callErr error
-
-	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
-		accessToken, err := utils.ResolvePerUserOAuthToken(nestedCtx, client, s.oauth2Provider)
-		if err != nil {
-			return nil, err
-		}
-
-		if client.Conn == nil {
-			// Per-user OAuth with no persistent connection — use a temporary connection.
-			// Assign to outer toolResponse/callErr so the shared logging + post-hooks path runs.
-			toolResponse, callErr = codemcp.ExecuteToolWithUserToken(toolCtx, client.ExecutionConfig, toolNameToCall, args, accessToken, s.logger)
-			if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
-				callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+	// Delegate to the canonical plugin gate. RunWithPluginPipeline owns the
+	// tracing span, MCPRequestType/ClientName/ToolName stamping (via
+	// PopulateExtraFields), plugin log draining, and short-circuit semantics —
+	// the op closure below only handles the wire CallTool. Keeps Starlark
+	// nested calls observationally identical to gateway-routed calls.
+	finalResp, finalErr := s.clientManager.RunWithPluginPipeline(nestedCtx, mcpRequest, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		// Honor any pre-hook mutation of tool name + arguments before the wire
+		// call. Mirrors ToolsManager.executeToolInternal (toolmanager.go:648–670):
+		// mutated name has its client prefix stripped using the ORIGINAL client
+		// (we already hold a connection to it; redirecting is out of scope),
+		// empty mutated args become an empty map, and a parse failure is a hard
+		// error rather than a silent fallback.
+		effectiveToolName := originalToolName
+		effectiveArgs := args
+		if preReq != nil && preReq.ChatAssistantMessageToolCall != nil {
+			toolCallReq = *preReq.ChatAssistantMessageToolCall
+			if toolCallReq.Function.Name != nil && *toolCallReq.Function.Name != "" {
+				effectiveToolName = stripClientPrefix(*toolCallReq.Function.Name, clientName)
 			}
-		} else {
-			callRequest.Header = utils.BuildPerUserOAuthHeaders(callRequest.Header, accessToken)
-			toolResponse, callErr = client.Conn.CallTool(toolCtx, callRequest)
+			if strings.TrimSpace(toolCallReq.Function.Arguments) == "" {
+				effectiveArgs = map[string]interface{}{}
+			} else {
+				var mutatedArgs map[string]interface{}
+				if err := sonic.Unmarshal([]byte(toolCallReq.Function.Arguments), &mutatedArgs); err != nil {
+					return nil, fmt.Errorf("failed to parse modified tool arguments for '%s': %v", effectiveToolName, err)
+				}
+				effectiveArgs = mutatedArgs
+			}
 		}
-	} else {
-		toolResponse, callErr = client.Conn.CallTool(toolCtx, callRequest)
-	}
 
-	latency := time.Since(startTime).Milliseconds()
+		startTime := time.Now()
+		toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
+		defer cancel()
 
-	var mcpResp *schemas.BifrostMCPResponse
-	var bifrostErr *schemas.BifrostError
-
-	if callErr != nil {
-		s.logger.Debug("%s Tool call failed: %s.%s - %v", codemcp.CodeModeLogPrefix, clientName, toolName, callErr)
-		appendLog(fmt.Sprintf("[TOOL] %s.%s error: %v", clientName, toolName, callErr))
-		bifrostErr = &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: fmt.Sprintf("tool call failed for %s.%s: %v", clientName, toolName, callErr),
+		callRequest := mcp.CallToolRequest{
+			Request: mcp.Request{
+				Method: string(mcp.MethodToolsCall),
 			},
+			Params: mcp.CallToolParams{
+				Name:      effectiveToolName,
+				Arguments: effectiveArgs,
+			},
+			Header: reqHeaders,
 		}
-	} else {
-		rawResult := extractTextFromMCPResponse(toolResponse, toolName)
 
+		toolResponse, callErr := conn.CallTool(toolCtx, callRequest)
+		if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
+			callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, effectiveToolName)
+		}
+		latency := time.Since(startTime).Milliseconds()
+
+		if callErr != nil {
+			s.logger.Debug("%s Tool call failed: %s.%s - %v", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, callErr)
+			appendLog(fmt.Sprintf("[TOOL] %s.%s error: %v", clientName, effectiveToolName, callErr))
+			return nil, fmt.Errorf("tool call failed for %s.%s: %v", clientName, effectiveToolName, callErr)
+		}
+
+		rawResult := extractTextFromMCPResponse(toolResponse, effectiveToolName)
 		if after, ok := strings.CutPrefix(rawResult, "Error: "); ok {
-			errorMsg := after
-			s.logger.Debug("%s Tool returned error result: %s.%s - %s", codemcp.CodeModeLogPrefix, clientName, toolName, errorMsg)
-			appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, toolName, errorMsg))
-			bifrostErr = &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: errorMsg,
-				},
-			}
-		} else {
-			mcpResp = &schemas.BifrostMCPResponse{
-				ChatMessage: createToolResponseMessage(toolCallReq, rawResult),
-				ExtraFields: schemas.BifrostMCPResponseExtraFields{
-					ClientName: clientName,
-					ToolName:   originalToolName,
-					Latency:    latency,
-				},
-			}
-
-			resultStr := formatResultForLog(rawResult)
-			logToolName := stripClientPrefix(toolName, clientName)
-			logToolName = strings.ReplaceAll(logToolName, "-", "_")
-			appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, logToolName, resultStr))
+			s.logger.Debug("%s Tool returned error result: %s.%s - %s", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, after)
+			appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, effectiveToolName, after))
+			return nil, fmt.Errorf("%s", after)
 		}
-	}
 
-	// Run post-hooks
-	finalResp, finalErr := pipeline.RunMCPPostHooks(nestedCtx, mcpResp, bifrostErr, preCount)
+		resultStr := formatResultForLog(rawResult)
+		logToolName := strings.ReplaceAll(effectiveToolName, "-", "_")
+		appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, logToolName, resultStr))
+
+		return &schemas.BifrostMCPResponse{
+			ChatMessage: createToolResponseMessage(toolCallReq, rawResult),
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{
+				ClientName: clientName,
+				ToolName:   effectiveToolName,
+				Latency:    latency,
+			},
+		}, nil
+	})
 
 	if finalErr != nil {
 		if finalErr.Error != nil {

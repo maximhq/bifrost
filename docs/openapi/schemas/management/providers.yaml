@@ -37,6 +37,10 @@ NetworkConfig:
     ca_cert_pem:
       type: string
       description: PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)
+    allow_private_network:
+      type: boolean
+      default: false
+      description: Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.
 
 ConcurrencyAndBufferSize:
   type: object
@@ -163,17 +167,6 @@ SglKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
   required:
     - url
-
-VLLMKeyConfig:
-  type: object
-  description: vLLM-specific key configuration for per-key routing to different vLLM instances
-  properties:
-    url:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      description: vLLM server base URL (required)
-    model_name:
-      type: string
-      description: Exact model name served on this vLLM instance
 
 VLLMKeyConfig:
   type: object

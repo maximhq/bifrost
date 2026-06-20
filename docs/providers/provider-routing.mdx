@@ -836,20 +836,21 @@ This is how Bifrost achieves **intelligent cross-provider routing** without manu
   v1.5.0-prerelease7 and above**.
 </Info>
 
-When a request includes a bare model name without a `provider/` prefix (e.g., `"model": "gpt-4o"` instead of `"model": "openai/gpt-4o"`), Bifrost automatically resolves the provider using the Model Catalog. Note that this default behavior is applied **after all other routing engines** have run.
+When a request includes a bare model name without a `provider/` prefix (e.g., `"model": "gpt-4o"` instead of `"model": "openai/gpt-4o"`), Bifrost automatically resolves the provider using the Model Catalog. This default behavior is applied **after all other routing engines** have run — the built-in `model-catalog-resolver` PreRequestHook plugin is registered as the last routing layer (order 9 within `builtin`), so governance routing rules, VK load balancing, and enterprise LB all get first crack.
 
 ### How It Works
 
 1. **Request arrives** without a provider prefix (e.g., `"model": "gpt-4o"`)
-2. **Catalog lookup**: Bifrost calls `GetProvidersForModel("gpt-4o")` to find all providers that support the model
-3. **Provider selected**: A provider from the catalog's available list is used (e.g., `openai`)
-4. **Request continues**: The resolved `provider/model` string is used for load balancing and fallback handling
+2. Governance, VK LB, and enterprise LB all run first; if any of them sets `req.Provider`, the resolver no-ops
+3. **Catalog lookup** (if `req.Provider` is still empty): Bifrost calls `GetProvidersForModel("gpt-4o")` to find all providers that support the model
+4. **Provider selected**: If the request came in via an integration route (OpenAI / Anthropic / GenAI / Bedrock / Cohere) and the catalog includes that integration's canonical provider in the candidate list, it is preferred. Otherwise the first candidate is selected.
+5. **Request continues**: The resolved `provider/model` is used for the provider call, fallback handling, and Level 2 key selection.
 
 This is logged as the **`model-catalog`** routing engine in telemetry and routing logs, with a message like:
 
 ```
 No provider specified for model gpt-4o, found 3 options in model catalog:
-[openai, azure, groq], selecting first: openai
+[openai, azure, groq], selected: openai
 ```
 
 ### Example
@@ -872,6 +873,18 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   For deterministic provider selection, always use the explicit `provider/model`
   prefix.
 </Note>
+
+### Routing allowlist enforcement
+
+When a Virtual Key has `provider_configs`, governance publishes the VK's allowed-provider set to the request context (`BifrostContextKeyRoutingAllowedProviders`). The constraint is then enforced at **two levels**:
+
+1. **Cooperative filtering (observability-first):** Enterprise LB and the model-catalog-resolver intersect their catalog candidates with the allowlist before picking a provider. This produces clean routing-engine logs explaining *why* a candidate was excluded ("filtered N catalog candidates by routing allowlist").
+
+2. **Hard enforcement in core:** After all `PreRequestHook` plugins have run, the core validates the final `req.Provider` against the allowlist. If `req.Provider` isn't in the allowlist, the request fails with HTTP 400. Fallbacks that target non-allowed providers are silently filtered out.
+
+**Why two levels:** cooperative filtering surfaces routing decisions in observability; core enforcement makes the constraint a *guarantee* that no plugin (or user-specified `provider/model` prefix) can bypass. A user request for `model: "anthropic/claude-3"` against a VK that allows only `[openai, azure]` is rejected by core enforcement even though the user provided an explicit prefix.
+
+Custom routing plugins can set the same context key to constrain downstream routing for any reason — geo restrictions, A/B test cohorts, tier-based gating, etc. The semantics are **fail-closed**: setting `BifrostContextKeyRoutingAllowedProviders` to an empty slice means "no provider is permitted for this request" → HTTP 400.
 
 ---
 
@@ -1189,60 +1202,67 @@ This means key-level optimization works regardless of how the provider was chose
 flowchart TD
     Start["Request: gpt-4o"]
 
-    subgraph Governance["Governance Plugin (HTTPTransportIntercept)"]
+    subgraph PreReq["PreRequestHook Phase (once per request, registration order)"]
         HasVK{"Has VK with<br/>provider_configs?"}
-        GovRoute["Provider Selection:<br/>Weighted random"]
-        AddPrefix["Add prefix:<br/>azure/gpt-4o"]
+        GovRoute["Governance:<br/>Routing rules + VK weighted random"]
+        AddPrefix["Set req.Provider/Model:<br/>azure/gpt-4o"]
+        PrefixCheck{"req.Provider<br/>already set?"}
+        LBProvider["Enterprise LB:<br/>Performance-based selection"]
+        AddLBPrefix["Set req.Provider/Model:<br/>openai/gpt-4o"]
+        Resolver["model-catalog-resolver:<br/>Fill from catalog (last fallback)"]
     end
 
-    subgraph LB1["Load Balancer Level 1 (Middleware)"]
-        PrefixCheck{"Has provider<br/>prefix?"}
-        LBProvider["Provider Selection:<br/>Performance-based"]
-        AddLBPrefix["Add prefix:<br/>openai/gpt-4o"]
-    end
-
-    subgraph LB2["Load Balancer Level 2 (Key Selector)"]
+    subgraph LB2["Load Balancer Level 2 (Key Selector, in core)"]
         GetKeys["Get available keys<br/>for selected provider"]
         ScoreKeys["Score keys by<br/>performance metrics"]
         SelectKey["Select best key"]
     end
 
     Start --> HasVK
-    HasVK -->|Yes| GovRoute --> AddPrefix
+    HasVK -->|Yes| GovRoute --> AddPrefix --> PrefixCheck
     HasVK -->|No| PrefixCheck
-    AddPrefix --> PrefixCheck
-    PrefixCheck -->|Yes, skip Level 1| GetKeys
-    PrefixCheck -->|No| LBProvider --> AddLBPrefix --> GetKeys
+    PrefixCheck -->|Yes, skip LB Level 1| Resolver
+    PrefixCheck -->|No| LBProvider --> AddLBPrefix --> Resolver
+    Resolver --> GetKeys
     GetKeys --> ScoreKeys --> SelectKey --> Execute["Execute request<br/>with selected provider + key"]
 ```
 
 ### Execution Order
 
-1. **HTTPTransportIntercept** (Governance Plugin - Provider Level)
-   - Runs first in the request pipeline
-   - Checks if Virtual Key has `provider_configs`
-   - If yes: adds provider prefix (e.g., `azure/gpt-4o`)
-   - **Result**: Provider is selected by governance rules
+All three routing layers (governance, enterprise LB Level 1, model-catalog-resolver) now run inside a single **PreRequestHook** phase that fires **once per top-level request**, before any provider call and before per-attempt hooks. Within that phase, plugins execute in placement + order:
 
-2. **Middleware** (Load Balancing Plugin - Provider Level / Direction)
-   - Runs after HTTPTransportIntercept
-   - Checks if model string contains "/"
-   - If yes: **skips provider selection** (already determined by governance or user)
-   - If no: performs performance-based provider selection
-   - **Result**: Provider prefix added if not already present
+1. **Governance Plugin** (PreRequestHook, builtin order 4)
+   - Evaluates routing rules (CEL expressions, scope hierarchy)
+   - If Virtual Key has `provider_configs`: performs weighted random provider selection
+   - **Result**: `req.Provider`/`req.Model` set; `req.Fallbacks` populated
 
-3. **KeySelector** (Load Balancing - Key Level / Route)
-   - **Always runs** during request execution in Bifrost core
-   - Gets all keys for the selected provider
-   - Filters keys based on model restrictions
+2. **Enterprise Load Balancer Level 1** (PreRequestHook, builtin)
+   - Runs after governance
+   - If `req.Provider` is already set (by governance or by an explicit `provider/model` prefix from the user): **skips provider selection**
+   - If not: performs performance-based provider selection across catalog providers
+   - **Result**: `req.Provider`/`req.Model` set if previously empty
+
+3. **model-catalog-resolver** (PreRequestHook, builtin order 9 — final fallback)
+   - Runs last
+   - If `req.Provider` is still empty: looks up the model in the catalog and picks a provider (preferring the integration's canonical provider when the request came in via an integration route)
+   - Emits a `model-catalog` routing-engine log entry
+   - **Result**: Always leaves `req.Provider` populated when the catalog knows about the model
+
+4. **Empty-provider validation** (core, after PreRequestHook)
+   - If `req.Provider` is still empty: returns 400 to the caller with a clear error
+
+5. **Load Balancer Level 2** (Key Selector — core, per provider attempt)
+   - **Always runs** during request execution
+   - Gets all keys for the selected provider, filters by model restrictions
    - Scores each key by performance metrics
    - Selects best key using weighted random + exploration
    - **Result**: Optimal key selected within the provider
 
 <Info>
-  **Important**: Even when governance specifies `azure/gpt-4o`, load balancing
-  **still optimizes which Azure key to use** based on performance metrics. This
-  is the power of the two-level architecture!
+  **Important**: Even when governance specifies `azure/gpt-4o` in PreRequestHook,
+  load balancing Level 2 **still optimizes which Azure key to use** based on
+  performance metrics. The two-level architecture is preserved — only the
+  *layer* where Level 1 runs has moved from a middleware to PreRequestHook.
 </Info>
 
 ### Example Scenarios
@@ -1395,35 +1415,37 @@ Routing Rules provide sophisticated, expression-based control over request routi
 flowchart TD
     Start["Request: model + provider"]
 
-    subgraph Rules["1. Routing Rules Layer (Evaluated First)"]
-        RuleMatch{"CEL Expression<br/>Matches?"}
-        RuleDecision["Override:<br/>New provider/model/fallbacks"]
-        NoMatch["No match:<br/>Continue to Governance"]
+    subgraph PreReq["PreRequestHook Phase (once per request)"]
+        direction TB
+        subgraph Gov["Governance Plugin"]
+            RuleMatch{"CEL Routing Rule<br/>Matches?"}
+            RuleDecision["Override:<br/>provider/model/fallbacks"]
+            VKValidation["Virtual Key Validation"]
+            GovRouting["VK Provider Selection<br/>(weighted random)"]
+        end
+        LB1["Enterprise LB Level 1:<br/>Provider Selection<br/>(skipped if provider already set)"]
+        Resolver["model-catalog-resolver:<br/>Fill provider from catalog<br/>(final fallback)"]
     end
 
-    subgraph Gov["2. Governance Layer (if no routing rule matched)"]
-        VKValidation["Virtual Key Validation"]
-        GovRouting["Provider Governance Routing<br/>(weighted random)"]
-    end
-
-    subgraph LB["3. Load Balancing Layer"]
-        LB1["Level 1: Provider Selection"]
-        LB2["Level 2: Key Selection"]
-    end
+    LB2["LB Level 2: Key Selection<br/>(core, per attempt)"]
 
     Start --> RuleMatch
     RuleMatch -->|Yes| RuleDecision --> LB1
-    RuleMatch -->|No| NoMatch --> VKValidation --> GovRouting --> LB1
-    LB1 --> LB2 --> Execute["Execute with<br/>selected provider + key"]
+    RuleMatch -->|No| VKValidation --> GovRouting --> LB1
+    LB1 --> Resolver --> LB2 --> Execute["Execute with<br/>selected provider + key"]
 ```
 
 ### How It Works
 
+All routing layers below execute inside the **PreRequestHook** phase in registration order; routing rules run first within the governance plugin's hook body, before VK load balancing:
+
 1. **Routing rules evaluate first** in scope precedence order (VirtualKey → Team → Customer → Global)
-2. **If a routing rule matches**: provider/model/fallbacks are overridden, governance provider_configs are skipped
-3. **If no routing rule matches**: governance provider selection runs (weighted random)
-4. **Load balancing Level 1**: skipped if provider already determined (has "/" prefix)
-5. **Load balancing Level 2** (key selection): always runs to select the best key within the determined provider
+2. **If a routing rule matches**: provider/model/fallbacks are overridden, the VK `provider_configs` weighted selection is skipped
+3. **If no routing rule matches**: VK provider selection runs (weighted random)
+4. **Enterprise LB Level 1**: skipped if `req.Provider` is already set; otherwise performs performance-based selection
+5. **model-catalog-resolver**: last fallback — fills `req.Provider` from the catalog if no earlier plugin set it
+6. **Empty-provider validation** (core): returns 400 if `req.Provider` is still empty after the phase
+7. **Load balancing Level 2** (key selection, core, per attempt): always runs to select the best key within the determined provider
 
 ### Available CEL Variables
 
@@ -1500,6 +1522,10 @@ Within each scope, rules are sorted by **priority** (ascending: 0 before 10).
 | **Fallback Chains**    | Define multiple fallback providers for automatic failover              |
 | **Priority Ordering**  | Lower priority evaluated first within same scope                       |
 | **Capacity Awareness** | Access real-time budget and rate limit usage percentages               |
+
+<Info>
+For complexity-based routing driven by request content, see [Complexity Router](/features/governance/complexity-router). It adds a `complexity_tier` CEL variable that lets routing rules steer SIMPLE, MEDIUM, COMPLEX, and REASONING requests to different models.
+</Info>
 
 ### Integration with Governance
 

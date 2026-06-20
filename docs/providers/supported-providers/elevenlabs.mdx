@@ -34,6 +34,65 @@ ElevenLabs is a specialized audio provider for text-to-speech and speech-to-text
 **Note**: ElevenLabs also supports a "Speech with Timestamps" endpoint at `/v1/text-to-speech/{voice_id}/with-timestamps` (non-streaming only) for enhanced timestamp information.
 </Note>
 
+## Setup & Configuration
+
+Configure ElevenLabs as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![ElevenLabs provider dashboard](../../media/provider-dashboard-elevenlabs.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **ElevenLabs** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **ElevenLabs**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.ELEVENLABS_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "elevenlabs": {
+      "keys": [
+        {
+          "name": "elevenlabs-key-1",
+          "value": "env.ELEVENLABS_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Elevenlabs:
+    return []schemas.Key{{
+        Name:   "elevenlabs-key-1",
+        Value:  *schemas.NewEnvVar("env.ELEVENLABS_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+For text-to-speech calls, the Bifrost `model` is the ElevenLabs voice ID unless you pass a provider-specific voice override in the request.
+
 ---
 
 # 1. Speech (Text-to-Speech)

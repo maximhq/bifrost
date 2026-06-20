@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -44,25 +45,33 @@ func getActualToolsFromGoTestServer(t *testing.T) (tool1, tool2 string) {
 	return toolList[0], toolList[1]
 }
 
-// Helper to execute a tool via MCP manager and check if it's allowed
-func executeToolViaManager(t *testing.T, manager interface{ ExecuteToolCall(*schemas.BifrostContext, *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) }, toolName string) error {
+// Helper to execute a tool via MCP manager and check if it's allowed.
+// Runs through the canonical plugin-wrapped path (ExecuteChatTool); the
+// test setup wires a no-op plugin pipeline so this is functionally
+// equivalent to a direct execution for filtering assertions.
+func executeToolViaManager(t *testing.T, manager interface {
+	ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
+}, toolName string) error {
 	t.Helper()
 
 	ctx := createTestContext()
-	request := &schemas.BifrostMCPRequest{
-		RequestType: schemas.MCPRequestTypeChatToolCall,
-		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
-			ID:   schemas.Ptr("call-1"),
-			Type: schemas.Ptr("function"),
-			Function: schemas.ChatAssistantMessageToolCallFunction{
-				Name:      schemas.Ptr(toolName),
-				Arguments: `{}`,
-			},
+	toolCall := &schemas.ChatAssistantMessageToolCall{
+		ID:   schemas.Ptr("call-1"),
+		Type: schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      schemas.Ptr(toolName),
+			Arguments: `{}`,
 		},
 	}
 
-	_, err := manager.ExecuteToolCall(ctx, request)
-	return err
+	_, bErr := manager.ExecuteChatTool(ctx, toolCall)
+	if bErr == nil {
+		return nil
+	}
+	if bErr.Error != nil {
+		return fmt.Errorf("%s", bErr.Error.Message)
+	}
+	return fmt.Errorf("tool execution failed")
 }
 
 // TestToolsToExecute_Nil - FULLY IMPLEMENTED EXAMPLE

@@ -1,3 +1,4 @@
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -78,6 +79,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		},
 	});
@@ -112,6 +114,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				allow_private_network: data.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
 		updateProvider(updatedProvider)
@@ -144,6 +147,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -399,6 +403,29 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 						/>
 						<FormField
 							control={form.control}
+							name="network_config.allow_private_network"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between">
+									<div className="space-y-0.5">
+										<FormLabel>Allow Private Network</FormLabel>
+										<FormDescription>
+											Allow connections to private IPs (e.g. <code>10.x</code>, <code>192.168.x</code>). Required for providers on a
+											LAN, k8s pod network, or private VPC. Cloud metadata addresses (169.254.x.x) are always blocked.
+										</FormDescription>
+									</div>
+									<FormControl>
+										<Switch
+											checked={field.value ?? false}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+											data-testid="network-config-allow-private-network"
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
 							name="network_config.extra_headers"
 							render={({ field }) => (
 								<FormItem>
@@ -416,62 +443,68 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								</FormItem>
 							)}
 						/>
-						<div className="space-y-4 rounded-lg border p-4">
-							<h4 className="text-sm font-medium">TLS / Certificate</h4>
-							<FormField
-								control={form.control}
-								name="network_config.insecure_skip_verify"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-										<div className="space-y-0.5">
-											<FormLabel>Skip TLS verification</FormLabel>
-											<FormDescription>
-												Disable TLS certificate verification for provider connections. This bypasses server certificate validation and
-												should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for
-												self-signed or private CA deployments.
-											</FormDescription>
-										</div>
-										<FormControl>
-											<Switch
-												checked={field.value ?? false}
-												onCheckedChange={field.onChange}
-												disabled={!hasUpdateProviderAccess}
-												data-testid="network-config-insecure-skip-verify"
-											/>
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="network_config.ca_cert_pem"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
-										<FormControl>
-											<EnvVarInput
-												variant="textarea"
-												placeholder={`-----BEGIN CERTIFICATE-----
+						<Accordion type="single" collapsible className="w-full">
+							<AccordionItem value="tls-config" className="border-b-0">
+								<AccordionTrigger className="py-0" data-testid="tls-config-trigger">
+									<span className="text-sm font-medium">TLS / Certificate</span>
+								</AccordionTrigger>
+								<AccordionContent className="space-y-4 pt-4 pb-0">
+									<FormField
+										control={form.control}
+										name="network_config.insecure_skip_verify"
+										render={({ field }) => (
+											<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+												<div className="space-y-0.5">
+													<FormLabel>Skip TLS verification</FormLabel>
+													<FormDescription>
+														Disable TLS certificate verification for provider connections. This bypasses server certificate validation and
+														should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for
+														self-signed or private CA deployments.
+													</FormDescription>
+												</div>
+												<FormControl>
+													<Switch
+														checked={field.value ?? false}
+														onCheckedChange={field.onChange}
+														disabled={!hasUpdateProviderAccess}
+														data-testid="network-config-insecure-skip-verify"
+													/>
+												</FormControl>
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={form.control}
+										name="network_config.ca_cert_pem"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+												<FormControl>
+													<EnvVarInput
+														variant="textarea"
+														placeholder={`-----BEGIN CERTIFICATE-----
 ...
 -----END CERTIFICATE----- or env.OPENAI_CA_CERT_PEM`}
-												className="font-mono text-xs"
-												rows={6}
-												hideValueWhenEnv
-												redactNonEnvValue
-												{...field}
-												value={field.value}
-												disabled={!hasUpdateProviderAccess}
-												data-testid="network-config-ca-cert-pem"
-											/>
-										</FormControl>
-										<FormDescription>
-											PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA).
-										</FormDescription>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-						</div>
+														className="font-mono text-xs"
+														rows={6}
+														hideValueWhenEnv
+														redactNonEnvValue
+														{...field}
+														value={field.value}
+														disabled={!hasUpdateProviderAccess}
+														data-testid="network-config-ca-cert-pem"
+													/>
+												</FormControl>
+												<FormDescription>
+													PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA).
+												</FormDescription>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								</AccordionContent>
+							</AccordionItem>
+						</Accordion>
 					</div>
 				</div>
 
@@ -501,11 +534,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button
-									type="submit"
-									disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
-									isLoading={isUpdatingProvider}
-								>
+								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
 									Save Network Configuration
 								</Button>
 							</TooltipTrigger>

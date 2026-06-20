@@ -5,11 +5,31 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    {"key": "base_url", "value": "http://localhost:8080", "type": "string"},
-    {"key": "provider", "value": "openai", "type": "string"},
-    {"key": "chat_model", "value": "gpt-4o", "type": "string"},
-    {"key": "vk_value", "value": "", "type": "string"},
-    {"key": "vk_id", "value": "", "type": "string"}
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    }
   ],
   "item": [
     {
@@ -51,116 +71,26 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{"key": "Content-Type", "value": "application/json"}],
-        "body": {"mode": "raw", "raw": "{}"},
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
         "url": {
           "raw": "{{base_url}}/api/governance/virtual-keys",
-          "host": ["{{base_url}}"],
-          "path": ["api", "governance", "virtual-keys"]
-        }
-      }
-    },
-    {
-      "name": "Chat Completion #1",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('Request 1: 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {"key": "Content-Type", "value": "application/json"},
-          {"key": "x-bf-vk", "value": "{{vk_value}}"}
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": ["{{base_url}}"],
-          "path": ["v1", "chat", "completions"]
-        }
-      }
-    },
-    {
-      "name": "Chat Completion #2",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('Request 2: 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {"key": "Content-Type", "value": "application/json"},
-          {"key": "x-bf-vk", "value": "{{vk_value}}"}
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": ["{{base_url}}"],
-          "path": ["v1", "chat", "completions"]
-        }
-      }
-    },
-    {
-      "name": "Chat Completion #3 (expect 429)",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "var code = pm.response.code;",
-              "pm.test('Request 3: 429 rate limited', function() { pm.expect(code).to.equal(429); });",
-              "if (code === 429) {",
-              "  var json = pm.response.json();",
-              "  var errType = (json.type || (json.error && json.error.type) || '').toString();",
-              "  if (errType) {",
-              "    pm.test('Error type indicates rate limit', function() {",
-              "      pm.expect(errType).to.match(/request_limited|rate_limited|token_limited/);",
-              "    });",
-              "  }",
-              "  pm.test('Error has message', function() {",
-              "    pm.expect(json.error).to.be.an('object');",
-              "    pm.expect(json.error.message).to.be.a('string').and.not.be.empty;",
-              "  });",
-              "}"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {"key": "Content-Type", "value": "application/json"},
-          {"key": "x-bf-vk", "value": "{{vk_value}}"}
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": ["{{base_url}}"],
-          "path": ["v1", "chat", "completions"]
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
         }
       }
     },
@@ -185,8 +115,15 @@
         "header": [],
         "url": {
           "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
-          "host": ["{{base_url}}"],
-          "path": ["api", "governance", "virtual-keys", "{{vk_id}}"]
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ]
         }
       }
     }

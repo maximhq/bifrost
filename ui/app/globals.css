@@ -354,6 +354,20 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	fill: var(--foreground) !important;
 }
 
+@keyframes sidebar-new-badge-shine {
+	0% {
+		opacity: 0;
+		transform: translateX(-60%);
+	}
+	22% {
+		opacity: 0.75;
+	}
+	100% {
+		opacity: 0;
+		transform: translateX(200%);
+	}
+}
+
 /* Dynamic chain: dash period 3+5 = 8 — offset must move exactly one period per loop */
 @keyframes rf-routing-tree-dynamic-chain-dash {
 	from {
@@ -374,7 +388,8 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.rf-chain-legend-dynamic-dash {
+	.rf-chain-legend-dynamic-dash,
+	[data-new-badge="true"] {
 		animation: none;
 	}
 
@@ -388,4 +403,23 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 [data-streamdown="code-block"],
 [data-streamdown="code-block-body"] {
 	@apply rounded-sm!;
+}
+
+/* Ensure toasts remain clickable above modal overlays (radix react-remove-scroll) */
+[data-sonner-toaster] {
+	pointer-events: auto !important;
+}
+
+/* Move Sonner toast close button to top-right */
+[data-sonner-toaster][dir="ltr"],
+[data-sonner-toaster] {
+	--toast-close-button-start: unset !important;
+	--toast-close-button-end: 0 !important;
+	--toast-close-button-transform: translate(35%, -35%) !important;
+}
+
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+	left: auto !important;
+	right: 0 !important;
+	transform: translate(35%, -35%) !important;
 }

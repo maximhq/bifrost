@@ -129,7 +129,18 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## Two Configuration Modes
 
-Bifrost supports **two configuration approaches** - you cannot use both simultaneously:
+Bifrost supports **two configuration approaches**:
+
+**How config and database state interact:**
+
+- Entities defined in `config.json` are stored with a
+  content-based hash on first load.
+- Changes made later through the UI or API are persisted to the
+  database and survive pod restarts, scale-ups, and redeployments.
+- Re-applying the same
+  `config.json` does not overwrite those database changes, because the content hash is unchanged. If
+  you edit an entity directly in `config.json`, its hash changes and the file-based definition
+  overwrites the database copy.
 
 ### Mode 1: Web UI Configuration
 
@@ -142,9 +153,7 @@ Bifrost supports **two configuration approaches** - you cannot use both simultan
 
 ### Mode 2: File-based Configuration
 
-<Note>
-  You can view entire config schema [here](https://www.getbifrost.ai/schema)
-</Note>
+<Note>You can view entire config schema [here](https://www.getbifrost.ai/schema)</Note>
 
 **When to use:** Advanced setups, GitOps workflows, or when UI is not needed
 
@@ -188,13 +197,10 @@ Create `config.json` in your app directory:
 **With `config_store` in `config.json`:**
 
 - **UI is enabled** - full real-time configuration via web interface
-- **Database check** - Bifrost checks if config store database exists and has data
-  - **Empty DB**: Bootstraps database with `config.json` settings, then uses DB exclusively
-  - **Existing DB**: Uses database directly, **ignores** `config.json` configurations
+- **Database check** - Bifrost reconciles `config.json` against the config store using a content-based hash per entity
+  - **Empty DB**: Bootstraps database with `config.json` settings, then uses DB for runtime reads
+  - **Existing DB**: Compares each entity's file hash to the stored `ConfigHash`. If the hash is unchanged, the DB copy is kept (UI/API edits are preserved). If you edit an entity in `config.json` so its hash changes, the file definition overwrites the DB copy for that entity. Entries added only via the UI/API (not present in `config.json`) are always preserved.
 - **Persistent storage** - all changes saved to database immediately
-
-**Important for Advanced Users:**
-If you want database persistence but prefer not to use the UI, note that modifying `config.json` after initial bootstrap has no effect when `config_store` is enabled. Use the public HTTP APIs to make configuration changes instead.
 
 **The Three Stores Explained:**
 
@@ -207,9 +213,13 @@ If you want database persistence but prefer not to use the UI, note that modifyi
 <Note>The minimum PostgreSQL version required is 16 or above.</Note>
 
 <Note>
-  For the log store, Bifrost creates materialized views to improve analytics
-  performance. Ensure that the PostgreSQL user has the necessary permissions to
-  perform these operations on the target schema.
+  For the log store, Bifrost creates materialized views to improve analytics performance. Ensure
+  that the PostgreSQL user has the necessary permissions to perform these operations on the target
+  schema.
+</Note>
+
+<Note>
+  If you are behind PgBouncer in transaction pooling mode, RDS Proxy or any proxy that does not guarantee session affinity, Bifrost migrations may fail due to concurrent session locking issues.
 </Note>
 
 If you use PostgreSQL for `config_store` or `logs_store`, the target database must use `UTF8` encoding.

@@ -1,5 +1,5 @@
 import type { MCPCostHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CHART_COLORS, formatCost, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
@@ -34,7 +34,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function MCPCostChart({ data, chartType, startTime, endTime }: MCPCostChartProps) {
+function MCPCostChartImpl({ data, chartType, startTime, endTime }: MCPCostChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -128,3 +128,4 @@ export function MCPCostChart({ data, chartType, startTime, endTime }: MCPCostCha
 		</ChartErrorBoundary>
 	);
 }
+export const MCPCostChart = memo(MCPCostChartImpl);

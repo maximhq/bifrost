@@ -4,6 +4,7 @@
  */
 
 import { getProviderLabel } from "@/lib/constants/logs";
+import { COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
 
 export interface CELFieldDefinition {
 	name: string;
@@ -110,6 +111,16 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 		operators: ["=", "!=", ">", "<", ">=", "<="],
 		defaultOperator: ">=",
 		description: "Check budget usage as percentage. Checked against max of model and provider configs.",
+	},
+	{
+		name: "complexity_tier",
+		label: "Complexity Tier",
+		placeholder: "Select complexity tier",
+		inputType: "select",
+		valueEditorType: "select",
+		operators: ["=", "!=", "in", "notIn"],
+		defaultOperator: "=",
+		values: COMPLEXITY_TIER_VALUES.map((tier) => ({ name: tier, label: tier.charAt(0) + tier.slice(1).toLowerCase() })),
 	},
 	{
 		name: "params",

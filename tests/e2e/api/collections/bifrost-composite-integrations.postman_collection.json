@@ -229,67 +229,6 @@
   ],
   "item": [
     {
-      "name": "GenAI",
-      "item": [
-        {
-          "name": "Generate Content",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.7,\n    \"maxOutputTokens\": 1024\n  }\n}"
-            },
-            "url": {
-              "raw": "{{base_url}}/genai/v1beta/models/{{provider}}/{{model}}:generateContent",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "genai",
-                "v1beta",
-                "models",
-                "{{provider}}/{{model}}:generateContent"
-              ]
-            }
-          }
-        },
-        {
-          "name": "Embed Content",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"content\": {\n    \"parts\": [\n        {\n          \"text\": \"Hello world\"\n        }\n      ]\n     }\n}"
-            },
-            "url": {
-              "raw": "{{base_url}}/genai/v1beta/models/{{provider}}/{{embedding_model}}:embedContent",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "genai",
-                "v1beta",
-                "models",
-                "{{provider}}/{{embedding_model}}:embedContent"
-              ]
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "Cohere",
       "item": [
         {

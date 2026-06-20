@@ -75,15 +75,52 @@ curl -X POST http://localhost:8080/api/providers/openai/keys \
   }'
 ```
 
-The `aliases` field is a flat `string → string` map. The key is what your application sends; the value is what gets forwarded to the provider. There are no restrictions on what either side can be - deployments, ARNs, model IDs, version hashes, fine-tune IDs, anything.
+Each alias maps the name your application sends to either a plain target string (the simplest form) or an object that additionally tags the alias with the canonical name used for pricing/logs, the model family used for provider routing, and any provider-specific overrides. The shorthand and the rich object form are interchangeable - both are accepted on the wire.
+
+```json
+{
+  "aliases": {
+    "fast-model": "gpt-4o-mini",
+    "best-model": {
+      "model_id": "12345-azure-deployment",
+      "model_name": "claude-sonnet-4-5",
+      "model_family": "anthropic",
+      "description": "Claude Sonnet 4.5 on our Azure tenant",
+      "api_version": "2024-10-21",
+      "endpoint": "env.AZURE_SECONDARY_ENDPOINT"
+    }
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model_id` | string | **Required.** The wire identifier forwarded to the provider — deployment name, inference profile ARN, fine-tune ID, anything. |
+| `model_name` | string | Canonical model name used by pricing and logs. Set this when `model_id` is opaque (e.g. an Azure deployment ID) so cost attribution still hits the catalog. |
+| `model_family` | enum | Forces the family used for provider routing decisions (request shape, response parsing, etc.). One of: `anthropic`, `openai`, `mistral`, `cohere`, `gemini`, `gemma`, `llama`, `imagen`, `veo`, `nova`, `titan`. When unset, the family is auto-detected by substring matching against `model_name`, `model_id`, and the alias name. |
+| `description` | string | Free-form note. Surfaced in the UI; not used for routing. |
+| `region` | string / EnvVar | Per-alias region override (Bedrock + Vertex). Falls back to the key-level region when unset. |
+
+**Provider-specific overrides** (only set on aliases whose owning key matches the provider; validation rejects mismatches):
+
+| Provider | Field | Description |
+|----------|-------|-------------|
+| Azure | `api_version` | Overrides the `api-version` query parameter |
+| Azure | `anthropic_version` | Overrides the `anthropic-version` header for Claude-on-Azure deployments |
+| Azure | `endpoint` | Overrides the key-level Azure endpoint — useful when one credential spans deployments on multiple Azure resources |
+| Vertex | `project_id` | Per-alias GCP project ID |
+| Vertex | `project_number` | Per-alias GCP project number (required for fine-tuned models) |
+| Bedrock | `inference_profile_arn` | Cross-region inference profile ARN invoked instead of the model ID |
+| Replicate | `use_deployments_endpoint` | Routes the alias through Replicate's deployments endpoint |
 
 ### Validation rules
 
 Bifrost rejects an aliases map that violates any of these:
 
-- **No empty strings** - both the alias name and its target must be non-empty
+- **No empty strings** - both the alias name and `model_id` must be non-empty
 - **No leading or trailing whitespace** on either side
 - **No duplicate alias names** (checked case-insensitively) - `"GPT-4o"` and `"gpt-4o"` cannot both be keys in the same map
+- **No provider mismatch on sub-configs** - an Azure-specific override (`api_version`, `endpoint`, …) can only appear on an alias whose owning key is an Azure key, and likewise for Vertex / Bedrock / Replicate
 
 ### Case-insensitive matching
 
@@ -91,19 +128,38 @@ Alias lookup is case-insensitive. If your map has `"GPT-4O": "gpt-4o-2024-11-20"
 
 ### Tracking in responses
 
-Every response includes both the original name and the resolved identifier in `extra_fields`:
+Every response includes a `routing_info` block in `extra_fields` describing the routing decisions Bifrost made:
 
 ```json
 {
   "extra_fields": {
-    "original_model_requested": "best-model",
-    "resolved_model_used": "gpt-4o-2024-11-20",
-    "provider": "openai"
+    "routing_info": {
+      "provider": "openai",
+      "model": "best-model",
+      "key": "production-key",
+      "resolved_key_alias": {
+        "model_id": "gpt-4o-2024-11-20",
+        "model_name": "gpt-4o"
+      }
+    }
   }
 }
 ```
 
-If no alias matches, `resolved_model_used` equals `original_model_requested`.
+| Field | Description |
+|-------|-------------|
+| `routing_info.provider` | Provider that handled the request |
+| `routing_info.model` | Model name the caller sent (the LHS of the alias map when an alias matched) |
+| `routing_info.key` | Human-friendly name of the key used |
+| `routing_info.resolved_key_alias` | Present only when an alias matched. Carries the wire `model_id`, the canonical `model_name` (if set), and the resolved `model_family` (if set). |
+| `routing_info.is_fallback` | `true` when the request was served by a fallback attempt rather than the primary |
+| `routing_info.primary_provider` / `routing_info.primary_model` | Populated on fallback attempts with the primary attempt's provider/model |
+
+When no alias matches, `resolved_key_alias` is omitted and `model` carries the wire identifier directly.
+
+<Note>
+`extra_fields.provider`, `extra_fields.original_model_requested`, and `extra_fields.resolved_model_used` are deprecated but still populated for backward compatibility. New consumers should read from `routing_info`.
+</Note>
 
 ---
 
@@ -333,13 +389,18 @@ ml-team → model="best-model"
   → Anthropic receives model="claude-3-5-sonnet-20241022"
 ```
 
-**Response `extra_fields` for tech-team + premium-vk:**
+**Response `extra_fields.routing_info` for tech-team + premium-vk:**
 ```json
 {
-  "original_model_requested": "best-model",
-  "resolved_model_used": "gpt-5",
-  "provider": "openai"
+  "routing_info": {
+    "provider": "openai",
+    "model": "best-model",
+    "key": "high-tier-key",
+    "resolved_key_alias": {
+      "model_id": "gpt-5"
+    }
+  }
 }
 ```
 
-`original_model_requested` is always what the client originally sent. `resolved_model_used` is the final identifier that reached the provider API - after both routing and alias resolution.
+`routing_info.model` is what the client sent (after any routing rule rewrites). `routing_info.resolved_key_alias.model_id` is the final identifier that reached the provider API - after both routing and key-level alias resolution. When no key-level alias matches, `resolved_key_alias` is omitted and the wire model equals `routing_info.model`.

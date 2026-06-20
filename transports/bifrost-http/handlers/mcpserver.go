@@ -86,33 +86,18 @@ func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schem
 	// MCP server endpoint - supports both POST (JSON-RPC) and GET (SSE)
 	r.POST("/mcp", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
 	r.GET("/mcp", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
-}
-
-// handleMCPServer handles POST requests for MCP JSON-RPC 2.0 messages
-// injectMCPSessionIdentity sets the MCP gateway flag and, if a per-user OAuth
-// session exists, injects the session token and identity (VK / User ID) directly
-// into the BifrostContext. This avoids header-based identity propagation which
-// would be vulnerable to spoofing by upstream callers.
-//
-// Governance context keys are set here intentionally (bypassing governance plugin)
-// because in the MCP gateway path, identity is pre-authenticated via the OAuth session.
-func injectMCPSessionIdentity(bifrostCtx *schemas.BifrostContext, session *tables.TablePerUserOAuthSession) {
-	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
-	if session != nil {
-		if session.AccessToken != "" {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserSession, session.AccessToken)
-		}
-		if session.VirtualKeyID != nil && *session.VirtualKeyID != "" && session.VirtualKey != nil && session.VirtualKey.Value != "" {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey.Value)
-		}
-		if session.UserID != nil && *session.UserID != "" {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, *session.UserID)
-		}
-	}
+	// Bifrost is NOT an OAuth authorization server — auth is via the
+	// x-bf-vk / x-bf-mcp-session-id headers or upstream SSO. Claude Code's
+	// MCP client may proactively POST `/register` (RFC 7591 DCR) on
+	// `claude mcp add` and log "SDK auth failed: ..." when the probe fails,
+	// even though the underlying `/mcp` connection works fine. That warning
+	// is a known Claude Code bug — see
+	// https://github.com/anthropics/claude-code/issues/46640 — and is safe
+	// to ignore. We intentionally do NOT implement an OAuth stub.
 }
 
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
-	mcpServer, session, err := h.getMCPServerForRequest(ctx)
+	mcpServer, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
@@ -120,9 +105,8 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
 	defer cancel()
-
-	injectMCPSessionIdentity(bifrostCtx, session)
 
 	// Use mcp-go server to handle the request
 	// HandleMessage processes JSON-RPC messages and returns appropriate responses
@@ -148,7 +132,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 // handleMCPServerSSE handles GET requests for MCP Server-Sent Events streaming
 func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
-	_, session, err := h.getMCPServerForRequest(ctx)
+	_, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
@@ -180,8 +164,7 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
-
-	injectMCPSessionIdentity(bifrostCtx, session)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
@@ -293,31 +276,17 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 	h.syncServer(h.globalMCPServer, availableTools, nil)
 	logger.Debug("Synced global MCP server with %d tools", len(availableTools))
 
-	// initialize vkMCPServers map
-	if h.config.ConfigStore != nil {
-		virtualKeys, err := h.config.ConfigStore.GetVirtualKeys(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get virtual keys: %w", err)
-		}
-		h.vkMCPServers = make(map[string]*server.MCPServer)
-		for i := range virtualKeys {
-			vk := &virtualKeys[i]
-			vkServer := server.NewMCPServer(
-				vk.Name,
-				version,
-				server.WithToolCapabilities(true),
-			)
-			server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
-			h.vkMCPServers[vk.Value] = vkServer
-			availableTools, toolFilter := h.fetchToolsForVK(vk)
-			h.syncServer(h.vkMCPServers[vk.Value], availableTools, toolFilter)
-			logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
-		}
-	}
+	// Per-VK MCP servers are created lazily on first request (see
+	// getMCPServerForRequest / ensureVKMCPServer) rather than eagerly here.
+	// Building one server per virtual key previously scaled O(number of keys)
+	// and stalled startup with large key counts (100k+). Resetting the map
+	// invalidates any cached servers so they are rebuilt with the latest tool
+	// configuration on next use.
+	h.vkMCPServers = make(map[string]*server.MCPServer)
 	return nil
 }
 
-func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) {
+func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.MCPServer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	vkServer, ok := h.vkMCPServers[vk.Value]
@@ -335,6 +304,7 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) {
 	h.syncServer(vkServer, availableTools, toolFilter)
 	h.vkMCPServers[vk.Value] = vkServer
 	logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
+	return vkServer
 }
 
 func (h *MCPServerHandler) DeleteVKMCPServer(vkValue string) {
@@ -384,10 +354,21 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			// Execute the tool via tool executor
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
-				if err.ExtraFields.MCPAuthRequired != nil {
+				if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
+					// Two surfaces share this error: per-user OAuth uses
+					// AuthorizeURL (the upstream provider's authorize page);
+					// per-user headers uses SubmitURL (the workspace landing
+					// page where the user submits their header values).
+					// Pick whichever Kind populated.
+					url := authReq.AuthorizeURL
+					action := "connect your account"
+					if authReq.Kind == schemas.MCPAuthRequiredKindHeaders {
+						url = authReq.SubmitURL
+						action = "submit the required headers"
+					}
 					return mcp.NewToolResultError(fmt.Sprintf(
-						"Authentication required for %s. Open this URL to connect your account: %s",
-						err.ExtraFields.MCPAuthRequired.MCPClientName, err.ExtraFields.MCPAuthRequired.AuthorizeURL,
+						"Authentication required for %s. Open this URL to %s: %s",
+						authReq.MCPClientName, action, url,
 					)), nil
 				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
@@ -419,27 +400,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			description = *tool.Function.Description
 		}
 
-		// Convert Parameters to mcp.ToolInputSchema
-		var inputSchema mcp.ToolInputSchema
-		if tool.Function.Parameters != nil {
-			inputSchema.Type = tool.Function.Parameters.Type
-			if tool.Function.Parameters.Properties != nil {
-				// Convert *map[string]interface{} to map[string]any
-				props := make(map[string]any)
-				tool.Function.Parameters.Properties.Range(func(key string, value interface{}) bool {
-					props[key] = value
-					return true
-				})
-				inputSchema.Properties = props
-			}
-			if tool.Function.Parameters.Required != nil {
-				inputSchema.Required = tool.Function.Parameters.Required
-			}
-		} else {
-			// Default to empty object schema if no parameters
-			inputSchema.Type = "object"
-			inputSchema.Properties = make(map[string]any)
-		}
+		inputSchema := convertToolFunctionParametersToMCPInputSchema(tool.Function.Parameters)
 
 		// Map Bifrost annotations back to MCP tool annotations
 		var toolAnnotation mcp.ToolAnnotation
@@ -461,6 +422,47 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			Annotations: toolAnnotation,
 		}, handler)
 	}
+}
+
+func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionParameters) mcp.ToolInputSchema {
+	if params == nil {
+		return mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: make(map[string]any),
+		}
+	}
+
+	inputSchema := mcp.ToolInputSchema{
+		Type:     params.Type,
+		Required: params.Required,
+	}
+
+	if params.Properties != nil {
+		props := make(map[string]any, params.Properties.Len())
+		params.Properties.Range(func(key string, value interface{}) bool {
+			props[key] = value
+			return true
+		})
+		inputSchema.Properties = props
+	}
+
+	if params.Defs != nil {
+		defs := make(map[string]any, params.Defs.Len())
+		params.Defs.Range(func(key string, value interface{}) bool {
+			defs[key] = value
+			return true
+		})
+		inputSchema.Defs = defs
+	} else if params.Definitions != nil {
+		defs := make(map[string]any, params.Definitions.Len())
+		params.Definitions.Range(func(key string, value interface{}) bool {
+			defs[key] = value
+			return true
+		})
+		inputSchema.Defs = defs
+	}
+
+	return inputSchema
 }
 
 // fetchToolsForVK fetches the tools for a given virtual key value.
@@ -544,97 +546,52 @@ func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 
 // Utility methods
 
-func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, *tables.TablePerUserOAuthSession, error) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, error) {
 	h.config.Mu.RLock()
 	enforceVK := h.config.ClientConfig.EnforceAuthOnInference
 	h.config.Mu.RUnlock()
 
 	vk := getVKFromRequest(ctx)
 
-	// Check for Bifrost per-user OAuth Bearer token (not a VK)
-	userOauthSession, sessionErr := h.getPerUserOAuthSession(ctx)
-	if sessionErr != nil {
-		return nil, nil, fmt.Errorf("failed to look up OAuth session: %w", sessionErr)
-	}
-
-	// If per_user_oauth MCP clients are configured and no valid auth, return 401 with discovery
-	if clients := h.config.GetPerUserOAuthMCPClients(); len(clients) > 0 && userOauthSession == nil && vk == "" {
-		resourceMetadataURL := lib.BuildBaseURL(ctx, h.config.GetMCPExternalServerURL()) + "/.well-known/oauth-protected-resource"
-		ctx.Response.Header.Set("WWW-Authenticate",
-			fmt.Sprintf(`Bearer resource_metadata="%s"`, resourceMetadataURL))
-		return nil, nil, fmt.Errorf("oauth authentication required for mcp access")
-	}
-
-	if userOauthSession != nil {
-		if !enforceVK && (userOauthSession.VirtualKeyID == nil || *userOauthSession.VirtualKeyID == "") {
-			return h.globalMCPServer, userOauthSession, nil
-		}
-
-		if userOauthSession.VirtualKeyID == nil || *userOauthSession.VirtualKeyID == "" || userOauthSession.VirtualKey == nil {
-			return nil, nil, fmt.Errorf("virtual key required in oauth session to access mcp server, please re-authenticate with a virtual key")
-		}
-
-		vkServer, ok := h.vkMCPServers[userOauthSession.VirtualKey.Value]
-		if !ok {
-			return nil, nil, fmt.Errorf("virtual key not found")
-		}
-
-		return vkServer, userOauthSession, nil
-	}
-
-	// Return global MCP server if not enforcing virtual key header and no virtual key is provided
+	// EnforceAuth=false: anonymous access to the global (un-scoped) MCP server
+	// is allowed in dev mode. EnforceAuth=true: VK header is mandatory.
 	if !enforceVK && vk == "" {
-		return h.globalMCPServer, nil, nil
+		return h.globalMCPServer, nil
 	}
 
 	if vk == "" {
-		return nil, nil, fmt.Errorf("virtual key header required to access mcp server")
+		return nil, fmt.Errorf("virtual key required to access mcp server; set one of x-bf-vk, Authorization: Bearer <vk>, or x-api-key in your MCP client config")
 	}
 
+	// Fast path: a per-VK server already exists in the cache.
+	h.mu.RLock()
 	vkServer, ok := h.vkMCPServers[vk]
-	if !ok {
-		return nil, nil, fmt.Errorf("virtual key not found")
+	h.mu.RUnlock()
+	if ok {
+		return vkServer, nil
 	}
 
-	return vkServer, nil, nil
+	// Slow path: build the per-VK server lazily on first use.
+	return h.ensureVKMCPServer(ctx, vk)
 }
 
-// getPerUserOAuthSession extracts and validates a Bifrost-issued per-user OAuth
-// token from the Authorization header. Returns the session if valid, nil otherwise.
-func (h *MCPServerHandler) getPerUserOAuthSession(ctx *fasthttp.RequestCtx) (*tables.TablePerUserOAuthSession, error) {
-	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
-	if authHeader == "" || !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-		return nil, nil
-	}
-	token := strings.TrimSpace(authHeader[7:])
-	if token == "" || strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
-		return nil, nil // It's a virtual key, not a per-user OAuth token
-	}
-
+// ensureVKMCPServer lazily builds and caches the MCP server for a virtual key on
+// first use, looking the key up by value via the config store. Per-VK servers
+// are no longer created eagerly at startup, so the first MCP request for a given
+// key materializes it here. Returns "virtual key not found" if the value does
+// not resolve to a known virtual key (or no config store is configured).
+func (h *MCPServerHandler) ensureVKMCPServer(ctx context.Context, vkValue string) (*server.MCPServer, error) {
 	if h.config.ConfigStore == nil {
-		return nil, nil
+		return nil, fmt.Errorf("virtual key not found")
 	}
-
-	session, err := h.config.ConfigStore.GetPerUserOAuthSessionByAccessToken(ctx, token)
-	if err != nil {
-		logger.Warn("[mcp/auth] GetPerUserOAuthSessionByAccessToken error: %v", err)
-		return nil, err
+	vk, err := h.config.ConfigStore.GetVirtualKeyByValue(ctx, vkValue)
+	if err != nil || vk == nil {
+		return nil, fmt.Errorf("virtual key not found")
 	}
-	if session == nil {
-		logger.Debug("[mcp/auth] Session not found for token")
-		return nil, nil
-	}
-
-	// Check expiry
-	if session.ExpiresAt.Before(time.Now()) {
-		logger.Debug("[mcp/auth] Session expired: session_id=%s expires_at=%v", session.ID, session.ExpiresAt)
-		return nil, nil
-	}
-
-	return session, nil
+	// SyncVKMCPServer creates (or refreshes) and caches the server under the
+	// handler write lock, returning the live server so a concurrent
+	// SyncAllMCPServers cannot wipe the map out from under us before we read it.
+	return h.SyncVKMCPServer(vk), nil
 }
 
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {

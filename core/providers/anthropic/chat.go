@@ -25,32 +25,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 
 	// Convert function parameters to input_schema
 	if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
-		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
-			Type:                 tool.Function.Parameters.Type,
-			Description:          tool.Function.Parameters.Description,
-			Properties:           tool.Function.Parameters.Properties,
-			Required:             tool.Function.Parameters.Required,
-			Enum:                 tool.Function.Parameters.Enum,
-			AdditionalProperties: tool.Function.Parameters.AdditionalProperties,
-			Defs:                 tool.Function.Parameters.Defs,
-			Definitions:          tool.Function.Parameters.Definitions,
-			Ref:                  tool.Function.Parameters.Ref,
-			Items:                tool.Function.Parameters.Items,
-			MinItems:             tool.Function.Parameters.MinItems,
-			MaxItems:             tool.Function.Parameters.MaxItems,
-			AnyOf:                tool.Function.Parameters.AnyOf,
-			OneOf:                tool.Function.Parameters.OneOf,
-			AllOf:                tool.Function.Parameters.AllOf,
-			Format:               tool.Function.Parameters.Format,
-			Pattern:              tool.Function.Parameters.Pattern,
-			MinLength:            tool.Function.Parameters.MinLength,
-			MaxLength:            tool.Function.Parameters.MaxLength,
-			Minimum:              tool.Function.Parameters.Minimum,
-			Maximum:              tool.Function.Parameters.Maximum,
-			Title:                tool.Function.Parameters.Title,
-			Default:              tool.Function.Parameters.Default,
-			Nullable:             tool.Function.Parameters.Nullable,
-		}
+		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(tool.Function.Parameters)
 	}
 
 	if anthropicTool.InputSchema != nil {
@@ -260,6 +235,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	}
 
 	messages := bifrostReq.Input
+	if ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+		trimmed := len(messages)
+		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+			trimmed--
+		}
+		messages = messages[:trimmed]
+	}
+
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
 		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
@@ -272,8 +255,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
 
-		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
-		if !IsOpus47(bifrostReq.Model) {
+		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
+		// top_k with a 400 error.
+		if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -285,14 +269,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 
 		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
-		// Opus 4.7+ rejects top_k with a 400 error.
+		// Opus 4.7+ and the Fable/Mythos family reject top_k with a 400 error.
 		if bifrostReq.Params.TopK != nil {
-			if !IsOpus47(bifrostReq.Model) {
+			if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 				anthropicReq.TopK = bifrostReq.Params.TopK
 			}
 		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			if !IsOpus47(bifrostReq.Model) {
+			if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 				anthropicReq.TopK = topK
 			}
 		}
@@ -367,6 +351,33 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.CacheControl = bifrostReq.Params.CacheControl
 		}
 
+		// Diagnostics — cache diagnostics opt-in (Anthropic API only). Promote
+		// the raw/typed form from ExtraParams onto the typed field so it is
+		// always serialized (parity with cache_control), not gated behind the
+		// ExtraParams passthrough flag.
+		if dVal := bifrostReq.Params.ExtraParams["diagnostics"]; dVal != nil {
+			parsed := false
+			switch v := dVal.(type) {
+			case *AnthropicDiagnostics:
+				anthropicReq.Diagnostics = v
+				parsed = true
+			case AnthropicDiagnostics:
+				anthropicReq.Diagnostics = &v
+				parsed = true
+			default:
+				if data, err := providerUtils.MarshalSorted(v); err == nil {
+					var d AnthropicDiagnostics
+					if sonic.Unmarshal(data, &d) == nil {
+						anthropicReq.Diagnostics = &d
+						parsed = true
+					}
+				}
+			}
+			if parsed {
+				delete(anthropicReq.ExtraParams, "diagnostics")
+			}
+		}
+
 		// TaskBudget — maps onto output_config.task_budget. If an OutputConfig
 		// already exists (e.g. from structured outputs), attach the budget to
 		// it; otherwise create one.
@@ -401,10 +412,16 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
-					// Force the model to use this specific tool
-					anthropicReq.ToolChoice = &AnthropicToolChoice{
-						Type: "tool",
-						Name: responseFormatTool.Name,
+					// Anthropic rejects forced tool_choice when extended thinking is active.
+					// Skip forcing tool_choice in that case; the model may still call the tool.
+					thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+						(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+							(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+					if !thinkingEnabled {
+						anthropicReq.ToolChoice = &AnthropicToolChoice{
+							Type: "tool",
+							Name: responseFormatTool.Name,
+						}
 					}
 				}
 			} else {
@@ -487,8 +504,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if IsOpus47(bifrostReq.Model) {
-					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
+				if IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 				} else {
 					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
@@ -507,7 +524,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-				if SupportsAdaptiveThinking(bifrostReq.Model) || IsOpus47(bifrostReq.Model) {
+				if SupportsAdaptiveThinking(bifrostReq.Model) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
@@ -533,7 +550,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
 				}
-			} else {
+			} else if !IsFableFamily(bifrostReq.Model) {
+				// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
+				// adaptive thinking is always on and cannot be disabled. Omit
+				// the thinking param entirely for that family; all other models
+				// take the explicit disabled path.
 				anthropicReq.Thinking = &AnthropicThinking{
 					Type: "disabled",
 				}
@@ -545,44 +566,105 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// nothing to display", per the extended-thinking doc). We attach
 			// on non-disabled modes and let the upstream provider enforce
 			// model-level support.
-			if bifrostReq.Params.Reasoning.Display != nil &&
-				anthropicReq.Thinking != nil &&
-				anthropicReq.Thinking.Type != "disabled" {
-				anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+			// Opus 4.7+ and the Fable/Mythos family omit reasoning text by
+			// default; default to "summarized" so the text is visible unless
+			// the caller explicitly requests "omitted".
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+				if bifrostReq.Params.Reasoning.Display != nil {
+					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+				} else if IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
+				}
 			}
 		}
 
 		// Convert service tier
-		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
+		if bifrostReq.Params.ServiceTier != nil {
+			mapped := MapBifrostServiceTierToAnthropicRequest(*bifrostReq.Params.ServiceTier)
+			anthropicReq.ServiceTier = &mapped
+		}
 	}
 
 	// Convert messages - group consecutive tool messages into single user messages
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
+	// seenConversation tracks whether any user/assistant message has been processed.
+	// A system message after the first user/assistant turn is a mid-conversation
+	// system message and is emitted as role:"system" in the messages array
+	// (Anthropic API + Opus 4.8+ only).
+	seenConversation := false
+	midConvSystemSupported := SupportsMidConversationSystem(bifrostReq.Provider, bifrostReq.Model)
 
 	i := 0
 	for i < len(messages) {
 		msg := messages[i]
 
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
-			// Handle system message separately
-			if msg.Content != nil {
-				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-					systemContent = &AnthropicContent{ContentStr: msg.Content.ContentStr}
-				} else if msg.Content.ContentBlocks != nil {
-					blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
-					for _, block := range msg.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							blocks = append(blocks, AnthropicContentBlock{
-								Type:         AnthropicContentBlockTypeText,
-								Text:         block.Text,
-								CacheControl: block.CacheControl,
-							})
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
+			// Anthropic placement rule: a mid-conv system message must end the array
+			// or be immediately followed by an assistant turn. Anything else (e.g.
+			// [user, system, user]) returns a 400, so fall through to top-level system.
+			midConvPlacementOK := i == len(messages)-1 ||
+				messages[i+1].Role == schemas.ChatMessageRoleAssistant
+			if seenConversation && midConvSystemSupported && midConvPlacementOK {
+				// Mid-conversation system message — emit directly as role:"system".
+				var content AnthropicContent
+				if msg.Content != nil {
+					if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+						content = AnthropicContent{ContentStr: msg.Content.ContentStr}
+					} else if msg.Content.ContentBlocks != nil {
+						blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+						for _, block := range msg.Content.ContentBlocks {
+							if block.Text != nil && *block.Text != "" {
+								blocks = append(blocks, AnthropicContentBlock{
+									Type:         AnthropicContentBlockTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								})
+							}
+						}
+						if len(blocks) > 0 {
+							content = AnthropicContent{ContentBlocks: blocks}
 						}
 					}
-					if len(blocks) > 0 {
-						systemContent = &AnthropicContent{ContentBlocks: blocks}
+				}
+				if content.ContentStr != nil || len(content.ContentBlocks) > 0 {
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:    AnthropicMessageRoleSystem,
+						Content: content,
+					})
+				}
+			} else {
+				var newContent AnthropicContent
+				if msg.Content != nil {
+					if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+						newContent = AnthropicContent{ContentStr: msg.Content.ContentStr}
+					} else if msg.Content.ContentBlocks != nil {
+						blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+						for _, block := range msg.Content.ContentBlocks {
+							if block.Text != nil && *block.Text != "" {
+								blocks = append(blocks, AnthropicContentBlock{
+									Type:         AnthropicContentBlockTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								})
+							}
+						}
+						if len(blocks) > 0 {
+							newContent = AnthropicContent{ContentBlocks: blocks}
+						}
+					}
+				}
+				systemContent = appendToSystemContent(systemContent, newContent)
+				// If the entire transcript consists only of system/developer messages
+				if i == len(messages)-1 && len(anthropicMessages) == 0 {
+					if systemContent != nil {
+						content := systemContent
+						systemContent = nil
+						anthropicMessages = append(anthropicMessages, AnthropicMessage{
+							Role:    AnthropicMessageRoleUser,
+							Content: *content,
+						})
 					}
 				}
 			}
@@ -635,6 +717,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					Role:    "user", // Tool results are sent as user messages in Anthropic
 					Content: AnthropicContent{ContentBlocks: toolResults},
 				})
+				seenConversation = true
 			}
 
 		default:
@@ -715,12 +798,27 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 
 			anthropicMessages = append(anthropicMessages, anthropicMsg)
+			seenConversation = true
 			i++
 		}
 	}
 
 	anthropicReq.Messages = anthropicMessages
 	anthropicReq.System = systemContent
+
+	// Trim trailing whitespace from the last assistant message text blocks
+	// ContentStr is converted to a single text ContentBlock during message conversion
+	// so we trim the text of that block instead.
+	lastMsgIndex := len(anthropicReq.Messages) - 1
+	if lastMsgIndex >= 0 && anthropicReq.Messages[lastMsgIndex].Role == AnthropicMessageRoleAssistant {
+		blocks := anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if blocks[j].Type == AnthropicContentBlockTypeText && blocks[j].Text != nil {
+				anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+				break
+			}
+		}
+	}
 
 	// Strip request- and tool-level fields the target Anthropic-family
 	// provider does not support. Fail-closed tool validation stays in
@@ -750,6 +848,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			structuredOutputToolName = toolName
 		}
 	}
+	var usedStructuredOutputTool bool
 
 	// Collect all content and tool calls into a single message
 	var toolCalls []schemas.ChatAssistantMessageToolCall
@@ -785,6 +884,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 							jsonStr = "{}"
 						}
 						contentStr = &jsonStr
+						usedStructuredOutputTool = true
 						continue // Skip adding to toolCalls
 					}
 
@@ -874,6 +974,12 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		FinishReason: func() *string {
 			if response.StopReason != "" {
 				mapped := ConvertAnthropicFinishReasonToBifrost(response.StopReason)
+				// When the structured output tool was folded back into text content, the
+				// stop reason should be "stop", not "tool_calls".
+				if usedStructuredOutputTool && len(toolCalls) == 0 &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
 				return &mapped
 			}
 			return nil
@@ -902,8 +1008,19 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
 		if response.Usage.ServiceTier != nil {
-			bifrostResponse.ServiceTier = response.Usage.ServiceTier
+			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+			bifrostResponse.ServiceTier = &mapped
 		}
+		// Forward the speed actually served (fast mode) — drives fast-mode billing.
+		if response.Usage.Speed != nil {
+			bifrostResponse.Speed = response.Usage.Speed
+		}
+	}
+
+	// Forward cache diagnostics (cache-diagnosis-2026-04-07) — top-level on the
+	// message, not under usage.
+	if response.Diagnostics != nil {
+		bifrostResponse.Diagnostics = response.Diagnostics
 	}
 
 	return bifrostResponse
@@ -948,8 +1065,18 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		}
 		// Forward service tier
 		if bifrostResp.ServiceTier != nil {
-			anthropicResp.Usage.ServiceTier = bifrostResp.ServiceTier
+			mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
+			anthropicResp.Usage.ServiceTier = &mapped
 		}
+		// Forward the speed actually served (fast mode)
+		if bifrostResp.Speed != nil {
+			anthropicResp.Usage.Speed = bifrostResp.Speed
+		}
+	}
+
+	// Forward cache diagnostics (cache-diagnosis-2026-04-07) — top-level, not under usage.
+	if bifrostResp.Diagnostics != nil {
+		anthropicResp.Diagnostics = bifrostResp.Diagnostics
 	}
 
 	// Convert choices to content
@@ -1053,6 +1180,27 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
+		if chunk.Message != nil && chunk.Message.Role != "" {
+			role := chunk.Message.Role
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Role: &role,
+							},
+						},
+					},
+				},
+			}
+			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
+			if chunk.Message.Diagnostics != nil {
+				streamResponse.Diagnostics = chunk.Message.Diagnostics
+			}
+			return streamResponse, nil, false
+		}
 		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageStop:
@@ -1127,26 +1275,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				}
 
 			case AnthropicStreamDeltaTypeInputJSON:
-				// Handle tool use streaming - accumulate partial JSON
+				// Handle tool use streaming - accumulate partial JSON.
 				if chunk.Delta.PartialJSON != nil {
-					if structuredOutputToolName != "" {
-						// Structured output: stream JSON as content
-						streamResponse := &schemas.BifrostChatResponse{
-							Object: "chat.completion.chunk",
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: &schemas.ChatStreamResponseChoiceDelta{
-											Content: chunk.Delta.PartialJSON,
-										},
-									},
-								},
-							},
-						}
-						return streamResponse, nil, false
-					}
-
 					// Resolve which tool-call this delta belongs to via the content-block index.
 					toolCallIdx := state.contentBlockToToolCallIdx[*chunk.Index]
 
@@ -1355,6 +1485,10 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 			}
 
 			streamMessage.Content = content
+			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
+			if bifrostResp.Diagnostics != nil {
+				streamMessage.Diagnostics = bifrostResp.Diagnostics
+			}
 			streamResp.Message = streamMessage
 		}
 	}

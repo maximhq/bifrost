@@ -1,122 +1,190 @@
 package utils
 
 import (
-	"errors"
-	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ResolvePerUserOAuthToken looks up the per-user OAuth access token for the given client.
-// If no token exists yet, it initiates an OAuth flow and returns an MCPUserOAuthRequiredError.
-func ResolvePerUserOAuthToken(ctx *schemas.BifrostContext, client *schemas.MCPClientState, oauth2Provider schemas.OAuth2Provider) (string, error) {
-	if oauth2Provider == nil {
-		return "", fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
+// FlattenHeaders converts an http.Header into a map[string]string suitable
+// for mcp-go's transport.WithHTTPHeaders, used for both shared persistent
+// connections (clientmanager) and ephemeral per-call connections
+// (AcquireClientConn). Multi-value headers collapse to their first value.
+func FlattenHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) == 0 {
+			continue
+		}
+		out[k] = v[0]
 	}
-
-	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
-	sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
-
-	// Optional X-Bf-User-Id header overrides user identity; if absent, falls back to virtual key
-	if mcpUserID, _ := ctx.Value(schemas.BifrostContextKeyMCPUserID).(string); mcpUserID != "" {
-		userID = mcpUserID
-	}
-
-	accessToken, err := oauth2Provider.GetUserAccessTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, client.ExecutionConfig.ID)
-	// Both sentinels mean "this user must re-authenticate":
-	//   - ErrOAuth2TokenNotFound: row missing (never authed, or purged after permanent refresh failure)
-	//   - ErrOAuth2TokenExpired:  row present but tokens unusable (access expired + no refresh available)
-	// Either way, fall through to the re-auth branch below to surface an inline auth URL.
-	if err != nil && !errors.Is(err, schemas.ErrOAuth2TokenNotFound) && !errors.Is(err, schemas.ErrOAuth2TokenExpired) {
-		return "", fmt.Errorf("failed to get user access token for MCP server %s: %w", client.ExecutionConfig.Name, err)
-	}
-	if err != nil {
-		// In LLM gateway mode with no identity, an OAuth flow would produce an orphaned token.
-		isMCPGateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool)
-		if !isMCPGateway && userID == "" && virtualKeyID == "" {
-			return "", fmt.Errorf(
-				"per-user OAuth for %s requires a user identity: include X-Bf-User-Id or a Virtual Key in your request so the token can be linked to you",
-				client.ExecutionConfig.Name,
-			)
-		}
-
-		if client.ExecutionConfig.OauthConfigID == nil || *client.ExecutionConfig.OauthConfigID == "" {
-			return "", fmt.Errorf("per-user OAuth requires an OAuth config but MCP client %s has none", client.ExecutionConfig.Name)
-		}
-		redirectURI := BuildRedirectURIFromContext(ctx)
-		if redirectURI == "" {
-			return "", fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
-		}
-		flowInitiation, sessionID, flowErr := oauth2Provider.InitiateUserOAuthFlow(ctx, *client.ExecutionConfig.OauthConfigID, client.ExecutionConfig.ID, redirectURI)
-		if flowErr != nil {
-			return "", fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", client.ExecutionConfig.Name, flowErr)
-		}
-		return "", &schemas.MCPUserOAuthRequiredError{
-			MCPClientID:   client.ExecutionConfig.ID,
-			MCPClientName: client.ExecutionConfig.Name,
-			AuthorizeURL:  flowInitiation.AuthorizeURL,
-			SessionID:     sessionID,
-			Message:       fmt.Sprintf("Authentication required for %s. Please visit the authorize URL to connect your account.", client.ExecutionConfig.Name),
-		}
-	}
-
-	return accessToken, nil
+	return out
 }
 
-// BuildPerUserOAuthHeaders clones the provided headers and adds the Bearer token,
-// preserving any request-scoped extra headers already present.
-func BuildPerUserOAuthHeaders(headers http.Header, accessToken string) http.Header {
-	h := headers.Clone()
-	h.Set("Authorization", "Bearer "+accessToken)
-	return h
-}
-
-// BuildRedirectURIFromContext extracts the OAuth redirect URI from context.
-func BuildRedirectURIFromContext(ctx *schemas.BifrostContext) string {
-	if uri, ok := ctx.Value(schemas.BifrostContextKeyOAuthRedirectURI).(string); ok && uri != "" {
-		return uri
+// BuildMCPCallbackBaseURL extracts the base URL set on the BifrostContext by
+// the HTTP middleware (e.g. "https://host"). Per-user OAuth and per-user
+// headers resolvers append their respective paths on top.
+//
+// Trailing slashes are stripped defensively. The sole writer today
+// (lib/ctx.go BuildBaseURL) already normalizes, but OAuth providers match
+// redirect URIs exactly — a `https://host//api/oauth/callback` produced by
+// a future writer that forgets to trim would silently break every per-user
+// OAuth flow. Guarding once on the read side keeps that invariant local
+// to this function rather than spread across every potential writer.
+func BuildMCPCallbackBaseURL(ctx *schemas.BifrostContext) string {
+	if base, ok := ctx.Value(schemas.BifrostContextKeyMCPCallbackBaseURL).(string); ok && base != "" {
+		return strings.TrimRight(base, "/")
 	}
 	return ""
 }
 
-// GetHeadersForToolExecution sets additional headers for tool execution.
-// It returns the headers for the tool execution.
-func GetHeadersForToolExecution(ctx *schemas.BifrostContext, client *schemas.MCPClientState) http.Header {
-	if ctx == nil || client == nil || client.ExecutionConfig == nil {
-		return make(http.Header)
+// BuildOAuthRedirectURIFromContext returns the full OAuth callback URL
+// ("<base>/api/oauth/callback") needed by the per-user OAuth flow, or empty
+// if the base URL is unavailable.
+func BuildOAuthRedirectURIFromContext(ctx *schemas.BifrostContext) string {
+	base := BuildMCPCallbackBaseURL(ctx)
+	if base == "" {
+		return ""
 	}
+	return base + "/api/oauth/callback"
+}
+
+// StaticConfigHeaders returns the admin-configured static headers from
+// config.Headers MINUS any header whose name is a credential — Authorization
+// always, plus any name declared in config.PerUserHeaderKeys. These are the
+// headers that are safe to expose to MCP connect-plugins via the
+// PreConnectionHook gate — plugins may add, remove, or rewrite them.
+//
+// Why exclude:
+//   - Authorization: credential by definition. The CredentialStore resolver
+//     for the active auth type emits the final value (config bearer for
+//     MCPAuthTypeHeaders; dynamic token for OAuth-flavored types).
+//   - PerUserHeaderKeys: credential schema for MCPAuthTypePerUserHeaders. If
+//     an admin accidentally (or deliberately) baked one of these names into
+//     config.Headers with a static value, exposing it to plugins would leak
+//     the static fallback. The per-user-headers resolver emits the caller's
+//     value; the static fallback should never reach the wire (and never
+//     reach plugins) for per-user-headers clients.
+//
+// Comparison is case-insensitive because HTTP headers are case-insensitive
+// on the wire but case-sensitive in Go maps.
+func StaticConfigHeaders(config *schemas.MCPClientConfig) http.Header {
 	headers := make(http.Header)
-	if client.ExecutionConfig.Headers != nil {
-		for key, value := range client.ExecutionConfig.Headers {
-			headers.Add(key, value.GetValue())
+	if config == nil {
+		return headers
+	}
+	for key, value := range config.Headers {
+		if strings.EqualFold(key, "Authorization") {
+			continue
+		}
+		if matchesPerUserHeaderKey(key, config.PerUserHeaderKeys) {
+			continue
+		}
+		headers.Add(key, value.GetValue())
+	}
+	return headers
+}
+
+// matchesPerUserHeaderKey reports whether name matches any entry in
+// perUserKeys (case-insensitively). Used by StaticConfigHeaders to strip
+// per-user credential keys from the plugin-visible static header set.
+func matchesPerUserHeaderKey(name string, perUserKeys []string) bool {
+	for _, key := range perUserKeys {
+		if strings.EqualFold(name, key) {
+			return true
 		}
 	}
-	// Give priority to extra headers in the context
-	if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyMCPExtraHeaders).(map[string][]string); ok {
-		filteredHeaders := make(http.Header)
-		for key, values := range extraHeaders {
-			if client.ExecutionConfig.AllowedExtraHeaders.IsAllowed(key) {
-				for i, value := range values {
-					if i == 0 {
-						filteredHeaders.Set(key, value)
-					} else {
-						filteredHeaders.Add(key, value)
-					}
-				}
-			}
+	return false
+}
+
+// Canonical-form invariant for per-user-headers data
+// =====================================================
+// HTTP header names are case-insensitive on the wire (RFC 7230 §3.2),
+// so anywhere the per-user-headers feature compares a schema key against
+// a stored or submitted header name we'd need EqualFold lookups. Doing
+// that defensively at every read site is fragile — a single missed call
+// site re-introduces the bug (stored `authorization` looking missing
+// against schema `Authorization`, etc.).
+//
+// Instead we enforce a write-time invariant: every external boundary
+// that accepts a header key (or a credential header map) lowercases and
+// trims via the helpers below before persisting. Downstream code can
+// then assume canonical form and use plain map lookups.
+//
+// Write boundaries that MUST call these:
+//   - createMCPClient / updateMCPClient / resolvePerUserHeaderKeys
+//     (handlers/mcp.go) for MCPClientConfig.PerUserHeaderKeys
+//   - flowSubmit (handlers/mcp_per_user_headers.go) for the
+//     user-submitted credential.Headers map
+//   - loadMCPClientConfigFromFile (lib/config.go) for the config.json
+//     load path
+//
+// New write paths added in the future must canonicalize too — there is
+// no defensive case-folding on the read side anymore.
+
+// CanonicalizeHeaderKey returns the canonical lowercase + trimmed form
+// of a single header key. Empty input returns empty.
+func CanonicalizeHeaderKey(key string) string {
+	return strings.ToLower(strings.TrimSpace(key))
+}
+
+// CanonicalizeHeaderKeys returns a new slice with every entry passed
+// through CanonicalizeHeaderKey. Nil in → nil out so a caller that
+// uses "nil means preserve existing" semantics (e.g.
+// resolvePerUserHeaderKeys, UpdateMCPClientConfig) keeps that signal.
+// The input slice is not mutated.
+func CanonicalizeHeaderKeys(keys []string) []string {
+	if keys == nil {
+		return nil
+	}
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = CanonicalizeHeaderKey(k)
+	}
+	return out
+}
+
+// CanonicalizeHeaderMap returns a new map whose keys are passed through
+// CanonicalizeHeaderKey. On collision (e.g. "Authorization" and
+// "authorization" both present in the input), the last value wins —
+// callers that need duplicate detection should run it on the raw input
+// before calling this. Nil in → nil out.
+func CanonicalizeHeaderMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[CanonicalizeHeaderKey(k)] = v
+	}
+	return out
+}
+
+// ExtractFilteredExtras returns just the per-request "extra" headers carried
+// in the BifrostContext (BifrostContextKeyMCPExtraHeaders), scoped by the
+// client's AllowedExtraHeaders. Static config headers are NOT included here —
+// those live on the upstream transport via StaticConfigHeaders and apply
+// automatically to every message it carries. This function exists for the
+// per-message CredentialStore.RequestHeaders path on shared connections.
+func ExtractFilteredExtras(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) http.Header {
+	headers := make(http.Header)
+	if ctx == nil || config == nil {
+		return headers
+	}
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyMCPExtraHeaders).(map[string][]string)
+	if !ok {
+		return headers
+	}
+	for key, values := range extraHeaders {
+		if !config.AllowedExtraHeaders.IsAllowed(key) {
+			continue
 		}
-		// Add the filtered headers to the headers
-		if len(filteredHeaders) > 0 {
-			for k, values := range filteredHeaders {
-				for i, v := range values {
-					if i == 0 {
-						headers.Set(k, v)
-					} else {
-						headers.Add(k, v)
-					}
-				}
+		for i, value := range values {
+			if i == 0 {
+				headers.Set(key, value)
+			} else {
+				headers.Add(key, value)
 			}
 		}
 	}

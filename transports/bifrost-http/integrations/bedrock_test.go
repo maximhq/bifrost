@@ -25,10 +25,6 @@ func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return m.headerMatcher
 }
 
-func (m *mockHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
-	return m.availableProviders
-}
-
 func (m *mockHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
 	return nil
 }
@@ -54,6 +50,10 @@ func (m *mockHandlerStore) ShouldAllowPerRequestStorageOverride() bool {
 }
 
 func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
+	return false
+}
+
+func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return false
 }
 

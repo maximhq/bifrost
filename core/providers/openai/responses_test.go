@@ -226,6 +226,233 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_ReasoningStringContent guards the Codex/GPT-5.5
+// replay path: a reasoning item can arrive with content as a string (notably an
+// empty "" round-tripped through the response path). OpenAI types reasoning.content
+// as an array of reasoning_text blocks and rejects a string with
+// "expected an array ... got a string", so the outbound conversion must drop the
+// empty string and promote a non-empty one to a reasoning_text block.
+func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
+	t.Run("empty string content is dropped", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if len(original.ContentBlocks) != 0 {
+			t.Fatalf("expected input reasoning content blocks to remain empty, got %#v", original.ContentBlocks)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		if c := result.Input.OpenAIResponsesRequestInputArray[0].Content; c != nil {
+			t.Errorf("expected reasoning Content to be dropped, got %#v", c)
+		}
+
+		// End-to-end: the marshalled request must not carry content:"" on the reasoning item.
+		out, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), `"content":""`) {
+			t.Errorf("reasoning item serialized with empty-string content: %s", string(out))
+		}
+	})
+
+	t.Run("non-empty string content becomes a reasoning_text block", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("thinking")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "thinking" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if len(original.ContentBlocks) != 0 {
+			t.Fatalf("expected input reasoning content blocks to remain empty, got %#v", original.ContentBlocks)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+		if c == nil || c.ContentStr != nil || len(c.ContentBlocks) != 1 {
+			t.Fatalf("expected a single content block, got %#v", c)
+		}
+		block := c.ContentBlocks[0]
+		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning ||
+			block.Text == nil || *block.Text != "thinking" {
+			t.Errorf("expected reasoning_text block with text %q, got %#v", "thinking", block)
+		}
+	})
+}
+
+func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
+	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		effort   string
+		expected string
+	}{
+		{
+			name:     "preserves xhigh for gpt-5.4",
+			model:    "gpt-5.4",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2",
+			model:    "gpt-5.2",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2 pro",
+			model:    "gpt-5.2-pro",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2 codex",
+			model:    "gpt-5.2-codex",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.3 codex",
+			model:    "gpt-5.3-codex",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.4 mini",
+			model:    "gpt-5.4-mini",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.5",
+			model:    "gpt-5.5",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5",
+			model:    "gpt-5",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5.1",
+			model:    "gpt-5.1",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5-pro",
+			model:    "gpt-5-pro",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps minimal to low",
+			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps max to xhigh for xhigh-capable model",
+			model:    "gpt-5.4",
+			effort:   "max",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps max to high for model without xhigh",
+			model:    "gpt-5.1",
+			effort:   "max",
+			expected: "high",
+		},
+		{
+			// DeepSeek V4 is routed via a custom OpenAI-compatible provider, so the
+			// OpenAI-only reasoning-stripping doesn't apply and "max" passes through.
+			name:     "preserves max for deepseek-v4-pro",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
+			req := ToOpenAIResponsesRequest(&schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:    schemas.Ptr(tt.effort),
+						MaxTokens: schemas.Ptr(1024),
+					},
+				},
+			})
+
+			if req == nil {
+				t.Fatal("expected OpenAI responses request")
+			}
+			if req.Reasoning == nil || req.Reasoning.Effort == nil {
+				t.Fatal("expected reasoning effort to be set")
+			}
+			if got := *req.Reasoning.Effort; got != tt.expected {
+				t.Fatalf("expected reasoning effort %q, got %q", tt.expected, got)
+			}
+			if req.Reasoning.MaxTokens != nil {
+				t.Fatalf("expected reasoning max_tokens to be cleared, got %d", *req.Reasoning.MaxTokens)
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 	tests := []struct {
 		name              string

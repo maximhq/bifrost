@@ -1,0 +1,191 @@
+---
+title: "Per-User OAuth"
+sidebarTitle: "Per-User OAuth"
+description: "Each end-user authenticates with the upstream MCP service under their own credentials. Same lazy-auth model on the MCP Gateway and the LLM Gateway."
+icon: "user-shield"
+---
+
+## Overview
+
+`auth_type: "per_user_oauth"` lets each end-user connect to an upstream MCP service (Notion, GitHub, Sentry, etc.) under their own account. Bifrost stores one OAuth token per `(identity, mcp_client)` and reuses it on every later call.
+
+If a single shared admin token is fine, use [OAuth 2.0](./oauth) instead.
+
+This auth type is only valid for **HTTP** and **SSE** connections.
+
+<Note>
+Bifrost is **not** an OAuth 2.1 Authorization Server. The MCP Gateway (`/mcp`) does not advertise its own `.well-known` endpoints or run a consent screen for inbound MCP clients. Identity is asserted by the caller via headers (or upstream SSO), and auth happens **lazily** — on the first tool call that needs an upstream token.
+</Note>
+
+| | Server-level OAuth (`oauth`) | Per-user OAuth (`per_user_oauth`) |
+| --- | --- | --- |
+| Who authenticates | Admin, once at setup | Each end-user individually |
+| Token scope | Shared across all requests | Per-identity, per-MCP-server |
+| Identity required | No | Yes (VK, signed-in user, or session ID) |
+| Sessions UI | Not surfaced | One row per (identity, MCP) |
+
+---
+
+## Setup
+
+Per-user OAuth is configured through the **Web UI** only. During setup Bifrost runs a test OAuth flow as the admin and pre-fetches the tool list from the upstream service — that's why file-based config is not supported for this auth type. (Once the MCP client is persisted, the admin's temp token is discarded; per-user tokens are minted lazily by end-users.)
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **MCP Gateway** in the sidebar
+2. Click **New MCP Server**
+3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+4. Set **Auth Type** to **Per-User OAuth 2.0**
+5. Fill in the OAuth fields:
+   - **Client ID** (optional — leave blank for Dynamic Client Registration)
+   - **Client Secret** (optional — omit for PKCE public clients)
+   - **Authorize URL** / **Token URL** (optional — leave blank for OAuth discovery)
+   - **Scopes** (comma-separated)
+6. Click **Create** — Bifrost runs a test OAuth flow in a popup as the admin
+7. Complete the upstream sign-in
+8. The MCP client is persisted with the discovered tool list and made available for end-users
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-oauth-setup.png" alt="MCP client form with Auth Type set to Per-User OAuth 2.0 and the OAuth fields ready for setup" />
+</Frame>
+
+</Tab>
+</Tabs>
+
+<Info>
+If the upstream server supports OAuth Discovery (RFC 8414), you can leave the authorize and token URLs blank and provide only the **Connection URL** plus client ID. Bifrost discovers the endpoints automatically.
+</Info>
+
+---
+
+## How it works
+
+The same lazy-auth pattern is used on both the **MCP Gateway** (`/mcp`) and the **LLM Gateway** (`/v1/chat/completions`):
+
+1. The caller sends a request with an identity (header or SSO).
+2. The LLM (or MCP client) asks to invoke a tool on a per-user OAuth service.
+3. Bifrost looks up an existing token for `(identity, mcp_client)`:
+   - **Token found and `active`** → upstream call goes out transparently
+   - **Missing, `orphaned`, or `needs_reauth`** → Bifrost returns an `mcp_auth_required` payload with an inline `authorize_url`. The tool is **not** executed.
+4. The user opens the URL, completes the upstream OAuth flow, and Bifrost stores the resulting token against their identity.
+5. The next request executes the tool normally.
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-oauth-flow-lazy.svg" alt="Per-user OAuth lazy flow — identity → tool call → auth URL → upstream OAuth → tool executes" />
+</Frame>
+
+### What the auth URL looks like
+
+**LLM Gateway** — `authorize_url` is on the response's `extra_fields.mcp_auth_required` block, and also embedded in the natural-language message so plain-text clients see it too:
+
+```text
+Authentication required for Notion. Open this URL to connect your account: https://your-bifrost-domain.com/workspace/mcp-sessions/auth?flow=<flow-id>
+```
+
+VK and session-mode URLs may also carry a `#t=<temp-token>` fragment when [`mcp_enable_temp_token_auth`](./overview#the-mcp_enable_temp_token_auth-toggle) is turned on. User-mode URLs never do — they require SSO login regardless.
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-oauth-llm-prompt-llm.png" alt="LLM Gateway response with mcp_auth_required and an inline authorize_url" />
+</Frame>
+
+**MCP Gateway** — same string surfaces as a tool result message, so OAuth-capable MCP clients like Claude Code and Cursor see the URL inline in chat:
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-oauth-llm-prompt-mcp.png" alt="Auth URL surfaced inline in a Claude Code tool result" />
+</Frame>
+
+### The consent page
+
+The URL points at a Bifrost dashboard page. It shows:
+
+- Which **MCP server** is asking for authentication
+- Which **identity** the resulting token will be bound to (VK name, signed-in user, or session ID)
+- An **Authenticate** button that redirects to the upstream provider
+
+After completing upstream OAuth, the user is redirected back to `/api/oauth/callback`, the code is exchanged for tokens server-side, and the token is stored against the identity.
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-oauth-consent-flow.png" alt="Bifrost consent page at /workspace/mcp-sessions/auth?flow=<id>, showing the MCP server, the identity, and an Authenticate button" />
+</Frame>
+
+When the `#t=<temp-token>` URL fragment is present, it authorizes anonymous browser visitors to complete the flow without a dashboard session. The fragment never reaches server logs (fragments are not sent in the request line). User-mode flow URLs never carry a temp token — visitors must complete SSO login first, and only the bound SSO user can finish the flow. See [Flow mode and access rules](./overview#flow-mode-and-access-rules) for the per-mode behavior and how to enable temp tokens for VK/session flows.
+
+### Multi-server auth
+
+If a single LLM turn triggers tool calls against multiple unauthenticated per-user MCP servers, the LLM only ever sees one `mcp_auth_required` at a time (the first un-authed service Bifrost hits). The user authenticates that one, retries, and the LLM is then prompted for the next un-authed service — until everything required for the turn is authenticated. There is no upfront "connect all your services" screen.
+
+---
+
+## Identity modes
+
+Every per-user OAuth row is bound to **exactly one** identity column. The mode is derived from request context at lookup time, with priority `user` > `vk` > `session`. See [Identity modes on the Auth overview](./overview#identity-modes) for the full table.
+
+A per-user request **without any identity** is rejected with an `mcp_auth_required` payload that explains the caller must send a VK, sign in, or set `x-bf-mcp-session-id`.
+
+---
+
+## Cross-gateway token sharing
+
+Tokens are stored against an **identity**, not against a gateway. As long as the same identity reaches the gateway, the token is reused.
+
+- Authenticate via the **LLM Gateway** with `vk_xyz` → that token is immediately usable on the **MCP Gateway** as long as the inbound request also carries `vk_xyz`.
+- Authenticate via the **MCP Gateway** with `x-bf-mcp-session-id=abc` → the **LLM Gateway** can reuse it by sending the same `x-bf-mcp-session-id` header.
+- Authenticate via enterprise SSO as user `u_123` on either gateway → the other gateway also reuses the token automatically (no header to set).
+
+---
+
+## Configuration reference
+
+Once an MCP client is created via the Web UI, its `auth_type` is `per_user_oauth` with an `oauth_config_id` linking to the OAuth credentials Bifrost stored. You'll see this shape in API responses:
+
+```json
+{
+  "name": "notion",
+  "connection_type": "http",
+  "connection_string": "https://mcp.notion.so/sse",
+  "auth_type": "per_user_oauth",
+  "oauth_config_id": "oauth_cfg_abc123",
+  "tools_to_execute": ["*"]
+}
+```
+
+| Field             | Type   | Notes                                                                  |
+| ----------------- | ------ | ---------------------------------------------------------------------- |
+| `auth_type`       | string | `"per_user_oauth"`                                                     |
+| `oauth_config_id` | string | ID of the OAuth credentials row (set automatically by Web UI setup)   |
+
+<Note>
+MCP client names cannot contain hyphens — Bifrost prefixes tools as `<client>-<tool>` and uses the hyphen to split the two halves at execution time.
+</Note>
+
+---
+
+## Managing user tokens
+
+Every per-user OAuth token shows up on the **MCP Sessions** page. From there callers can re-authenticate stale tokens, revoke rows outright, and see status (`active`, `orphaned`, `needs_reauth`).
+
+See [MCP Sessions](../sessions) for the full lifecycle, the difference between `orphaned` and `needs_reauth`, and the auto-orphan-on-VK-change behavior.
+
+---
+
+## Public URL configuration
+
+The consent page URL Bifrost builds (`/workspace/mcp-sessions/auth?flow=…`) and the `redirect_uri` Bifrost registers with upstream OAuth providers are both derived from the request `Host` header by default. Behind a reverse proxy, override them with:
+
+- `mcp_external_client_url` — public base URL for both the consent page and the `redirect_uri` Bifrost registers with upstream providers
+
+See [Reverse Proxy configuration →](../../deployment-guides/config-json/client#reverse-proxy) for the full reference.
+
+<Warning>
+**Changing `mcp_external_client_url` after an upstream provider has been registered breaks already-authorized clients.** Upstream providers lock the `redirect_uri` to whatever was registered during Dynamic Client Registration. To recover, clear the stored OAuth client credentials for the affected MCP server so Bifrost re-registers with the new URL.
+</Warning>
+
+---
+
+## Next Steps
+
+- [Per-User Headers](./per-user-headers) — when there's no upstream OAuth, just per-user API keys
+- [OAuth 2.0](./oauth) — admin authenticates once, shared token for all requests
+- [MCP Sessions](../sessions) — token states, re-authenticate, revoke
+- [MCP Gateway Mode](../gateway) — expose Bifrost as an MCP server for Claude Code / Cursor

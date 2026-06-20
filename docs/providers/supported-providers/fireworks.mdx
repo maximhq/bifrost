@@ -35,6 +35,63 @@ Unless noted below, Fireworks follows the standard OpenAI-compatible request and
 Fireworks Responses support is **native** in Bifrost. Requests are sent to Fireworks’ `/v1/responses` endpoint directly, so fields such as `previous_response_id`, `max_tool_calls`, and `store` are preserved.
 </Note>
 
+## Setup & Configuration
+
+Configure Fireworks as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Fireworks AI provider dashboard](../../media/provider-dashboard-fireworks.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Fireworks** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Fireworks**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.FIREWORKS_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "fireworks": {
+      "keys": [
+        {
+          "name": "fireworks-key-1",
+          "value": "env.FIREWORKS_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Fireworks:
+    return []schemas.Key{{
+        Name:   "fireworks-key-1",
+        Value:  *schemas.NewEnvVar("env.FIREWORKS_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
 ---
 
 # 1. Chat Completions

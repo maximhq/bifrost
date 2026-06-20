@@ -34,6 +34,70 @@ SGL (SGLang) is an **OpenAI-compatible local/remote inference engine** used for 
 SGL is typically self-hosted. Ensure BaseURL is configured correctly pointing to your SGL instance (e.g., `http://localhost:8000`).
 </Note>
 
+## Setup & Configuration
+
+Configure SGLang as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![SGLang provider dashboard](../../media/provider-dashboard-sglang.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **SGLang** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **SGLang**.
+2. Click **Add New Server** or edit an existing key.
+3. Set a name for your key.
+4. Leave **API Key** blank for local servers. If your endpoint requires auth, paste a bearer token directly or use an environment variable.
+5. Set **SGLang URL** to `http://localhost:8000` or your remote SGLang endpoint.
+6. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+7. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "sgl": {
+      "keys": [
+        {
+          "name": "sgl-local",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0,
+          "sgl_key_config": {
+            "url": "http://localhost:8000"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.SGL:
+    return []schemas.Key{{
+        Name:   "sgl-local",
+        Value:  *schemas.NewEnvVar(""),
+        Models: []string{"*"},
+        Weight: 1.0,
+        SGLKeyConfig: &schemas.SGLKeyConfig{
+            URL: *schemas.NewEnvVar("http://localhost:8000"),
+        },
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
 ---
 
 # 1. Chat Completions
@@ -119,9 +183,9 @@ SGL requires BaseURL configuration pointing to your SGL instance (e.g., `http://
 
 <Accordion title="BaseURL Configuration Required">
 **Severity**: High
-**Behavior**: BaseURL must be explicitly configured
+**Behavior**: BaseURL must be explicitly configured through `sgl_key_config.url` or `network_config.base_url`
 **Impact**: Requests fail without proper configuration
-**Code**: Validated in NewSGLProvider
+**Code**: Requests call `baseURLOrError` before contacting SGL
 </Accordion>
 
 <Accordion title="Cache Control Stripped">

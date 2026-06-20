@@ -1,5 +1,5 @@
 import type { LogStats } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import { GaugeNeedle, getGaugeGeometry, useGaugeSize } from "./gaugeUtils";
@@ -10,7 +10,7 @@ interface LocalCacheTokenMeterChartProps {
 
 const METER_COLORS = { direct: "#06b6d4", semantic: "#8b5cf6", remaining: "#3b82f6" };
 
-export default function LocalCacheTokenMeterChart({ data }: LocalCacheTokenMeterChartProps) {
+function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
 
 	const { percentage, directHits, semanticHits, totalRequests, hasCacheCounters } = useMemo(() => {
@@ -98,3 +98,5 @@ export default function LocalCacheTokenMeterChart({ data }: LocalCacheTokenMeter
 		</ChartErrorBoundary>
 	);
 }
+
+export default memo(LocalCacheTokenMeterChartImpl);

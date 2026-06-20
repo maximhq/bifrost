@@ -1,6 +1,11 @@
 package tables
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"encoding/json"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"gorm.io/gorm"
+)
 
 // TableModelPricing represents pricing information for AI models
 type TableModelPricing struct {
@@ -23,7 +28,11 @@ type TableModelPricing struct {
 	OutputCostPerTokenPriority *float64 `gorm:"default:null;column:output_cost_per_token_priority" json:"output_cost_per_token_priority,omitempty"`
 	InputCostPerTokenFlex      *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex     *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
-	InputCostPerCharacter      *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
+	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
+	// Flat rate across the full context window; cache tokens bill at standard cache rates.
+	InputCostPerTokenFast  *float64 `gorm:"default:null;column:input_cost_per_token_fast" json:"input_cost_per_token_fast,omitempty"`
+	OutputCostPerTokenFast *float64 `gorm:"default:null;column:output_cost_per_token_fast" json:"output_cost_per_token_fast,omitempty"`
+	InputCostPerCharacter  *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`
@@ -91,7 +100,48 @@ type TableModelPricing struct {
 	// Costs - OCR
 	OCRCostPerPage        *float64 `gorm:"default:null;column:ocr_cost_per_page" json:"ocr_cost_per_page,omitempty"`
 	AnnotationCostPerPage *float64 `gorm:"default:null;column:annotation_cost_per_page" json:"annotation_cost_per_page,omitempty"`
+
+	// AdditionalAttributes holds editorial per-model metadata (e.g. description,
+	// tags). Persisted as a JSON string in the additional_attributes column and
+	// surfaced as a typed map via BeforeSave/AfterFind. This column is
+	// intentionally excluded from the pricing-sync upsert path so the 24-hour
+	// datasheet sync never overwrites user-set values.
+	AdditionalAttributesJSON string            `gorm:"type:text;column:additional_attributes" json:"-"`
+	AdditionalAttributes     map[string]string `gorm:"-" json:"additional_attributes,omitempty"`
 }
 
 // TableName sets the table name for each model
 func (TableModelPricing) TableName() string { return "governance_model_pricing" }
+
+// BeforeSave marshals AdditionalAttributes → AdditionalAttributesJSON. A nil
+// or empty map serializes to "{}" so the column always holds a valid JSON
+// object; reads round-trip back to a nil map via AfterFind. Mirrors the
+// convention used by TableMCPClient.HeadersJSON.
+func (p *TableModelPricing) BeforeSave(tx *gorm.DB) error {
+	if len(p.AdditionalAttributes) == 0 {
+		p.AdditionalAttributesJSON = "{}"
+		return nil
+	}
+	data, err := json.Marshal(p.AdditionalAttributes)
+	if err != nil {
+		return err
+	}
+	p.AdditionalAttributesJSON = string(data)
+	return nil
+}
+
+// AfterFind unmarshals AdditionalAttributesJSON → AdditionalAttributes.
+// Empty/missing JSON resolves to a nil map so callers can use len() and
+// idiomatic nil checks.
+func (p *TableModelPricing) AfterFind(tx *gorm.DB) error {
+	if p.AdditionalAttributesJSON == "" || p.AdditionalAttributesJSON == "{}" {
+		p.AdditionalAttributes = nil
+		return nil
+	}
+	var attrs map[string]string
+	if err := json.Unmarshal([]byte(p.AdditionalAttributesJSON), &attrs); err != nil {
+		return err
+	}
+	p.AdditionalAttributes = attrs
+	return nil
+}

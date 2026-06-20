@@ -70,9 +70,6 @@ func TestAgent_ContextToolFilter_Whitelist(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -117,9 +114,6 @@ func TestAgent_ContextToolFilter_BlockedToolError(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -175,9 +169,6 @@ func TestAgent_ContextClientFilter_Whitelist(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -226,9 +217,6 @@ func TestAgent_ContextNarrowing_AutoExecute(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -275,9 +263,6 @@ func TestAgent_ContextToolFilter_EmptyList(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -340,9 +325,6 @@ func TestAgent_ContextToolFilter_WildcardOverride(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -412,9 +394,6 @@ func TestAgent_ContextClientFilter_MultipleClients(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -465,9 +444,6 @@ func TestAgent_ContextToolFilter_ParallelMixed(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions

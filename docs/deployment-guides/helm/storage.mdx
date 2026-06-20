@@ -97,18 +97,15 @@ The chart can deploy a PostgreSQL instance alongside Bifrost. Good for simple pr
 | `storage.mode` | Set to `postgres` | `sqlite` |
 | `postgresql.enabled` | Deploy PostgreSQL as a sub-deployment | `false` |
 | `postgresql.auth.username` | Database user | `bifrost` |
-| `postgresql.auth.password` | Database password | `bifrost_password` |
+| `postgresql.auth.password` | Database password (ignored when `existingSecret` is set) | `bifrost_password` |
 | `postgresql.auth.database` | Database name | `bifrost` |
+| `postgresql.auth.existingSecret` | Name of an existing Kubernetes secret containing the password. When set, the chart skips creating its own secret — both the postgres pod and the Bifrost pod read from this secret. | `""` |
+| `postgresql.auth.passwordKey` | Key inside `existingSecret` that holds the password | `"password"` |
 | `postgresql.primary.persistence.size` | PVC size for PostgreSQL data | `8Gi` |
 
 <Note>
 Ensure the database is created with **UTF8 encoding**. The embedded PostgreSQL deployment handles this automatically. See [PostgreSQL UTF8 Requirement](/quickstart/gateway/setting-up#postgresql-utf8-requirement) for manual setups.
 </Note>
-
-```bash
-kubectl create secret generic postgres-credentials \
-  --from-literal=password='your-secure-postgres-password'
-```
 
 ```yaml
 # embedded-postgres-values.yaml
@@ -122,7 +119,7 @@ postgresql:
   enabled: true
   auth:
     username: bifrost
-    password: "your-secure-postgres-password"   # use existingSecret in production
+    password: "your-secure-postgres-password"
     database: bifrost
   primary:
     persistence:
@@ -142,6 +139,26 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost -f embedded-postgres-values.yaml
+```
+
+**Using an existing secret (Vault, ESO, Sealed Secrets)**
+
+If you manage secrets externally, set `existingSecret` instead of providing a plaintext password. The chart will not create its own secret — both the postgres pod (`POSTGRES_PASSWORD`) and the Bifrost pod (`BIFROST_POSTGRES_PASSWORD`) mount the password directly from your secret.
+
+```bash
+# Example: create the secret manually (VSO / ESO would do this automatically)
+kubectl create secret generic postgres-credentials \
+  --from-literal=password='your-secure-postgres-password'
+```
+
+```yaml
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    database: bifrost
+    existingSecret: "postgres-credentials"   # your secret name
+    passwordKey: "password"                  # key inside the secret
 ```
 
 **Verify the connection from Bifrost:**
@@ -167,8 +184,10 @@ Point Bifrost at an existing PostgreSQL instance - RDS, Cloud SQL, Azure Databas
 | `postgresql.external.user` | Username | `bifrost` |
 | `postgresql.external.database` | Database name | `bifrost` |
 | `postgresql.external.sslMode` | SSL mode (`disable`, `require`, `verify-ca`, `verify-full`) | `disable` |
-| `postgresql.external.existingSecret` | Secret name for the password | `""` |
+| `postgresql.external.existingSecret` | Secret name for the password. Mutually exclusive with `passwordCommand`. | `""` |
 | `postgresql.external.passwordKey` | Key within the secret | `"password"` |
+| `postgresql.external.passwordCommand` | Command executed by Bifrost to produce the database password on stdout for each new physical connection. Mutually exclusive with `existingSecret`; set only the executable path or name in `command` and pass arguments through `args`. | unset |
+| `postgresql.external.connMaxLifetime` | Maximum lifetime for physical database connections, such as `"10m"` | unset |
 
 ```bash
 kubectl create secret generic external-postgres-credentials \
@@ -201,6 +220,35 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost -f external-postgres-values.yaml
+```
+
+For dynamic credentials such as AWS RDS IAM auth tokens, use `passwordCommand` instead of `existingSecret`:
+
+```yaml
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "your-rds-endpoint.us-east-1.rds.amazonaws.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    passwordCommand:
+      command: aws
+      args:
+        - rds
+        - generate-db-auth-token
+        - --hostname
+        - your-rds-endpoint.us-east-1.rds.amazonaws.com
+        - --port
+        - "5432"
+        - --region
+        - us-east-1
+        - --username
+        - bifrost
+      timeout: 10s
+    connMaxLifetime: 10m
 ```
 
 **Test connectivity before installing:**
@@ -287,6 +335,36 @@ Offload large request/response payloads from the database to S3 or GCS. The DB r
 <Tabs>
 <Tab title="AWS S3">
 
+#### Required IAM Permissions
+
+The IAM user or role needs the following permissions on your bucket:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketAccess",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::bifrost-logs"
+    },
+    {
+      "Sid": "ObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:PutObjectTagging",
+        "s3:GetObjectTagging"
+      ],
+      "Resource": "arn:aws:s3:::bifrost-logs/*"
+    }
+  ]
+}
+```
+
 ```bash
 kubectl create secret generic s3-credentials \
   --from-literal=access-key-id='AKIAIOSFODNN7EXAMPLE' \
@@ -325,7 +403,7 @@ bifrost:
       envVar: "S3_SECRET_ACCESS_KEY"
 ```
 
-`storage.logsStore.objectStorageExcludeFields` keeps selected payload fields in Postgres while still offloading the rest to object storage. Use DB payload field names such as `output_message`, `input_history`, `raw_request`, or `raw_response`.
+`storage.logsStore.objectStorageExcludeFields` keeps selected LLM log payload fields in Postgres while still offloading the rest to object storage. Use DB payload field names such as `output_message`, `input_history`, `raw_request`, or `raw_response`. MCP logs always offload the full tool log and keep dashboard/table fields plus a 200-character input preview in Postgres.
 
 **Using IAM role (IRSA / instance profile) instead of static keys:**
 

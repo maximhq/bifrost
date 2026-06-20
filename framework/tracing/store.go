@@ -14,12 +14,12 @@ import (
 type DeferredSpanInfo struct {
 	SpanID              string
 	StartTime           time.Time
-	Tracer              schemas.Tracer          // Reference to tracer for completing the span
-	RequestID           string                  // Request ID for accumulator lookup
-	FirstChunkTime      time.Time               // Timestamp of first chunk (for TTFT calculation)
-	ChunkCount          int                     // Count of received streaming chunks (for AttrTotalChunks)
+	Tracer              schemas.Tracer           // Reference to tracer for completing the span
+	RequestID           string                   // Request ID for accumulator lookup
+	FirstChunkTime      time.Time                // Timestamp of first chunk (for TTFT calculation)
+	ChunkCount          int                      // Count of received streaming chunks (for AttrTotalChunks)
 	AccumulatedResponse *schemas.BifrostResponse // Full accumulated response from streaming chunks
-	mu                  sync.Mutex              // Mutex for thread-safe chunk accumulation
+	mu                  sync.Mutex               // Mutex for thread-safe chunk accumulation
 }
 
 // TraceStore manages traces with thread-safe access and object pooling
@@ -106,6 +106,9 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) s
 		clear(trace.Attributes)
 	}
 
+	// Reset request headers
+	trace.RequestHeaders = nil
+
 	s.traces.Store(trace.TraceID, trace)
 	return trace.TraceID
 }
@@ -125,6 +128,24 @@ func (s *TraceStore) SetRequestID(traceID string, requestID string) {
 		return
 	}
 	trace.SetRequestID(requestID)
+}
+
+// SetRequestHeaders sets the captured request headers for the trace
+func (s *TraceStore) SetRequestHeaders(traceID string, headers map[string]string) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetRequestHeaders(headers)
+}
+
+// SetTraceAttribute sets a trace-level attribute on the trace
+func (s *TraceStore) SetTraceAttribute(traceID string, key string, value any) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetAttribute(key, value)
 }
 
 // CompleteTrace marks the trace as complete, removes it from store, and returns it for flushing

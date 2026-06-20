@@ -748,6 +748,8 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 		`{"type":"function","name":"get_weather","description":"Get weather","strict":true}`,
 		`{"type":"function","name":"search_db","description":"Search database","cache_control":{"type":"ephemeral"},"strict":false}`,
 		`{"type":"file_search","vector_store_ids":["vs_1"],"max_num_results":10}`,
+		// Anthropic advisor server tool: model/max_uses/max_tokens/caching must survive the JSON boundary.
+		`{"type":"advisor","name":"advisor","model":"claude-opus-4-8","max_uses":3,"max_tokens":2048,"caching":{"type":"ephemeral","ttl":"5m"}}`,
 	}
 
 	for _, input := range inputs {
@@ -843,11 +845,11 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 			Type:     ChatToolTypeFunction,
 			Function: &ChatToolFunction{Name: "get_weather"},
 			// Mixed state: server-tool + custom fields also populated.
-			Custom:        &ChatToolCustom{},
-			Name:          "leaked_name",
-			MaxUses:       Ptr(5),
+			Custom:         &ChatToolCustom{},
+			Name:           "leaked_name",
+			MaxUses:        Ptr(5),
 			DisplayWidthPx: Ptr(1280),
-			MCPServerName: "leaked_server",
+			MCPServerName:  "leaked_server",
 		}
 		data, err := Marshal(tool)
 		require.NoError(t, err)
@@ -874,8 +876,8 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 		raw := string(data)
 
 		assert.Contains(t, raw, `"type":"custom"`)
-		assert.Contains(t, raw, `"my_custom"`)    // custom tool retains top-level Name
-		assert.Contains(t, raw, `"format"`)       // custom's format field
+		assert.Contains(t, raw, `"my_custom"`) // custom tool retains top-level Name
+		assert.Contains(t, raw, `"format"`)    // custom's format field
 		assert.NotContains(t, raw, `"function"`)
 		assert.NotContains(t, raw, `"should_be_stripped"`)
 		assert.NotContains(t, raw, `"max_uses"`)
@@ -883,9 +885,9 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 
 	t.Run("server_tool_type_clears_function_and_custom", func(t *testing.T) {
 		tool := ChatTool{
-			Type:    "web_search_20260209",
-			Name:    "web_search",
-			MaxUses: Ptr(5),
+			Type:           "web_search_20260209",
+			Name:           "web_search",
+			MaxUses:        Ptr(5),
 			AllowedCallers: []string{"direct"},
 			// Leaks
 			Function: &ChatToolFunction{Name: "should_be_stripped"},
@@ -1214,6 +1216,8 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		wantWebFetch   bool
 		wantComputer   bool
 		wantCodeInterp bool
+		wantAdvisor    bool
+		wantModel      string
 	}{
 		// web_search variants
 		{name: "web_search canonical", input: `{"type":"web_search"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
@@ -1240,6 +1244,10 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		{name: "code_execution_20250522", input: `{"type":"code_execution_20250522"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 		{name: "code_execution_20250825", input: `{"type":"code_execution_20250825"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 
+		// advisor variants → advisor
+		{name: "advisor canonical", input: `{"type":"advisor","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+		{name: "advisor_20260301", input: `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+
 		// unrecognized types pass through unchanged
 		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
 		{name: "custom unchanged", input: `{"type":"custom","name":"bar"}`, wantType: ResponsesToolTypeCustom},
@@ -1263,6 +1271,10 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 			}
 			if tt.wantCodeInterp {
 				assert.NotNil(t, tool.ResponsesToolCodeInterpreter, "ResponsesToolCodeInterpreter should be populated")
+			}
+			if tt.wantAdvisor {
+				require.NotNil(t, tool.ResponsesToolAdvisor, "ResponsesToolAdvisor should be populated")
+				assert.Equal(t, tt.wantModel, tool.ResponsesToolAdvisor.Model)
 			}
 		})
 	}
@@ -1353,4 +1365,71 @@ func TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil(t *testing.T) {
 	copied := DeepCopyChatTool(original)
 
 	assert.Nil(t, copied.Annotations, "Annotations should stay nil when original has none")
+}
+
+func TestSonic_ChatTool_DeepCopy_PreservesFullParameterSchema(t *testing.T) {
+	ref := "#/$defs/Preferences"
+	minItems := int64(1)
+	nullable := true
+	original := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name: "suggest_time",
+			Parameters: &ToolFunctionParameters{
+				Type: "object",
+				Properties: NewOrderedMapFromPairs(
+					KV("preferences", NewOrderedMapFromPairs(KV("$ref", ref))),
+				),
+				Required: []string{"preferences"},
+				Defs: NewOrderedMapFromPairs(
+					KV("Preferences", NewOrderedMapFromPairs(
+						KV("type", "object"),
+						KV("properties", NewOrderedMapFromPairs(
+							KV("startHour", NewOrderedMapFromPairs(KV("type", "string"))),
+						)),
+					)),
+				),
+				Ref:      &ref,
+				Items:    NewOrderedMapFromPairs(KV("type", "string")),
+				MinItems: &minItems,
+				AnyOf: []OrderedMap{
+					*NewOrderedMapFromPairs(KV("type", "string")),
+				},
+				Nullable: &nullable,
+			},
+		},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	require.NotNil(t, copied.Function)
+	require.NotNil(t, copied.Function.Parameters)
+	data, err := Marshal(copied.Function.Parameters)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `"$defs"`)
+	assert.Contains(t, s, `"Preferences"`)
+	assert.Contains(t, s, `"$ref":"#/$defs/Preferences"`)
+	assert.Contains(t, s, `"items"`)
+	assert.Contains(t, s, `"anyOf"`)
+	assert.Contains(t, s, `"nullable":true`)
+
+	copied.Function.Parameters.Defs.Set("Mutated", map[string]any{"type": "object"})
+	_, exists := original.Function.Parameters.Defs.Get("Mutated")
+	assert.False(t, exists, "copy must not share $defs map with original")
+}
+
+func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T) {
+	var original ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{"$defs":{"Preferences":{"type":"object"}},"type":"object","properties":{"preferences":{"$ref":"#/$defs/Preferences"}}}`), &original))
+	require.NotEmpty(t, original.keyOrder.keys)
+
+	copied := DeepCopyToolFunctionParameters(&original)
+	require.NotNil(t, copied)
+	require.Equal(t, original.keyOrder.keys, copied.keyOrder.keys)
+
+	original.keyOrder.keys[0] = "mutated"
+
+	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
+	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
 }

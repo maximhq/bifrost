@@ -24,13 +24,14 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
-	ID            uint              `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID  string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider      string            `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight        *float64          `json:"weight"`
-	AllowedModels schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
-	AllowAllKeys  bool              `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
-	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	ID                uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID      string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider          string            `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight            *float64          `json:"weight"`
+	AllowedModels     schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"`     // ["*"] allows all models; empty denies all (deny-by-default)
+	BlacklistedModels schemas.BlackList `gorm:"type:text;serializer:json" json:"blacklisted_models"` // ["*"] blocks all models; empty blocks none
+	AllowAllKeys      bool              `gorm:"default:false" json:"allow_all_keys"`                 // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	RateLimitID       *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
@@ -77,30 +78,39 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BeforeSave validates WhiteList fields before GORM persists the record.
+// BeforeSave validates WhiteList and BlackList fields before GORM persists the record.
 func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.AllowedModels.Validate(); err != nil {
 		return fmt.Errorf("invalid allowed_models: %w", err)
 	}
+	if err := pc.BlacklistedModels.Validate(); err != nil {
+		return fmt.Errorf("invalid blacklisted_models: %w", err)
+	}
 	return nil
 }
 
-// MarshalJSON custom marshaller to ensure AllowedModels is always an array (never null)
+// MarshalJSON custom marshaller to ensure AllowedModels and BlacklistedModels are always arrays (never null)
 func (pc TableVirtualKeyProviderConfig) MarshalJSON() ([]byte, error) {
 	type Alias TableVirtualKeyProviderConfig
 
-	// Ensure AllowedModels is an empty slice instead of nil
+	// Ensure arrays are empty slices instead of nil
 	allowedModels := pc.AllowedModels
 	if allowedModels == nil {
 		allowedModels = []string{}
 	}
+	blacklistedModels := pc.BlacklistedModels
+	if blacklistedModels == nil {
+		blacklistedModels = []string{}
+	}
 
 	return json.Marshal(&struct {
 		Alias
-		AllowedModels []string `json:"allowed_models"`
+		AllowedModels     []string `json:"allowed_models"`
+		BlacklistedModels []string `json:"blacklisted_models"`
 	}{
-		Alias:         Alias(pc),
-		AllowedModels: allowedModels,
+		Alias:             Alias(pc),
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
 	})
 }
 
@@ -116,7 +126,6 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 
 			// Clear all Azure-related sensitive fields
 			key.AzureEndpoint = nil
-			key.AzureAPIVersion = nil
 			key.AzureClientID = nil
 			key.AzureClientSecret = nil
 			key.AzureTenantID = nil
@@ -210,11 +219,7 @@ type TableVirtualKey struct {
 	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
-	// Deprecated
-	// Calendar aligned is not the property of virtual key but its property of the budget and ratelimit
-	// So in the migration we will move this to the budget/ratelimit table
-	// And this won't be referred
-	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
@@ -228,6 +233,8 @@ type TableVirtualKey struct {
 
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	ValueHash        string `gorm:"type:varchar(64);index:idx_virtual_key_value_hash,unique" json:"-"`
+
+	CreatedByUserID *string `gorm:"type:varchar(255);index:idx_virtual_key_created_by" json:"created_by_user_id,omitempty"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
@@ -260,7 +267,14 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	if vk.Value != "" {
 		vk.ValueHash = encrypt.HashSHA256(vk.Value)
 	}
-	if encrypt.IsEnabled() && vk.Value != "" {
+	if VaultIsEnabled() && vk.Value != "" {
+		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
+		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
+		if err := vaultString(tx.Statement.Context, path, &vk.Value); err != nil {
+			return fmt.Errorf("failed to vault virtual key value: %w", err)
+		}
+		vk.EncryptionStatus = EncryptionStatusVault
+	} else if encrypt.IsEnabled() && vk.Value != "" {
 		if err := encryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
 		}
@@ -269,12 +283,47 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterFind is a GORM hook that decrypts the virtual key value after reading from the database.
+// AfterFind is a GORM hook that decrypts the virtual key value after reading
+// from the database and propagates VK-level calendar_aligned down to owned
+// budgets / rate_limit and to each provider config's budgets / rate_limit.
+// The reset path reads the stamped value; Update*InMemory paths re-stamp on
+// every VK update.
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
-	if vk.EncryptionStatus == EncryptionStatusEncrypted {
+	switch vk.EncryptionStatus {
+	case EncryptionStatusVault:
+		if err := resolveVaultString(tx.Statement.Context, &vk.Value); err != nil {
+			return fmt.Errorf("failed to resolve vault virtual key value: %w", err)
+		}
+	case EncryptionStatusEncrypted:
 		if err := decryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
 		}
 	}
+	for i := range vk.Budgets {
+		vk.Budgets[i].IsCalendarAligned = vk.CalendarAligned
+	}
+	if vk.RateLimit != nil {
+		vk.RateLimit.IsCalendarAligned = vk.CalendarAligned
+	}
+	for i := range vk.ProviderConfigs {
+		pc := &vk.ProviderConfigs[i]
+		for j := range pc.Budgets {
+			pc.Budgets[j].IsCalendarAligned = vk.CalendarAligned
+		}
+		if pc.RateLimit != nil {
+			pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
+		}
+	}
+	return nil
+}
+
+// AfterDelete hook for best-effort vault cleanup on row deletion.
+func (vk *TableVirtualKey) AfterDelete(tx *gorm.DB) error {
+	if vk.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
+		return nil
+	}
+	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
+	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
+	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }

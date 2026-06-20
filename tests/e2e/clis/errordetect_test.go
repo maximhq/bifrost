@@ -24,7 +24,10 @@ var errorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)invalid[_ ]api[_ ]key`),
 	regexp.MustCompile(`(?i)upstream error`),
 	regexp.MustCompile(`(?i)connection refused`),
+	regexp.MustCompile(`(?i)request cancel(?:led|ed)`),
+	regexp.MustCompile(`(?i)client disconnected`),
 	regexp.MustCompile(`context deadline exceeded`),
+	regexp.MustCompile(`(?i)tool was called with invalid arguments`),
 	regexp.MustCompile(`panic:`),
 	regexp.MustCompile(`Unhandled exception`),
 	// "Error: <something>" at line start or after whitespace - matches CLI

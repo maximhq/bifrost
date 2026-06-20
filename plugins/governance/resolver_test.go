@@ -504,3 +504,47 @@ func TestBudgetResolver_ContextPopulation(t *testing.T) {
 	assert.Equal(t, "team1", teamID)
 	assert.Equal(t, "cust1", customerID)
 }
+
+// TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering verifies that passthrough requests
+// enforce the VK's model allowlist only when a model is resolved: a disallowed model is blocked, an
+// allowed model passes, and an absent model imposes no model restriction. Non-passthrough
+// model-not-required types (e.g. batch) remain unfiltered, confirming the change is scoped.
+func TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		requestType schemas.RequestType
+		want        Decision
+	}{
+		{"passthrough disallowed model is blocked", "gpt-4o-mini", schemas.PassthroughRequest, DecisionModelBlocked},
+		{"passthrough allowed model passes", "gpt-4", schemas.PassthroughRequest, DecisionAllow},
+		{"passthrough without model has no restriction", "", schemas.PassthroughRequest, DecisionAllow},
+		{"passthrough stream disallowed model is blocked", "gpt-4o-mini", schemas.PassthroughStreamRequest, DecisionModelBlocked},
+		{"passthrough stream allowed model passes", "gpt-4", schemas.PassthroughStreamRequest, DecisionAllow},
+		{"passthrough stream without model has no restriction", "", schemas.PassthroughStreamRequest, DecisionAllow},
+		// Scoping guard: batch is model-not-required and not passthrough, so its model is never
+		// filtered even when set to a disallowed value (behavior unchanged by the passthrough fix).
+		{"batch with disallowed model is not filtered", "gpt-4o-mini", schemas.BatchCreateRequest, DecisionAllow},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := NewMockLogger()
+			providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
+				buildProviderConfig("openai", []string{"gpt-4", "gpt-4-turbo"}),
+			}
+			vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
+
+			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil)
+			require.NoError(t, err)
+
+			resolver := NewBudgetResolver(store, nil, logger, nil)
+			ctx := &schemas.BifrostContext{}
+
+			result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, tt.model, tt.requestType, false)
+			assertDecision(t, tt.want, result)
+		})
+	}
+}

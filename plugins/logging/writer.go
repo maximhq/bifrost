@@ -2,6 +2,7 @@ package logging
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -9,20 +10,18 @@ import (
 )
 
 const (
-	// maxBatchSize is the maximum number of entries to collect before flushing
-	maxBatchSize = 1000
-	// batchInterval is the maximum time to wait before flushing a partial batch
-	batchInterval = 2 * time.Second
-	// maxBatchBytes is the approximate byte-size ceiling for a batch (100 MB).
-	// When the cumulative estimated size of queued entries hits this limit the
-	// batch is flushed immediately, even if maxBatchSize hasn't been reached.
-	maxBatchBytes = 100 * 1024 * 1024
-	// writeQueueCapacity is the buffer size for the write queue channel
-	writeQueueCapacity = 10000
-	// maxDeferredUsageConcurrency limits concurrent deferred usage DB updates
-	maxDeferredUsageConcurrency = 5
-	// pendingLogTTL is how long a pending log entry can stay in memory before cleanup
-	pendingLogTTL = 5 * time.Minute
+	// pendingLogTTL is the maximum idle gap (time since the last chunk/activity)
+	// a pending log entry can sit in memory before cleanup reclaims it. It is an
+	// idle timeout, not a total-lifetime cap: actively-streaming requests refresh
+	// their LastActivity on every chunk (see PostLLMHook), so a long-running stream
+	// is never evicted mid-flight. Matches the 30-minute window used by
+	// cleanupOldProcessingLogs so the two reapers agree on what "stale" means.
+	pendingLogTTL = 15 * time.Minute
+	// cleanupDrainTimeout caps how long Cleanup spends draining the write queue
+	// itself. Matches the outer server shutdown budget at server.go:1596 so the
+	// logging plugin can fully drain in the worst case; remaining entries beyond
+	// the deadline are dropped so the process is never wedged on a slow store.
+	cleanupDrainTimeout = 30 * time.Second
 )
 
 // PendingLogData holds PreLLMHook input data until PostLLMHook fires.
@@ -36,6 +35,12 @@ type PendingLogData struct {
 	RoutingEnginesUsed []string
 	InitialData        *InitialLogData
 	CreatedAt          time.Time // For cleanup of stale entries
+	// LastActivity is the unix-nano timestamp of the most recent PostLLMHook
+	// activity (e.g. each streaming chunk). cleanupStalePendingLogs evicts on
+	// idle time using this value, so long-running streams that keep producing
+	// chunks are not reaped before they finish. Atomic because the cleanup
+	// goroutine reads it concurrently with per-chunk PostLLMHook writes.
+	LastActivity atomic.Int64
 }
 
 // pendingInjectEntries wraps a slice of log entries so it can be used with sync.Map.
@@ -48,8 +53,10 @@ type pendingInjectEntries struct {
 
 // writeQueueEntry is an entry pushed to the batch write queue.
 type writeQueueEntry struct {
-	log      *logstore.Log             // Complete log entry ready for INSERT
-	callback func(entry *logstore.Log) // Post-commit callback receives the inserted entry (no DB re-read needed)
+	log         *logstore.Log
+	mcpLog      *logstore.MCPToolLog
+	callback    func(entry *logstore.Log)
+	mcpCallback func(entry *logstore.MCPToolLog)
 }
 
 // batchWriter is the single writer goroutine that drains the write queue
@@ -57,7 +64,13 @@ type writeQueueEntry struct {
 func (p *LoggerPlugin) batchWriter() {
 	defer p.wg.Done()
 
-	batch := make([]*writeQueueEntry, 0, maxBatchSize)
+	writerConfig := p.writerConfig
+	batchInterval, err := time.ParseDuration(writerConfig.BatchInterval)
+	if err != nil {
+		batchInterval = 5 * time.Second
+	}
+
+	batch := make([]*writeQueueEntry, 0, writerConfig.MaxBatchSize)
 	batchBytes := 0
 	timer := time.NewTimer(batchInterval)
 	timer.Stop()
@@ -88,8 +101,8 @@ func (p *LoggerPlugin) batchWriter() {
 				return
 			}
 			batch = append(batch, entry)
-			batchBytes += estimateLogEntrySize(entry.log)
-			if len(batch) >= maxBatchSize || batchBytes >= maxBatchBytes {
+			batchBytes += estimateWriteQueueEntrySize(entry)
+			if len(batch) >= writerConfig.MaxBatchSize || batchBytes >= writerConfig.MaxBatchBytes {
 				flush()
 			} else if !timerRunning {
 				timer.Reset(batchInterval)
@@ -101,6 +114,14 @@ func (p *LoggerPlugin) batchWriter() {
 			if len(batch) > 0 {
 				flush()
 			}
+
+		case <-p.batchCtx.Done():
+			// Cleanup is taking over: hand the local batch back via
+			// recoveredBatch, signal exit, and return without touching the
+			// store. Cleanup owns the drain budget from this point on.
+			p.recoveredBatch = batch
+			close(p.batchWriterDone)
+			return
 		}
 	}
 }
@@ -125,9 +146,13 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 
 	// Collect all log entries for batch insert
 	logs := make([]*logstore.Log, 0, len(batch))
+	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
 			logs = append(logs, entry.log)
+		}
+		if entry.mcpLog != nil {
+			mcpLogs = append(mcpLogs, entry.mcpLog)
 		}
 	}
 
@@ -143,6 +168,17 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 			}
 		}
 	}
+	if len(mcpLogs) > 0 {
+		if err := p.store.BatchCreateMCPToolLogsIfNotExists(p.ctx, mcpLogs); err != nil {
+			p.logger.Warn("batch insert failed for %d MCP tool logs, falling back to individual inserts: %v", len(mcpLogs), err)
+			for _, log := range mcpLogs {
+				if err := p.store.BatchCreateMCPToolLogsIfNotExists(p.ctx, []*logstore.MCPToolLog{log}); err != nil {
+					p.logger.Warn("individual insert failed for MCP tool log %s: %v", log.ID, err)
+					p.droppedRequests.Add(1)
+				}
+			}
+		}
+	}
 
 	// Collect callbacks that need to fire, then run them in a single goroutine.
 	// This avoids blocking the batch writer (synchronous was causing 1+ second stalls
@@ -152,14 +188,22 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 		cb  func(*logstore.Log)
 		log *logstore.Log
 	}
+	type mcpCbPair struct {
+		cb  func(*logstore.MCPToolLog)
+		log *logstore.MCPToolLog
+	}
 	var callbacks []cbPair
+	var mcpCallbacks []mcpCbPair
 	for _, entry := range batch {
 		if entry.callback != nil {
 			callbacks = append(callbacks, cbPair{cb: entry.callback, log: entry.log})
 		}
+		if entry.mcpCallback != nil {
+			mcpCallbacks = append(mcpCallbacks, mcpCbPair{cb: entry.mcpCallback, log: entry.mcpLog})
+		}
 	}
-	if len(callbacks) > 0 {
-		go func(callbacks []cbPair) {
+	if len(callbacks) > 0 || len(mcpCallbacks) > 0 {
+		go func(callbacks []cbPair, mcpCallbacks []mcpCbPair) {
 			defer func() {
 				if r := recover(); r != nil {
 					p.logger.Warn("log callback panicked: %v", r)
@@ -168,18 +212,30 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 			for _, pair := range callbacks {
 				pair.cb(pair.log)
 			}
-		}(callbacks)
+			for _, pair := range mcpCallbacks {
+				pair.cb(pair.log)
+			}
+		}(callbacks, mcpCallbacks)
 	}
 }
 
-// cleanupStalePendingLogs removes entries from pendingLogs that have been
-// waiting longer than pendingLogTTL. This handles cases where PostLLMHook
-// never fires for a request (e.g., request was cancelled before reaching the provider).
+// cleanupStalePendingLogs removes stale in-memory pending log state.
+// Pending LLM entries are dropped to prevent unbounded memory growth. Pending
+// MCP entries are converted into terminal error rows and queued for persistence,
+// because PreMCPHook does not write a processing row to the database.
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
 	p.pendingLogsEntries.Range(func(key, value any) bool {
 		if pending, ok := value.(*PendingLogData); ok {
-			if pending.CreatedAt.Before(cutoff) {
+			// Evict on idle time: use the last chunk/activity timestamp, falling
+			// back to CreatedAt for entries that never saw a PostLLMHook (e.g. a
+			// request abandoned before its first chunk). This keeps actively
+			// streaming requests alive past the TTL while still reaping dead ones.
+			lastActive := pending.CreatedAt
+			if nanos := pending.LastActivity.Load(); nanos > 0 {
+				lastActive = time.Unix(0, nanos)
+			}
+			if lastActive.Before(cutoff) {
 				p.pendingLogsEntries.Delete(key)
 			}
 		}
@@ -189,6 +245,26 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		if pending, ok := value.(*pendingInjectEntries); ok {
 			if pending.createdAt.Before(cutoff) {
 				p.pendingLogsToInject.Delete(key)
+			}
+		}
+		return true
+	})
+	p.pendingMCPLogsToInject.Range(func(key, value any) bool {
+		if pending, ok := value.(*logstore.MCPToolLog); ok {
+			if pending.CreatedAt.Before(cutoff) {
+				actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
+				if !loaded {
+					return true
+				}
+				stalePending, ok := actual.(*logstore.MCPToolLog)
+				if !ok || stalePending == nil {
+					return true
+				}
+
+				p.mu.Lock()
+				callback := p.mcpToolLogCallback
+				p.mu.Unlock()
+				p.enqueueMCPToolLogEntry(buildStaleMCPToolLogEntry(stalePending), callback)
 			}
 		}
 		return true
@@ -215,6 +291,44 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 		p.droppedRequests.Add(1)
 		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
 	}
+}
+
+// EnqueueLogEntry pushes a complete log entry through the logging plugin's
+// normal async write queue.
+func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
+	p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+}
+
+// enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.
+// If the queue is full, the entry is dropped to prevent store slowness from
+// cascading into request handling goroutines.
+func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callback func(entry *logstore.MCPToolLog)) {
+	if p.closed.Load() {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{mcpLog: entry, mcpCallback: callback}:
+	default:
+		p.droppedRequests.Add(1)
+		p.logger.Warn("log write queue full, dropping MCP tool log entry %s", entry.ID)
+	}
+}
+
+// estimateWriteQueueEntrySize returns the estimated serialized payload size for
+// the log entry carried by a write queue item.
+func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
+	if entry == nil {
+		return 0
+	}
+	if entry.mcpLog != nil {
+		return estimateMCPToolLogEntrySize(entry.mcpLog)
+	}
+	return estimateLogEntrySize(entry.log)
 }
 
 // estimateLogEntrySize returns a rough byte-size estimate for a log entry
@@ -269,6 +383,32 @@ func estimateLogEntrySize(log *logstore.Log) int {
 	return n + 512
 }
 
+// estimateMCPToolLogEntrySize returns a rough byte-size estimate for an MCP
+// tool log entry based on its serialized text fields.
+func estimateMCPToolLogEntrySize(log *logstore.MCPToolLog) int {
+	if log == nil {
+		return 0
+	}
+	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + 512
+}
+
+// buildStaleMCPToolLogEntry converts a pending MCP processing row into a
+// terminal error entry suitable for the batch writer.
+func buildStaleMCPToolLogEntry(pending *logstore.MCPToolLog) *logstore.MCPToolLog {
+	entry := *pending
+	entry.Status = "error"
+	entry.Result = ""
+	entry.ResultParsed = nil
+	entry.ErrorDetails = ""
+	entry.ErrorDetailsParsed = &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: &schemas.ErrorField{
+			Message: "MCP tool execution did not complete before pending log TTL",
+		},
+	}
+	return &entry
+}
+
 // buildInitialLogEntry constructs a logstore.Log from PendingLogData (input)
 // without writing to the database. Used for the UI callback in PreLLMHook.
 func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
@@ -286,6 +426,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
+		MetadataParsed:              pending.InitialData.Metadata,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
@@ -346,6 +487,23 @@ func applyModelAlias(entry *logstore.Log, requestedModel, resolvedModel string) 
 			entry.Model = requestedModel
 		}
 		entry.Alias = nil
+	}
+}
+
+// applyResolvedAliasInfo copies the canonical model name and model family from the
+// resolved key alias onto the entry when the alias config defines them. Both fields
+// stay nil when no alias matched or the alias doesn't configure them.
+func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.ResolvedKeyAlias) {
+	if resolvedAlias == nil {
+		return
+	}
+	if resolvedAlias.ModelName != nil && *resolvedAlias.ModelName != "" {
+		name := *resolvedAlias.ModelName
+		entry.CanonicalModelName = &name
+	}
+	if resolvedAlias.ModelFamily != nil && *resolvedAlias.ModelFamily != "" {
+		family := string(*resolvedAlias.ModelFamily)
+		entry.AliasModelFamily = &family
 	}
 }
 

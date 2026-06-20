@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -10,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -54,11 +56,19 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		telConfig := &telemetry.Config{
 			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
 		}
-		// Merge push gateway config if provided (e.g., from config file or UI update)
+		// Merge persisted config if provided.
 		if pluginConfig != nil {
 			extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
-			if err == nil && extraConfig != nil && extraConfig.PushGateway != nil {
-				telConfig.PushGateway = extraConfig.PushGateway
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal telemetry plugin config: %w", err)
+			}
+			if extraConfig != nil {
+				if extraConfig.PushGateway != nil {
+					telConfig.PushGateway = extraConfig.PushGateway
+				}
+				if extraConfig.MetricsEnabled != nil {
+					telConfig.MetricsEnabled = extraConfig.MetricsEnabled
+				}
 			}
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
@@ -112,6 +122,9 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		}
 		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
 
+	case modelcatalogresolver.PluginName:
+		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
+
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
 	}
@@ -157,10 +170,16 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	builtinPlacement := schemas.Ptr(schemas.PluginPlacementBuiltin)
 
-	// 1. Telemetry (always first - tracks everything)
+	// 1. Telemetry (always first - tracks everything).
+	// Default-on: absent PluginConfig entry is treated as enabled, matching pre-#3269 behavior
+	// so upgraders don't silently lose /metrics. Only an explicit Enabled=false disables it.
 	telemetryPluginConfig := s.getPluginConfig(telemetry.PluginName)
-	if telemetryPluginConfig != nil && telemetryPluginConfig.Enabled {
-		s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, telemetryPluginConfig.Config, false)
+	var pluginConfig any
+	if telemetryPluginConfig != nil {
+		pluginConfig = telemetryPluginConfig.Config
+	}
+	if telemetryPluginConfig == nil || telemetryPluginConfig.Enabled {
+		s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, pluginConfig, false)
 	} else {
 		s.markPluginDisabled(telemetry.PluginName)
 	}
@@ -179,6 +198,9 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		config := &logging.Config{
 			DisableContentLogging: &s.Config.ClientConfig.DisableContentLogging,
 			LoggingHeaders:        &s.Config.ClientConfig.LoggingHeaders,
+		}
+		if s.Config.LogsStoreConfig != nil {
+			config.Writer = s.Config.LogsStoreConfig.Writer
 		}
 		s.registerPluginWithStatus(ctx, logging.PluginName, nil, config, false)
 	} else {
@@ -237,6 +259,20 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		s.markPluginDisabled(maxim.PluginName)
 	}
 	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(8))
+
+	// 9. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
+	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
+	// already set one. CEL rules can still match on provider == "" because this runs last.
+	// Requires a model catalog; only register when one is configured.
+	if s.Config.ModelCatalog != nil {
+		s.registerPluginWithStatus(ctx, modelcatalogresolver.PluginName, nil, nil, false)
+	} else {
+		s.markPluginDisabled(modelcatalogresolver.PluginName)
+	}
+	// Place it in post_builtin with a max order so it runs after every other routing plugin,
+	// including post_builtin ones like the enterprise load balancer (which would otherwise run
+	// after this builtin and never get a chance to pick the provider first).
+	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt))
 
 	return nil
 }
