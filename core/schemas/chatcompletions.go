@@ -1147,13 +1147,14 @@ type ChatStreamResponseChoice struct {
 
 // ChatStreamResponseChoiceDelta represents a delta in the stream response
 type ChatStreamResponseChoiceDelta struct {
-	Role             *string                        `json:"role,omitempty"`      // Only in the first chunk
-	Content          *string                        `json:"content,omitempty"`   // May be empty string or null
-	Refusal          *string                        `json:"refusal,omitempty"`   // Refusal content if any
-	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`     // Audio data if any
-	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
+	Role             *string                        `json:"role,omitempty"`          // Only in the first chunk
+	Content          *string                        `json:"content,omitempty"`       // May be empty string or null
+	Refusal          *string                        `json:"refusal,omitempty"`       // Refusal content if any
+	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`         // Audio data if any
+	Reasoning        *string                        `json:"reasoning,omitempty"`     // May be empty string or null
 	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
-	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
+	ExtraContent     json.RawMessage                `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. google.thought, google.thought_signature)
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.
