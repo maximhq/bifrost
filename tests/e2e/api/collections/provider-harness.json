@@ -344,6 +344,119 @@
               "path": ["bedrock", "model", "{{bedrockModel}}", "converse"]
             }
           }
+        },
+        {
+          "name": "POST /bedrock/model/{modelId}/converse-stream — streaming (incremental events)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock native streaming (converse-stream). Verifies the upstream is delivered",
+                  "// as a live AWS event stream with multiple incremental frames, guarding against the",
+                  "// server-side gzip buffering regression where all events arrive at once (issue #4542).",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Bedrock stream is an AWS event stream', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected vnd.amazon.eventstream, got ' + ct).to.include('vnd.amazon.eventstream');",
+                  "});",
+                  "pm.test('Bedrock stream contains multiple incremental events', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var deltas = (body.match(/contentBlockDelta/g) || []).length;",
+                  "  pm.expect(deltas, 'expected >= 2 contentBlockDelta frames, got ' + deltas).to.be.at.least(2);",
+                  "  pm.expect(body, 'expected a messageStop event terminating the stream').to.include('messageStop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"Write three short sentences about the Unix philosophy.\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 512 }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/chat/completions — bedrock streaming (SSE incremental deltas)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock streaming via the OpenAI-compatible SSE path (/v1/chat/completions).",
+                  "// Confirms chunked SSE delivery with multiple incremental content deltas and a",
+                  "// [DONE] terminator. Note: newman buffers the full response, so this validates",
+                  "// SSE framing/chunking, not wall-clock TTFB (that is covered by the Go unit test",
+                  "// TestChatCompletionStream_StreamsIncrementally_NotBuffered). Issue #4542.",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Bedrock SSE: content-type is text/event-stream', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('text/event-stream');",
+                  "});",
+                  "pm.test('Bedrock SSE: multiple data chunks with incremental content deltas', function () {",
+                  "  var lines = (pm.response.text() || '').split('\\n');",
+                  "  var chunks = 0, sawDelta = false, sawDone = false;",
+                  "  lines.forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    chunks++;",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { sawDone = true; return; }",
+                  "    try { var j = JSON.parse(p); var d = j.choices && j.choices[0] && j.choices[0].delta; if (d && typeof d.content === 'string' && d.content.length) { sawDelta = true; } } catch (e) {}",
+                  "  });",
+                  "  pm.expect(chunks, 'expected > 1 SSE data chunks, got ' + chunks).to.be.above(1);",
+                  "  pm.expect(sawDelta, 'expected at least one chunk with an incremental content delta').to.be.true;",
+                  "  pm.expect(sawDone, 'expected an SSE [DONE] terminator').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"stream\": true,\n  \"max_tokens\": 256,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Write three short sentences about the Unix philosophy.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     },
