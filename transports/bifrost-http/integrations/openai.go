@@ -764,7 +764,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						existing, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
 						headers := make(map[string][]string, len(existing)+1)
 						for k, v := range existing {
-							headers[k] = v
+							if !strings.EqualFold(k, "authorization") {
+								headers[k] = v
+							}
 						}
 						headers["Authorization"] = []string{"Bearer " + token}
 						bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, headers)
