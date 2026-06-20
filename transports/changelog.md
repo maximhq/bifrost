@@ -9,6 +9,7 @@
 ## 🐞 Fixed
 
 - **Anthropic Streaming** — Fixed duplicate `message_start` event in the Anthropic stream (closes #4556)
+- **Bedrock Streaming** — Encode Bedrock stream errors as EventStream exceptions (#4545)
 - **Bedrock MiniMax** — Fixed Bedrock signature handling for MiniMax models
 - **Bedrock Nova** — Fixed Nova model handling on Bedrock
 - **Bedrock Batch** — Corrected model id in Bedrock batch requests
