@@ -128,7 +128,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 	var data []byte
 
 	if parsed.Scheme == "file" {
-		data, err = os.ReadFile(parsed.Path)
+		data, err = os.ReadFile(filePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
 		}
