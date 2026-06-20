@@ -1,0 +1,9 @@
+- feat: add business unit & user names and ids to tracing
+- fix: double message start event in anthropic stream (closes #4556)
+- fix: bedrock signature fix for minimax
+- fix: nova bedrock fixes
+- fix: model id in bedrock batch request
+- fix: resolve model names for feature gating
+- fix: 403 errors for list models request
+- fix: explicit content type header for container delete
+- chore: updated the default network config timings
