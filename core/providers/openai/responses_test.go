@@ -1980,7 +1980,7 @@ func TestToOpenAIResponsesRequest_OpenRouterServerToolsPreserved(t *testing.T) {
 	// provider (web_search, web_fetch, and any future server tool).
 	for _, toolType := range []schemas.ResponsesToolType{"openrouter:web_search", "openrouter:web_fetch"} {
 		t.Run("openrouter keeps "+string(toolType), func(t *testing.T) {
-			result := ToOpenAIResponsesRequest(makeReq(schemas.OpenRouter, toolType))
+			result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenRouter, toolType))
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
 			}
@@ -1991,7 +1991,7 @@ func TestToOpenAIResponsesRequest_OpenRouterServerToolsPreserved(t *testing.T) {
 	}
 
 	t.Run("openai strips openrouter: namespace tools", func(t *testing.T) {
-		result := ToOpenAIResponsesRequest(makeReq(schemas.OpenAI, "openrouter:web_search"))
+		result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenAI, "openrouter:web_search"))
 		if result == nil {
 			t.Fatal("ToOpenAIResponsesRequest returned nil")
 		}
