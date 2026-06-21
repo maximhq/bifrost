@@ -29,7 +29,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSetsActiveVKProviders(t *testing
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
 				Value:    "sk-bf-active",
-				IsActive: true,
+				IsActive: new(true),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},
 					{Provider: " anthropic "},
@@ -125,7 +125,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSkipsInactiveVK(t *testing.T) {
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
 				Value:    "sk-bf-inactive",
-				IsActive: false,
+				IsActive: new(false),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},
 				},
