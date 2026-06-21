@@ -10,6 +10,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
@@ -19,6 +21,7 @@ import (
 type testClientManager struct {
 	clients map[string]*schemas.MCPClientState
 	tools   map[string][]schemas.ChatTool
+	conn    *client.Client
 }
 
 func (m *testClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
@@ -46,7 +49,7 @@ func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
 
 func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipeline) {}
 func (m *testClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
-	return nil, func() {}, nil
+	return m.conn, func() {}, nil
 }
 func (m *testClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op codemcp.MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
 	resp, err := op(req)
@@ -1013,4 +1016,90 @@ func TestGeneratePythonErrorHintsNewCases(t *testing.T) {
 			t.Errorf("Expected scope persistence hint, got: %v", hints)
 		}
 	})
+}
+
+// newEchoInProcessClient stands up an in-process MCP server exposing a single
+// tool that echoes a fixed payload, and returns an initialized client for it.
+func newEchoInProcessClient(t *testing.T, toolName, payload string) *client.Client {
+	t.Helper()
+	srv := server.NewMCPServer("test-server", "1.0.0", server.WithToolCapabilities(true))
+	srv.AddTool(
+		mcp.NewTool(toolName, mcp.WithDescription("echo tool")),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{mcp.TextContent{Type: "text", Text: payload}},
+			}, nil
+		},
+	)
+
+	c, err := client.NewInProcessClient(srv)
+	if err != nil {
+		t.Fatalf("NewInProcessClient: %v", err)
+	}
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("client.Start: %v", err)
+	}
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "test-client", Version: "1.0.0"}
+	if _, err := c.Initialize(context.Background(), initReq); err != nil {
+		t.Fatalf("client.Initialize: %v", err)
+	}
+	return c
+}
+
+// TestCallMCPToolDoesNotEchoRawResponseIntoLogs pins the fix for the raw tool
+// response being surfaced to the model twice: once as the tool's return value
+// and once again inside the model-visible execution logs. The payload must
+// reach the caller (return value) but must NOT appear in the appended logs.
+func TestCallMCPToolDoesNotEchoRawResponseIntoLogs(t *testing.T) {
+	const toolName = "echo"
+	const payload = "ECHO_PAYLOAD_b3f19a27"
+
+	conn := newEchoInProcessClient(t, toolName, payload)
+	defer conn.Close()
+
+	clientName := "testserver"
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+		BindingLevel:         schemas.CodeModeBindingLevelTool,
+		ToolExecutionTimeout: time.Second,
+	}, nil)
+	mode.clientManager = &testClientManager{
+		clients: map[string]*schemas.MCPClientState{
+			clientName: {
+				Name:            clientName,
+				ExecutionConfig: &schemas.MCPClientConfig{Name: clientName, IsCodeModeClient: true},
+			},
+		},
+		tools: map[string][]schemas.ChatTool{
+			clientName: {{Function: &schemas.ChatToolFunction{Name: toolName}}},
+		},
+		conn: conn,
+	}
+
+	var logs []string
+	appendLog := func(msg string) { logs = append(logs, msg) }
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := mode.callMCPTool(ctx, clientName, toolName, map[string]interface{}{"msg": "hi"}, appendLog)
+	if err != nil {
+		t.Fatalf("callMCPTool returned error: %v", err)
+	}
+
+	resultStr, ok := result.(string)
+	if !ok {
+		if b, mErr := schemas.MarshalSorted(result); mErr == nil {
+			resultStr = string(b)
+		}
+	}
+	// The data must still reach the caller as the tool's return value.
+	if !strings.Contains(resultStr, payload) {
+		t.Fatalf("expected tool payload in return value, got: %q", resultStr)
+	}
+
+	// ...but it must NOT be duplicated into the model-visible execution logs.
+	joined := strings.Join(logs, "\n")
+	if strings.Contains(joined, "raw response") || strings.Contains(joined, payload) {
+		t.Fatalf("raw tool response leaked into execution logs (would be sent to the model twice):\n%s", joined)
+	}
 }
