@@ -20,6 +20,14 @@ set -Ee
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
+# Setup Go workspace for CI (go.work is gitignored, must be regenerated) so the
+# build below resolves local core/framework/plugins instead of the published
+# versions pinned in transports/go.mod. Run with repo root as CWD because
+# setup-go-workspace.sh's `go work use ./core` paths are repo-root-relative; the
+# go.work file it writes at ${REPO_ROOT} is then auto-discovered by `go build`.
+( cd "${REPO_ROOT}" && source "${SCRIPT_DIR}/setup-go-workspace.sh" )
+
 BIFROST_HTTP_DIR="${REPO_ROOT}/transports/bifrost-http"
 TRANSPORTS_DIR="${REPO_ROOT}/transports"
 WORK_DIR="${SCRIPT_DIR}"
