@@ -175,7 +175,10 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 	result := bedrockReq.ToBifrostRerankRequest(bifrostCtx)
 
 	require.NotNil(t, result)
-	assert.Equal(t, schemas.Bedrock, result.Provider)
+	// A Bedrock rerank ModelARN has no Bifrost provider prefix, so ParseModelString
+	// returns the empty default provider (intentional — provider routing is resolved
+	// elsewhere) and the full ARN as the model.
+	assert.Equal(t, schemas.ModelProvider(""), result.Provider)
 	assert.Equal(t, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0", result.Model)
 	assert.Equal(t, "capital of france", result.Query)
 	require.Len(t, result.Documents, 2)

@@ -385,13 +385,14 @@ func (provider *VertexProvider) TextCompletionStream(ctx *schemas.BifrostContext
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
-// inlineDocumentURLs replaces document content blocks carrying a remote URL
-// source with inline base64 bytes by fetching each URL. Required because
-// Anthropic-on-Vertex does not accept URL-source documents (unlike direct
-// Anthropic). Mutates the request in place; safe to call when no document
-// blocks are present. The ctx is propagated to each fetch so request
-// cancellation/deadlines abort in-flight downloads.
-func inlineDocumentURLs(ctx context.Context, request *schemas.BifrostChatRequest) error {
+// inlineRemoteURLSources replaces document AND image content blocks carrying a
+// remote URL source with inline base64 bytes by fetching each URL. Required
+// because Anthropic-on-Vertex does not accept URL-source documents or images
+// (unlike direct Anthropic, which accepts source.type "url"). Mutates the
+// request in place; safe to call when no such blocks are present. The ctx is
+// propagated to each fetch so request cancellation/deadlines abort in-flight
+// downloads.
+func inlineRemoteURLSources(ctx context.Context, request *schemas.BifrostChatRequest) error {
 	if request == nil || request.Input == nil {
 		return nil
 	}
@@ -402,18 +403,40 @@ func inlineDocumentURLs(ctx context.Context, request *schemas.BifrostChatRequest
 		}
 		for bi := range msg.Content.ContentBlocks {
 			block := &msg.Content.ContentBlocks[bi]
-			if block.File == nil || block.File.FileURL == nil || *block.File.FileURL == "" {
-				continue
+
+			// Inline url-source documents.
+			if block.File != nil && block.File.FileURL != nil && *block.File.FileURL != "" {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
+				if err != nil {
+					return err
+				}
+				block.File.FileData = &encoded
+				if mediaType != "" && block.File.FileType == nil {
+					block.File.FileType = &mediaType
+				}
+				block.File.FileURL = nil
 			}
-			mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
-			if err != nil {
-				return err
+
+			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
+			// accepts base64 image sources only. Skip data: URIs (already inline).
+			if img := block.ImageURLStruct; img != nil && img.URL != "" && !strings.HasPrefix(img.URL, "data:") {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, img.URL)
+				if err != nil {
+					return err
+				}
+				if mediaType != "" {
+					img.URL = "data:" + mediaType + ";base64," + encoded
+				} else {
+					// Content-Type header absent; sniff the media type from the
+					// fetched bytes so we never emit a malformed "data:;base64,..."
+					// URI, which Anthropic-on-Vertex rejects.
+					sanitized, sErr := schemas.SanitizeImageURL(encoded)
+					if sErr != nil {
+						return sErr
+					}
+					img.URL = sanitized
+				}
 			}
-			block.File.FileData = &encoded
-			if mediaType != "" && block.File.FileType == nil {
-				block.File.FileType = &mediaType
-			}
-			block.File.FileURL = nil
 		}
 	}
 	return nil
@@ -433,10 +456,10 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			var err error
 
 			if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-				// Anthropic-on-Vertex doesn't accept URL-source document blocks.
-				// Inline any URL documents to base64 before the converter runs.
-				if err := inlineDocumentURLs(ctx, request); err != nil {
-					return nil, fmt.Errorf("failed to inline document URLs for vertex/claude: %w", err)
+				// Anthropic-on-Vertex doesn't accept URL-source document or image blocks.
+				// Inline any URL documents/images to base64 before the converter runs.
+				if err := inlineRemoteURLSources(ctx, request); err != nil {
+					return nil, fmt.Errorf("failed to inline remote URL sources for vertex/claude: %w", err)
 				}
 				// Use centralized Anthropic converter
 				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
@@ -758,10 +781,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
 				var extraParams map[string]interface{}
-				// Anthropic-on-Vertex doesn't accept URL-source document blocks.
-				// Inline any URL documents to base64 before the converter runs.
-				if err := inlineDocumentURLs(ctx, request); err != nil {
-					return nil, fmt.Errorf("failed to inline document URLs for vertex/claude: %w", err)
+				// Anthropic-on-Vertex doesn't accept URL-source document or image blocks.
+				// Inline any URL documents/images to base64 before the converter runs.
+				if err := inlineRemoteURLSources(ctx, request); err != nil {
+					return nil, fmt.Errorf("failed to inline remote URL sources for vertex/claude: %w", err)
 				}
 				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
 				if convErr != nil {

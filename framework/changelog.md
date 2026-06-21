@@ -1,3 +1,5 @@
+- feat: sync model catalog pricing and model parameters from local files for airgapped deployments (closes #4305)
+- feat: compute cost for failed and cancelled requests from billed usage
 - feat: dashboard export endpoint
 - feat: add Virtual Key Rankings tab in dashboard
 - feat: add business unit & user names and ids to tracing
