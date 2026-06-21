@@ -342,7 +342,14 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
 	for _, tool := range resp.Tools {
-		if supportedTypes[tool.Type] {
+		// OpenRouter exposes server-side tools under the "openrouter:" namespace
+		// (web_search, web_fetch, datetime, image_generation, apply_patch, subagent, ...).
+		// They are native to OpenRouter and must not be stripped by the
+		// OpenAI-oriented whitelist. Match the whole namespace so future tools are
+		// covered without per-tool additions.
+		isOpenRouterServerTool := resp.Provider == schemas.OpenRouter &&
+			strings.HasPrefix(string(tool.Type), schemas.ResponsesToolTypeOpenRouterPrefix)
+		if supportedTypes[tool.Type] || isOpenRouterServerTool {
 			// check for computer use preview
 			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
 				newTool := tool
