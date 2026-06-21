@@ -2,6 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
+# Setup Go workspace for CI (go.work is gitignored, must be regenerated) so the
+# build below resolves local core/framework/plugins instead of the published
+# versions pinned in transports/go.mod. Run with repo root as CWD because
+# setup-go-workspace.sh's `go work use ./core` paths are repo-root-relative; the
+# go.work file it writes at ${ROOT_DIR} is then auto-discovered by `go build`.
+( cd "${ROOT_DIR}" && source "${ROOT_DIR}/.github/workflows/scripts/setup-go-workspace.sh" )
+
 COMPOSE_FILE="${ROOT_DIR}/.github/workflows/configs/docker-compose.yml"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-bifrost-cost-accuracy}"
 BENCHMARK_DIR="${BENCHMARK_DIR:-${ROOT_DIR}/../bifrost-benchmarking}"
