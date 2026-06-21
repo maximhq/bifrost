@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -80,7 +81,14 @@ func (p *Plugin) PreLLMHook(
 		return req, nil, nil
 	}
 
-	flagged, categories, err := p.moderate(text)
+	// Propagate the request's cancellation/deadline into the moderation call.
+	// *BifrostContext implements context.Context; guard the nil pointer.
+	var reqCtx context.Context = context.Background()
+	if ctx != nil {
+		reqCtx = ctx
+	}
+
+	flagged, categories, err := p.moderate(reqCtx, text)
 	if err != nil {
 		if p.failClosed {
 			return req, blockShortCircuit("Agent Threat Rules moderation endpoint unreachable"), nil
@@ -149,15 +157,17 @@ type moderationResponse struct {
 }
 
 // moderate POSTs the text to the ATR moderation endpoint and reports whether it
-// was flagged plus the truthy category names.
-func (p *Plugin) moderate(text string) (bool, string, error) {
+// was flagged plus the truthy category names. A non-2xx status or a malformed
+// (resultless) body is returned as an error so the caller's fail-closed policy
+// applies rather than silently allowing the request.
+func (p *Plugin) moderate(ctx context.Context, text string) (bool, string, error) {
 	payload, err := json.Marshal(map[string]string{"input": text})
 	if err != nil {
 		return false, "", err
 	}
 
 	httpReq, err := http.NewRequestWithContext(
-		context.Background(), http.MethodPost, p.endpoint, bytes.NewReader(payload),
+		ctx, http.MethodPost, p.endpoint, bytes.NewReader(payload),
 	)
 	if err != nil {
 		return false, "", err
@@ -170,11 +180,18 @@ func (p *Plugin) moderate(text string) (bool, string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, "", fmt.Errorf("atr: moderation endpoint returned status %d", resp.StatusCode)
+	}
+
 	var out moderationResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return false, "", err
 	}
-	if len(out.Results) == 0 || !out.Results[0].Flagged {
+	if len(out.Results) == 0 {
+		return false, "", errors.New("atr: moderation response contained no results")
+	}
+	if !out.Results[0].Flagged {
 		return false, "", nil
 	}
 

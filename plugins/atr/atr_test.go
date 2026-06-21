@@ -109,6 +109,26 @@ func TestPreLLMHookFailClosed(t *testing.T) {
 	}
 }
 
+// A non-2xx moderation response must route through fail-closed, not be allowed.
+func TestPreLLMHookNon2xxFailClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false}]}`))
+	}))
+	defer srv.Close()
+
+	// fail-closed blocks
+	_, sc, _ := New(srv.URL, true).PreLLMHook(nil, chatRequest("anything"))
+	if sc == nil || sc.Error == nil {
+		t.Fatal("non-2xx with fail-closed should short-circuit")
+	}
+	// fail-open allows
+	_, sc, err := New(srv.URL, false).PreLLMHook(nil, chatRequest("anything"))
+	if err != nil || sc != nil {
+		t.Fatalf("non-2xx with fail-open should proceed, got sc=%v err=%v", sc, err)
+	}
+}
+
 func TestGetName(t *testing.T) {
 	if New("", false).GetName() != PluginName {
 		t.Fatal("GetName should be atr")
