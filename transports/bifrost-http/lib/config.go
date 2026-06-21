@@ -3690,12 +3690,20 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	if authConfig == nil {
 		return
 	}
-	// File config present: warn about empty env vars but continue processing
-	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromEnv() {
-		logger.Warn("username set with env var but value is empty: %s", authConfig.AdminUserName.EnvVar)
+	// File config present: warn about empty env/vault references but continue processing
+	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && (authConfig.AdminUserName.IsFromEnv() || authConfig.AdminUserName.IsFromVault()) {
+		ref := authConfig.AdminUserName.EnvVar
+		if authConfig.AdminUserName.IsFromVault() {
+			ref = authConfig.AdminUserName.VaultRef
+		}
+		logger.Warn("username set with external reference but value is empty: %s", ref)
 	}
-	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromEnv() {
-		logger.Warn("password set with env var but value is empty: %s", authConfig.AdminPassword.EnvVar)
+	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && (authConfig.AdminPassword.IsFromEnv() || authConfig.AdminPassword.IsFromVault()) {
+		ref := authConfig.AdminPassword.EnvVar
+		if authConfig.AdminPassword.IsFromVault() {
+			ref = authConfig.AdminPassword.VaultRef
+		}
+		logger.Warn("password set with external reference but value is empty: %s", ref)
 	}
 	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
 		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")

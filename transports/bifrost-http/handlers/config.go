@@ -702,12 +702,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 
 			// Validate env variables are set if referenced
-			if payload.AuthConfig.AdminUserName.IsFromEnv() && payload.AuthConfig.AdminUserName.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("environment variable %s is not set", payload.AuthConfig.AdminUserName.EnvVar))
+			if (payload.AuthConfig.AdminUserName.IsFromEnv() || payload.AuthConfig.AdminUserName.IsFromVault()) && payload.AuthConfig.AdminUserName.GetValue() == "" {
+				ref := payload.AuthConfig.AdminUserName.EnvVar
+				if payload.AuthConfig.AdminUserName.IsFromVault() {
+					ref = payload.AuthConfig.AdminUserName.VaultRef
+				}
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", ref))
 				return
 			}
-			if payload.AuthConfig.AdminPassword.IsFromEnv() && payload.AuthConfig.AdminPassword.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("environment variable %s is not set", payload.AuthConfig.AdminPassword.EnvVar))
+			if (payload.AuthConfig.AdminPassword.IsFromEnv() || payload.AuthConfig.AdminPassword.IsFromVault()) && payload.AuthConfig.AdminPassword.GetValue() == "" {
+				ref := payload.AuthConfig.AdminPassword.EnvVar
+				if payload.AuthConfig.AdminPassword.IsFromVault() {
+					ref = payload.AuthConfig.AdminPassword.VaultRef
+				}
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_password resolved to an empty value", ref))
 				return
 			}
 
