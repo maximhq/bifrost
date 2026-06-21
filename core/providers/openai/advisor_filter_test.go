@@ -42,7 +42,7 @@ func TestToOpenAIResponsesRequest_DropsAdvisorTool(t *testing.T) {
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}

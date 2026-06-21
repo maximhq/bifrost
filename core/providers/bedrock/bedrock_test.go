@@ -2792,6 +2792,80 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 	assert.Equal(t, "get_weather", bedrockReq.ToolConfig.Tools[1].ToolSpec.Name)
 }
 
+// TestToBedrockResponsesRequest_DropsMCPToolKeepsFunction is the regression
+// guard for issue #3795: a /v1/responses request to Bedrock carrying a
+// Bifrost-hosted `mcp` server tool alongside function tools must no longer fail
+// conversion ("tool type 'mcp' is not supported by provider 'bedrock'"). The
+// unsupported mcp tool is silently dropped; function tools survive; and the
+// inbound request's tool slice is never mutated.
+func TestToBedrockResponsesRequest_DropsMCPToolKeepsFunction(t *testing.T) {
+	toolParams := schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("city", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		),
+	}
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/eu.anthropic.claude-sonnet-4-6",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:        schemas.ResponsesToolTypeFunction,
+					Name:        schemas.Ptr("get_weather"),
+					Description: schemas.Ptr("Get weather information"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &toolParams,
+					},
+				},
+				{
+					// Bifrost-hosted MCP server tool — server_url points back at
+					// Bifrost itself; Bedrock's Converse API can't consume it.
+					Type: schemas.ResponsesToolTypeMCP,
+					ResponsesToolMCP: &schemas.ResponsesToolMCP{
+						ServerLabel: "mongodb",
+						ServerURL:   schemas.Ptr("https://bifrost.example.com/mcp/mongodb"),
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err, "mcp tool must be dropped, not error the conversion (issue #3795)")
+	require.NotNil(t, bedrockReq)
+	require.NotNil(t, bedrockReq.ToolConfig, "function tool must still produce a tool_config")
+	require.Len(t, bedrockReq.ToolConfig.Tools, 1, "only the function tool should reach Bedrock; mcp dropped")
+	assert.Equal(t, "get_weather", bedrockReq.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// The inbound request must not be mutated by the filtering.
+	require.Len(t, req.Params.Tools, 2, "inbound Params.Tools must be left untouched")
+	assert.Equal(t, schemas.ResponsesToolTypeMCP, req.Params.Tools[1].Type)
+}
+
+// TestToBedrockResponsesRequest_AllToolsDroppedNoToolConfig verifies that when
+// every tool is provider-unsupported (e.g. a lone mcp tool), conversion still
+// succeeds and simply emits no tool_config.
+func TestToBedrockResponsesRequest_AllToolsDroppedNoToolConfig(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/eu.anthropic.claude-sonnet-4-6",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeMCP, ResponsesToolMCP: &schemas.ResponsesToolMCP{ServerLabel: "mongodb"}},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+	assert.Nil(t, bedrockReq.ToolConfig, "no supported tools means no tool_config")
+}
+
 // TestToolResultJSONParsingResponsesAPI tests that tool results are correctly parsed and wrapped based on JSON type
 // Tests only Responses API.
 func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
@@ -4006,6 +4080,86 @@ func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
 	// Nova should NOT use "thinking"
 	_, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
 	assert.False(t, hasThinking, "Nova models should NOT use thinking field")
+}
+
+// TestNovaReasoningEffortClamped verifies efforts above Nova's enum (xhigh/max)
+// are clamped to "high" so Nova doesn't 400 on an invalid maxReasoningEffort.
+func TestNovaReasoningEffortClamped(t *testing.T) {
+	cases := map[string]string{
+		"xhigh":   "high",
+		"max":     "high",
+		"high":    "high",
+		"medium":  "medium",
+		"minimal": "low",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: "amazon.nova-pro-v1",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(in)}},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			cfg, ok := result.AdditionalModelRequestFields.Get("reasoningConfig")
+			require.True(t, ok, "expected reasoningConfig")
+			cfgMap, ok := cfg.(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, want, cfgMap["maxReasoningEffort"], "effort %q should map to %q", in, want)
+		})
+	}
+}
+
+// TestReasoningSignatureEchoedOnlyWhenNonEmpty verifies that an empty reasoning
+// signature is dropped before sending to Bedrock (MiniMax emits ""), while a real
+// signature is preserved (Anthropic requires it). Keyed on the value, not the model.
+func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
+	cases := map[string]struct {
+		in   *string
+		want *string
+	}{
+		"empty signature dropped":  {in: schemas.Ptr(""), want: nil},
+		"nil signature dropped":    {in: nil, want: nil},
+		"real signature preserved": {in: schemas.Ptr("ErUBCkYI"), want: schemas.Ptr("ErUBCkYI")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: "anthropic.claude-sonnet-4-5",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+					{
+						Role:    schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ok")},
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ReasoningDetails: []schemas.ChatReasoningDetails{
+								{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("thinking"), Signature: tc.in},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			var got *string
+			for _, m := range result.Messages {
+				for _, b := range m.Content {
+					if b.ReasoningContent != nil && b.ReasoningContent.ReasoningText != nil {
+						got = b.ReasoningContent.ReasoningText.Signature
+					}
+				}
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // TestStandaloneCachePointBlockHandling tests that standalone cachePoint content blocks

@@ -1750,6 +1750,12 @@ const (
 	ResponsesToolTypeAdvisor            ResponsesToolType = "advisor"
 )
 
+// ResponsesToolTypeOpenRouterPrefix is the namespace prefix for OpenRouter server
+// tools (e.g. "openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime",
+// "openrouter:image_generation", "openrouter:apply_patch", "openrouter:subagent").
+// These are executed server-side by OpenRouter and are not part of the OpenAI spec.
+const ResponsesToolTypeOpenRouterPrefix = "openrouter:"
+
 // normalizeResponsesToolType maps versioned/provider-specific tool type strings
 // to their canonical ResponsesToolType. For example, "web_search_20250305" → "web_search".
 // Returns the input unchanged if it's already canonical or unrecognized.

@@ -237,7 +237,7 @@ export function FilePreview({
     const textContent = source.inlineText ?? fetchedText ?? "";
 
     return (
-      <ScrollArea className="h-full">
+      <ScrollArea className="h-full" bidirectionalScroll>
         <pre className="p-4 font-mono text-xs leading-5 whitespace-pre-wrap">
           {textContent || "(empty)"}
         </pre>

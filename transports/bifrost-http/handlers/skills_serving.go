@@ -1053,12 +1053,8 @@ func (h *SkillsServingHandler) doServeFileContent(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	filePath := ""
-	if val := ctx.UserValue("filepath"); val != nil {
-		filePath, _ = val.(string)
-	}
-	if filePath == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "file path is required")
+	filePath, ok := decodeStringPathParam(ctx, "filepath", "file path")
+	if !ok {
 		return
 	}
 
@@ -1357,14 +1353,8 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.
 func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) (*tables.TableSkill, bool) {
-	val := ctx.UserValue("skill-name")
-	if val == nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "skill name is required")
-		return nil, false
-	}
-	name, ok := val.(string)
-	if !ok || name == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid skill name")
+	name, ok := decodeStringPathParam(ctx, "skill-name", "skill name")
+	if !ok {
 		return nil, false
 	}
 
@@ -1379,6 +1369,25 @@ func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) 
 		return nil, false
 	}
 	return skill, true
+}
+
+func decodeStringPathParam(ctx *fasthttp.RequestCtx, paramName, displayName string) (string, bool) {
+	val := ctx.UserValue(paramName)
+	if val == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("%s is required", displayName))
+		return "", false
+	}
+	raw, ok := val.(string)
+	if !ok || raw == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid %s", displayName))
+		return "", false
+	}
+	decoded, err := url.PathUnescape(raw)
+	if err != nil || decoded == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid %s", displayName))
+		return "", false
+	}
+	return decoded, true
 }
 
 // listAllSkills fetches all skills for marketplace generation.

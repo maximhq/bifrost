@@ -629,3 +629,16 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		done:      make(chan struct{}),
 	}
 }
+
+// NewTestCatalogWithDatasheet wraps a caller-provided datasheet.Store (e.g. one
+// loaded from a local testdata pricing file via datasheet.New(...) +
+// LoadFromURLIntoMemory) in a ModelCatalog, so tests in other packages can
+// exercise real pricing/cost computation without reaching the network.
+func NewTestCatalogWithDatasheet(ds *datasheet.Store) *ModelCatalog {
+	return &ModelCatalog{
+		datasheet: ds,
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
+	}
+}

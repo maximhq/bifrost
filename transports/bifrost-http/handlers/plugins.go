@@ -561,36 +561,71 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// restoreRedactedFromExisting walks the incoming config map and, for any field that
-// looks like an EnvVar object whose value ShouldPreserveStored (i.e. it is a redacted
-// placeholder like "***"), replaces the value with the corresponding field from the
-// existing DB config. This mirrors the mergeUpdatedKey pattern used by provider keys.
+// restoreRedactedFromExisting walks the incoming config map and, for any field whose
+// value is a redacted placeholder (a masked EnvVar object, or a masked plain string),
+// replaces it with the corresponding value from the existing DB
+// config so client-side redaction never overwrites real credentials. It descends into
+// nested maps AND slices (e.g. the OTEL `profiles` array), and handles header values that
+// are stored as plain strings rather than EnvVar objects. Mirrors the mergeUpdatedKey
+// pattern used by provider keys.
 func restoreRedactedFromExisting(incoming, existing map[string]any) map[string]any {
 	if len(incoming) == 0 {
 		return incoming
 	}
 	result := make(map[string]any, len(incoming))
 	for k, v := range incoming {
-		switch val := v.(type) {
-		case map[string]any:
-			if isEnvVarObject(val) {
-				ev := schemas.NewEnvVar(marshalEnvVarObject(val))
-				if ev.ShouldPreserveStored() {
-					if existingVal, ok := existing[k]; ok {
-						result[k] = existingVal
-						continue
-					}
-				}
-			} else if existingNested, ok := existing[k].(map[string]any); ok {
-				result[k] = restoreRedactedFromExisting(val, existingNested)
-				continue
-			}
-			result[k] = val
-		default:
-			result[k] = v
-		}
+		result[k] = restoreRedactedValue(v, existing[k])
 	}
 	return result
+}
+
+// restoreRedactedValue restores a single incoming value against its corresponding existing
+// value. It recurses through maps and slices, and treats both EnvVar-shaped objects and
+// plain redacted strings as placeholders to swap back to the stored original. Returns the
+// incoming value unchanged when it is not a redaction placeholder or has no stored match.
+func restoreRedactedValue(incoming, existing any) any {
+	switch val := incoming.(type) {
+	case map[string]any:
+		if isEnvVarObject(val) {
+			if schemas.NewEnvVar(marshalEnvVarObject(val)).ShouldPreserveStored() && existing != nil {
+				return existing
+			}
+			return val
+		}
+		if existingNested, ok := existing.(map[string]any); ok {
+			return restoreRedactedFromExisting(val, existingNested)
+		}
+		return val
+	case []any:
+		// Restore element-by-element against the existing slice (index-aligned). New
+		// elements beyond the existing length carry user-supplied values, so keep them.
+		existingSlice, ok := existing.([]any)
+		if !ok {
+			return val
+		}
+		out := make([]any, len(val))
+		for i, item := range val {
+			if i < len(existingSlice) {
+				out[i] = restoreRedactedValue(item, existingSlice[i])
+			} else {
+				out[i] = item
+			}
+		}
+		return out
+	case string:
+		// Plain-string secrets (e.g. OTEL headers): restore only when the incoming string
+		// is a redaction artifact and not an intentional env reference. Empty strings are
+		// left as-is so clearing a value works.
+		if existingStr, ok := existing.(string); ok {
+			envVal := schemas.NewEnvVar(val)
+			if !envVal.IsFromEnv() && envVal.IsRedacted() {
+				return existingStr
+			}
+		}
+		return val
+	default:
+		return incoming
+	}
 }
 
 // isEnvVarObject returns true if m has exactly the shape of a serialised EnvVar:

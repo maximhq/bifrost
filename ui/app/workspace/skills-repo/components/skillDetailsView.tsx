@@ -13,6 +13,7 @@ import {
 import FullPageLoader from "@/components/fullPageLoader";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { SplitButton } from "@/components/ui/splitButton";
 import { useGetSkillQuery, useUpdateSkillMutation, useDeleteSkillMutation } from "@/lib/store/apis/skillsApi";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { SkillFile, SkillVersionSummary } from "@/lib/types/skills";
@@ -26,7 +27,7 @@ import { type SkillFormState, composeFrontmatter, useSkillForm } from "./helpers
 import { SkillHeader } from "./shared";
 import { SkillFormFields } from "../forms/skillEditFormFields";
 import { SkillEditView } from "../forms/skillEditForm";
-import { SkillVersionsPopover } from "../dialogs/skillVersionDialog";
+import { SkillVersionsList } from "../dialogs/skillVersionDialog";
 import { VersionDetailDialog } from "../dialogs/versionDetailsDialog";
 
 // ---------- SkillDetailView ----------
@@ -50,6 +51,7 @@ export function SkillDetailView({
 	const [deleteSkill, { isLoading: isDeleting }] = useDeleteSkillMutation();
 
 	const [selectedVersion, setSelectedVersion] = useState<SkillVersionSummary | null>(null);
+	const [versionsOpen, setVersionsOpen] = useState(false);
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
 	const form = useSkillForm();
@@ -171,6 +173,7 @@ export function SkillDetailView({
 					onSave={handleSave}
 					onCancel={handleCancelEdit}
 					onBack={handleCancelEdit}
+					onNavigateToList={onBack}
 					isSaving={isUpdating}
 				/>
 			) : (
@@ -201,13 +204,41 @@ export function SkillDetailView({
 						onBack={onBack}
 						actions={
 							<>
-								<SkillVersionsPopover skillId={skillId} servingVersion={skill.latest_version} onSelectVersion={setSelectedVersion} />
-								{hasEditAccess && (
-									<Button size="sm" data-testid="skill-add-version-btn" onClick={() => setIsEditing(true)}>
-										<Plus className="h-3.5 w-3.5" />
-										Add New Version
-									</Button>
-								)}
+								<SplitButton
+									onClick={() => setIsEditing(true)}
+									variant="outline"
+									disabledCheck
+									dropdownTrigger={{
+										className: "bg-transparent",
+										dataTestId: "skill-versions-popover-trigger",
+										"aria-label": `Versions for ${skill.name}`,
+									}}
+									button={{
+										dataTestId: "skill-add-version-btn",
+										className: "bg-transparent",
+										disabled: !hasEditAccess,
+									}}
+									dropdownContent={{
+										align: "end",
+										className: "w-72 p-0",
+										open: versionsOpen,
+										onOpenChange: setVersionsOpen,
+										children: (
+											<SkillVersionsList
+												skillId={skillId}
+												servingVersion={skill.latest_version}
+												open={versionsOpen}
+												onSelectVersion={(v) => {
+													setSelectedVersion(v);
+													setVersionsOpen(false);
+												}}
+											/>
+										),
+									}}
+								>
+									<Plus className="h-3.5 w-3.5" />
+									Add New Version
+								</SplitButton>
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild>
 										<Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Actions for ${skill.name}`}>

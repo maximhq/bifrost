@@ -516,9 +516,20 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 
 				response, bifrostErr := bifrost.ListModelsRequest(providerCtx, providerRequest)
 				if bifrostErr != nil {
-					// Skip logging "no keys found" and "not supported" errors as they are expected when a provider is not configured
-					if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
-						!strings.Contains(bifrostErr.Error.Message, "not supported") {
+					// Some per-provider failures are expected when fanning out across all
+					// configured providers and must not be surfaced as a top-level error
+					errType := ""
+					if bifrostErr.Type != nil {
+						errType = *bifrostErr.Type
+					}
+					errMsg := ""
+					if bifrostErr.Error != nil {
+						errMsg = bifrostErr.Error.Message
+					}
+					isExpected := strings.Contains(errMsg, "no keys found") ||
+						strings.Contains(errMsg, "not supported") ||
+						errType == "provider_blocked"
+					if !isExpected {
 						providerErr = bifrostErr
 						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, bifrostErr.GetErrorString())
 					}
@@ -3722,6 +3733,17 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 //	    ConnectionType: schemas.MCPConnectionTypeHTTP,
 //	    ConnectionString: &url,
 //	})
+//
+// ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
+// no longer auto-connects, so callers invoke this after all plugins are registered
+// (so every PreMCPConnectionHook participates in the connection). No-op if MCP is
+// not configured.
+func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context) {
+	if bifrost.MCPManager != nil {
+		bifrost.MCPManager.ConnectConfiguredClients(ctx)
+	}
+}
+
 func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
@@ -5738,6 +5760,18 @@ func executeRequestWithRetries[T any](
 			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
 			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerName, customerName)
 		}
+		if businessUnitID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitID).(string); ok && businessUnitID != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitID, businessUnitID)
+		}
+		if businessUnitName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitName).(string); ok && businessUnitName != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitName, businessUnitName)
+		}
+		if userID, ok := ctx.Value(schemas.BifrostContextKeyUserID).(string); ok && userID != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostUserID, userID)
+		}
+		if userName, ok := ctx.Value(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostUserName, userName)
+		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
 			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
 			tracer.SetAttribute(handle, schemas.AttrBifrostFallbackIndex, fallbackIndex)
@@ -6412,6 +6446,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			case <-req.Context.Done():
 				// Client no longer listening, log and continue
 				bifrost.logger.Debug("Client context cancelled while sending error response")
+				// The provider already produced this error (possibly after
+				// processing input tokens). tryRequest returned on ctx.Done and will
+				// never receive it, so bill/log it here. Non-streaming only.
+				bifrost.billAbandonedTerminal(req, nil, bifrostError)
 			case <-time.After(5 * time.Second):
 				// Timeout to prevent indefinite blocking
 				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
@@ -6441,6 +6479,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				case <-req.Context.Done():
 					// Client no longer listening, log and continue
 					bifrost.logger.Debug("Client context cancelled while sending response")
+					// The provider already produced this non-streaming result
+					// (consuming tokens). tryRequest returned on ctx.Done and will never
+					// receive it, so bill/log it here.
+					bifrost.billAbandonedTerminal(req, result, nil)
 				case <-time.After(5 * time.Second):
 					// Timeout to prevent indefinite blocking
 					bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
@@ -6450,6 +6492,32 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	}
 
 	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
+}
+
+// billAbandonedTerminal runs terminal post-LLM hooks for a NON-STREAMING request
+// whose client stopped waiting (tryRequest returned on ctx.Done) after the
+// provider had already produced a result or error. Without this, tokens the
+// provider consumed are never billed or logged (non-streaming
+// cancellation). Safety:
+//   - The channel rendezvous guarantees tryRequest did NOT also receive this
+//     value (a value cannot be both delivered and land in the no-receiver
+//     ctx.Done branch), so post-hooks never run twice for one call.
+//   - The governance tracker additionally dedupes on RequestID+attempt.
+//   - Streaming requests are excluded: their provider goroutine already runs
+//     terminal post-hooks via HandleStreamCancellation.
+func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+	if req == nil || req.Context == nil || IsStreamRequestType(req.RequestType) {
+		return
+	}
+	pipeline := bifrost.getPluginPipeline()
+	defer bifrost.releasePluginPipeline(pipeline)
+	pluginCount := len(*bifrost.llmPlugins.Load())
+	if bifrostErr != nil {
+		_, _ = pipeline.RunPostLLMHooks(req.Context, nil, bifrostErr, pluginCount)
+	} else if result != nil {
+		_, _ = pipeline.RunPostLLMHooks(req.Context, result, nil, pluginCount)
+	}
+	drainAndAttachPluginLogs(req.Context)
 }
 
 // handleProviderRequest handles the request to the provider based on the request type

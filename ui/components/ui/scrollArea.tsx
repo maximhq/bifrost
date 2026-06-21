@@ -1,14 +1,15 @@
-import * as React from "react";
 import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
+import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
 function ScrollArea({
 	className,
 	viewportClassName,
+	bidirectionalScroll,
 	children,
 	...props
-}: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & { viewportClassName?: string }) {
+}: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & { viewportClassName?: string, bidirectionalScroll?: boolean }) {
 	return (
 		<ScrollAreaPrimitive.Root data-slot="scroll-area" className={cn("relative", className)} {...props}>
 			<ScrollAreaPrimitive.Viewport
@@ -20,7 +21,7 @@ function ScrollArea({
 			>
 				{children}
 			</ScrollAreaPrimitive.Viewport>
-			<ScrollBar />
+			{bidirectionalScroll ? <><ScrollBar orientation="horizontal" /><ScrollBar orientation="vertical" /></> : <ScrollBar />}
 			<ScrollAreaPrimitive.Corner />
 		</ScrollAreaPrimitive.Root>
 	);

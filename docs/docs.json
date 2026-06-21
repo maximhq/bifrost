@@ -110,7 +110,8 @@
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
-              "migration-guides/v1.5.0"
+              "migration-guides/v1.5.0",
+              "migration-guides/litellm"
             ]
           },
           {
@@ -392,6 +393,7 @@
               "cli-agents/cursor",
               "cli-agents/librechat",
               "cli-agents/claude-code",
+              "cli-agents/claude-desktop",
               "cli-agents/claude-for-office",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
@@ -528,6 +530,7 @@
                 "icon": "file-code",
                 "pages": [
                   "deployment-guides/config-json",
+                  "deployment-guides/config-json/source-of-truth",
                   "deployment-guides/config-json/schema-reference",
                   "deployment-guides/config-json/client",
                   "deployment-guides/config-json/providers",

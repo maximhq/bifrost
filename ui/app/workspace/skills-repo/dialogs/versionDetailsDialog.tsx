@@ -3,11 +3,11 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useGetSkillQuery, useShiftSkillVersionMutation } from "@/lib/store/apis/skillsApi";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
-import { getApiBaseUrl } from "@/lib/utils/port";
+import { useGetSkillQuery, useShiftSkillVersionMutation } from "@/lib/store/apis/skillsApi";
 import type { SkillFile, SkillFileEntry } from "@/lib/types/skills";
-import { Loader2, RefreshCw, Download, X } from "lucide-react";
+import { getApiBaseUrl } from "@/lib/utils/port";
+import { Download, Loader2, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
 import { composeFrontmatter } from "../components/helpers";
 import { SkillHeader, SkillReadOnlyContent } from "../components/shared";
@@ -38,30 +38,30 @@ export function VersionDetailDialog({
 
 	const composedSkillMd = skill
 		? composeFrontmatter({
-				name: skill.name,
-				description: skill.description,
-				license: skill.license || "",
-				compatibility: skill.compatibility || "",
-				allowed_tools: skill.allowed_tools || "",
-				extra_frontmatter_json: skill.extra_frontmatter ? JSON.stringify(skill.extra_frontmatter) : "",
-				metadata_json: skill.metadata ? JSON.stringify(skill.metadata) : "",
-			}) +
-			"\n\n" +
-			skill.skill_md_body
+			name: skill.name,
+			description: skill.description,
+			license: skill.license || "",
+			compatibility: skill.compatibility || "",
+			allowed_tools: skill.allowed_tools || "",
+			extra_frontmatter_json: skill.extra_frontmatter ? JSON.stringify(skill.extra_frontmatter) : "",
+			metadata_json: skill.metadata ? JSON.stringify(skill.metadata) : "",
+		}) +
+		"\n\n" +
+		skill.skill_md_body
 		: "";
 
 	const fileEntries: SkillFileEntry[] = skill?.files
 		? skill.files.map((f: SkillFile) => ({
-				path: f.path,
-				source_type: f.source_type,
-				content: f.content,
-				source_url: f.source_url,
-				dataurl: f.dataurl,
-				storage_key: f.storage_key,
-				blob_id: f.blob_id,
-				mime_type: f.mime_type,
-				file_size_bytes: f.file_size_bytes,
-			}))
+			path: f.path,
+			source_type: f.source_type,
+			content: f.content,
+			source_url: f.source_url,
+			dataurl: f.dataurl,
+			storage_key: f.storage_key,
+			blob_id: f.blob_id,
+			mime_type: f.mime_type,
+			file_size_bytes: f.file_size_bytes,
+		}))
 		: [];
 
 	const downloadUrl = skill
@@ -163,7 +163,7 @@ export function VersionDetailDialog({
 								/>
 							</div>
 
-							<div className="min-h-0 flex-1 px-6 pb-6">
+							<div className="min-h-0 flex-1 px-6 pb-6 flex">
 								<SkillReadOnlyContent
 									skillName={skill.name}
 									skillMdBody={skill.skill_md_body}

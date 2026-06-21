@@ -581,6 +581,7 @@ bifrost:
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
         # enable_metrics: true
         # enable_llm_obs: true
+        # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
         # Agentless mode (direct to Datadog API, no local agent):
@@ -948,6 +949,7 @@ bifrost:
       #   sampling_rate: 100
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
+      #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
     providers: []
       # - id: 1
       #   provider_name: "bedrock"

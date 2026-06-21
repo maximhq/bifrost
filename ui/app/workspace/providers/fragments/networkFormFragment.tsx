@@ -35,11 +35,19 @@ const secondsToHumanReadable = (seconds: number) => {
 	}
 	if (seconds < 3600) {
 		const minutes = Math.floor(seconds / 60);
-		return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+		const remainingSeconds = seconds % 60;
+		const parts: string[] = [`${minutes} ${minutes === 1 ? "minute" : "minutes"}`];
+		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
+		return parts.join(" ");
 	}
 	if (seconds < 86400) {
 		const hours = Math.floor(seconds / 3600);
-		return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+		const minutes = Math.floor((seconds % 3600) / 60);
+		const remainingSeconds = seconds % 60;
+		const parts: string[] = [`${hours} ${hours === 1 ? "hour" : "hours"}`];
+		if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
+		return parts.join(" ");
 	}
 	// For >= 1 day, only show non-zero components
 	const days = Math.floor(seconds / 86400);
@@ -104,7 +112,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				...provider.network_config,
 				base_url: data.network_config?.base_url || undefined,
 				extra_headers: data.network_config?.extra_headers || undefined,
-				default_request_timeout_in_seconds: data.network_config?.default_request_timeout_in_seconds ?? 30,
+				default_request_timeout_in_seconds:
+					data.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: data.network_config?.max_retries ?? 0,
 				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,

@@ -2138,11 +2138,19 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
 
-	// Validate tools are supported by Bedrock
+	// capModel is the canonical model used only for Anthropic capability gating
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+
+	// Filter provider-unsupported tools (e.g. an `mcp` server tool that points
+	// back at Bifrost's own gateway) instead of failing the whole request. This
+	// mirrors the Chat path (bedrock/utils.go ValidateChatToolsForProvider) and
+	// restores pre-v1.5.0 behavior: function/custom tools are always kept, so the
+	// model still sees the tools Bifrost injected/executes; only tools Bedrock's
+	// Converse API genuinely can't consume are dropped. The kept slice is used
+	// locally below — bifrostReq.Params.Tools is never mutated.
+	var keepTools []schemas.ResponsesTool
 	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
-		if toolErr := anthropic.ValidateToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock); toolErr != nil {
-			return nil, toolErr
-		}
+		keepTools, _ = anthropic.ValidateResponsesToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
 	}
 
 	bedrockReq := &BedrockConverseRequest{
@@ -2219,7 +2227,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					tokenBudget = anthropic.MinimumReasoningMaxTokens
 				}
 				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-					if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
 						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 							"type": "adaptive",
 						})
@@ -2274,8 +2282,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						effort := *bifrostReq.Params.Reasoning.Effort
 						typeStr := "enabled"
 						switch effort {
-						case "high":
-							// for nova models we need to unset these fields at high effort
+						case "high", "xhigh", "max":
+							// Nova's maxReasoningEffort enum tops out at "high"; clamp
+							// xhigh/max and unset these fields at high effort.
+							effort = "high"
 							inferenceConfig.MaxTokens = nil
 							inferenceConfig.Temperature = nil
 							inferenceConfig.TopP = nil
@@ -2296,7 +2306,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 					} else if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-						if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
+						if anthropic.SupportsAdaptiveThinking(capModel) {
 							// Opus 4.6+: adaptive thinking + output_config.effort
 							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 							thinkingConfig := map[string]any{
@@ -2309,7 +2319,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 								} else {
 									thinkingConfig["display"] = "summarized"
 								}
-							} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+							} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
 								thinkingConfig["display"] = "summarized"
 							}
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -2351,7 +2361,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					}
 				} else {
 					if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-						if !anthropic.IsFableFamily(bifrostReq.Model) {
+						if !anthropic.IsFableFamily(capModel) {
 							// Fable/Mythos reject thinking:{type:"disabled"}; omit it
 							// entirely (adaptive thinking is always on for that family).
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
@@ -2404,11 +2414,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 	}
 
-	// Convert tools
-	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
+	// Convert tools (using the provider-filtered keepTools set computed above).
+	if len(keepTools) > 0 {
 		var bedrockTools []BedrockTool
 		isNova2 := schemas.IsNova2Model(bifrostReq.Model)
-		for _, tool := range bifrostReq.Params.Tools {
+		for _, tool := range keepTools {
 			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
 				if !isNova2 {
 					return nil, fmt.Errorf("tool type %q is only supported on Nova 2 models in Bedrock; got model %q", tool.Type, bifrostReq.Model)
@@ -2485,6 +2495,25 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
 		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && bedrockToolChoice.Tool.Name != "" {
 			bedrockToolChoice.Tool.Name = bedrockAliasToolName(ctx, bedrockToolChoice.Tool.Name)
+			// Reconcile the pinned tool against the converted (filtered) tool set.
+			// Tools dropped by ValidateResponsesToolsForProvider above (e.g. an
+			// unsupported `mcp` server tool) never reach bedrockReq.ToolConfig.Tools,
+			// so a toolChoice.tool that names a dropped tool would make Bedrock
+			// reject the request ("tool not found in toolConfig.tools"). Fall back
+			// to Bedrock's default "auto" in that case. Mirrors the Chat path's
+			// buildBedrockServerToolChoice reconciliation against its filtered set.
+			pinPresent := false
+			if bedrockReq.ToolConfig != nil {
+				for _, t := range bedrockReq.ToolConfig.Tools {
+					if t.ToolSpec != nil && t.ToolSpec.Name == bedrockToolChoice.Tool.Name {
+						pinPresent = true
+						break
+					}
+				}
+			}
+			if !pinPresent {
+				bedrockToolChoice = nil
+			}
 		}
 		// Per-model gate: Bedrock Converse rejects toolConfig.toolChoice.tool
 		// on Meta Llama variants ("This model doesn't support the
@@ -2536,8 +2565,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
 	ensureResponsesToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
-	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+	if !schemas.BedrockModelSupportsCachePoints(capModel) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
+	} else if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
 	}
 
 	return bedrockReq, nil
@@ -4232,7 +4263,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      block.Text,
-							Signature: block.Signature,
+							Signature: reasoningSignatureForBedrock(block.Signature),
 						},
 					},
 				}
@@ -4301,7 +4332,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      block.Text,
-							Signature: block.Signature,
+							Signature: reasoningSignatureForBedrock(block.Signature),
 						},
 					}
 				}

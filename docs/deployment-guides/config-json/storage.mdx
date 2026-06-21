@@ -21,7 +21,7 @@ If you use PostgreSQL for any store, the target database must be **UTF8 encoded*
 ## config_store
 
 <Note>
-When `config_store` is disabled (or absent), all configuration is loaded from `config.json` at startup only - the Web UI is disabled and changes require a restart. See [Two Configuration Modes](/deployment-guides/config-json#two-configuration-modes).
+When `config_store` is omitted, Bifrost creates a default SQLite config store in the app directory. Set `config_store.enabled` to `false` only when you want file-only configuration with no config-backed Web UI/API edits. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
 </Note>
 
 <Tabs>
@@ -129,7 +129,7 @@ Use `password_command` for short-lived database credentials such as AWS RDS IAM 
 
 ### Disabled (file-only mode)
 
-Use this when you want Bifrost to read all configuration from `config.json` only - no database, no Web UI.
+Use this when you want Bifrost to read all configuration from `config.json` only - no configuration database and no config-backed Web UI/API edits.
 
 ```json
 {

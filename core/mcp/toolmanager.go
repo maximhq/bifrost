@@ -681,11 +681,10 @@ func (m *ToolsManager) executeToolInternal(
 
 	// The connection (shared persistent OR ephemeral per-call) is supplied by
 	// the caller via AcquireClientConn. Admin-level credentials live on the
-	// transport; per-call request carries filtered context-extras only.
-	reqHeaders, err := m.credStore.RequestHeaders(ctx, executionConfig)
-	if err != nil {
-		return nil, "", "", err
-	}
+	// transport; per-request filtered context-extras are injected uniformly by the
+	// transport headerFunc (see createHTTPConnection/createSSEConnection), so no
+	// per-call Header is set here — that keeps ping/list_tools and tools/call on a
+	// single header path.
 	callRequest := mcp.CallToolRequest{
 		Request: mcp.Request{
 			Method: string(mcp.MethodToolsCall),
@@ -694,7 +693,6 @@ func (m *ToolsManager) executeToolInternal(
 			Name:      originalMCPToolName,
 			Arguments: arguments,
 		},
-		Header: reqHeaders,
 	}
 
 	toolResponse, callErr := clientConn.CallTool(toolCtx, callRequest)
