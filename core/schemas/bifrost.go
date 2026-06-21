@@ -888,6 +888,8 @@ func (t MCPRequestType) IsExecuteTool() bool {
 type BifrostMCPRequest struct {
 	RequestType MCPRequestType
 	ClientName  string // MCP client this request targets (always set, regardless of request type)
+	// ToolDefinition is the resolved execute-tool definition. It is observe-only for plugins.
+	ToolDefinition *ChatTool
 
 	*BifrostMCPPingRequest
 	*BifrostMCPListToolsRequest

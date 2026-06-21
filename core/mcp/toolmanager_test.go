@@ -37,6 +37,10 @@ func (m *mockToolClientManager) GetClientForTool(toolName string) *schemas.MCPCl
 	return nil
 }
 
+func (m *mockToolClientManager) GetToolDefinition(toolName string) *schemas.ChatTool {
+	return nil
+}
+
 func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return map[string][]schemas.ChatTool{
 		"test-client": m.tools,

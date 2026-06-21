@@ -789,6 +789,48 @@ func (t *countingTracer) CompleteAndFlushTrace(_ string) {
 	t.flushed.Add(1)
 }
 
+type responseErrorRecordingTracer struct {
+	schemas.NoOpTracer
+	err *schemas.BifrostError
+}
+
+func (t *responseErrorRecordingTracer) StartSpan(ctx context.Context, _ string, _ schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	return ctx, struct{}{}
+}
+
+func (t *responseErrorRecordingTracer) PopulateLLMResponseAttributes(_ *schemas.BifrostContext, _ schemas.SpanHandle, _ *schemas.BifrostResponse, err *schemas.BifrostError) {
+	t.err = err
+}
+
+func TestExecuteRequestWithRetries_PopulatesTraceErrorWithoutResponse(t *testing.T) {
+	tracer := &responseErrorRecordingTracer{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	providerErr := createBifrostError("invalid tool choice", Ptr(400), nil, false)
+	providerErr.Error.Code = Ptr("InternalError.Algo.InvalidParameter")
+
+	_, err := executeRequestWithRetries(
+		ctx,
+		createTestConfig(0, 0, 0),
+		func(_ schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return nil, providerErr
+		},
+		nil,
+		schemas.ChatCompletionRequest,
+		schemas.OpenAI,
+		"test-model",
+		nil,
+		NewDefaultLogger(schemas.LogLevelError),
+	)
+
+	if err != providerErr {
+		t.Fatal("expected provider error to be returned")
+	}
+	if tracer.err != providerErr {
+		t.Fatal("expected provider error to be populated on trace when response is nil")
+	}
+}
+
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	account := NewMockAccount()

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -30,8 +31,12 @@ const PluginName = "otel"
 // TraceType is the type of trace to use for the OTEL collector
 type TraceType string
 
-// TraceTypeGenAIExtension is the type of trace to use for the OTEL collector
-const TraceTypeGenAIExtension TraceType = "genai_extension"
+const (
+	// TraceTypeGenAIExtension exports OpenTelemetry GenAI semantic conventions.
+	TraceTypeGenAIExtension TraceType = "genai_extension"
+	// TraceTypeOpenInference adds Arize OpenInference semantic conventions.
+	TraceTypeOpenInference TraceType = "open_inference"
+)
 
 // Protocol is the protocol to use for the OTEL collector
 type Protocol string
@@ -72,6 +77,10 @@ type Profile struct {
 	Protocol     Protocol          `json:"protocol"`
 	TLSCACert    string            `json:"tls_ca_cert,omitempty"`
 	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+
+	// ResourceAttributes are profile-scoped OTEL resource attributes. They are applied only
+	// to this profile's ResourceSpan, after global OTEL_RESOURCE_ATTRIBUTES.
+	ResourceAttributes map[string]string `json:"resource_attributes,omitempty"`
 
 	// Metrics push configuration
 	MetricsEnabled      bool            `json:"metrics_enabled"`
@@ -207,6 +216,7 @@ type profileForStorage struct {
 	MetricsPushInterval   int               `json:"metrics_push_interval,omitempty"`
 	RequestHeaders        []string          `json:"request_headers,omitempty"`
 	DisableContentLogging bool              `json:"disable_content_logging,omitempty"`
+	ResourceAttributes    map[string]string `json:"resource_attributes,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -242,6 +252,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			MetricsPushInterval:   p.MetricsPushInterval,
 			RequestHeaders:        p.RequestHeaders,
 			DisableContentLogging: p.DisableContentLogging,
+			ResourceAttributes:    p.ResourceAttributes,
 		})
 	}
 	return sonic.Marshal(out)
@@ -301,6 +312,46 @@ func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
 	return v.Redacted()
 }
 
+func profileResourceAttributes(profile *Profile) ([]*commonpb.KeyValue, error) {
+	if profile == nil {
+		return nil, nil
+	}
+	attrs := make([]*commonpb.KeyValue, 0, len(profile.ResourceAttributes)+1)
+	keys := make([]string, 0, len(profile.ResourceAttributes))
+	for k := range profile.ResourceAttributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			return nil, fmt.Errorf("resource attribute key cannot be empty")
+		}
+		attrs = append(attrs, kvStr(key, profile.ResourceAttributes[k]))
+	}
+	return attrs, nil
+}
+
+func profileMetricResourceAttributes(profile *Profile) ([]attribute.KeyValue, error) {
+	if profile == nil {
+		return nil, nil
+	}
+	attrs := make([]attribute.KeyValue, 0, len(profile.ResourceAttributes)+1)
+	keys := make([]string, 0, len(profile.ResourceAttributes))
+	for k := range profile.ResourceAttributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			return nil, fmt.Errorf("metric resource attribute key cannot be empty")
+		}
+		attrs = append(attrs, attribute.String(key, profile.ResourceAttributes[k]))
+	}
+	return attrs, nil
+}
+
 // otelTarget is the runtime state for a single configured profile: one trace client
 // plus an optional metrics exporter, along with the per-profile identity (service name)
 // used when converting traces for this destination.
@@ -312,6 +363,7 @@ type otelTarget struct {
 	metricsExporter       *MetricsExporter
 	requestHeaders        []string
 	disableContentLogging bool
+	resourceAttributes    []*commonpb.KeyValue
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -428,15 +480,19 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	url := profile.CollectorURL.GetValue()
+	resourceAttributes, err := profileResourceAttributes(profile)
+	if err != nil {
+		return nil, fmt.Errorf("profile %d: %w", index, err)
+	}
 	target := &otelTarget{
 		serviceName:           serviceName,
 		url:                   url,
 		traceType:             profile.TraceType,
 		requestHeaders:        slices.Clone(profile.RequestHeaders),
 		disableContentLogging: profile.DisableContentLogging,
+		resourceAttributes:    resourceAttributes,
 	}
 
-	var err error
 	switch profile.Protocol {
 	case ProtocolGRPC:
 		target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
@@ -462,14 +518,20 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			target.client.Close()
 			return nil, fmt.Errorf("profile %d: metrics_push_interval must be between 1 and 300 seconds, got %d", index, pushInterval)
 		}
+		metricResourceAttributes, err := profileMetricResourceAttributes(profile)
+		if err != nil {
+			target.client.Close()
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
 		metricsConfig := &MetricsConfig{
-			ServiceName:  serviceName,
-			Endpoint:     profile.MetricsEndpoint.GetValue(),
-			Headers:      headers,
-			Protocol:     profile.Protocol,
-			TLSCACert:    profile.TLSCACert,
-			Insecure:     profile.Insecure,
-			PushInterval: pushInterval,
+			ServiceName:        serviceName,
+			Endpoint:           profile.MetricsEndpoint.GetValue(),
+			Headers:            headers,
+			Protocol:           profile.Protocol,
+			TLSCACert:          profile.TLSCACert,
+			Insecure:           profile.Insecure,
+			PushInterval:       pushInterval,
+			ResourceAttributes: metricResourceAttributes,
 		}
 		target.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
 		if err != nil {
@@ -556,6 +618,12 @@ func (p *OtelPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifros
 // The OTEL plugin receives completed traces from TracingMiddleware.
 func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
+}
+
+// PreRequestHook is a no-op. OTEL remains an LLMPlugin because PostLLMHook records
+// cache-hit metrics that cannot be derived from completed traces.
+func (p *OtelPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
 }
 
 // PostLLMHook records the cache-hit metric. Every other metric is derived from the
@@ -645,7 +713,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		go func(t *otelTarget) {
 			defer wg.Done()
 			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging)
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.traceType, t.disableContentLogging, t.resourceAttributes)
 				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
 					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
 				}
@@ -925,5 +993,8 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// Compile-time check that OtelPlugin implements ObservabilityPlugin
-var _ schemas.ObservabilityPlugin = (*OtelPlugin)(nil)
+var (
+	_ schemas.HTTPTransportPlugin = (*OtelPlugin)(nil)
+	_ schemas.LLMPlugin           = (*OtelPlugin)(nil)
+	_ schemas.ObservabilityPlugin = (*OtelPlugin)(nil)
+)

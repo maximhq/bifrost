@@ -5823,7 +5823,9 @@ func executeRequestWithRetries[T any](
 			// Don't end the span here - it will be ended when streaming completes
 		} else {
 			// Populate LLM response attributes for non-streaming responses
-			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
+			var traceResp *schemas.BifrostResponse
+			if resp, ok := any(result).(*schemas.BifrostResponse); ok && resp != nil {
+				traceResp = resp
 				// Populate ExtraFields with provider/model/requestType before cost
 				// calculation, because the per-request worker only calls PopulateExtraFields
 				// after executeRequestWithRetries returns (line ~5802).  Without this,
@@ -5836,8 +5838,10 @@ func executeRequestWithRetries[T any](
 					}
 				}
 				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
-				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
 			}
+			// Populate errors even when the provider returned no response. Otherwise
+			// structured provider error message/type/code never reach the span.
+			tracer.PopulateLLMResponseAttributes(ctx, handle, traceResp, bifrostError)
 
 			// End span with appropriate status
 			if bifrostError != nil {

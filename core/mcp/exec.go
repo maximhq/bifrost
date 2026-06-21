@@ -29,6 +29,7 @@ var mcpRequestPool = sync.Pool{
 func resetMCPRequest(req *schemas.BifrostMCPRequest) {
 	req.RequestType = ""
 	req.ClientName = ""
+	req.ToolDefinition = nil
 	req.BifrostMCPPingRequest = nil
 	req.BifrostMCPListToolsRequest = nil
 	req.BifrostMCPExecuteToolRequest = nil
@@ -110,6 +111,7 @@ func (m *MCPManager) executeToolWithHooks(
 	if state != nil {
 		executionConfig = state.ExecutionConfig
 		toolNameMapping = state.ToolNameMapping
+		request.ToolDefinition = m.GetToolDefinition(request.GetToolName())
 	}
 
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {

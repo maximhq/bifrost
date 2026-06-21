@@ -2114,6 +2114,8 @@ type captureTracePlugin struct {
 	rootEnd   time.Time
 	llmEnd    time.Time
 	foundLLM  bool
+	foundMCP  bool
+	mcpParent string
 }
 
 func (p *captureTracePlugin) GetName() string { return "capture-trace" }
@@ -2130,8 +2132,69 @@ func (p *captureTracePlugin) Inject(_ context.Context, trace *schemas.Trace) err
 			p.llmEnd = span.EndTime
 			p.foundLLM = true
 		}
+		if span != nil && span.Kind == schemas.SpanKindMCPClient {
+			p.foundMCP = true
+			p.mcpParent = span.ParentID
+		}
 	}
 	return nil
+}
+
+func TestTracingMiddleware_PropagatesTracerForMCPGatewayChildSpan(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureTracePlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	tm := NewTracingMiddleware(tracer)
+	var rootSpanID string
+	var inheritedTracer, createdChildSpan bool
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		rootSpanID, _ = ctx.UserValue(schemas.BifrostContextKeySpanID).(string)
+
+		childTracer, _ := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+		if childTracer == nil {
+			return
+		}
+		inheritedTracer = true
+		childCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+		childCtx = context.WithValue(childCtx, schemas.BifrostContextKeySpanID, rootSpanID)
+		_, handle := childTracer.StartSpan(childCtx, "mcp.chat_tool_call.test", schemas.SpanKindMCPClient)
+		if handle == nil {
+			return
+		}
+		createdChildSpan = true
+		childTracer.EndSpan(handle, schemas.SpanStatusOk, "")
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/mcp")
+	ctx.Request.Header.SetMethod("POST")
+	tm.Middleware()(next)(ctx)
+
+	if !inheritedTracer {
+		t.Fatal("MCP gateway context did not inherit the request tracer")
+	}
+	if !createdChildSpan {
+		t.Fatal("MCP gateway context could not create a child span")
+	}
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace injection")
+	}
+
+	if !plugin.foundMCP {
+		t.Fatal("mcp.client child span not found in flushed trace")
+	}
+	if plugin.mcpParent != rootSpanID {
+		t.Fatalf("mcp.client parent = %q, want HTTP root %q", plugin.mcpParent, rootSpanID)
+	}
 }
 
 // TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan asserts that for a deferred

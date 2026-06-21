@@ -479,8 +479,17 @@ const (
 	// The corresponding legacy gen_ai.* emissions are tagged "// legacy:" at their
 	// call sites and will be removed once dashboards migrate over.
 	// =====================================================================
+	AttrBifrostAgentMode           = "bifrost.agent.mode"
+	AttrBifrostMCPClientName       = "bifrost.mcp.client_name"
+	AttrBifrostMCPLatencyMS        = "bifrost.mcp.latency_ms"
+	AttrBifrostMCPRequestType      = "bifrost.mcp.request_type"
+	AttrBifrostMCPToolName         = "bifrost.mcp.tool_name"
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
+	AttrBifrostToolDescription     = "bifrost.tool.description"
+	AttrBifrostToolDefinitions     = "bifrost.tool.definitions"
+	AttrBifrostToolJSONSchema      = "bifrost.tool.json_schema"
+	AttrBifrostToolParameters      = "bifrost.tool.parameters"
 	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"
 	AttrBifrostVirtualKeyName      = "bifrost.virtual_key.name"
 	AttrBifrostSelectedKeyID       = "bifrost.selected_key.id"

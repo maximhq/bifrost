@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -181,7 +182,11 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 				"collector_url": "env.OTEL_URL",
 				"trace_type": "genai_extension",
 				"protocol": "grpc",
-				"headers": {"Authorization": "env.OTEL_TOKEN", "X-Tenant": "acme"}
+				"headers": {"Authorization": "env.OTEL_TOKEN", "X-Tenant": "acme"},
+				"resource_attributes": {
+					"deployment.environment.name": "staging",
+					"openinference.project.name": "phoenix-a"
+				}
 			},
 			{
 				"service_name": "svc-b",
@@ -240,6 +245,12 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 	}
 	if back.Profiles[0].Headers["X-Tenant"] != "acme" {
 		t.Errorf("round-trip profile 0 literal header lost: %q", back.Profiles[0].Headers["X-Tenant"])
+	}
+	if back.Profiles[0].ResourceAttributes["deployment.environment.name"] != "staging" {
+		t.Errorf("round-trip profile 0 resource attribute lost: %q", back.Profiles[0].ResourceAttributes["deployment.environment.name"])
+	}
+	if back.Profiles[0].ResourceAttributes["openinference.project.name"] != "phoenix-a" {
+		t.Errorf("round-trip profile 0 project resource attribute lost: %q", back.Profiles[0].ResourceAttributes["openinference.project.name"])
 	}
 	if back.Profiles[1].CollectorURL.GetValue() != "http://collector-b:4318/v1/traces" {
 		t.Errorf("round-trip profile 1 collector_url = %q, want http://collector-b:4318/v1/traces", back.Profiles[1].CollectorURL.GetValue())
@@ -352,6 +363,41 @@ func TestInitMultiProfileValidation(t *testing.T) {
 	t.Cleanup(func() { _ = plugin.Cleanup() })
 	if len(plugin.targets) != 2 {
 		t.Errorf("targets len = %d, want 2", len(plugin.targets))
+	}
+}
+
+func TestInitRejectsEmptyResourceAttributeKey(t *testing.T) {
+	raw := `{"profiles": [
+		{
+			"collector_url": "a:4317",
+			"trace_type": "genai_extension",
+			"protocol": "grpc",
+			"resource_attributes": {"   ": "staging"}
+		}
+	]}`
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	_, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+	if err == nil {
+		t.Fatal("expected invalid resource attribute key error")
+	}
+	if !strings.Contains(err.Error(), "profile 0: resource attribute key cannot be empty") {
+		t.Fatalf("error = %q, want empty resource attribute key", err)
+	}
+}
+
+func TestProfileMetricResourceAttributesRejectsEmptyKey(t *testing.T) {
+	_, err := profileMetricResourceAttributes(&Profile{
+		ResourceAttributes: map[string]string{"\t": "staging"},
+	})
+	if err == nil {
+		t.Fatal("expected invalid metric resource attribute key error")
+	}
+	if !strings.Contains(err.Error(), "metric resource attribute key cannot be empty") {
+		t.Fatalf("error = %q, want empty metric resource attribute key", err)
 	}
 }
 

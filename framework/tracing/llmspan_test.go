@@ -176,3 +176,88 @@ func TestPopulateRequestExtraParamsSerializesStructuredValues(t *testing.T) {
 		})
 	}
 }
+
+func TestPopulateChatRequestAttributesIncludesToolsAndToolMessageIdentity(t *testing.T) {
+	toolName := "weather"
+	toolCallID := "call-1"
+	messageName := "weather"
+	attrs := map[string]any{}
+
+	PopulateChatRequestAttributes(&schemas.BifrostChatRequest{
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleTool,
+			Name: &messageName,
+			ChatToolMessage: &schemas.ChatToolMessage{
+				ToolCallID: &toolCallID,
+			},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name: toolName,
+				},
+			}},
+		},
+	}, attrs)
+
+	tools, ok := attrs[schemas.AttrTools].(string)
+	if !ok {
+		t.Fatalf("%s = %T(%v), want JSON string", schemas.AttrTools, attrs[schemas.AttrTools], attrs[schemas.AttrTools])
+	}
+	if !strings.Contains(tools, `"name":"weather"`) {
+		t.Errorf("%s = %q, want full tool definition", schemas.AttrTools, tools)
+	}
+
+	messages, ok := attrs[schemas.AttrInputMessages].(string)
+	if !ok {
+		t.Fatalf("%s = %T(%v), want JSON string", schemas.AttrInputMessages, attrs[schemas.AttrInputMessages], attrs[schemas.AttrInputMessages])
+	}
+	if !strings.Contains(messages, `"name":"weather"`) || !strings.Contains(messages, `"tool_call_id":"call-1"`) {
+		t.Errorf("%s = %q, want tool message name and call ID", schemas.AttrInputMessages, messages)
+	}
+}
+
+func TestPopulateResponsesRequestAttributesPreservesCompactToolsAndFullDefinitions(t *testing.T) {
+	name := "weather"
+	description := "Get weather"
+	attrs := map[string]any{}
+
+	PopulateResponsesRequestAttributes(&schemas.BifrostResponsesRequest{
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:        schemas.ResponsesToolTypeFunction,
+				Name:        &name,
+				Description: &description,
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{
+					Parameters: &schemas.ToolFunctionParameters{
+						Type:       "object",
+						Properties: schemas.NewOrderedMap(),
+					},
+				},
+			}},
+		},
+	}, attrs)
+
+	var compact []map[string]any
+	if err := schemas.Unmarshal([]byte(attrs[schemas.AttrTools].(string)), &compact); err != nil {
+		t.Fatalf("%s is not valid JSON: %v", schemas.AttrTools, err)
+	}
+	if len(compact) != 1 || compact[0]["name"] != name || compact[0]["description"] != description {
+		t.Fatalf("%s = %v, want compact name and description", schemas.AttrTools, compact)
+	}
+	if _, ok := compact[0]["type"]; ok {
+		t.Fatalf("%s = %v, should preserve compact legacy shape", schemas.AttrTools, compact)
+	}
+
+	var full []map[string]any
+	if err := schemas.Unmarshal([]byte(attrs[schemas.AttrBifrostToolDefinitions].(string)), &full); err != nil {
+		t.Fatalf("%s is not valid JSON: %v", schemas.AttrBifrostToolDefinitions, err)
+	}
+	if len(full) != 1 || full[0]["type"] != string(schemas.ResponsesToolTypeFunction) {
+		t.Fatalf("%s = %v, want full Responses tool definition", schemas.AttrBifrostToolDefinitions, full)
+	}
+	if _, ok := full[0]["parameters"]; !ok {
+		t.Fatalf("%s = %v, want parameters", schemas.AttrBifrostToolDefinitions, full)
+	}
+}

@@ -32,6 +32,18 @@ func (m *testClientManager) GetClientForTool(toolName string) *schemas.MCPClient
 	return nil
 }
 
+func (m *testClientManager) GetToolDefinition(toolName string) *schemas.ChatTool {
+	for _, tools := range m.tools {
+		for _, tool := range tools {
+			if tool.Function != nil && tool.Function.Name == toolName {
+				toolCopy := schemas.DeepCopyChatTool(tool)
+				return &toolCopy
+			}
+		}
+	}
+	return nil
+}
+
 func (m *testClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return m.clients[clientName]
 }

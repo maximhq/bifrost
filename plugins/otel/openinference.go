@@ -1,0 +1,441 @@
+package otel
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+const (
+	openInferenceSpanKind = "openinference.span.kind"
+	oiInputValue          = "input.value"
+	oiInputMIMEType       = "input.mime_type"
+	oiOutputValue         = "output.value"
+	oiOutputMIMEType      = "output.mime_type"
+)
+
+// convertSpanToOpenInferenceAttributes maps Bifrost's canonical attributes to a clean
+// OpenInference attribute set. The source attributes are used only as conversion input
+// and are not exported by OpenInference profiles.
+func convertSpanToOpenInferenceAttributes(trace *schemas.Trace, span *schemas.Span, disableContentLogging bool) []*KeyValue {
+	attrs := span.Attributes
+	kind := openInferenceKind(trace, span)
+	result := []*KeyValue{kvStr(openInferenceSpanKind, kind)}
+
+	if sessionID, ok := trace.GetAttribute(schemas.TraceAttrSessionID); ok {
+		if kv := anyToKeyValue("session.id", sessionID); kv != nil {
+			result = append(result, kv)
+		}
+	}
+
+	result = appendMappedAttribute(result, attrs, "user.id", schemas.AttrRequestUser)
+	result = appendOpenInferenceMetadata(result, attrs, kind)
+	result = appendOpenInferenceExceptionAttributes(result, span)
+
+	switch kind {
+	case "LLM":
+		provider, system := openInferenceProviderAndSystem(attrs)
+		if provider != "" {
+			result = append(result, kvStr("llm.provider", provider))
+		}
+		if system != "" {
+			result = append(result, kvStr("llm.system", system))
+		}
+		result = appendMappedAttribute(result, attrs, "llm.model_name", schemas.AttrResponseModel, schemas.AttrRequestModel)
+		result = appendOpenInferenceTokenAttributes(result, attrs)
+		result = appendMappedAttribute(result, attrs, "llm.cost.total", schemas.AttrUsageCost)
+		result = appendMappedAttribute(result, attrs, "llm.finish_reason", schemas.AttrFinishReason)
+		if invocation := openInferenceInvocationParameters(attrs); invocation != "" {
+			result = append(result, kvStr("llm.invocation_parameters", invocation))
+		}
+	case "EMBEDDING":
+		result = appendMappedAttribute(result, attrs, "embedding.model_name", schemas.AttrResponseModel, schemas.AttrRequestModel)
+		result = appendOpenInferenceTokenAttributes(result, attrs)
+		if invocation := openInferenceInvocationParameters(attrs); invocation != "" {
+			result = append(result, kvStr("embedding.invocation_parameters", invocation))
+		}
+	case "TOOL":
+		result = appendOpenInferenceToolIdentity(result, attrs)
+	}
+
+	if disableContentLogging {
+		return result
+	}
+
+	return appendOpenInferenceContent(result, attrs, kind)
+}
+
+func appendOpenInferenceMetadata(result []*KeyValue, attrs map[string]any, kind string) []*KeyValue {
+	if kind != "TOOL" {
+		return appendMappedAttribute(result, attrs, "metadata", schemas.AttrRespMetadata)
+	}
+
+	metadata := make(map[string]any)
+	if raw, ok := attrs[schemas.AttrRespMetadata].(string); ok {
+		_ = schemas.Unmarshal([]byte(raw), &metadata)
+	}
+	for target, source := range map[string]string{
+		"mcp.client_name":  schemas.AttrBifrostMCPClientName,
+		"mcp.latency_ms":   schemas.AttrBifrostMCPLatencyMS,
+		"mcp.request_type": schemas.AttrBifrostMCPRequestType,
+		"mcp.tool_name":    schemas.AttrBifrostMCPToolName,
+	} {
+		if value, ok := attrs[source]; ok && value != nil {
+			metadata[target] = value
+		}
+	}
+	if len(metadata) == 0 {
+		return result
+	}
+	data, err := schemas.MarshalSorted(metadata)
+	if err != nil {
+		return result
+	}
+	return append(result, kvStr("metadata", string(data)))
+}
+
+func appendOpenInferenceExceptionAttributes(result []*KeyValue, span *schemas.Span) []*KeyValue {
+	if span.Status != schemas.SpanStatusError {
+		return result
+	}
+	result = appendMappedAttribute(result, span.Attributes, "exception.message", schemas.AttrError)
+	if _, ok := firstAttribute(span.Attributes, schemas.AttrError); !ok && span.StatusMsg != "" {
+		result = append(result, kvStr("exception.message", span.StatusMsg))
+	}
+	return appendMappedAttribute(result, span.Attributes, "exception.type", schemas.AttrErrorTypeSpec, schemas.AttrErrorType, schemas.AttrErrorCode)
+}
+
+func appendOpenInferenceToolIdentity(result []*KeyValue, attrs map[string]any) []*KeyValue {
+	result = appendMappedAttribute(result, attrs, "tool.name", schemas.AttrToolName)
+	result = appendMappedAttribute(result, attrs, "tool_call.function.name", schemas.AttrToolName)
+	result = appendMappedAttribute(result, attrs, "tool.id", schemas.AttrToolCallID)
+	return appendMappedAttribute(result, attrs, "tool_call.id", schemas.AttrToolCallID)
+}
+
+func appendOpenInferenceTokenAttributes(result []*KeyValue, attrs map[string]any) []*KeyValue {
+	result = appendMappedAttribute(result, attrs, "llm.token_count.prompt", schemas.AttrInputTokens, schemas.AttrPromptTokens)
+	result = appendMappedAttribute(result, attrs, "llm.token_count.completion", schemas.AttrOutputTokens, schemas.AttrCompletionTokens)
+	result = appendMappedAttribute(result, attrs, "llm.token_count.total", schemas.AttrTotalTokens)
+	result = appendMappedAttribute(result, attrs, "llm.token_count.prompt_details.cache_read", schemas.AttrUsageCacheReadInputTokens, schemas.AttrPromptTokenDetailsCachedRead)
+	result = appendMappedAttribute(result, attrs, "llm.token_count.prompt_details.cache_write", schemas.AttrUsageCacheCreationInputTokens, schemas.AttrPromptTokenDetailsCachedWrite)
+	result = appendMappedAttribute(result, attrs, "llm.token_count.completion_details.reasoning", schemas.AttrUsageReasoningOutputTokens, schemas.AttrCompletionTokenDetailsReason, schemas.AttrOutputTokenDetailsReason)
+	return result
+}
+
+func openInferenceProviderAndSystem(attrs map[string]any) (provider, system string) {
+	canonicalValue, canonicalOK := firstAttribute(attrs, schemas.AttrProviderName)
+	rawValue, rawOK := firstAttribute(attrs, schemas.AttrBifrostProviderName)
+	if !canonicalOK && !rawOK {
+		return "", ""
+	}
+
+	canonical := ""
+	if canonicalOK {
+		canonical = fmt.Sprint(canonicalValue)
+	}
+	raw := canonical
+	if rawOK {
+		raw = fmt.Sprint(rawValue)
+	}
+
+	provider = openInferenceProviderName(canonical, raw)
+	system = openInferenceSystemName(canonical, raw, provider)
+	return provider, system
+}
+
+func openInferenceProviderName(canonical, raw string) string {
+	switch canonical {
+	case "aws.bedrock":
+		return "aws"
+	case "gcp.vertex_ai", "gcp.gemini":
+		return "google"
+	case "azure.ai.openai":
+		return "azure"
+	case "mistral_ai":
+		return "mistralai"
+	case "x_ai":
+		return "xai"
+	}
+
+	switch raw {
+	case "bedrock":
+		return "aws"
+	case "vertex", "gemini":
+		return "google"
+	case "mistral":
+		return "mistralai"
+	case "xai":
+		return "xai"
+	default:
+		return raw
+	}
+}
+
+func openInferenceSystemName(canonical, raw, provider string) string {
+	switch canonical {
+	case "aws.bedrock":
+		return "amazon"
+	case "gcp.vertex_ai":
+		return "vertexai"
+	case "gcp.gemini":
+		return "google"
+	case "azure.ai.openai":
+		return "openai"
+	case "mistral_ai":
+		return "mistralai"
+	case "x_ai":
+		return "xai"
+	}
+
+	switch raw {
+	case "bedrock":
+		return "amazon"
+	case "vertex":
+		return "vertexai"
+	case "gemini":
+		return "google"
+	case "azure":
+		return "openai"
+	case "mistral":
+		return "mistralai"
+	case "xai":
+		return "xai"
+	default:
+		return provider
+	}
+}
+
+func openInferenceKind(trace *schemas.Trace, span *schemas.Span) string {
+	if span == trace.RootSpan && span.Kind != schemas.SpanKindLLMCall {
+		if agentMode, ok := span.Attributes[schemas.AttrBifrostAgentMode].(bool); ok && agentMode {
+			return "AGENT"
+		}
+	}
+	if span.Kind == schemas.SpanKindMCPClient {
+		if operation, ok := span.Attributes[schemas.AttrOperationName].(string); ok && operation == schemas.OTelOperationNameExecuteTool {
+			return "TOOL"
+		}
+	}
+
+	switch span.Kind {
+	case schemas.SpanKindLLMCall, schemas.SpanKindSpeech, schemas.SpanKindTranscription:
+		return "LLM"
+	case schemas.SpanKindEmbedding:
+		return "EMBEDDING"
+	case schemas.SpanKindMCPTool:
+		return "TOOL"
+	default:
+		return "CHAIN"
+	}
+}
+
+func appendMappedAttribute(result []*KeyValue, attrs map[string]any, target string, sources ...string) []*KeyValue {
+	value, ok := firstAttribute(attrs, sources...)
+	if !ok {
+		return result
+	}
+	if target == "llm.finish_reason" {
+		if values, ok := value.([]string); ok && len(values) > 0 {
+			value = values[0]
+		}
+	}
+	if kv := anyToKeyValue(target, value); kv != nil {
+		result = append(result, kv)
+	}
+	return result
+}
+
+func firstAttribute(attrs map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if value, ok := attrs[key]; ok && value != nil {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func openInferenceInvocationParameters(attrs map[string]any) string {
+	params := make(map[string]any)
+	for key, value := range attrs {
+		if !strings.HasPrefix(key, "gen_ai.request.") {
+			continue
+		}
+		name := strings.TrimPrefix(key, "gen_ai.request.")
+		switch name {
+		case "prompt", "tools", "user", "message_count", "instructions":
+			continue
+		}
+		params[name] = value
+	}
+	if len(params) == 0 {
+		return ""
+	}
+	data, err := schemas.MarshalSorted(params)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func appendOpenInferenceContent(result []*KeyValue, attrs map[string]any, kind string) []*KeyValue {
+	if kind == "EMBEDDING" {
+		result = appendMappedAttribute(result, attrs, "embedding.text", schemas.AttrInputText)
+	}
+	if kind == "TOOL" {
+		result = appendMappedAttribute(result, attrs, "tool.description", schemas.AttrBifrostToolDescription)
+		result = appendMappedAttribute(result, attrs, "tool.json_schema", schemas.AttrBifrostToolJSONSchema)
+		result = appendMappedAttribute(result, attrs, "tool.parameters", schemas.AttrBifrostToolParameters)
+	}
+
+	if value, ok := firstAttribute(attrs, schemas.AttrInputMessages); ok {
+		result = appendJSONContent(result, "llm.input_messages", oiInputValue, oiInputMIMEType, value)
+	} else if value, ok := firstAttribute(attrs, schemas.AttrInputText, schemas.AttrInputSpeech, schemas.AttrInputEmbedding); ok {
+		semanticKey := "llm.prompts.0.prompt.text"
+		if kind == "EMBEDDING" {
+			semanticKey = ""
+		}
+		result = appendTextContent(result, semanticKey, oiInputValue, oiInputMIMEType, value)
+	}
+
+	if value, ok := firstAttribute(attrs, schemas.AttrOutputMessages); ok {
+		if choices, ok := value.([]string); ok {
+			for i, choice := range choices {
+				result = append(result, kvStr(fmt.Sprintf("llm.choices.%d.completion.text", i), choice))
+			}
+			result = appendTextContent(result, "", oiOutputValue, oiOutputMIMEType, value)
+		} else {
+			result = appendJSONContent(result, "llm.output_messages", oiOutputValue, oiOutputMIMEType, value)
+		}
+	}
+
+	if value, ok := firstAttribute(attrs, schemas.AttrBifrostToolDefinitions, schemas.AttrTools); ok {
+		result = appendOpenInferenceTools(result, value)
+	}
+
+	if value, ok := firstAttribute(attrs, schemas.AttrToolCallArguments); ok {
+		result = appendTextContent(result, "tool_call.function.arguments", oiInputValue, oiInputMIMEType, value)
+	}
+	if value, ok := firstAttribute(attrs, schemas.AttrToolCallResult); ok {
+		result = appendTextContent(result, "", oiOutputValue, oiOutputMIMEType, value)
+	}
+	return result
+}
+
+func appendJSONContent(result []*KeyValue, prefix, valueKey, mimeKey string, value any) []*KeyValue {
+	raw := openInferenceContentValue(value)
+	var items []map[string]any
+	if err := schemas.Unmarshal([]byte(raw), &items); err == nil {
+		for i, item := range items {
+			result = appendOpenInferenceMessage(result, fmt.Sprintf("%s.%d", prefix, i), item)
+		}
+		result = append(result, kvStr(valueKey, raw), kvStr(mimeKey, "application/json"))
+		return result
+	}
+	return appendTextContent(result, "", valueKey, mimeKey, value)
+}
+
+func appendTextContent(result []*KeyValue, semanticKey, valueKey, mimeKey string, value any) []*KeyValue {
+	raw := openInferenceContentValue(value)
+	if raw == "" {
+		return result
+	}
+	if semanticKey != "" {
+		result = append(result, kvStr(semanticKey, raw))
+	}
+	result = append(result, kvStr(valueKey, raw), kvStr(mimeKey, contentMIMEType(raw)))
+	return result
+}
+
+func openInferenceContentValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	data, err := schemas.MarshalSorted(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(data)
+}
+
+func appendOpenInferenceMessage(result []*KeyValue, prefix string, message map[string]any) []*KeyValue {
+	result = appendMappedAttribute(result, message, prefix+".message.role", "role")
+	result = appendMappedAttribute(result, message, prefix+".message.content", "content")
+	result = appendMappedAttribute(result, message, prefix+".message.name", "name")
+	result = appendMappedAttribute(result, message, prefix+".message.tool_call_id", "tool_call_id")
+
+	if calls, ok := message["tool_calls"].([]any); ok {
+		for i, rawCall := range calls {
+			call, ok := rawCall.(map[string]any)
+			if !ok {
+				continue
+			}
+			callPrefix := fmt.Sprintf("%s.message.tool_calls.%d.tool_call", prefix, i)
+			result = appendMappedAttribute(result, call, callPrefix+".id", "id")
+			result = appendMappedAttribute(result, call, callPrefix+".function.name", "name")
+			result = appendMappedAttribute(result, call, callPrefix+".function.arguments", "args")
+		}
+	}
+	return result
+}
+
+func appendOpenInferenceTools(result []*KeyValue, value any) []*KeyValue {
+	raw := openInferenceContentValue(value)
+	var tools []any
+	if err := schemas.Unmarshal([]byte(raw), &tools); err != nil {
+		return result
+	}
+	for i, tool := range tools {
+		if name := openInferenceToolName(tool); name != "" {
+			result = append(result, kvStr(fmt.Sprintf("llm.tools.%d.tool.name", i), name))
+		}
+		if description := openInferenceToolDescription(tool); description != "" {
+			result = append(result, kvStr(fmt.Sprintf("llm.tools.%d.tool.description", i), description))
+		}
+		data, err := schemas.MarshalSorted(tool)
+		if err == nil {
+			result = append(result, kvStr(fmt.Sprintf("llm.tools.%d.tool.json_schema", i), string(data)))
+		}
+	}
+	return result
+}
+
+func openInferenceToolName(tool any) string {
+	toolMap, ok := tool.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if name, ok := toolMap["name"].(string); ok {
+		return name
+	}
+	if function, ok := toolMap["function"].(map[string]any); ok {
+		if name, ok := function["name"].(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
+func openInferenceToolDescription(tool any) string {
+	toolMap, ok := tool.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if description, ok := toolMap["description"].(string); ok {
+		return description
+	}
+	if function, ok := toolMap["function"].(map[string]any); ok {
+		if description, ok := function["description"].(string); ok {
+			return description
+		}
+	}
+	return ""
+}
+
+func contentMIMEType(value string) string {
+	var parsed any
+	if schemas.Unmarshal([]byte(value), &parsed) == nil {
+		return "application/json"
+	}
+	return "text/plain"
+}

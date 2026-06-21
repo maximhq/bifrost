@@ -67,6 +67,21 @@ func (m *MCPManager) RunWithPluginPipeline(
 			if name := req.GetToolName(); name != "" {
 				tracer.SetAttribute(spanHandle, schemas.AttrToolName, name)
 			}
+			if tool := req.ToolDefinition; tool != nil {
+				if data, err := schemas.MarshalString(tool); err == nil {
+					tracer.SetAttribute(spanHandle, schemas.AttrBifrostToolJSONSchema, data)
+				}
+				if tool.Function != nil {
+					if tool.Function.Description != nil {
+						tracer.SetAttribute(spanHandle, schemas.AttrBifrostToolDescription, *tool.Function.Description)
+					}
+					if tool.Function.Parameters != nil {
+						if data, err := schemas.MarshalString(tool.Function.Parameters); err == nil {
+							tracer.SetAttribute(spanHandle, schemas.AttrBifrostToolParameters, data)
+						}
+					}
+				}
+			}
 			// GetToolArguments returns interface{}; the Responses branch boxes a
 			// *string, so a nil pointer survives the != nil guard. Unwrap and skip
 			// it explicitly, and deref non-nil so the attribute is the JSON string.
@@ -89,6 +104,36 @@ func (m *MCPManager) RunWithPluginPipeline(
 	defer func() {
 		if tracer == nil {
 			return
+		}
+		if req != nil && req.RequestType.IsExecuteTool() {
+			clientName := req.ClientName
+			toolName := req.GetToolName()
+			requestType := req.RequestType
+			var latency int64
+			if finalResponse != nil {
+				if finalResponse.ExtraFields.ClientName != "" {
+					clientName = finalResponse.ExtraFields.ClientName
+				}
+				if finalResponse.ExtraFields.ToolName != "" {
+					toolName = finalResponse.ExtraFields.ToolName
+				}
+				if finalResponse.ExtraFields.MCPRequestType != "" {
+					requestType = finalResponse.ExtraFields.MCPRequestType
+				}
+				latency = finalResponse.ExtraFields.Latency
+			}
+			if clientName != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPClientName, clientName)
+			}
+			if toolName != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPToolName, toolName)
+			}
+			if requestType != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPRequestType, string(requestType))
+			}
+			if latency > 0 {
+				tracer.SetAttribute(spanHandle, schemas.AttrBifrostMCPLatencyMS, latency)
+			}
 		}
 		// Tool-call result captured via named returns — set just before EndSpan so the
 		// attribute lands on the open span before it's frozen.

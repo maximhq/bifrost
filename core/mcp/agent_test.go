@@ -63,11 +63,36 @@ func (m *MockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 	return schemas.NoopLogEvent
 }
 
+type agentTraceAttributeTracer struct {
+	schemas.NoOpTracer
+	attrs map[string]any
+}
+
+func (t *agentTraceAttributeTracer) GetSpanHandleByID(_ string, _ *string) schemas.SpanHandle {
+	return struct{}{}
+}
+
+func (t *agentTraceAttributeTracer) SetAttribute(_ schemas.SpanHandle, key string, value any) {
+	t.attrs[key] = value
+}
+
+func contextWithAgentTrace() (*schemas.BifrostContext, *agentTraceAttributeTracer) {
+	tracer := &agentTraceAttributeTracer{attrs: make(map[string]any)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	return ctx, tracer
+}
+
 // MockClientManager implements ClientManager for testing
 type MockClientManager struct{}
 
 func (m *MockClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
 	return nil // Return nil to simulate no client found
+}
+
+func (m *MockClientManager) GetToolDefinition(toolName string) *schemas.ChatTool {
+	return nil
 }
 
 func (m *MockClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
@@ -79,7 +104,7 @@ func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 }
 
 func (m *MockClientManager) GetPluginPipeline() PluginPipeline             { return nil }
-func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline)  {}
+func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 func (m *MockClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
 }
@@ -362,7 +387,7 @@ func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
 		},
 	}
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx, tracer := contextWithAgentTrace()
 	agentModeExecutor := &AgentModeExecutor{
 		logger: &MockLogger{},
 	}
@@ -382,6 +407,9 @@ func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
 	// Verify that no LLM calls were made (since tools are non-auto-executable)
 	if llmCaller.chatCallCount != 0 {
 		t.Errorf("Expected 0 LLM calls for non-auto-executable tools, got %d", llmCaller.chatCallCount)
+	}
+	if _, ok := tracer.attrs[schemas.AttrBifrostAgentMode]; ok {
+		t.Error("non-auto-executable tools should not mark the trace as agent mode")
 	}
 }
 
@@ -562,6 +590,10 @@ func (m *MockAutoClientManager) GetClientForTool(toolName string) *schemas.MCPCl
 	}
 }
 
+func (m *MockAutoClientManager) GetToolDefinition(toolName string) *schemas.ChatTool {
+	return nil
+}
+
 func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return nil
 }
@@ -670,7 +702,7 @@ func TestParallelToolCallsHaveUniqueMCPLogIDs(t *testing.T) {
 		}, nil
 	}
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx, tracer := contextWithAgentTrace()
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 
 	originalReq := &schemas.BifrostChatRequest{
@@ -690,6 +722,9 @@ func TestParallelToolCallsHaveUniqueMCPLogIDs(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := tracer.attrs[schemas.AttrBifrostAgentMode]; got != true {
+		t.Fatalf("executed tools should mark the trace as agent mode, got %v", got)
 	}
 
 	if len(seenMCPLogIDs) != numTools {

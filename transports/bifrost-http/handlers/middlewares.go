@@ -1164,8 +1164,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			if sessionID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id"))); sessionID != "" {
 				tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
 			}
-			// Only trace ID goes into context (lightweight, no bloat)
+			// Propagate trace state and the pinned tracer so paths that bypass core
+			// inference, such as the MCP gateway, can create child spans.
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
+			ctx.SetUserValue(schemas.BifrostContextKeyTracer, tracer)
 			// Extract parent span ID from W3C traceparent header (if present)
 			// This is the 16-char span ID from the upstream service that should be
 			// set as the ParentID of our root span for proper trace linking in Datadog/etc.

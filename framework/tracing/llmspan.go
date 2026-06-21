@@ -253,6 +253,11 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 		if req.Params.User != nil {
 			attrs[schemas.AttrRequestUser] = *req.Params.User
 		}
+		if len(req.Params.Tools) > 0 {
+			if data, err := schemas.MarshalString(req.Params.Tools); err == nil {
+				attrs[schemas.AttrTools] = data
+			}
+		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
 			attrs[k] = formatTraceValue(v)
@@ -746,6 +751,9 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		}
 		if data, err := schemas.MarshalString(tools); err == nil {
 			attrs[schemas.AttrTools] = data
+		}
+		if data, err := schemas.MarshalString(req.Params.Tools); err == nil {
+			attrs[schemas.AttrBifrostToolDefinitions] = data
 		}
 	}
 	if req.Params.Truncation != nil {
@@ -1380,6 +1388,8 @@ func PopulateFileContentResponseAttributes(resp *schemas.BifrostFileContentRespo
 type MessageSummary struct {
 	Role             string                   `json:"role"`
 	Content          string                   `json:"content"`
+	Name             string                   `json:"name,omitempty"`
+	ToolCallID       string                   `json:"tool_call_id,omitempty"`
 	ToolCalls        []ToolCallSummary        `json:"tool_calls,omitempty"`
 	Reasoning        string                   `json:"reasoning,omitempty"`
 	ReasoningDetails []ReasoningDetailSummary `json:"reasoning_details,omitempty"`
@@ -1448,6 +1458,12 @@ func extractMessageSummary(msg *schemas.ChatMessage) MessageSummary {
 
 	if msg.Role != "" {
 		summary.Role = string(msg.Role)
+	}
+	if msg.Name != nil {
+		summary.Name = *msg.Name
+	}
+	if msg.ChatToolMessage != nil && msg.ChatToolMessage.ToolCallID != nil {
+		summary.ToolCallID = *msg.ChatToolMessage.ToolCallID
 	}
 
 	// Extract assistant-specific fields
