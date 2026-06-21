@@ -831,6 +831,12 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 func DeepCopyChatTool(original ChatTool) ChatTool {
 	copyTool := ChatTool{
 		Type: original.Type,
+		// Anthropic server tools (shape 3) carry their identity at the top level:
+		// Name for computer/text_editor/bash/memory/web_* tools, MCPServerName for
+		// mcp_toolset. Copying these is required or the cloned request loses the
+		// tool's identity (e.g. Bedrock rejects a server tool with no name).
+		Name:          original.Name,
+		MCPServerName: original.MCPServerName,
 	}
 
 	// Deep copy Function if present
@@ -913,7 +919,141 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		copyTool.CacheControl = copyCacheControl
 	}
 
+	// Anthropic-native per-tool flags (promoted to the neutral layer).
+	if original.DeferLoading != nil {
+		v := *original.DeferLoading
+		copyTool.DeferLoading = &v
+	}
+	if original.AllowedCallers != nil {
+		copyTool.AllowedCallers = append([]string(nil), original.AllowedCallers...)
+	}
+	if original.InputExamples != nil {
+		copyTool.InputExamples = make([]ChatToolInputExample, len(original.InputExamples))
+		for i, ex := range original.InputExamples {
+			copyEx := ChatToolInputExample{}
+			if ex.Input != nil {
+				copyEx.Input = append(json.RawMessage(nil), ex.Input...)
+			}
+			if ex.Description != nil {
+				d := *ex.Description
+				copyEx.Description = &d
+			}
+			copyTool.InputExamples[i] = copyEx
+		}
+	}
+	if original.EagerInputStreaming != nil {
+		v := *original.EagerInputStreaming
+		copyTool.EagerInputStreaming = &v
+	}
+
+	// web_search_* and web_fetch_* variant fields.
+	if original.MaxUses != nil {
+		v := *original.MaxUses
+		copyTool.MaxUses = &v
+	}
+	if original.AllowedDomains != nil {
+		copyTool.AllowedDomains = append([]string(nil), original.AllowedDomains...)
+	}
+	if original.BlockedDomains != nil {
+		copyTool.BlockedDomains = append([]string(nil), original.BlockedDomains...)
+	}
+	if original.UserLocation != nil {
+		copyLoc := &ChatToolUserLocation{}
+		if original.UserLocation.Type != nil {
+			v := *original.UserLocation.Type
+			copyLoc.Type = &v
+		}
+		if original.UserLocation.City != nil {
+			v := *original.UserLocation.City
+			copyLoc.City = &v
+		}
+		if original.UserLocation.Region != nil {
+			v := *original.UserLocation.Region
+			copyLoc.Region = &v
+		}
+		if original.UserLocation.Country != nil {
+			v := *original.UserLocation.Country
+			copyLoc.Country = &v
+		}
+		if original.UserLocation.Timezone != nil {
+			v := *original.UserLocation.Timezone
+			copyLoc.Timezone = &v
+		}
+		copyTool.UserLocation = copyLoc
+	}
+
+	// web_fetch_* only.
+	if original.MaxContentTokens != nil {
+		v := *original.MaxContentTokens
+		copyTool.MaxContentTokens = &v
+	}
+	if original.Citations != nil {
+		copyCitations := &ChatToolCitationsConfig{}
+		if original.Citations.Enabled != nil {
+			v := *original.Citations.Enabled
+			copyCitations.Enabled = &v
+		}
+		copyTool.Citations = copyCitations
+	}
+	if original.UseCache != nil {
+		v := *original.UseCache
+		copyTool.UseCache = &v
+	}
+
+	// computer_* variant fields.
+	if original.DisplayWidthPx != nil {
+		v := *original.DisplayWidthPx
+		copyTool.DisplayWidthPx = &v
+	}
+	if original.DisplayHeightPx != nil {
+		v := *original.DisplayHeightPx
+		copyTool.DisplayHeightPx = &v
+	}
+	if original.DisplayNumber != nil {
+		v := *original.DisplayNumber
+		copyTool.DisplayNumber = &v
+	}
+	if original.EnableZoom != nil {
+		v := *original.EnableZoom
+		copyTool.EnableZoom = &v
+	}
+
+	// text_editor_* variant field.
+	if original.MaxCharacters != nil {
+		v := *original.MaxCharacters
+		copyTool.MaxCharacters = &v
+	}
+
+	// mcp_toolset variant fields (MCPServerName is copied in the literal above).
+	if original.DefaultConfig != nil {
+		copyTool.DefaultConfig = deepCopyChatMCPToolsetConfig(original.DefaultConfig)
+	}
+	if original.Configs != nil {
+		copyTool.Configs = make(map[string]*ChatMCPToolsetConfig, len(original.Configs))
+		for k, v := range original.Configs {
+			copyTool.Configs[k] = deepCopyChatMCPToolsetConfig(v)
+		}
+	}
+
 	return copyTool
+}
+
+// deepCopyChatMCPToolsetConfig creates a deep copy of a ChatMCPToolsetConfig
+// (mcp_toolset default/per-server config), or returns nil if the input is nil.
+func deepCopyChatMCPToolsetConfig(original *ChatMCPToolsetConfig) *ChatMCPToolsetConfig {
+	if original == nil {
+		return nil
+	}
+	copyConfig := &ChatMCPToolsetConfig{}
+	if original.Enabled != nil {
+		v := *original.Enabled
+		copyConfig.Enabled = &v
+	}
+	if original.DeferLoading != nil {
+		v := *original.DeferLoading
+		copyConfig.DeferLoading = &v
+	}
+	return copyConfig
 }
 
 // DeepCopyToolFunctionParameters creates a deep copy of ToolFunctionParameters,

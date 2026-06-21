@@ -1,3 +1,9 @@
+- fix: inline remote image URLs (not just documents) to base64 for Anthropic-on-Vertex, which rejects url-source images
+- fix: preserve OpenRouter server tools (openrouter:web_search) in filterUnsupportedTools on the OpenAI Responses path (thanks [@abdenasseraroukhsiss](https://github.com/abdenasseraroukhsiss)!)
+- fix: send Accept-Encoding: identity on Bedrock streaming requests so responses stream incrementally instead of buffering until completion (closes #4542)
+- feat: bill partial usage for cancelled or timed-out streaming requests via BilledUsage on errors (closes #3357)
+- feat: forward allowlisted per-request extra headers to MCP tool calls, including ping/list_tools
+- fix: strip provider-unsupported server tools (e.g. mcp) on the bedrock/anthropic responses path instead of failing the request (closes #3795)
 - feat: add business unit & user names and ids to tracing
 - fix: double message start event in anthropic stream (closes #4556)
 - fix: bedrock signature fix for minimax

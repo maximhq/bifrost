@@ -1,3 +1,4 @@
+- feat: account billing for failed and cancelled requests
 - fix: remove skip key selection check from governance pre llm hook
 - fix: run governance on cc oauth requests when virtual key is present
 - fix: 403 errors for list models request

@@ -1,1 +1,2 @@
+- feat: log cost for failed and cancelled requests
 - chore: upgraded core to v1.5.22 and framework to v1.3.22
