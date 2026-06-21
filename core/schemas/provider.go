@@ -525,6 +525,7 @@ type ProviderConfig struct {
 	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
 	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	DisableModelDiscovery   bool                  `json:"disable_model_discovery"`    // Skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only statically configured models. For built-in providers (e.g. Azure, OpenRouter) that can't opt out via custom_provider_config.allowed_requests. (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 }

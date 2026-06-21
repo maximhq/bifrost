@@ -416,6 +416,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_customer_name_unique_constraint_dedup", "add_customer_name_unique_constraint_index"}, run: migrationAddCustomerNameUniqueConstraint},
 	{IDs: []string{"null_legacy_customer_budget_id_refs"}, run: migrationNullLegacyCustomerBudgetID},
 	{IDs: []string{"add_skills_repo_tables"}, run: migrationAddSkillsRepoTables},
+	{IDs: []string{"add_disable_model_discovery_column"}, run: migrationAddDisableModelDiscoveryColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -772,6 +773,42 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB,
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running add store raw request response column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddDisableModelDiscoveryColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_disable_model_discovery_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			// DisableModelDiscovery defaults to false, which contributes nothing to
+			// GenerateConfigHash, so existing rows keep a valid config_hash and need no
+			// backfill — only the column is added.
+			if !migrator.HasColumn(&tables.TableProvider{}, "disable_model_discovery") {
+				logger.Info("[configstore] %s: adding column disable_model_discovery to TableProvider", migrationName)
+				if err := migrator.AddColumn(&tables.TableProvider{}, "disable_model_discovery"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping column disable_model_discovery from TableProvider", migrationName)
+			if err := migrator.DropColumn(&tables.TableProvider{}, "disable_model_discovery"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add disable model discovery column migration: %s", err.Error())
 	}
 	return nil
 }

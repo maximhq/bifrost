@@ -135,6 +135,60 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 	})
 }
 
+// findPropertyTypes recursively collects the "type" of every occurrence of a named
+// property anywhere in the JSON schema (handling nested objects and arrays).
+func findPropertyTypes(node interface{}, name string) []string {
+	var out []string
+	switch n := node.(type) {
+	case map[string]interface{}:
+		if props, ok := n["properties"].(map[string]interface{}); ok {
+			if prop, ok := props[name].(map[string]interface{}); ok {
+				if ty, ok := prop["type"].(string); ok {
+					out = append(out, ty)
+				}
+			}
+		}
+		for _, v := range n {
+			out = append(out, findPropertyTypes(v, name)...)
+		}
+	case []interface{}:
+		for _, v := range n {
+			out = append(out, findPropertyTypes(v, name)...)
+		}
+	}
+	return out
+}
+
+// TestSchemaDisableModelDiscovery verifies the disable_model_discovery provider option is
+// documented in config.schema.json as a boolean on every provider block, mirroring
+// store_raw_request_response so the schema stays in sync with schemas.ProviderConfig.
+func TestSchemaDisableModelDiscovery(t *testing.T) {
+	schemaPath := getSchemaPath(t)
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("failed to read schema: %v", err)
+	}
+	var schema map[string]interface{}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("failed to parse schema: %v", err)
+	}
+
+	got := findPropertyTypes(schema, "disable_model_discovery")
+	if len(got) == 0 {
+		t.Fatal("disable_model_discovery not present in config.schema.json")
+	}
+	for _, ty := range got {
+		if ty != "boolean" {
+			t.Errorf("disable_model_discovery type = %q, want %q", ty, "boolean")
+		}
+	}
+
+	// It should sit alongside store_raw_request_response on every provider block.
+	if want := len(findPropertyTypes(schema, "store_raw_request_response")); len(got) != want {
+		t.Errorf("disable_model_discovery appears %d times, store_raw_request_response %d — must be on every provider block", len(got), want)
+	}
+}
+
 func TestSchemaPostgresPasswordCommand(t *testing.T) {
 	compiled := compileSchema(t)
 

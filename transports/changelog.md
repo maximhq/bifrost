@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Disable Model Discovery** — New per-provider `disable_model_discovery` option skips the live model-list fetch (and its per-key connection fan-out); `/v1/models` then serves only the statically configured models, letting built-in providers like Azure opt out the way custom providers already can (#4581)
 - **Business Unit & User Tracing** — Traces now capture business unit and user names/IDs for richer attribution
 - **Dashboard Export** — Added a dashboard export endpoint to download dashboard data
 - **Virtual Key Rankings** — New Virtual Key Rankings tab in the dashboard

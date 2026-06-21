@@ -1,3 +1,4 @@
+- feat: add per-provider disable_model_discovery option to skip live model discovery (#4581)
 - feat: add business unit & user names and ids to tracing
 - fix: double message start event in anthropic stream (closes #4556)
 - fix: bedrock signature fix for minimax

@@ -859,6 +859,10 @@
                 "type": "boolean",
                 "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
               },
+              "disable_model_discovery": {
+                "type": "boolean",
+                "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
+              },
               "network_config": {
                 "$ref": "#/$defs/network_config"
               },
@@ -3479,6 +3483,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -3517,6 +3525,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -3557,6 +3569,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -3595,6 +3611,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -3635,6 +3655,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -3673,6 +3697,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -3713,6 +3741,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -3750,6 +3782,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "disable_model_discovery": {
+          "type": "boolean",
+          "description": "When true, skip live model discovery (the per-key list-models fan-out) for this provider; /v1/models then serves only the statically configured models. Useful for built-in providers like Azure with many regional keys. (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"

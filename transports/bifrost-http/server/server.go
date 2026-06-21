@@ -969,14 +969,19 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, pr
 // routing graph is the same at boot, after a key add, and after a reload —
 // stale-but-routable behavior would diverge otherwise.
 func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) {
-	// Skip the fetch entirely when the provider has disabled list_models via
-	// allowed_requests — every per-(provider,keyID) call would just bounce with
-	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
+	// Skip the fetch entirely when discovery is disabled for this provider, or when the
+	// provider has disabled list_models via allowed_requests — every per-(provider,keyID)
+	// call would just bounce with "operation not allowed", wasting two goroutines and one
+	// bfCtx per attempt.
 	if s.Config != nil {
-		if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
-			pc.CustomProviderConfig != nil &&
-			!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
-			return
+		if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil {
+			if pc.DisableModelDiscovery {
+				return
+			}
+			if pc.CustomProviderConfig != nil &&
+				!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+				return
+			}
 		}
 	}
 	// One BifrostContext per goroutine. BifrostContext.SetValue mutates state

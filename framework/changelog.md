@@ -1,3 +1,4 @@
+- feat: add per-provider disable_model_discovery option with configstore persistence + migration (#4581)
 - feat: dashboard export endpoint
 - feat: add Virtual Key Rankings tab in dashboard
 - feat: add business unit & user names and ids to tracing
