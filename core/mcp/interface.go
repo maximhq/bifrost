@@ -57,6 +57,11 @@ type MCPManagerInterface interface {
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 
+	// ConnectConfiguredClients dials all clients supplied at construction time.
+	// Construction no longer connects; call this once all plugins are registered so
+	// PreMCPConnectionHook sees the full plugin set.
+	ConnectConfiguredClients(ctx context.Context)
+
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error
 

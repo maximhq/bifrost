@@ -89,6 +89,68 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, provider schemas.Mod
 	return keep, dropped
 }
 
+// ValidateResponsesToolsForProvider is the Responses-path mirror of
+// ValidateChatToolsForProvider. It partitions []schemas.ResponsesTool into a
+// keep-set (function/custom tools + server tools supported on the target
+// provider) and a dropped-set (server-tool Type strings the provider doesn't
+// support per ProviderFeatures).
+//
+// Does NOT mutate its input. Callers decide the policy (silent strip vs
+// fail-fast). The Bedrock and anthropic-family Responses paths use silent strip
+// so the request still reaches the provider without the unsupported tool — e.g.
+// an `mcp` server tool that points back at Bifrost's own gateway is consumed by
+// Bifrost (exposed to the model as function tools) and must not be forwarded to
+// providers like Bedrock/Vertex whose Converse APIs have no remote-MCP connector.
+//
+// Unknown providers keep all tools (safe default for custom providers),
+// matching ValidateToolsForProvider. The per-type gating mirrors
+// ValidateToolsForProvider exactly — only the control flow differs (partition
+// instead of erroring).
+func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) (keep []schemas.ResponsesTool, dropped []string) {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		// Unknown provider — keep all tools (safe default for custom providers).
+		return tools, nil
+	}
+
+	for _, tool := range tools {
+		supported := true
+		switch tool.Type {
+		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
+			supported = features.WebSearch || features.WebSearchNova
+		case schemas.ResponsesToolTypeWebFetch:
+			supported = features.WebFetch
+		case schemas.ResponsesToolTypeCodeInterpreter:
+			supported = features.CodeExecution || features.CodeExecNova
+		case schemas.ResponsesToolTypeComputerUsePreview:
+			supported = features.ComputerUse
+		case schemas.ResponsesToolTypeMCP:
+			supported = features.MCP
+		case schemas.ResponsesToolTypeLocalShell:
+			supported = features.Bash
+		case schemas.ResponsesToolTypeMemory:
+			supported = features.Memory
+		case schemas.ResponsesToolTypeToolSearch:
+			supported = features.ToolSearch
+		case schemas.ResponsesToolTypeFileSearch:
+			supported = features.FileSearch
+		case schemas.ResponsesToolTypeImageGeneration:
+			supported = features.ImageGeneration
+		case schemas.ResponsesToolTypeAdvisor:
+			supported = features.AdvisorTool
+		}
+		// ResponsesToolTypeFunction, ResponsesToolTypeCustom and unknown
+		// (forward-compat) tool types match no case above, so supported stays
+		// true (Go has no implicit fallthrough).
+		if supported {
+			keep = append(keep, tool)
+		} else {
+			dropped = append(dropped, string(tool.Type))
+		}
+	}
+	return keep, dropped
+}
+
 // ValidateToolsForProvider checks if all tools in the request are supported by the given provider.
 // Returns an error for the first unsupported tool found.
 func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) error {
