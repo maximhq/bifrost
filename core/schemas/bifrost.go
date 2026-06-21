@@ -270,6 +270,7 @@ const (
 	BifrostContextKeyGovernanceRateLimitIDs              BifrostContextKey = "bifrost-governance-rate-limit-ids"                // []string (rate limit IDs applicable to this request - set by governance plugin)
 	BifrostContextKeyPromptsPluginName                   BifrostContextKey = "prompts-plugin-name"                              // string (name of the prompts plugin to use - set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by internal bifrost components - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyStoreRawRequestResponse             BifrostContextKey = "bifrost-store-raw-request-response"               // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyCaptureRawRequest                   BifrostContextKey = "bifrost-capture-raw-request"                      // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw request bytes
 	BifrostContextKeyCaptureRawResponse                  BifrostContextKey = "bifrost-capture-raw-response"                     // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw response bytes
