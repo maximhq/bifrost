@@ -17,7 +17,7 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	t.Setenv("MY_AZURE_ENDPOINT_SECRET", "https://secret-resource.openai.azure.com")
 
 	endpoint := schemas.NewSecretVar("env.MY_AZURE_ENDPOINT_SECRET")
-	require.True(t, endpoint.IsFromEnv(), "setup: Endpoint should be FromEnv")
+	require.True(t, endpoint.IsFromSecret(), "setup: Endpoint should be FromSecret")
 	require.Equal(t, "https://secret-resource.openai.azure.com", endpoint.GetValue(),
 		"setup: Endpoint should be resolved")
 
@@ -42,17 +42,17 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	require.NoError(t, err)
 
 	var out struct {
-		Value   string `json:"value"`
-		EnvVar  string `json:"env_var"`
-		FromEnv bool   `json:"from_env"`
+		Value      string `json:"value"`
+		Ref        string `json:"ref"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.NotContains(t, out.Value, "secret-resource",
 		"resolved env value leaked through Endpoint JSON output: %q", out.Value)
-	assert.Equal(t, "env.MY_AZURE_ENDPOINT_SECRET", out.EnvVar,
-		"env var reference must be preserved so the UI can show it")
-	assert.True(t, out.FromEnv, "from_env flag must be preserved")
+	assert.Equal(t, "env.MY_AZURE_ENDPOINT_SECRET", out.Ref,
+		"secret ref must be preserved so the UI can show it")
+	assert.Equal(t, "env", out.SecretType, "type field must be preserved")
 }
 
 // TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields verifies that the
@@ -79,14 +79,14 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	require.NoError(t, err)
 
 	var out struct {
-		Value   string `json:"value"`
-		FromEnv bool   `json:"from_env"`
+		Value      string `json:"value"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.Equal(t, "https://foo.openai.azure.com", out.Value,
 		"plain Endpoint was incorrectly redacted")
-	assert.False(t, out.FromEnv)
+	assert.Empty(t, out.SecretType)
 }
 
 // TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that
@@ -116,16 +116,16 @@ func TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex(t *testing
 	require.NoError(t, err)
 
 	var out struct {
-		Value   string `json:"value"`
-		EnvVar  string `json:"env_var"`
-		FromEnv bool   `json:"from_env"`
+		Value      string `json:"value"`
+		Ref        string `json:"ref"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.NotContains(t, out.Value, "super-secret-project",
 		"resolved Vertex ProjectID env value leaked: %q", out.Value)
-	assert.Equal(t, "env.MY_VERTEX_PROJECT_ID_SECRET", out.EnvVar)
-	assert.True(t, out.FromEnv)
+	assert.Equal(t, "env.MY_VERTEX_PROJECT_ID_SECRET", out.Ref)
+	assert.Equal(t, "env", out.SecretType)
 }
 
 // TestProviderConfig_Redacted_DoesNotMutateOriginal ensures Redacted() does not

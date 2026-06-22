@@ -164,7 +164,7 @@ type ConfigData struct {
 	Server        *ServerConfig             `json:"server,omitempty"`
 	SourceOfTruth string                    `json:"source_of_truth,omitempty"`
 	Client        *configstore.ClientConfig `json:"client"`
-	EncryptionKey *schemas.SecretVar           `json:"encryption_key"`
+	EncryptionKey *schemas.SecretVar        `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -378,7 +378,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Server            *ServerConfig                         `json:"server,omitempty"`
 		Client            *configstore.ClientConfig             `json:"client"`
-		EncryptionKey     *schemas.SecretVar                       `json:"encryption_key"`
+		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -2257,7 +2257,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					// If the value is an env/vault reference that is currently unresolved, leave the
 					// existing DB entry untouched rather than silently generating a new literal key.
 					vkVal := &configData.Governance.VirtualKeys[i].Value
-					if (vkVal.IsFromEnv() || vkVal.IsFromVault()) && vkVal.GetValue() == "" {
+					if vkVal.IsFromSecret() && vkVal.GetValue() == "" {
 						logger.Warn("virtual key %s has an unresolved env/vault reference, skipping update to preserve existing credential", newVirtualKey.ID)
 						break
 					}
@@ -2287,7 +2287,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			// If the value is an env/vault reference that is currently unresolved, skip creating
 			// the entry. It will be created on the next sync once the reference resolves.
 			newVKVal := &configData.Governance.VirtualKeys[i].Value
-			if (newVKVal.IsFromEnv() || newVKVal.IsFromVault()) && newVKVal.GetValue() == "" {
+			if newVKVal.IsFromSecret() && newVKVal.GetValue() == "" {
 				logger.Warn("virtual key %s has an unresolved env/vault reference, skipping creation until reference resolves", newVirtualKey.ID)
 				continue
 			}
@@ -3643,11 +3643,12 @@ func preserveSecretVar(source *schemas.SecretVar, value string) *schemas.SecretV
 	if source == nil {
 		return schemas.NewSecretVar(value)
 	}
-	return &schemas.SecretVar{
-		Val:     value,
-		EnvVar:  source.EnvVar,
-		FromEnv: source.FromEnv,
+	if source.IsFromSecret() {
+		sv := *source
+		sv.Val = value
+		return &sv
 	}
+	return &schemas.SecretVar{Val: value}
 }
 
 // loadAuthConfig loads auth config from file.
@@ -3690,12 +3691,12 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	if authConfig == nil {
 		return
 	}
-	// File config present: warn about empty env vars but continue processing
-	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromEnv() {
-		logger.Warn("username set with env var but value is empty: %s", authConfig.AdminUserName.EnvVar)
+	// Fail-closed: if env/vault reference is unresolved, don't persist empty credentials.
+	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromSecret() {
+		logger.Warn("username set with external reference but value is empty: %s", authConfig.AdminUserName.GetRawRef())
 	}
-	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromEnv() {
-		logger.Warn("password set with env var but value is empty: %s", authConfig.AdminPassword.EnvVar)
+	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromSecret() {
+		logger.Warn("password set with external reference but value is empty: %s", authConfig.AdminPassword.GetRawRef())
 	}
 	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
 		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")

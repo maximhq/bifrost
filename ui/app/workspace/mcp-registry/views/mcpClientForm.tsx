@@ -33,13 +33,13 @@ const emptyStdioConfig: MCPStdioConfig = {
 	envs: [],
 };
 
-const emptySecretVar: SecretVar = { value: "", env_var: "", from_env: false };
+const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 /** Strips empty TLS config so we don't send `{}` to the server. */
 function buildTLSConfigPayload(tls: MCPTLSConfig | undefined): MCPTLSConfig | undefined {
 	if (!tls) return undefined;
 	const hasSkipVerify = tls.insecure_skip_verify === true;
-	const hasCACert = tls.ca_cert_pem?.value || tls.ca_cert_pem?.from_env;
+	const hasCACert = tls.ca_cert_pem?.value || (tls.ca_cert_pem?.type === "env" || tls.ca_cert_pem?.type === "vault");
 	if (!hasSkipVerify && !hasCACert) return undefined;
 	return { insecure_skip_verify: tls.insecure_skip_verify, ca_cert_pem: hasCACert ? tls.ca_cert_pem : undefined };
 }
@@ -139,7 +139,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		headers
 	) {
 		for (const [key, secretVar] of Object.entries(headers)) {
-			if (!secretVar.value && !secretVar.env_var) {
+			if (!secretVar.value && !secretVar.ref) {
 				headersValidationError = `Header "${key}" must have a value`;
 				break;
 			}
@@ -166,13 +166,15 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		let hasErrors = false;
 
 		if (connectionType === "http" || connectionType === "sse") {
-			const connVal = data.connection_string?.value || "";
-			if (!connVal.trim()) {
+			const connVal = data.connection_string?.value?.trim() || "";
+			const connRef = data.connection_string?.ref?.trim() || "";
+			const isSecret = data.connection_string?.type === "env" || data.connection_string?.type === "vault";
+			if (!connVal && !connRef) {
 				setError("connection_string", { message: "Connection URL is required" });
 				hasErrors = true;
-			} else if (!/^((https?:\/\/.+)|(env\.[A-Z_]+))$/.test(connVal)) {
+			} else if (!isSecret && connVal && !/^https?:\/\/.+/.test(connVal)) {
 				setError("connection_string", {
-					message: "Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
+					message: "Connection URL must start with http:// or https://",
 				});
 				hasErrors = true;
 			}
@@ -245,7 +247,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					? {
 						client_id: data.oauth_config?.client_id ?? emptySecretVar,
 						client_secret:
-							data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env
+							data.oauth_config?.client_secret?.value || (data.oauth_config?.client_secret?.type === "env" || data.oauth_config?.client_secret?.type === "vault")
 								? data.oauth_config.client_secret
 								: undefined,
 						authorize_url: data.oauth_config?.authorize_url || undefined,

@@ -20,7 +20,7 @@ func TestTableVirtualKey_EnvSourcedRoundTrip(t *testing.T) {
 
 	t.Setenv("TEST_VK_ENV", "sk-bf-env-resolved")
 	sv := schemas.NewSecretVar("env.TEST_VK_ENV")
-	require.True(t, sv.IsFromEnv())
+	require.True(t, sv.IsFromSecret())
 	require.Equal(t, "sk-bf-env-resolved", sv.GetValue())
 
 	vk := &TableVirtualKey{
@@ -37,8 +37,8 @@ func TestTableVirtualKey_EnvSourcedRoundTrip(t *testing.T) {
 
 	var found TableVirtualKey
 	require.NoError(t, db.First(&found, "id = ?", "vk-env").Error)
-	assert.True(t, found.Value.IsFromEnv())
-	assert.Equal(t, "env.TEST_VK_ENV", found.Value.EnvVar)
+	assert.True(t, found.Value.IsFromSecret())
+	assert.Equal(t, "env.TEST_VK_ENV", found.Value.GetRawRef())
 	assert.Equal(t, "sk-bf-env-resolved", found.Value.GetValue())
 }
 
@@ -60,7 +60,7 @@ func TestTableVirtualKey_LiteralRoundTrip(t *testing.T) {
 
 	var found TableVirtualKey
 	require.NoError(t, db.First(&found, "id = ?", "vk-lit").Error)
-	assert.False(t, found.Value.IsFromEnv())
+	assert.False(t, found.Value.IsFromSecret())
 	assert.False(t, found.Value.IsFromVault())
 	assert.Equal(t, "sk-bf-literal", found.Value.GetValue())
 }
@@ -96,8 +96,8 @@ func TestTableVirtualKey_MarshalJSON_SecretVarShape(t *testing.T) {
 		Value schemas.SecretVar `json:"value"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
-	assert.True(t, out.Value.FromEnv)
-	assert.Equal(t, "env.TEST_VK_MARSHAL", out.Value.EnvVar)
+	assert.True(t, out.Value.IsFromSecret())
+	assert.Equal(t, "env.TEST_VK_MARSHAL", out.Value.GetRawRef())
 }
 
 // TestTableVirtualKey_UnmarshalJSON_Forms verifies `value` accepts a bare string and an "env.X"
@@ -109,15 +109,15 @@ func TestTableVirtualKey_UnmarshalJSON_Forms(t *testing.T) {
 		var vk TableVirtualKey
 		require.NoError(t, json.Unmarshal([]byte(`{"name":"n","value":"sk-bf-plain"}`), &vk))
 		assert.Equal(t, "sk-bf-plain", vk.Value.GetValue())
-		assert.False(t, vk.Value.IsFromEnv())
+		assert.False(t, vk.Value.IsFromSecret())
 	})
 
 	t.Run("env string", func(t *testing.T) {
 		var vk TableVirtualKey
 		require.NoError(t, json.Unmarshal([]byte(`{"name":"n","value":"env.TEST_VK_UMARSHAL"}`), &vk))
 		assert.Equal(t, "sk-bf-um", vk.Value.GetValue())
-		assert.True(t, vk.Value.IsFromEnv())
-		assert.Equal(t, "env.TEST_VK_UMARSHAL", vk.Value.EnvVar)
+		assert.True(t, vk.Value.IsFromSecret())
+		assert.Equal(t, "env.TEST_VK_UMARSHAL", vk.Value.GetRawRef())
 	})
 }
 

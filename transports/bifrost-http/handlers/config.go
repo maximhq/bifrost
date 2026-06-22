@@ -136,23 +136,11 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			// If from env, preserve env_var reference but clear value
 			// If not from env, show <redacted> as the value
 			var passwordSecretVar *schemas.SecretVar
-			if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromEnv() {
-				passwordSecretVar = &schemas.SecretVar{
-					Val:     "",
-					EnvVar:  authConfig.AdminPassword.EnvVar,
-					FromEnv: true,
-				}
-			} else if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromVault() {
-				passwordSecretVar = &schemas.SecretVar{
-					Val:       "",
-					FromVault: true,
-					VaultRef:  authConfig.AdminPassword.VaultRef,
-				}
+			if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromSecret() {
+				passwordSecretVar = authConfig.AdminPassword.FullyRedacted()
 			} else {
 				passwordSecretVar = &schemas.SecretVar{
-					Val:     "<redacted>",
-					EnvVar:  "",
-					FromEnv: false,
+					Val: "<redacted>",
 				}
 			}
 			mapConfig["auth_config"] = map[string]any{
@@ -163,15 +151,15 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			// No auth config exists yet, return default empty SecretVar values
 			mapConfig["auth_config"] = map[string]any{
-				"admin_username": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
-				"admin_password": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
+				"admin_username": &schemas.SecretVar{},
+				"admin_password": &schemas.SecretVar{},
 				"is_enabled":     false,
 			}
 		}
 	} else {
 		mapConfig["auth_config"] = map[string]any{
-			"admin_username": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
-			"admin_password": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
+			"admin_username": &schemas.SecretVar{},
+			"admin_password": &schemas.SecretVar{},
 			"is_enabled":     false,
 		}
 	}
@@ -678,11 +666,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
-			// Password is considered changed only if it's NOT redacted and has a value
-			// (IsRedacted() returns true for <redacted>, asterisk patterns, and env var references)
+			// Password is considered changed when it was intentionally submitted —
+			// ShouldPreserveStored() returns false for both plain values and secret refs.
 			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!payload.AuthConfig.AdminPassword.IsRedacted() &&
-				payload.AuthConfig.AdminPassword.GetValue() != ""
+				!payload.AuthConfig.AdminPassword.ShouldPreserveStored()
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
@@ -702,12 +689,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 
 			// Validate env variables are set if referenced
-			if payload.AuthConfig.AdminUserName.IsFromEnv() && payload.AuthConfig.AdminUserName.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("environment variable %s is not set", payload.AuthConfig.AdminUserName.EnvVar))
+			if payload.AuthConfig.AdminUserName.IsFromSecret() && payload.AuthConfig.AdminUserName.GetValue() == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", payload.AuthConfig.AdminUserName.GetRawRef()))
 				return
 			}
-			if payload.AuthConfig.AdminPassword.IsFromEnv() && payload.AuthConfig.AdminPassword.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("environment variable %s is not set", payload.AuthConfig.AdminPassword.EnvVar))
+			if payload.AuthConfig.AdminPassword.IsFromSecret() && payload.AuthConfig.AdminPassword.GetValue() == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_password resolved to an empty value", payload.AuthConfig.AdminPassword.GetRawRef()))
 				return
 			}
 
@@ -717,7 +704,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if payload.AuthConfig.AdminPassword.IsRedacted() {
+				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
 					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
 						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
 						return
@@ -734,12 +721,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 						return
 					}
 					// Preserve env/vault reference metadata when storing hashed password
-					payload.AuthConfig.AdminPassword = &schemas.SecretVar{
-						Val:       hashedPassword,
-						FromEnv:   payload.AuthConfig.AdminPassword.IsFromEnv(),
-						EnvVar:    payload.AuthConfig.AdminPassword.EnvVar,
-						FromVault: payload.AuthConfig.AdminPassword.IsFromVault(),
-						VaultRef:  payload.AuthConfig.AdminPassword.VaultRef,
+					if payload.AuthConfig.AdminPassword.IsFromSecret() {
+						sv := *payload.AuthConfig.AdminPassword
+						sv.Val = hashedPassword
+						payload.AuthConfig.AdminPassword = &sv
+					} else {
+						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
 					}
 				}
 			}
@@ -752,7 +739,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword == nil || payload.AuthConfig.AdminPassword.IsRedacted() || payload.AuthConfig.AdminPassword.GetValue() == "" {
+			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
