@@ -31,6 +31,12 @@ variable "config_json_file" {
   default     = null
 }
 
+variable "schema_url" {
+  description = "Schema location written to config.json $schema. Override for isolated deployments that mirror the Bifrost schema internally. Accepts an HTTP(S) URL, file:// URL, or filesystem path."
+  type        = string
+  default     = "https://www.getbifrost.ai/schema"
+}
+
 # --- Config: individual sections (each mirrors a top-level property from config.schema.json) ---
 variable "encryption_key" {
   description = "Encryption key for sensitive data. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF."

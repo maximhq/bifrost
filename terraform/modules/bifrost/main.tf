@@ -23,7 +23,7 @@ locals {
   # Terraform variable overrides (non-null values only)
   overrides = {
     for k, v in {
-      "$schema"            = "https://www.getbifrost.ai/schema"
+      "$schema"            = var.schema_url
       encryption_key       = var.encryption_key
       auth_config          = var.auth_config
       client               = var.client

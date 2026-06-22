@@ -205,6 +205,11 @@ bifrost:
   logStyle: json
   # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
 
+  # Schema location written to config.json $schema.
+  # Override this for isolated deployments that mirror the schema internally.
+  # Accepts an HTTP(S) URL, file:// URL, or filesystem path.
+  schemaUrl: "https://www.getbifrost.ai/schema"
+
   # Controls how config.json is reconciled with the database on startup.
   # "split" (default): existing merge behavior — file and DB rows coexist.
   # "config.json": sections explicitly present in the file are authoritative;
