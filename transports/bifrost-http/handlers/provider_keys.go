@@ -132,7 +132,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if errors.Is(err, lib.ErrAlreadyExists) {
-			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			SendError(ctx, fasthttp.StatusConflict, "API key names must be unique across providers. Choose a different name")
 			return
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create provider key: %v", err))
@@ -240,6 +240,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to update key %s for provider %s: %v", keyID, provider, err)
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
+			return
+		}
+		if errors.Is(err, lib.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, "API key names must be unique across providers. Choose a different name")
 			return
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider key: %v", err))

@@ -971,7 +971,11 @@ export default function VirtualKeySheet({
       }
 
       onSave();
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.status === 409) {
+        form.setError("name", { message: getErrorMessage(error) });
+        return;
+      }
       toast.error(getErrorMessage(error));
     }
   };

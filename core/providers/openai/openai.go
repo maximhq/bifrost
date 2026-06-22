@@ -569,6 +569,9 @@ func HandleOpenAITextCompletionStreaming(
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream
+		// cancel/timeout can bill for tokens the provider already processed.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 		var finishReason *string
 		var messageID string
@@ -1113,6 +1116,9 @@ func HandleOpenAIChatCompletionStreaming(
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream
+		// cancel/timeout can bill for tokens the provider already processed.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 		lastChunkTime := startTime
 
@@ -1482,7 +1488,7 @@ func HandleOpenAIResponsesRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(request), nil
+			return ToOpenAIResponsesRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1634,7 +1640,7 @@ func HandleOpenAIResponsesStreaming(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody := ToOpenAIResponsesRequest(request)
+			reqBody := ToOpenAIResponsesRequest(ctx, request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
 				if postRequestConverter != nil {
@@ -4131,7 +4137,7 @@ func HandleOpenAICompactionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAICompactionRequest(request), nil
+			return ToOpenAICompactionRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4243,7 +4249,7 @@ func HandleOpenAICountTokensRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(request), nil
+			return ToOpenAIResponsesRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -6984,6 +6990,7 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", request.ContainerID, request.FileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileDeleteRequest))
 		req.Header.SetMethod(http.MethodDelete)
+		req.Header.SetContentType("application/json")
 
 		if key.Value.GetValue() != "" {
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())

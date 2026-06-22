@@ -478,11 +478,6 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 	defer release()
 
-	reqHeaders, err := s.credStore.RequestHeaders(nestedCtx, client.ExecutionConfig)
-	if err != nil {
-		return nil, err
-	}
-
 	toolExecutionTimeout := s.getToolExecutionTimeout()
 
 	// Delegate to the canonical plugin gate. RunWithPluginPipeline owns the
@@ -519,6 +514,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
 		defer cancel()
 
+		// Per-request extra headers (BifrostContextKeyMCPExtraHeaders) are injected
+		// uniformly by the transport headerFunc (see createHTTPConnection /
+		// createSSEConnection / AcquireClientConn), so no per-call Header is set here.
+		// Keeps nested codemode calls on the same single header path as the gateway.
 		callRequest := mcp.CallToolRequest{
 			Request: mcp.Request{
 				Method: string(mcp.MethodToolsCall),
@@ -527,7 +526,6 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 				Name:      effectiveToolName,
 				Arguments: effectiveArgs,
 			},
-			Header: reqHeaders,
 		}
 
 		toolResponse, callErr := conn.CallTool(toolCtx, callRequest)

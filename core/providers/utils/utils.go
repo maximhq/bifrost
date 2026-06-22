@@ -2217,7 +2217,7 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 // before bifrost considers the connection stalled and closes it. This protects
 // against providers that stop sending data but keep the TCP connection open
 // (e.g., Azure TPM throttling).
-const DefaultStreamIdleTimeout = 60 * time.Second
+const DefaultStreamIdleTimeout = 120 * time.Second
 
 // SetStreamIdleTimeoutIfEmpty sets the stream idle timeout on the context from
 // the provider's network config, but only if no valid timeout is already present.
@@ -2408,8 +2408,57 @@ func HandleStreamCancellation(
 		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
+	// Bill for tokens the provider already processed before the client
+	// disconnected.
+	attachBilledUsageFromContext(ctx, cancelErr)
+
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
+}
+
+// attachBilledUsageFromContext copies a streaming provider's in-place
+// accumulated usage handle (BifrostContextKeyStreamAccumulatedUsage), if any,
+// onto the error's BilledUsage so downstream post-hooks (governance billing,
+// logging cost) can charge for tokens the provider already processed before the
+// stream was cancelled or timed out. No-op when nothing measurable was
+// accumulated, so failures that consumed no tokens bill nothing.
+func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+	if ctx == nil || bifrostErr == nil {
+		return
+	}
+	usage, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
+	if !ok || usage == nil {
+		return
+	}
+	if usage.PromptTokens == 0 &&
+		usage.CompletionTokens == 0 &&
+		usage.TotalTokens == 0 &&
+		usage.PromptTokensDetails == nil &&
+		usage.CompletionTokensDetails == nil &&
+		usage.Cost == nil {
+		return
+	}
+	// Snapshot the handle so the billed usage is fully decoupled from the
+	// in-context accumulator, which may still be mutated by the provider
+	// goroutine. A shallow copy leaves nested pointers aliased, so clone them too.
+	usageCopy := *usage
+	if usage.PromptTokensDetails != nil {
+		promptDetailsCopy := *usage.PromptTokensDetails
+		if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			cachedWriteDetailsCopy := *usage.PromptTokensDetails.CachedWriteTokenDetails
+			promptDetailsCopy.CachedWriteTokenDetails = &cachedWriteDetailsCopy
+		}
+		usageCopy.PromptTokensDetails = &promptDetailsCopy
+	}
+	if usage.CompletionTokensDetails != nil {
+		completionDetailsCopy := *usage.CompletionTokensDetails
+		usageCopy.CompletionTokensDetails = &completionDetailsCopy
+	}
+	if usage.Cost != nil {
+		costCopy := *usage.Cost
+		usageCopy.Cost = &costCopy
+	}
+	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 
 // HandleStreamTimeout should be called when a streaming goroutine exits
@@ -2446,6 +2495,9 @@ func HandleStreamTimeout(
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
 		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
+
+	// Bill for tokens the provider already processed before the deadline.
+	attachBilledUsageFromContext(ctx, timeoutErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)

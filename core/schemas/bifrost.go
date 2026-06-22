@@ -272,6 +272,7 @@ const (
 	BifrostContextKeyGovernanceRateLimitIDs              BifrostContextKey = "bifrost-governance-rate-limit-ids"                // []string (rate limit IDs applicable to this request - set by governance plugin)
 	BifrostContextKeyPromptsPluginName                   BifrostContextKey = "prompts-plugin-name"                              // string (name of the prompts plugin to use - set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by internal bifrost components - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyStoreRawRequestResponse             BifrostContextKey = "bifrost-store-raw-request-response"               // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyCaptureRawRequest                   BifrostContextKey = "bifrost-capture-raw-request"                      // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw request bytes
 	BifrostContextKeyCaptureRawResponse                  BifrostContextKey = "bifrost-capture-raw-response"                     // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw response bytes
@@ -330,6 +331,7 @@ const (
 	BifrostContextKeyLargeResponseThreshold              BifrostContextKey = "bifrost-large-response-threshold"           // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) threshold for response streaming
 	BifrostContextKeyLargePayloadPrefetchSize            BifrostContextKey = "bifrost-large-payload-prefetch-size"        // int (set by enterprise - DO NOT SET THIS MANUALLY)) prefetch buffer size for metadata extraction from large responses
 	BifrostContextKeyDeferredUsage                       BifrostContextKey = "bifrost-deferred-usage"                     // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
+	BifrostContextKeyStreamAccumulatedUsage              BifrostContextKey = "bifrost-stream-accumulated-usage"           // *BifrostLLMUsage handle, set ONCE by a streaming provider and mutated in place as usage arrives; read on cancel/timeout to bill partial usage that the provider already consumed
 	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
@@ -1868,4 +1870,12 @@ type BifrostErrorExtraFields struct {
 	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
+	// BilledUsage carries provider-reported token usage that was consumed even
+	// though the request ultimately failed or was cancelled (e.g. a stream
+	// aborted mid-response, or a 5xx returned after input tokens were
+	// processed). Providers populate it on cancel/error paths so downstream
+	// post-LLM hooks (governance billing, logging cost) can charge for tokens
+	// the provider actually billed us for. Nil when the failure consumed no
+	// tokens (e.g. 401/403/429 before the model ran).
+	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
 }

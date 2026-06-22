@@ -296,6 +296,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			}
 		} catch (error) {
 			setIsLoading(false);
+			if ((error as any)?.status === 409) {
+				setError("name", { message: getErrorMessage(error) });
+				return;
+			}
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
@@ -925,6 +929,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					onError={(error) => {
 						toast({ title: "OAuth Error", description: error, variant: "destructive" });
 					}}
+					onConflict={(error) => {
+						setOauthFlow(null);
+						setError("name", { message: error });
+					}}
 					authorizeUrl={oauthFlow.authorizeUrl}
 					oauthConfigId={oauthFlow.oauthConfigId}
 					mcpClientId={oauthFlow.mcpClientId}
@@ -951,6 +959,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					}}
 					onError={() => {
 						/* error toast handled by the dialog itself */
+					}}
+					onConflict={(error) => {
+						setHeadersFlow(null);
+						setError("name", { message: error });
 					}}
 					payload={headersFlow.payload}
 					perUserHeaderKeys={perUserHeaderKeys}

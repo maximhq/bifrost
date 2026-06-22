@@ -530,6 +530,13 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		var responseID string
 
+		// Running usage handle so a cancel/timeout can bill for tokens
+		// already processed. Cohere only reports usage at message-end, so a true
+		// mid-stream cancel captures nothing (the API emits no incremental usage);
+		// this still bills correctly when usage has arrived before teardown.
+		streamUsage := &schemas.BifrostLLMUsage{}
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -572,6 +579,10 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			}
 			if response != nil {
 				response.ID = responseID
+				// keep the running usage handle current.
+				if response.Usage != nil {
+					*streamUsage = *response.Usage
+				}
 				response.ExtraFields = schemas.BifrostResponseExtraFields{
 					ChunkIndex: chunkIndex,
 					Latency:    time.Since(lastChunkTime).Milliseconds(),

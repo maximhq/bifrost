@@ -649,6 +649,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -893,6 +897,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// Creating MCP client config in config store
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -1733,6 +1741,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			// Persist MCP client config in config store (BeforeSave hook serializes DiscoveredTools)
 			if h.store.ConfigStore != nil {
 				if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+					if errors.Is(err, configstore.ErrAlreadyExists) {
+						SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+						return
+					}
 					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 					return
 				}
@@ -1804,6 +1816,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	} else {
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+				if errors.Is(err, configstore.ErrAlreadyExists) {
+					SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+					return
+				}
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 				return
 			}

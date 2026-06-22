@@ -593,7 +593,7 @@ func TestTranscriptionWithMockServer(t *testing.T) {
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
 					BaseURL:                        server.URL,
-					DefaultRequestTimeoutInSeconds: 30,
+					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
 
@@ -637,7 +637,7 @@ func TestTranscriptionNilInput(t *testing.T) {
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        "https://api.mistral.ai",
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
 
@@ -787,7 +787,7 @@ func TestTranscriptionStreamWithMockServer(t *testing.T) {
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
 					BaseURL:                        server.URL,
-					DefaultRequestTimeoutInSeconds: 30,
+					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
 
@@ -842,7 +842,7 @@ func TestTranscriptionStreamNilInput(t *testing.T) {
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        "https://api.mistral.ai",
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
 
@@ -1272,7 +1272,7 @@ func TestTranscriptionStreamEdgeCases(t *testing.T) {
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
 					BaseURL:                        server.URL,
-					DefaultRequestTimeoutInSeconds: 30,
+					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
 
@@ -1342,7 +1342,7 @@ func TestTranscriptionStreamContextCancellation(t *testing.T) {
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        server.URL,
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
 

@@ -76,7 +76,7 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	return bifrostReq
 }
 
-func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -88,10 +88,13 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 		Model: bifrostReq.Model,
 	}
 
+	// Canonical model for capability gating only; wire model is untouched.
+	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		var err error
-		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params)
+		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, capModel)
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +119,7 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, bifrostReq.Model, bifrostReq.Provider)
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider)
 		if err != nil {
 			return nil, err
 		}
@@ -2819,7 +2822,7 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
-func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters) (GenerationConfig, error) {
+func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters, capModel string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	if params.Temperature != nil {
@@ -2832,14 +2835,14 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		config.MaxOutputTokens = int32(*params.MaxOutputTokens)
 	}
 	// Only set ThinkingConfig if the model actually supports thinking
-	if params.Reasoning != nil && supportsThinkingConfig(r.Model) {
+	if params.Reasoning != nil && supportsThinkingConfig(capModel) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
-		supportsLevel := isGemini3Plus(r.Model) // Check if model is 3.0+
+		supportsLevel := isGemini3Plus(capModel) // Check if model is 3.0+
 
 		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
 		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
@@ -2859,7 +2862,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
-				if err := validateThinkingBudget(r.Model, budget); err != nil {
+				if err := validateThinkingBudget(capModel, budget); err != nil {
 					return config, err
 				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
@@ -2868,13 +2871,13 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, r.Model))
+				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, capModel))
 			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(capModel, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
 					maxTokens = int(config.MaxOutputTokens)
 				}
-				budgetRange := getThinkingBudgetRange(r.Model, maxTokens)
+				budgetRange := getThinkingBudgetRange(capModel, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
