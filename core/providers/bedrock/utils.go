@@ -223,6 +223,9 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	if bifrostReq.Params == nil {
 		return nil
 	}
+
+	// capModel is the canonical model used only for Anthropic capability gating
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params); inferenceConfig != nil {
 		bedrockReq.InferenceConfig = inferenceConfig
@@ -292,7 +295,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				tokenBudget = anthropic.MinimumReasoningMaxTokens
 			}
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+				if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "adaptive",
 					})
@@ -371,7 +374,9 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				effort := *bifrostReq.Params.Reasoning.Effort
 				typeStr := "enabled"
 				switch effort {
-				case "high":
+				case "high", "xhigh", "max":
+					// Nova's maxReasoningEffort enum tops out at "high"; clamp xhigh/max.
+					effort = "high"
 					if bedrockReq.InferenceConfig != nil {
 						bedrockReq.InferenceConfig.MaxTokens = nil
 						bedrockReq.InferenceConfig.Temperature = nil
@@ -392,7 +397,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
+				if anthropic.SupportsAdaptiveThinking(capModel) {
 					// Opus 4.6+: adaptive thinking + output_config.effort
 					effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 					thinkingConfig := map[string]any{
@@ -400,7 +405,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					}
 					if bifrostReq.Params.Reasoning.Display != nil {
 						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
-					} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
 						thinkingConfig["display"] = "summarized"
 					}
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -419,7 +424,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 		} else {
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if !anthropic.IsFableFamily(bifrostReq.Model) {
+				if !anthropic.IsFableFamily(capModel) {
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "disabled",
 					})
@@ -786,6 +791,30 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 	return messages, systemMessages, nil
 }
 
+// reasoningSignatureForBedrock returns sig only when it is a non-empty string.
+// A valid reasoning signature is a non-empty crypto token (Anthropic always emits
+// one, and Bedrock requires it on those reasoning blocks). Other families emit an
+// empty signature (MiniMax sends "") or none (Nova); echoing
+// reasoningContent.reasoningText.signature:"" back 400s with "This model doesn't
+// support the reasoningContent.reasoningText.signature field". Returning nil lets
+// omitempty drop the field (a non-nil *string to "" would still serialize as "").
+func reasoningSignatureForBedrock(sig *string) *string {
+	if sig == nil || *sig == "" {
+		return nil
+	}
+	return sig
+}
+
+// newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
+// Bedrock accepts ("5m" | "1h"); anything else (e.g. Anthropic's "1m") is dropped to the default.
+func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
+	cp := &BedrockCachePoint{Type: BedrockCachePointTypeDefault}
+	if ttl != nil && (*ttl == "5m" || *ttl == "1h") {
+		cp.TTL = ttl
+	}
+	return cp
+}
+
 // convertSystemMessages converts a Bifrost system message to Bedrock format
 func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, error) {
 	systemMsgs := []BedrockSystemMessage{}
@@ -809,17 +838,13 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 				})
 				if block.CacheControl != nil {
 					systemMsgs = append(systemMsgs, BedrockSystemMessage{
-						CachePoint: &BedrockCachePoint{
-							Type: BedrockCachePointTypeDefault,
-						},
+						CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 					})
 				}
 			} else if block.CachePoint != nil {
 				// Handle standalone cache point blocks
 				systemMsgs = append(systemMsgs, BedrockSystemMessage{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(block.CachePoint.TTL),
 				})
 			}
 		}
@@ -845,7 +870,7 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      detail.Text,
-							Signature: detail.Signature,
+							Signature: reasoningSignatureForBedrock(detail.Signature),
 						},
 					},
 				})
@@ -936,9 +961,7 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 						// Cache point must be in a separate block
 						if block.CacheControl != nil {
 							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: &BedrockCachePoint{
-									Type: BedrockCachePointTypeDefault,
-								},
+								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 							})
 						}
 					}
@@ -954,9 +977,7 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 						// Cache point must be in a separate block
 						if block.CacheControl != nil {
 							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: &BedrockCachePoint{
-									Type: BedrockCachePointTypeDefault,
-								},
+								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 							})
 						}
 					}
@@ -1039,9 +1060,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		// Cache point must be in a separate block
 		if block.CacheControl != nil {
 			blocks = append(blocks, BedrockContentBlock{
-				CachePoint: &BedrockCachePoint{
-					Type: BedrockCachePointTypeDefault,
-				},
+				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 			})
 		}
 		return blocks, nil
@@ -1063,9 +1082,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		// Cache point must be in a separate block
 		if block.CacheControl != nil {
 			blocks = append(blocks, BedrockContentBlock{
-				CachePoint: &BedrockCachePoint{
-					Type: BedrockCachePointTypeDefault,
-				},
+				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
 			})
 		}
 		return blocks, nil
@@ -1202,9 +1219,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		if block.Type == "" && block.CachePoint != nil {
 			return []BedrockContentBlock{
 				{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(block.CachePoint.TTL),
 				},
 			}, nil
 		}
@@ -1773,9 +1788,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, pa
 
 			if tool.CacheControl != nil && !schemas.IsNovaModelFamily(ctx, model) {
 				bedrockTools = append(bedrockTools, BedrockTool{
-					CachePoint: &BedrockCachePoint{
-						Type: BedrockCachePointTypeDefault,
-					},
+					CachePoint: newBedrockCachePoint(tool.CacheControl.TTL),
 				})
 			}
 		}
@@ -2340,5 +2353,35 @@ func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
 			}
 		}
 		req.ToolConfig.Tools = req.ToolConfig.Tools[:nt]
+	}
+}
+
+// downgradeExtendedCacheTTLInBedrockRequest drops the 1h (extended) cache TTL to
+// the default for models that support cache points but not extended TTL (e.g. Nova),
+// which otherwise 400 with "Extended TTL prompt caching is only supported for
+// Anthropic models". Only 1h TTLs are touched; cache points themselves are kept.
+func downgradeExtendedCacheTTLInBedrockRequest(req *BedrockConverseRequest) {
+	downgrade := func(cp *BedrockCachePoint) {
+		if cp != nil && cp.TTL != nil && *cp.TTL == string(BedrockCacheWriteTTL1h) {
+			cp.TTL = nil
+		}
+	}
+	for i := range req.Messages {
+		for j := range req.Messages[i].Content {
+			downgrade(req.Messages[i].Content[j].CachePoint)
+			if req.Messages[i].Content[j].ToolResult != nil {
+				for k := range req.Messages[i].Content[j].ToolResult.Content {
+					downgrade(req.Messages[i].Content[j].ToolResult.Content[k].CachePoint)
+				}
+			}
+		}
+	}
+	for i := range req.System {
+		downgrade(req.System[i].CachePoint)
+	}
+	if req.ToolConfig != nil {
+		for i := range req.ToolConfig.Tools {
+			downgrade(req.ToolConfig.Tools[i].CachePoint)
+		}
 	}
 }

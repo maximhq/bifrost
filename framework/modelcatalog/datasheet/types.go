@@ -309,6 +309,7 @@ type modelParametersParseResult struct {
 	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
 	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
 	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
+	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
 	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
 }
 
@@ -447,7 +448,10 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 		case "reasoning_effort", "reasoning_summary":
 			addParam("reasoning")
 		case "web_search":
-			addParam("web_search_options")
+			addParam("web_search_options") // chat-path param
+			addParam("web_search")         // responses-path server tool
+		case "stop_sequences":
+			addParam("stop")
 		case "promptTools", "image_detail", "stream":
 			// skip — not top-level request parameters
 		default:
@@ -484,6 +488,10 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 		addParam("cache_control")
 		addParam("prompt_cache_key")
 		addParam("prompt_cache_retention")
+	}
+	if parsed.SupportsWebSearch != nil && *parsed.SupportsWebSearch {
+		addParam("web_search")
+		addParam("web_search_options")
 	}
 
 	return supported
@@ -721,4 +729,3 @@ func convertTableOverride(override *configstoreTables.TablePricingOverride) (Ove
 		Options:       options,
 	}, nil
 }
-

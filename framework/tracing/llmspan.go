@@ -157,6 +157,8 @@ func PopulateContextAttributes(
 	routingRuleID, routingRuleName string,
 	teamID, teamName string,
 	customerID, customerName string,
+	businessUnitID, businessUnitName string,
+	userID, userName string,
 	numberOfRetries, fallbackIndex int,
 ) {
 	// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: a
@@ -182,16 +184,32 @@ func PopulateContextAttributes(
 		attrs[schemas.AttrBifrostRoutingRuleName] = routingRuleName
 	}
 	if teamID != "" {
-		attrs[schemas.AttrTeamID] = teamID     // legacy: gen_ai.* placement of bifrost-internal attr
-		attrs[schemas.AttrTeamName] = teamName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrTeamID] = teamID // legacy: gen_ai.* placement of bifrost-internal attr
 		attrs[schemas.AttrBifrostTeamID] = teamID
+	}
+	if teamName != "" {
+		attrs[schemas.AttrTeamName] = teamName // legacy: gen_ai.* placement of bifrost-internal attr
 		attrs[schemas.AttrBifrostTeamName] = teamName
 	}
 	if customerID != "" {
-		attrs[schemas.AttrCustomerID] = customerID     // legacy: gen_ai.* placement of bifrost-internal attr
-		attrs[schemas.AttrCustomerName] = customerName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrCustomerID] = customerID // legacy: gen_ai.* placement of bifrost-internal attr
 		attrs[schemas.AttrBifrostCustomerID] = customerID
+	}
+	if customerName != "" {
+		attrs[schemas.AttrCustomerName] = customerName // legacy: gen_ai.* placement of bifrost-internal attr
 		attrs[schemas.AttrBifrostCustomerName] = customerName
+	}
+	if businessUnitID != "" {
+		attrs[schemas.AttrBifrostBusinessUnitID] = businessUnitID
+	}
+	if businessUnitName != "" {
+		attrs[schemas.AttrBifrostBusinessUnitName] = businessUnitName
+	}
+	if userID != "" {
+		attrs[schemas.AttrBifrostUserID] = userID
+	}
+	if userName != "" {
+		attrs[schemas.AttrBifrostUserName] = userName
 	}
 	attrs[schemas.AttrNumberOfRetries] = numberOfRetries // legacy: gen_ai.* placement of bifrost-internal attr
 	attrs[schemas.AttrFallbackIndex] = fallbackIndex     // legacy: gen_ai.* placement of bifrost-internal attr

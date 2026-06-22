@@ -33,6 +33,36 @@ func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupSco
 	return s.calculateBaseCost(result, lookupScopes)
 }
 
+// CalculateCostForUsage computes the dollar cost from a bare usage object plus
+// provider / model / request type, for cases where no full BifrostResponse
+// exists. The primary use is billing partial usage carried on a failed or
+// cancelled request via BifrostError.ExtraFields.BilledUsage: the
+// provider consumed tokens, so we must charge for them even though there is no
+// success response to read. It mirrors CalculateCost's compute path so success
+// and failure billing use identical rates. Returns 0 when usage is nil.
+func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) float64 {
+	if usage == nil {
+		return 0
+	}
+
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+
+	// If the provider already computed cost, trust it (matches calculateBaseCost).
+	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+		return usage.Cost.TotalCost
+	}
+
+	return s.computeCostFromInput(
+		costInput{usage: usage},
+		schemas.RoutingInfo{Provider: provider, Model: model},
+		normalizeStreamRequestType(requestType),
+		lookupScopes,
+	)
+}
+
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
 func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
 	if cacheDebug.CacheHit {
@@ -128,6 +158,14 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		requestType = normalizeStreamRequestType(requestType)
 	}
 
+	return s.computeCostFromInput(input, routingInfo, requestType, scopes)
+}
+
+// computeCostFromInput resolves pricing for the given routing info + request
+// type and routes the extracted usage to the appropriate per-modality compute
+// function. Shared by calculateBaseCost (response-driven) and
+// CalculateCostForUsage (bare-usage-driven, for failed/cancelled requests).
+func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) float64 {
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to

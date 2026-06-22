@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -116,7 +118,13 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	} else if !bifrostErr.IsBifrostError {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if bifrostErr.Error != nil &&
+			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
+				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 	}
 
 	ctx.SetContentType("application/json")
@@ -197,9 +205,18 @@ func isLocalhostOrigin(origin string) bool {
 		strings.HasPrefix(origin, "https://127.0.0.1:")
 }
 
+// wildcardRegexpCache caches compiled regexps for wildcard origin patterns.
+// The set of patterns is small (typically 1-5) and append-only, making sync.Map
+// ideal: lock-free reads on the hot path, no coordination with config reloads.
+var wildcardRegexpCache sync.Map // map[string]*regexp.Regexp
+
 // matchesWildcardPattern checks if an origin matches a wildcard pattern.
 // Supports patterns like *.example.com, https://*.example.com, or http://*.example.com
 func matchesWildcardPattern(origin string, pattern string) bool {
+	if v, ok := wildcardRegexpCache.Load(pattern); ok {
+		return v.(*regexp.Regexp).MatchString(origin)
+	}
+
 	// Convert wildcard pattern to regex pattern
 	// Escape special regex characters except *
 	regexPattern := regexp.QuoteMeta(pattern)
@@ -209,13 +226,13 @@ func matchesWildcardPattern(origin string, pattern string) bool {
 	// Anchor the pattern to match the entire origin
 	regexPattern = "^" + regexPattern + "$"
 
-	// Compile and test the regex
 	re, err := regexp.Compile(regexPattern)
 	if err != nil {
 		return false
 	}
 
-	return re.MatchString(origin)
+	actual, _ := wildcardRegexpCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp).MatchString(origin)
 }
 
 // ParseModel parses a model string in the format "provider/model" or "provider/nested/model"

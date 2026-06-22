@@ -172,6 +172,10 @@
     {
       "name": "Cache",
       "description": "Cache management endpoints"
+    },
+    {
+      "name": "Skills",
+      "description": "Skills Repository management, marketplace, and download endpoints"
     }
   ],
   "paths": {
@@ -50288,6 +50292,14 @@
             }
           },
           {
+            "name": "aliases",
+            "in": "query",
+            "description": "Comma-separated list of model aliases to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "status",
             "in": "query",
             "description": "Comma-separated list of statuses to filter by",
@@ -50315,6 +50327,38 @@
             "name": "virtual_key_ids",
             "in": "query",
             "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
             "schema": {
               "type": "string"
             }
@@ -50351,6 +50395,14 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -50407,6 +50459,38 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "stop_reasons",
+            "in": "query",
+            "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cache_hit_types",
+            "in": "query",
+            "description": "Comma-separated list of cache hit types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_request_id",
+            "in": "query",
+            "description": "Parent request ID to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter where <key> is the metadata key to match",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -53078,6 +53162,14 @@
             }
           },
           {
+            "name": "aliases",
+            "in": "query",
+            "description": "Comma-separated list of model aliases to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "status",
             "in": "query",
             "description": "Comma-separated list of statuses to filter by",
@@ -53105,6 +53197,38 @@
             "name": "virtual_key_ids",
             "in": "query",
             "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
             "schema": {
               "type": "string"
             }
@@ -53141,6 +53265,14 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -53197,6 +53329,38 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "stop_reasons",
+            "in": "query",
+            "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cache_hit_types",
+            "in": "query",
+            "description": "Comma-separated list of cache hit types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_request_id",
+            "in": "query",
+            "description": "Parent request ID to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter where <key> is the metadata key to match",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -53286,6 +53450,991 @@
                             }
                           }
                         ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/dashboard": {
+      "get": {
+        "operationId": "getDashboard",
+        "summary": "Get consolidated dashboard data",
+        "description": "Returns every metric shown on the workspace dashboard in a single\nresponse: overview totals and histograms, provider usage, model rankings,\ndimension rankings (team, user, virtual key, customer, business unit), and\nMCP usage. Intended for external integrations that want the full dashboard\nin one call rather than orchestrating the individual endpoints.\n\nAccepts the same LLM filter parameters as the histogram and rankings\nendpoints, plus the MCP filter parameters (`tool_names`, `server_labels`)\nwhich apply to the `mcp` section. Filters are applied once and every\nsection is computed against the same time window and bucket size. The\nrequest fails as a whole if any section cannot be computed, so the payload\nis always complete.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "aliases",
+            "in": "query",
+            "description": "Comma-separated list of model aliases to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "stop_reasons",
+            "in": "query",
+            "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cache_hit_types",
+            "in": "query",
+            "description": "Comma-separated list of cache hit types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_request_id",
+            "in": "query",
+            "description": "Parent request ID to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter where <key> is the metadata key to match",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool_names",
+            "in": "query",
+            "description": "Comma-separated list of MCP tool names to filter the MCP section by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server_labels",
+            "in": "query",
+            "description": "Comma-separated list of MCP server labels to filter the MCP section by",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard data retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Consolidated payload containing every metric shown on the workspace\ndashboard. Each section mirrors the response of its dedicated endpoint, so\nconsumers can integrate a single call instead of orchestrating many.\n",
+                  "properties": {
+                    "meta": {
+                      "type": "object",
+                      "description": "Parameters the dashboard data was computed with",
+                      "properties": {
+                        "generated_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "UTC time the response was assembled"
+                        },
+                        "bucket_size_seconds": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Width of every histogram bucket, derived from the time range"
+                        },
+                        "start_time": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "Resolved start of the queried range"
+                        },
+                        "end_time": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "Resolved end of the queried range"
+                        }
+                      }
+                    },
+                    "overview": {
+                      "type": "object",
+                      "description": "Overview tab metrics",
+                      "properties": {
+                        "stats": {
+                          "$ref": "#/components/schemas/LogStats"
+                        },
+                        "requests": {
+                          "type": "object",
+                          "description": "Time-bucketed request count histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed request count",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "count": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "success": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "error": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "tokens": {
+                          "type": "object",
+                          "description": "Time-bucketed token usage histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed token usage",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "prompt_tokens": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "completion_tokens": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "total_tokens": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "cost": {
+                          "type": "object",
+                          "description": "Time-bucketed cost histogram with model breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed cost data with model breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "total_cost": {
+                                    "type": "number"
+                                  },
+                                  "by_model": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "number"
+                                    },
+                                    "description": "Cost breakdown by model name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "List of models present in the histogram"
+                            }
+                          }
+                        },
+                        "models": {
+                          "type": "object",
+                          "description": "Time-bucketed model usage histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed model usage with success/error breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_model": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Usage statistics for a single model",
+                                      "properties": {
+                                        "total": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "success": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "error": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Usage breakdown by model name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "latency": {
+                          "type": "object",
+                          "description": "Time-bucketed latency histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed latency percentiles",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "avg_latency": {
+                                    "type": "number"
+                                  },
+                                  "p90_latency": {
+                                    "type": "number"
+                                  },
+                                  "p95_latency": {
+                                    "type": "number"
+                                  },
+                                  "p99_latency": {
+                                    "type": "number"
+                                  },
+                                  "total_requests": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "provider_usage": {
+                      "type": "object",
+                      "description": "Provider Usage tab metrics",
+                      "properties": {
+                        "cost": {
+                          "type": "object",
+                          "description": "Time-bucketed cost histogram with provider breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed cost data with provider breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "total_cost": {
+                                    "type": "number"
+                                  },
+                                  "by_provider": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "number"
+                                    },
+                                    "description": "Cost breakdown by provider name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "providers": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "tokens": {
+                          "type": "object",
+                          "description": "Time-bucketed token histogram with provider breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed token usage with provider breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_provider": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Token statistics for a single provider",
+                                      "properties": {
+                                        "prompt_tokens": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "completion_tokens": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "total_tokens": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Token usage breakdown by provider name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "providers": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "latency": {
+                          "type": "object",
+                          "description": "Time-bucketed latency histogram with provider breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed latency data with provider breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_provider": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Latency statistics for a single provider",
+                                      "properties": {
+                                        "avg_latency": {
+                                          "type": "number"
+                                        },
+                                        "p90_latency": {
+                                          "type": "number"
+                                        },
+                                        "p95_latency": {
+                                          "type": "number"
+                                        },
+                                        "p99_latency": {
+                                          "type": "number"
+                                        },
+                                        "total_requests": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Latency breakdown by provider name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "providers": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "model_rankings": {
+                      "type": "object",
+                      "description": "Model Rankings tab data",
+                      "properties": {
+                        "rankings": {
+                          "type": "object",
+                          "description": "Models ranked by usage with trend comparison",
+                          "properties": {
+                            "rankings": {
+                              "type": "array",
+                              "items": {
+                                "allOf": [
+                                  {
+                                    "type": "object",
+                                    "description": "Aggregated stats for a single model over the query period",
+                                    "properties": {
+                                      "model": {
+                                        "type": "string"
+                                      },
+                                      "provider": {
+                                        "type": "string"
+                                      },
+                                      "total_requests": {
+                                        "type": "integer",
+                                        "format": "int64"
+                                      },
+                                      "success_count": {
+                                        "type": "integer",
+                                        "format": "int64"
+                                      },
+                                      "success_rate": {
+                                        "type": "number"
+                                      },
+                                      "total_tokens": {
+                                        "type": "integer",
+                                        "format": "int64"
+                                      },
+                                      "total_cost": {
+                                        "type": "number"
+                                      },
+                                      "avg_latency": {
+                                        "type": "number"
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "trend": {
+                                        "type": "object",
+                                        "description": "Percentage change versus the previous comparable period",
+                                        "properties": {
+                                          "has_previous_period": {
+                                            "type": "boolean"
+                                          },
+                                          "requests_trend": {
+                                            "type": "number"
+                                          },
+                                          "tokens_trend": {
+                                            "type": "number"
+                                          },
+                                          "cost_trend": {
+                                            "type": "number"
+                                          },
+                                          "latency_trend": {
+                                            "type": "number"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "histogram": {
+                          "type": "object",
+                          "description": "Time-bucketed model usage histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed model usage with success/error breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_model": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Usage statistics for a single model",
+                                      "properties": {
+                                        "total": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "success": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "error": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Usage breakdown by model name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "dimension_rankings": {
+                      "type": "object",
+                      "description": "Ranking tables keyed by dimension (`team`, `user`, `virtual_key`,\n`customer`, `business_unit`); each value is that dimension's rankings.\n",
+                      "additionalProperties": {
+                        "type": "object",
+                        "description": "Dimension values ranked by usage with trend comparison",
+                        "properties": {
+                          "rankings": {
+                            "type": "array",
+                            "items": {
+                              "allOf": [
+                                {
+                                  "type": "object",
+                                  "description": "Aggregated usage for a single dimension value (team, user, virtual key, etc.)",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "total_requests": {
+                                      "type": "integer",
+                                      "format": "int64"
+                                    },
+                                    "total_tokens": {
+                                      "type": "integer",
+                                      "format": "int64"
+                                    },
+                                    "total_cost": {
+                                      "type": "number"
+                                    }
+                                  }
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "trend": {
+                                      "type": "object",
+                                      "description": "Percentage change versus the previous comparable period",
+                                      "properties": {
+                                        "has_previous_period": {
+                                          "type": "boolean"
+                                        },
+                                        "requests_trend": {
+                                          "type": "number"
+                                        },
+                                        "tokens_trend": {
+                                          "type": "number"
+                                        },
+                                        "cost_trend": {
+                                          "type": "number"
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "dimension": {
+                            "type": "string",
+                            "description": "Entity used to group dimension rankings",
+                            "enum": [
+                              "team",
+                              "customer",
+                              "business_unit",
+                              "user",
+                              "virtual_key"
+                            ]
+                          },
+                          "total_actual_requests": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Distinct request count over the attributed population. Only set for\nfan-out dimensions (team, customer, business_unit) on Postgres.\n"
+                          },
+                          "total_attributed_requests": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Requests credited to every dimension value they touch; the sum can\nexceed the real request count. Only set for fan-out dimensions.\n"
+                          }
+                        }
+                      }
+                    },
+                    "mcp": {
+                      "type": "object",
+                      "description": "MCP usage tab metrics",
+                      "properties": {
+                        "volume": {
+                          "type": "object",
+                          "description": "Time-bucketed MCP tool call volume histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed MCP tool call volume",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "count": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "success": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "error": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "cost": {
+                          "type": "object",
+                          "description": "Time-bucketed MCP cost histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed MCP cost data",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "total_cost": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "top_tools": {
+                          "type": "object",
+                          "description": "Top MCP tools by call count (limit 10)",
+                          "properties": {
+                            "tools": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Aggregated stats for a single MCP tool",
+                                "properties": {
+                                  "tool_name": {
+                                    "type": "string"
+                                  },
+                                  "count": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "cost": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -57551,6 +58700,992 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/files/upload": {
+      "post": {
+        "operationId": "uploadSkillFile",
+        "summary": "Upload skill file",
+        "description": "Uploads one file for later attachment to a skill version. The response contains either an object-storage key or a database blob ID.",
+        "tags": [
+          "Skills"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadSkillFileRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File uploaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadSkillFileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/files/orphans": {
+      "delete": {
+        "operationId": "cleanupOrphanSkillFiles",
+        "summary": "Clean up orphan skill files",
+        "description": "Deletes uploaded files that are not attached to any skill version. This is mostly a maintenance escape hatch: Bifrost also runs orphan cleanup on server startup. Non-forced cleanup preserves uploads newer than 24 hours so files are not deleted while a skill is still being edited.\n",
+        "tags": [
+          "Skills"
+        ],
+        "parameters": [
+          {
+            "name": "force",
+            "in": "query",
+            "description": "Bypass the 24-hour grace period when true.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cleanup completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillOrphanCleanupResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/all/version": {
+      "get": {
+        "operationId": "getAllSkillsVersion",
+        "summary": "Get all-skills version",
+        "description": "Returns the current version of the synthetic `bifrost-all-skills` marketplace plugin.",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllSkillsVersionResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "bumpAllSkillsVersion",
+        "summary": "Bump all-skills version",
+        "description": "Manually bumps the synthetic `bifrost-all-skills` plugin version as an escape hatch for marketplace refreshes.",
+        "tags": [
+          "Skills"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BumpAllSkillsVersionRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version bumped successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllSkillsVersionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills": {
+      "get": {
+        "operationId": "listSkills",
+        "summary": "List skills",
+        "description": "Returns a paginated list of skills from the Skills Repository.",
+        "tags": [
+          "Skills"
+        ],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search by skill name or description.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Field to sort by.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "name",
+                "updated_at",
+                "created_at"
+              ],
+              "default": "created_at"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of skills to return. Maximum 100.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of skills to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListSkillsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSkill",
+        "summary": "Create skill",
+        "description": "Creates a new skill and immediately serves its first immutable version.",
+        "tags": [
+          "Skills"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSkillRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Skill created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/{id}": {
+      "get": {
+        "operationId": "getSkill",
+        "summary": "Get skill",
+        "description": "Returns a skill by ID. Pass `version` to inspect a historical version snapshot.",
+        "tags": [
+          "Skills"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Skill ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "Optional version to load instead of the currently served version.",
+            "schema": {
+              "type": "string",
+              "example": "1.0.0"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateSkill",
+        "summary": "Update skill",
+        "description": "Creates a new immutable skill version. Set `serve` to false to save the version without switching the served version.",
+        "tags": [
+          "Skills"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Skill ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSkillRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Skill updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSkill",
+        "summary": "Delete skill",
+        "description": "Deletes a skill and all of its versions.",
+        "tags": [
+          "Skills"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Skill ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Skill deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/{id}/versions": {
+      "get": {
+        "operationId": "listSkillVersions",
+        "summary": "List skill versions",
+        "description": "Returns immutable version snapshots for a skill.",
+        "tags": [
+          "Skills"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Skill ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search versions by version string.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Field to sort by.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "version",
+                "created_at"
+              ],
+              "default": "created_at"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of versions to return. Maximum 100.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of versions to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListSkillVersionsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/{id}/shift-version": {
+      "post": {
+        "operationId": "shiftSkillVersion",
+        "summary": "Shift served skill version",
+        "description": "Changes the served version for a skill without deleting newer versions.",
+        "tags": [
+          "Skills"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Skill ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShiftSkillVersionRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Served version shifted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/serve/claude-code/.claude-plugin/marketplace.json": {
+      "get": {
+        "operationId": "getClaudeCodeSkillsMarketplace",
+        "summary": "Get Claude Code skills marketplace",
+        "description": "Public marketplace JSON consumed by Claude Code. Available only when the Bifrost server can access the `git` binary.",
+        "tags": [
+          "Skills"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Claude Code marketplace JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeCodeSkillMarketplace"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/serve/codex/.agents/plugins/marketplace.json": {
+      "get": {
+        "operationId": "getCodexSkillsMarketplace",
+        "summary": "Get Codex skills marketplace JSON",
+        "description": "Public Codex marketplace JSON for inspecting the skills and plugin sources exposed by Bifrost.",
+        "tags": [
+          "Skills"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Codex marketplace JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexSkillMarketplace"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/serve/all/download.zip": {
+      "get": {
+        "operationId": "downloadAllSkills",
+        "summary": "Download all skills as ZIP",
+        "description": "Public ZIP download containing every currently served skill.",
+        "tags": [
+          "Skills"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "ZIP archive",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/serve/{skill-name}/download.zip": {
+      "get": {
+        "operationId": "downloadSkill",
+        "summary": "Download skill as ZIP",
+        "description": "Public ZIP download containing a single currently served skill.",
+        "tags": [
+          "Skills"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "skill-name",
+            "in": "path",
+            "required": true,
+            "description": "Skill name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ZIP archive",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/serve/{skill-name}/files/{filepath}": {
+      "get": {
+        "operationId": "downloadSkillFile",
+        "summary": "Download skill file",
+        "description": "Public raw file download from the currently served version of a skill.",
+        "tags": [
+          "Skills"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "skill-name",
+            "in": "path",
+            "required": true,
+            "description": "Skill name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filepath",
+            "in": "path",
+            "required": true,
+            "description": "Relative file path inside the skill package.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw file content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -73293,6 +75428,521 @@
           "count": {
             "type": "integer",
             "description": "Total number of overrides returned"
+          }
+        }
+      },
+      "SkillSourceType": {
+        "type": "string",
+        "description": "Source backing for an attached skill file.",
+        "enum": [
+          "url",
+          "dataurl",
+          "text",
+          "upload"
+        ]
+      },
+      "SkillFileEntry": {
+        "type": "object",
+        "description": "File entry used when creating or updating a skill version.",
+        "required": [
+          "path",
+          "source_type",
+          "mime_type"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative file path inside the skill package.",
+            "example": "references/style-guide.md"
+          },
+          "source_type": {
+            "$ref": "#/components/schemas/SkillSourceType"
+          },
+          "content": {
+            "type": "string",
+            "description": "Inline file content for `text` source files."
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "HTTP or HTTPS URL for `url` source files."
+          },
+          "dataurl": {
+            "type": "string",
+            "description": "Data URL payload for `dataurl` source files.",
+            "example": "data:text/plain;base64,SGVsbG8="
+          },
+          "upload_id": {
+            "type": "string",
+            "description": "Upload identifier returned by the multipart upload endpoint."
+          },
+          "storage_key": {
+            "type": "string",
+            "description": "Object-storage key for an uploaded or stored file."
+          },
+          "blob_id": {
+            "type": "string",
+            "description": "Database blob ID used when object storage is not configured."
+          },
+          "mime_type": {
+            "type": "string",
+            "description": "MIME type for the file.",
+            "example": "text/markdown"
+          }
+        }
+      },
+      "SkillFile": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SkillFileEntry"
+          },
+          {
+            "type": "object",
+            "description": "Persisted file attached to a skill version.",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "File row ID."
+              },
+              "skill_version_id": {
+                "type": "string",
+                "description": "Version snapshot ID this file belongs to."
+              },
+              "file_size_bytes": {
+                "type": "integer",
+                "format": "int64",
+                "description": "File size in bytes when known."
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        ]
+      },
+      "SkillVersion": {
+        "type": "object",
+        "description": "Immutable skill version snapshot.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "skill_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "example": "1.0.0"
+          },
+          "skill_md_body": {
+            "type": "string",
+            "description": "SKILL.md body for this version. Included when a full version is loaded."
+          },
+          "frontmatter_snapshot": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Frontmatter snapshot for this version."
+          },
+          "created_by": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFile"
+            }
+          }
+        }
+      },
+      "Skill": {
+        "type": "object",
+        "description": "Skill repository entry and currently served version metadata.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "example": "review-migrations"
+          },
+          "description": {
+            "type": "string",
+            "example": "Reviews database migration safety and rollback behavior."
+          },
+          "license": {
+            "type": "string",
+            "nullable": true,
+            "example": "MIT"
+          },
+          "compatibility": {
+            "type": "string",
+            "nullable": true,
+            "example": "Claude Code, Codex"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Metadata emitted under the `metadata` frontmatter key."
+          },
+          "extra_frontmatter": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Additional top-level SKILL.md frontmatter fields."
+          },
+          "allowed_tools": {
+            "type": "string",
+            "nullable": true,
+            "description": "Tool guidance emitted in SKILL.md frontmatter."
+          },
+          "skill_md_body": {
+            "type": "string",
+            "description": "Markdown body of the composed SKILL.md."
+          },
+          "latest_version": {
+            "type": "string",
+            "description": "Currently served version.",
+            "example": "1.0.0"
+          },
+          "created_by": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "files": {
+            "type": "array",
+            "description": "Files attached to the currently served version.",
+            "items": {
+              "$ref": "#/components/schemas/SkillFile"
+            }
+          },
+          "file_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of files in the currently served version."
+          },
+          "highest_version": {
+            "type": "string",
+            "description": "Highest created SemVer for validation, even if an older version is served.",
+            "example": "1.2.0"
+          }
+        }
+      },
+      "CreateSkillRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "skill_md_body",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Immutable skill name. Lowercase letters, numbers, and single hyphens only.",
+            "example": "review-migrations"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "license": {
+            "type": "string",
+            "nullable": true
+          },
+          "compatibility": {
+            "type": "string",
+            "nullable": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "extra_frontmatter": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "allowed_tools": {
+            "type": "string",
+            "nullable": true
+          },
+          "skill_md_body": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "example": "1.0.0"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFileEntry"
+            }
+          }
+        }
+      },
+      "UpdateSkillRequest": {
+        "type": "object",
+        "required": [
+          "description",
+          "skill_md_body",
+          "version"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "license": {
+            "type": "string",
+            "nullable": true
+          },
+          "compatibility": {
+            "type": "string",
+            "nullable": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "extra_frontmatter": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "allowed_tools": {
+            "type": "string",
+            "nullable": true
+          },
+          "skill_md_body": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "example": "1.0.1"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFileEntry"
+            }
+          },
+          "serve": {
+            "type": "boolean",
+            "description": "When false, creates a new version without making it the served version.",
+            "default": true
+          }
+        }
+      },
+      "SkillResponse": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "$ref": "#/components/schemas/Skill"
+          }
+        }
+      },
+      "ListSkillsResponse": {
+        "type": "object",
+        "properties": {
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Skill"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          }
+        }
+      },
+      "ListSkillVersionsResponse": {
+        "type": "object",
+        "properties": {
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillVersion"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          }
+        }
+      },
+      "UploadSkillFileRequest": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "File to upload. Exactly one file part is accepted."
+          },
+          "path": {
+            "type": "string",
+            "description": "Optional relative path to store with the uploaded file.",
+            "example": "references/style-guide.md"
+          }
+        }
+      },
+      "UploadSkillFileResponse": {
+        "type": "object",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          },
+          "storage_key": {
+            "type": "string",
+            "description": "Object-storage key when object storage is configured."
+          },
+          "blob_id": {
+            "type": "string",
+            "description": "DB blob ID when object storage is not configured."
+          },
+          "path": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "file_size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "SkillOrphanCleanupResponse": {
+        "type": "object",
+        "properties": {
+          "deleted_db_blobs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deleted_storage_objects": {
+            "type": "integer"
+          },
+          "object_storage_configured": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "AllSkillsVersionResponse": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "example": "1.2.0"
+          }
+        }
+      },
+      "BumpAllSkillsVersionRequest": {
+        "type": "object",
+        "required": [
+          "bump"
+        ],
+        "properties": {
+          "bump": {
+            "type": "string",
+            "enum": [
+              "patch",
+              "minor",
+              "major"
+            ]
+          }
+        }
+      },
+      "ShiftSkillVersionRequest": {
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "example": "1.0.0"
+          }
+        }
+      },
+      "ClaudeCodeSkillMarketplace": {
+        "type": "object",
+        "description": "Claude Code marketplace document generated by Bifrost.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "CodexSkillMarketplace": {
+        "type": "object",
+        "description": "Codex marketplace document generated by Bifrost.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "interface": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
           }
         }
       },

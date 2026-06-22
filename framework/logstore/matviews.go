@@ -800,8 +800,9 @@ const freshAggregateMatViewMinWindow = 24 * time.Hour
 // (both StartTime and EndTime nil) are treated as matview-safe — a half-bounded
 // range has no measurable width and could still be a short window.
 //
-// Used by both /api/logs/stats (full metric payload) and /api/logs (pagination
-// total count) so those two surfaces stay consistent on the same window.
+// Used by /api/logs/stats (full metric payload), /api/logs (pagination total
+// count), and the model/user/dimension ranking readers so all those surfaces
+// stay consistent on the same window.
 func (s *RDBLogStore) canUseMatViewForFreshAggregate(f SearchFilters) bool {
 	if !s.canUseMatView(f) {
 		return false
@@ -1633,9 +1634,20 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 	}
 	var prevResults []prevRow
 	if filters.StartTime != nil && filters.EndTime != nil {
-		duration := filters.EndTime.Sub(*filters.StartTime)
-		prevStart := filters.StartTime.Add(-duration)
-		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		// Anchor the previous period to the hour grid: the current period's
+		// hour >= date_trunc('hour', StartTime) predicate claims the bucket
+		// containing StartTime, so its effective span is [hourStart, EndTime].
+		// Derive the comparison duration from hourStart (not StartTime) so the
+		// previous window covers exactly the same effective interval; otherwise
+		// a sub-hour StartTime makes the current window longer by
+		// StartTime-hourStart and skews the trend. The previous period must
+		// also end strictly before that bucket: ending at StartTime-1ns would
+		// match the same bucket via hour <= prevEnd and double-count the
+		// boundary hour in both periods.
+		hourStart := filters.StartTime.Truncate(time.Hour)
+		duration := filters.EndTime.Sub(hourStart)
+		prevStart := hourStart.Add(-duration)
+		prevEnd := hourStart.Add(-time.Nanosecond)
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
@@ -1723,9 +1735,20 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 	}
 	var prevResults []prevRow
 	if filters.StartTime != nil && filters.EndTime != nil {
-		duration := filters.EndTime.Sub(*filters.StartTime)
-		prevStart := filters.StartTime.Add(-duration)
-		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		// Anchor the previous period to the hour grid: the current period's
+		// hour >= date_trunc('hour', StartTime) predicate claims the bucket
+		// containing StartTime, so its effective span is [hourStart, EndTime].
+		// Derive the comparison duration from hourStart (not StartTime) so the
+		// previous window covers exactly the same effective interval; otherwise
+		// a sub-hour StartTime makes the current window longer by
+		// StartTime-hourStart and skews the trend. The previous period must
+		// also end strictly before that bucket: ending at StartTime-1ns would
+		// match the same bucket via hour <= prevEnd and double-count the
+		// boundary hour in both periods.
+		hourStart := filters.StartTime.Truncate(time.Hour)
+		duration := filters.EndTime.Sub(hourStart)
+		prevStart := hourStart.Add(-duration)
+		prevEnd := hourStart.Add(-time.Nanosecond)
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
@@ -1825,9 +1848,20 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	// Previous period
 	var prevResults []row
 	if filters.StartTime != nil && filters.EndTime != nil {
-		duration := filters.EndTime.Sub(*filters.StartTime)
-		prevStart := filters.StartTime.Add(-duration)
-		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		// Anchor the previous period to the hour grid: the current period's
+		// hour >= date_trunc('hour', StartTime) predicate claims the bucket
+		// containing StartTime, so its effective span is [hourStart, EndTime].
+		// Derive the comparison duration from hourStart (not StartTime) so the
+		// previous window covers exactly the same effective interval; otherwise
+		// a sub-hour StartTime makes the current window longer by
+		// StartTime-hourStart and skews the trend. The previous period must
+		// also end strictly before that bucket: ending at StartTime-1ns would
+		// match the same bucket via hour <= prevEnd and double-count the
+		// boundary hour in both periods.
+		hourStart := filters.StartTime.Truncate(time.Hour)
+		duration := filters.EndTime.Sub(hourStart)
+		prevStart := hourStart.Add(-duration)
+		prevEnd := hourStart.Add(-time.Nanosecond)
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd

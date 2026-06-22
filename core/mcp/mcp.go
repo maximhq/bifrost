@@ -43,6 +43,8 @@ type MCPManager struct {
 	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
 	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
 	reconnectingClients  sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
+	bootClientConfigs    []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
+	connectOnce          sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
@@ -131,49 +133,76 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		manager.toolsManager.SetCodeMode(codeMode)
 	}
 
-	// Process client configs: create client map entries and establish connections
-	if len(config.ClientConfigs) > 0 {
-		// Add clients in parallel
-		wg := sync.WaitGroup{}
-		wg.Add(len(config.ClientConfigs))
-		for _, clientConfig := range config.ClientConfigs {
-			go func(clientConfig *schemas.MCPClientConfig) {
-				defer wg.Done()
-				if err := manager.AddClient(manager.ctx, clientConfig); err != nil {
-					manager.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
-					// Retain the entry in Disconnected state and start a health monitor to
-					// recover it automatically. On startup, a connection failure is likely
-					// transient (e.g. autoscaling cold start) — the client was previously
-					// configured and should be recovered without user intervention.
-					manager.mu.Lock()
-					if _, exists := manager.clientMap[clientConfig.ID]; !exists {
-						manager.clientMap[clientConfig.ID] = &schemas.MCPClientState{
-							Name:            clientConfig.Name,
-							ExecutionConfig: clientConfig,
-							State:           schemas.MCPConnectionStateDisconnected,
-							ToolMap:         make(map[string]schemas.ChatTool),
-							ToolNameMapping: make(map[string]string),
-							ConnectionInfo: &schemas.MCPClientConnectionInfo{
-								Type: clientConfig.ConnectionType,
-							},
-						}
-					} else {
-						manager.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
-					}
-					manager.mu.Unlock()
-					isPingAvailable := true
-					if clientConfig.IsPingAvailable != nil {
-						isPingAvailable = *clientConfig.IsPingAvailable
-					}
-					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, manager.logger)
-					manager.healthMonitorManager.StartMonitoring(monitor)
-				}
-			}(clientConfig)
-		}
-		wg.Wait()
-	}
+	// Retain client configs for an explicit dial via ConnectConfiguredClients.
+	// Construction no longer connects: callers dial after every plugin is
+	// registered so PreMCPConnectionHook sees the full plugin set (otherwise a
+	// connect issued during Init would run against the point-in-time plugin
+	// snapshot and silently skip plugins registered afterwards).
+	manager.bootClientConfigs = config.ClientConfigs
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
+}
+
+// ConnectConfiguredClients dials the MCP clients supplied at construction time
+// (MCPConfig.ClientConfigs). It is separated from NewMCPManager so the caller can
+// run it only after all plugins are registered, ensuring every PreMCPConnectionHook
+// participates in the connection. Safe to call once after construction; clients are
+// dialed in parallel and a failed client is retained in the Disconnected state with
+// a health monitor that recovers it automatically.
+func (m *MCPManager) ConnectConfiguredClients(ctx context.Context) {
+	m.connectOnce.Do(func() {
+		m.connectConfiguredClients(ctx)
+	})
+}
+
+// connectConfiguredClients performs the actual dial. It is invoked exactly once via
+// m.connectOnce, guarding against accidental repeat invocations (e.g. a double-Bootstrap
+// or a future code path) that would otherwise re-dial every boot config.
+func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
+	if len(m.bootClientConfigs) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = m.ctx
+	}
+	// Add clients in parallel
+	wg := sync.WaitGroup{}
+	wg.Add(len(m.bootClientConfigs))
+	for _, clientConfig := range m.bootClientConfigs {
+		go func(clientConfig *schemas.MCPClientConfig) {
+			defer wg.Done()
+			if err := m.AddClient(ctx, clientConfig); err != nil {
+				m.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
+				// Retain the entry in Disconnected state and start a health monitor to
+				// recover it automatically. On startup, a connection failure is likely
+				// transient (e.g. autoscaling cold start) — the client was previously
+				// configured and should be recovered without user intervention.
+				m.mu.Lock()
+				if _, exists := m.clientMap[clientConfig.ID]; !exists {
+					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{
+						Name:            clientConfig.Name,
+						ExecutionConfig: clientConfig,
+						State:           schemas.MCPConnectionStateDisconnected,
+						ToolMap:         make(map[string]schemas.ChatTool),
+						ToolNameMapping: make(map[string]string),
+						ConnectionInfo: &schemas.MCPClientConnectionInfo{
+							Type: clientConfig.ConnectionType,
+						},
+					}
+				} else {
+					m.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
+				}
+				m.mu.Unlock()
+				isPingAvailable := true
+				if clientConfig.IsPingAvailable != nil {
+					isPingAvailable = *clientConfig.IsPingAvailable
+				}
+				monitor := NewClientHealthMonitor(m, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, m.logger)
+				m.healthMonitorManager.StartMonitoring(monitor)
+			}
+		}(clientConfig)
+	}
+	wg.Wait()
 }
 
 // SetPluginPipeline updates the plugin pipeline provider and release function on the manager's

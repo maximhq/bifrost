@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
@@ -35,6 +36,23 @@ type ModelConfigsQueryParams struct {
 	Search   string
 	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
+}
+
+// SkillListQueryParams holds pagination, filtering, and search parameters for skill repository queries.
+type SkillListQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+	SortBy string // name, updated_at, created_at (default: created_at)
+	Order  string // asc, desc (default: desc)
+}
+
+type SkillVersionListQueryParams struct {
+	Limit  int
+	Offset int
+	SortBy string // version, created_at (default: created_at)
+	Order  string // asc, desc (default: desc)
+	Search string // substring match on the version string (optional)
 }
 
 // RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
@@ -200,6 +218,9 @@ type ConfigStore interface {
 	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
 	// so it is hidden from listings and never resurrected by the remote sync.
 	SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// DeleteMCPLibraryEntry removes a library row by ID, hard-deleting "custom"
+	// rows (freeing their slug for re-add) and tombstoning "remote" rows.
+	DeleteMCPLibraryEntry(ctx context.Context, id uint) error
 	// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must not
 	// overwrite or recreate: custom rows and soft-deleted (tombstoned) rows.
 	GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error)
@@ -578,6 +599,23 @@ type ConfigStore interface {
 	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
 	CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error
 	DeletePromptVersion(ctx context.Context, id uint) error
+
+	// Skills Repository
+	CreateSkill(ctx context.Context, skill *tables.TableSkill, version string, objectStore objectstore.ObjectStore) error
+	GetSkill(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillLean(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillByName(ctx context.Context, name string) (*tables.TableSkill, error)
+	GetSkillVersion(ctx context.Context, skillID, version string) (*tables.TableSkillVersion, error)
+	ListSkillVersions(ctx context.Context, skillID string, params SkillVersionListQueryParams) ([]tables.TableSkillVersion, int64, error)
+	UpdateSkill(ctx context.Context, skill *tables.TableSkill, version string, serve bool, objectStore objectstore.ObjectStore) error
+	DeleteSkill(ctx context.Context, id string, objectStore objectstore.ObjectStore) error
+	ListSkills(ctx context.Context, params SkillListQueryParams) ([]tables.TableSkill, int64, error)
+	ShiftSkillVersion(ctx context.Context, skillID string, targetVersion string, objectStore objectstore.ObjectStore) error
+	GetAllSkillsVersion(ctx context.Context) (string, error)
+	BumpAllSkillsVersion(ctx context.Context, bump string) (string, error)
+	CreateSkillFileBlob(ctx context.Context, blob *tables.TableSkillFileBlob) error
+	CleanupOrphanSkillFileBlobs(ctx context.Context, force bool) (int64, error)
+	UpdateSkillConfigHash(ctx context.Context, skillID string, configHash string) error
 
 	// Prompt Repository - Sessions
 	GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error)

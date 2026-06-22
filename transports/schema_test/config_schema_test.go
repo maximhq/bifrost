@@ -3,6 +3,7 @@ package schema_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -132,6 +133,196 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Errorf("port type mismatch: logs_store=%q, config_store=%q", logsPortType, configPortType)
 		}
 	})
+}
+
+func TestSchemaPostgresPasswordCommand(t *testing.T) {
+	compiled := compileSchema(t)
+
+	config := `{
+		"config_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		},
+		"logs_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		}
+	}`
+
+	if err := validateConfig(t, compiled, config); err != nil {
+		t.Fatalf("postgres password_command config should be valid, got: %v", err)
+	}
+}
+
+func TestSchemaPostgresPasswordCommandValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "config_store rejects password and password_command together",
+			config: postgresStoreConfig("config_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name: "logs_store rejects password and password_command together",
+			config: postgresStoreConfig("logs_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name:   "config_store rejects empty password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": ""}`),
+		},
+		{
+			name:   "config_store rejects inline args in password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws rds"}`),
+		},
+		{
+			name:   "config_store rejects zero password command timeout",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
+			name:   "logs_store rejects zero password command timeout",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
+			name: "config_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+		{
+			name: "logs_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
+func TestSchemaLogsStoreWriterConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	validConfig := `{
+		"logs_store": {
+			"enabled": true,
+			"type": "sqlite",
+			"config": {
+				"path": "/tmp/logs.db"
+			},
+			"writer": {
+				"max_batch_size": 500,
+				"batch_interval": "2s",
+				"max_batch_bytes": 1048576,
+				"write_queue_capacity": 2000,
+				"deferred_usage_concurrency": 3
+			}
+		}
+	}`
+	if err := validateConfig(t, compiled, validConfig); err != nil {
+		t.Fatalf("logs_store.writer config should be valid, got: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		writer string
+	}{
+		{
+			name:   "rejects zero max batch size",
+			writer: `"max_batch_size": 0`,
+		},
+		{
+			name:   "rejects zero batch interval",
+			writer: `"batch_interval": "0s"`,
+		},
+		{
+			name:   "rejects zero max batch bytes",
+			writer: `"max_batch_bytes": 0`,
+		},
+		{
+			name:   "rejects zero write queue capacity",
+			writer: `"write_queue_capacity": 0`,
+		},
+		{
+			name:   "rejects zero deferred usage concurrency",
+			writer: `"deferred_usage_concurrency": 0`,
+		},
+		{
+			name:   "rejects unknown writer field",
+			writer: `"unknown": 1`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"logs_store": {
+					"enabled": true,
+					"type": "sqlite",
+					"config": {
+						"path": "/tmp/logs.db"
+					},
+					"writer": {
+						%s
+					}
+				}
+			}`, tt.writer)
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
+func postgresStoreConfig(storeName string, passwordFields string) string {
+	return fmt.Sprintf(`{
+		"%s": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				%s,
+				"db_name": "bifrost",
+				"ssl_mode": "require"
+			}
+		}
+	}`, storeName, passwordFields)
 }
 
 // compileSchema loads and compiles the config.schema.json for validation tests.

@@ -270,6 +270,10 @@
     "affinity": {
       "type": "object"
     },
+    "strategy": {
+      "type": "object",
+      "description": "Deployment update strategy. Applies to the Deployment only (not the StatefulSet). Empty uses the Kubernetes default. Rendered verbatim into spec.strategy."
+    },
     "bifrost": {
       "type": "object",
       "description": "Bifrost application configuration",
@@ -293,6 +297,11 @@
         "logStyle": {
           "type": "string",
           "enum": ["json", "text"]
+        },
+        "envLabel": {
+          "type": "string",
+          "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
+          "maxLength": 10
         },
         "sourceOfTruth": {
           "type": "string",
@@ -524,6 +533,15 @@
               "minimum": 1,
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
+            },
+            "allowDirectKeys": {
+              "type": "boolean",
+              "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",
+              "default": false
+            },
+            "mcpExternalClientUrl": {
+              "type": "string",
+              "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."
             }
           },
           "additionalProperties": false
@@ -975,11 +993,27 @@
                     },
                     "agent_addr": {
                       "type": "string",
-                      "description": "Datadog Agent address for APM traces (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_AGENT_ADDR)"
+                      "description": "Datadog Agent address for APM traces as combined host:port (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_AGENT_ADDR). Overridden by agent_host when set"
+                    },
+                    "agent_host": {
+                      "type": "string",
+                      "description": "Datadog Agent host for APM traces, set separately from the port (agent mode only). Supports env.VAR_NAME prefix (e.g. env.DD_AGENT_HOST). Takes precedence over agent_addr. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)"
+                    },
+                    "agent_port": {
+                      "type": "string",
+                      "description": "Datadog Agent port for APM traces, used with agent_host (agent mode only). Supports env.VAR_NAME prefix. Defaults to 8126; has no effect when agent_host is unset"
                     },
                     "dogstatsd_addr": {
                       "type": "string",
-                      "description": "DogStatsD server address for metrics (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_DOGSTATSD_ADDR)"
+                      "description": "DogStatsD server address for metrics as combined host:port (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_DOGSTATSD_ADDR). Overridden by dogstatsd_host when set"
+                    },
+                    "dogstatsd_host": {
+                      "type": "string",
+                      "description": "DogStatsD server host for metrics, set separately from the port (agent mode only). Supports env.VAR_NAME prefix (e.g. env.DD_DOGSTATSD_HOST). Takes precedence over dogstatsd_addr. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)"
+                    },
+                    "dogstatsd_port": {
+                      "type": "string",
+                      "description": "DogStatsD server port for metrics, used with dogstatsd_host (agent mode only). Supports env.VAR_NAME prefix. Defaults to 8125; has no effect when dogstatsd_host is unset"
                     },
                     "env": {
                       "type": "string"
@@ -1005,6 +1039,10 @@
                     "enable_llm_obs": {
                       "type": "boolean",
                       "description": "Enable Datadog LLM Observability (default: true)"
+                    },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)"
                     },
                     "disable_content_logging": {
                       "type": "boolean",
@@ -2939,6 +2977,12 @@
                     "minimum": 0,
                     "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
                   },
+                  "evaluation_mode": {
+                    "type": "string",
+                    "enum": ["bundled", "per_turn"],
+                    "default": "bundled",
+                    "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
@@ -2984,6 +3028,111 @@
                   }
                 },
                 "required": ["id", "provider_name", "policy_name", "enabled"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "skillsRegistry": {
+          "type": "object",
+          "description": "Declarative Skills Repository definitions reconciled from config.json. Rendered verbatim into skills_registry.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether config-defined skills should be reconciled at startup"
+            },
+            "skills": {
+              "type": "array",
+              "description": "Skills to create or update from config.json",
+              "items": {
+                "type": "object",
+                "required": ["name", "description", "skill_md_body", "version"],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "license": {
+                    "type": "string"
+                  },
+                  "compatibility": {
+                    "type": "string"
+                  },
+                  "allowed_tools": {
+                    "type": "string"
+                  },
+                  "extra_frontmatter": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "skill_md_body": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "source_type"],
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "source_type": {
+                          "type": "string",
+                          "enum": ["text", "url", "dataurl"]
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "type": "string"
+                        },
+                        "dataurl": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "url"
+                            }
+                          },
+                          "required": ["url"]
+                        },
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "text"
+                            }
+                          },
+                          "required": ["content"]
+                        },
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "dataurl"
+                            }
+                          },
+                          "required": ["dataurl"]
+                        }
+                      ]
+                    }
+                  }
+                },
                 "additionalProperties": false
               }
             }
@@ -3341,6 +3490,33 @@
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
               "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
             },
+            "writer": {
+              "type": "object",
+              "description": "Async logging writer queue and batch tuning",
+              "properties": {
+                "maxBatchSize": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "batchInterval": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "maxBatchBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "writeQueueCapacity": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "deferredUsageConcurrency": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
             "objectStorageExcludeFields": {
               "type": "array",
               "items": {
@@ -3454,6 +3630,33 @@
             "password": {
               "type": "string"
             },
+            "passwordCommand": {
+              "type": "object",
+              "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout for each new physical connection",
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^\\S+$"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "timeout": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                }
+              },
+              "required": ["command"],
+              "additionalProperties": false
+            },
+            "connMaxLifetime": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "database": {
               "type": "string"
             },
@@ -3468,16 +3671,30 @@
               "type": "string"
             }
           },
-          "if": {
-            "properties": {
-              "enabled": {
-                "const": true
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": ["host", "port", "user", "database", "sslMode"]
+              }
+            },
+            {
+              "not": {
+                "required": ["password", "passwordCommand"]
+              }
+            },
+            {
+              "not": {
+                "required": ["existingSecret", "passwordCommand"]
               }
             }
-          },
-          "then": {
-            "required": ["host", "port", "user", "database", "sslMode"]
-          }
+          ]
         },
         "image": {
           "type": "object",
@@ -5023,6 +5240,13 @@
         "allowed_models": {
           "type": "array",
           "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all.",
           "items": {
             "type": "string"
           }

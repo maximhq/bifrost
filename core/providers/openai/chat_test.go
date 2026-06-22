@@ -407,7 +407,7 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 				},
 			}
 
-			req.filterOpenAISpecificParameters()
+			req.filterOpenAISpecificParameters(req.Model)
 
 			if req.Reasoning == nil || req.Reasoning.Effort == nil {
 				t.Fatal("expected reasoning effort to be set")
@@ -1101,5 +1101,28 @@ func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
 			// The tool identity must always survive regardless of stripping.
 			require.Contains(t, s, "lookup")
 		})
+	}
+}
+
+// TestOpenAIInbound_ServerToolNameSurvives is a diagnostic probe for the Bedrock
+// managed-tool harness 400s. It replicates the transport inbound path
+// (sonic.Unmarshal of the raw body into *OpenAIChatRequest, then
+// ToBifrostChatRequest) and asserts the top-level server-tool name survives.
+func TestOpenAIInbound_ServerToolNameSurvives(t *testing.T) {
+	body := `{"model":"bedrock/global.anthropic.claude-sonnet-4-6","max_tokens":1024,"tools":[{"type":"bash_20250124","name":"bash"}],"messages":[{"role":"user","content":"Run ls"}]}`
+
+	var req OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t.Logf("after Unmarshal: tools=%+v", req.ChatParameters.Tools)
+	if len(req.ChatParameters.Tools) != 1 || req.ChatParameters.Tools[0].Name != "bash" {
+		t.Fatalf("PARSE dropped name: %+v", req.ChatParameters.Tools)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifReq := req.ToBifrostChatRequest(ctx)
+	if bifReq.Params == nil || len(bifReq.Params.Tools) != 1 || bifReq.Params.Tools[0].Name != "bash" {
+		t.Fatalf("ToBifrostChatRequest dropped name: %+v", bifReq.Params)
 	}
 }

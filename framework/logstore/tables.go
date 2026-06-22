@@ -1646,6 +1646,7 @@ const (
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
 	RankingDimensionUser         RankingDimension = "user"
+	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 )
 
 var ValidRankingDimensions = map[RankingDimension]bool{
@@ -1653,6 +1654,7 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
 	RankingDimensionUser:         true,
+	RankingDimensionVirtualKey:   true,
 }
 
 type dimensionColumnDef struct {
@@ -1665,6 +1667,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
+	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 }
 
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
@@ -1702,6 +1705,65 @@ type DimensionRankingResult struct {
 	// over the same attributed population. Zero/omitted when not computed.
 	TotalActualRequests     int64 `json:"total_actual_requests,omitempty"`
 	TotalAttributedRequests int64 `json:"total_attributed_requests,omitempty"`
+}
+
+// ==================== CONSOLIDATED DASHBOARD RESULT ====================
+// The types below back the GET /api/logs/dashboard endpoint, which returns
+// every metric shown on the /workspace/dashboard page in a single response.
+// Each section reuses the same struct returned by its dedicated endpoint, so
+// the consolidated payload stays byte-for-byte consistent with the per-tab
+// endpoints. This is a stable, public-facing contract: add fields, do not
+// rename or remove existing ones.
+
+// DashboardMeta describes the parameters the dashboard data was computed with,
+// so consumers can interpret the buckets and rankings without re-deriving them.
+type DashboardMeta struct {
+	GeneratedAt       time.Time  `json:"generated_at"`         // UTC time the response was assembled
+	BucketSizeSeconds int64      `json:"bucket_size_seconds"`  // Width of every histogram bucket, derived from the time range
+	StartTime         *time.Time `json:"start_time,omitempty"` // Resolved start of the queried range (from start_time/end_time or period)
+	EndTime           *time.Time `json:"end_time,omitempty"`   // Resolved end of the queried range
+}
+
+// DashboardOverview holds the Overview tab metrics.
+type DashboardOverview struct {
+	Stats    *SearchStats            `json:"stats"`    // Totals + success/cache rates
+	Requests *HistogramResult        `json:"requests"` // Request volume over time
+	Tokens   *TokenHistogramResult   `json:"tokens"`   // Token usage over time
+	Cost     *CostHistogramResult    `json:"cost"`     // Cost over time, broken down by model
+	Models   *ModelHistogramResult   `json:"models"`   // Per-model usage over time
+	Latency  *LatencyHistogramResult `json:"latency"`  // Latency percentiles over time
+}
+
+// DashboardProviderUsage holds the Provider Usage tab metrics.
+type DashboardProviderUsage struct {
+	Cost    *ProviderCostHistogramResult    `json:"cost"`
+	Tokens  *ProviderTokenHistogramResult   `json:"tokens"`
+	Latency *ProviderLatencyHistogramResult `json:"latency"`
+}
+
+// DashboardModelRankings holds the Model Rankings tab data.
+type DashboardModelRankings struct {
+	Rankings  *ModelRankingResult   `json:"rankings"`  // Ranked table with trends
+	Histogram *ModelHistogramResult `json:"histogram"` // Backs the "Top Models" stacked bar chart
+}
+
+// DashboardMCP holds the MCP usage tab metrics.
+type DashboardMCP struct {
+	Volume   *MCPHistogramResult     `json:"volume"`    // Tool call volume over time
+	Cost     *MCPCostHistogramResult `json:"cost"`      // MCP cost over time
+	TopTools *MCPTopToolsResult      `json:"top_tools"` // Top tools by call count
+}
+
+// DashboardResult is the full consolidated payload for GET /api/logs/dashboard.
+// DimensionRankings is keyed by RankingDimension ("team", "user", "virtual_key",
+// "customer", "business_unit"); each value is that dimension's ranking table.
+type DashboardResult struct {
+	Meta              DashboardMeta                      `json:"meta"`
+	Overview          DashboardOverview                  `json:"overview"`
+	ProviderUsage     DashboardProviderUsage             `json:"provider_usage"`
+	ModelRankings     DashboardModelRankings             `json:"model_rankings"`
+	DimensionRankings map[string]*DimensionRankingResult `json:"dimension_rankings"`
+	MCP               DashboardMCP                       `json:"mcp"`
 }
 
 // NodeUsageCursor identifies the last log row included in a node usage scan.

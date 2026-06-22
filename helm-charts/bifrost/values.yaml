@@ -170,6 +170,17 @@ tolerations: []
 
 affinity: {}
 
+# Deployment rolling update strategy. Applies to the Deployment only (not the
+# StatefulSet used for sqlite-with-persistence). Rendered verbatim into spec.strategy.
+# Empty ({}) uses the Kubernetes default (RollingUpdate, maxSurge 25%, maxUnavailable 25%).
+# For HA gateway deployments, surge-only rollouts avoid dropping capacity:
+# strategy:
+#   type: RollingUpdate
+#   rollingUpdate:
+#     maxSurge: 100%
+#     maxUnavailable: 0%
+strategy: {}
+
 # Graceful shutdown configuration for long-lived connections (SSE streaming)
 # When a pod is terminated (e.g. during HPA scale-down), active streaming connections
 # are severed abruptly. This causes clients to lose their SSE stream mid-response.
@@ -192,6 +203,7 @@ bifrost:
   host: 0.0.0.0
   logLevel: info
   logStyle: json
+  # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
 
   # Controls how config.json is reconciled with the database on startup.
   # "split" (default): existing merge behavior — file and DB rows coexist.
@@ -281,6 +293,8 @@ bifrost:
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
+    # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
+    # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
 
   # Server configuration
   server:
@@ -552,6 +566,14 @@ bifrost:
         # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
         agent_addr: "localhost:8126"
         # dogstatsd_addr: "localhost:8125"  # DogStatsD address (supports env.VAR_NAME)
+        # Alternatively, set host and port separately (common in Kubernetes, where the
+        # host comes from the downward API status.hostIP and the port is fixed — the two
+        # can't be collapsed into one env var). When a *_host is set it takes precedence
+        # over the matching *_addr; the *_port defaults to 8126 (agent) / 8125 (DogStatsD).
+        # agent_host: "env.DD_AGENT_HOST"
+        # agent_port: "8126"
+        # dogstatsd_host: "env.DD_AGENT_HOST"
+        # dogstatsd_port: "8125"
         env: ""
         version: ""
         custom_tags: {}
@@ -559,6 +581,7 @@ bifrost:
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
         # enable_metrics: true
         # enable_llm_obs: true
+        # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
         # Agentless mode (direct to Datadog API, no local agent):
@@ -695,6 +718,7 @@ bifrost:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
+      #       blacklisted_models: []   # Models blocked even if matched by allowed_models; ["*"] blocks all
       #       rate_limit_id: ""
       #       keys:
       #         - key_id: "uuid-of-key"
@@ -925,6 +949,7 @@ bifrost:
       #   sampling_rate: 100
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
+      #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
@@ -932,6 +957,27 @@ bifrost:
       #   enabled: true
       #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
       #   config: {}
+
+  # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`
+  # in config.json and reconciled at startup when enabled.
+  # skillsRegistry:
+  #   enabled: true
+  #   skills:
+  #     - name: "my-skill"
+  #       description: "What this skill does"
+  #       version: "1.0.0"
+  #       skill_md_body: "# My Skill\n\nInstructions..."
+  #       # license: "MIT"
+  #       # compatibility: ">=1.0.0"
+  #       # allowed_tools: "Read,Write"
+  #       # metadata: {}
+  #       # extra_frontmatter: {}
+  #       # files:
+  #       #   - path: "reference.md"
+  #       #     source_type: "text"   # text | url | dataurl
+  #       #     content: "..."          # required when source_type=text
+  #       #     # url: "https://..."    # required when source_type=url
+  #       #     # dataurl: "data:..."   # required when source_type=dataurl
 
   # Access profiles (enterprise): seed RBAC access profile templates from Helm.
   # This is rendered directly as top-level `access_profiles` in config.json.
@@ -1017,6 +1063,13 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
+    # writer:
+    #   maxBatchSize: 1000
+    #   batchInterval: "5s"
+    #   maxBatchBytes: 314572800
+    #   writeQueueCapacity: 10000
+    #   deferredUsageConcurrency: 5
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []
@@ -1056,6 +1109,23 @@ postgresql:
     port: 5432
     user: bifrost
     password: ""
+    # Command executed by Bifrost to produce the PostgreSQL password on stdout.
+    # Use for dynamic credentials such as AWS RDS IAM auth tokens.
+    # passwordCommand:
+    #   command: aws
+    #   args:
+    #     - rds
+    #     - generate-db-auth-token
+    #     - --hostname
+    #     - your-rds-endpoint.us-east-1.rds.amazonaws.com
+    #     - --port
+    #     - "5432"
+    #     - --region
+    #     - us-east-1
+    #     - --username
+    #     - bifrost
+    #   timeout: 10s
+    # connMaxLifetime: 10m
     database: bifrost
     sslMode: disable
     # Use existing Kubernetes secret for password (takes precedence over password field)

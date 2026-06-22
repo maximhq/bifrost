@@ -121,7 +121,11 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 				onSave();
 			})
 			.catch((err) => {
-				toast.error(submittingAsEdit ? "Error updating key" : "Error creating key", {
+				if (err?.status === 409) {
+					form.setError("key.name", { message: getErrorMessage(err) });
+					return;
+				}
+				toast.error(isEditing ? "Error updating key" : "Error creating key", {
 					description: getErrorMessage(err),
 				});
 			});

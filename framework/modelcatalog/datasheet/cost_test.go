@@ -28,7 +28,7 @@ func chatPricing(input, output float64) configstoreTables.TableModelPricing {
 // testStoreWithPricing creates a catalog pre-loaded with the given pricing entries.
 func testStoreWithPricing(entries map[string]configstoreTables.TableModelPricing) *Store {
 	s := newTestStore()
-	
+
 	for k, v := range entries {
 		s.pricingData[k] = v
 	}
@@ -211,7 +211,7 @@ func TestComputeTextCost_FastMode_CacheBillsAtStandardRates(t *testing.T) {
 	p := chatPricing(0.000005, 0.000025)
 	p.InputCostPerTokenFast = bifrost.Ptr(0.00001)
 	p.OutputCostPerTokenFast = bifrost.Ptr(0.00005)
-	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)     // standard read
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)      // standard read
 	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000625) // standard 5m write
 
 	usage := &schemas.BifrostLLMUsage{
@@ -1958,7 +1958,7 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
+				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
@@ -1992,7 +1992,7 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
+				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
@@ -2235,7 +2235,7 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
+				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
@@ -2261,7 +2261,7 @@ func TestCalculateCost_FlexTier_FallsBackToBaseWhenNoFlexRate(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
+				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
@@ -2518,7 +2518,7 @@ func TestCalculateCost_ResponsesWithCodeInterpreter(t *testing.T) {
 				{Type: &ciType},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ResponsesRequest,
+				RequestType: schemas.ResponsesRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4.1"),
 			},
 		},
@@ -2798,4 +2798,41 @@ func TestCalculateCost_BackCompat_PartialRoutingInfo_NoFallback(t *testing.T) {
 
 	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
+}
+
+// TestCalculateCostForUsage_MatchesCalculateCost verifies the cost-from-usage helper:
+// billing a bare usage object (the failure/cancel path) yields exactly the same
+// cost as billing a full BifrostResponse carrying that usage (the success path),
+// so failed-but-token-consuming requests are charged at identical rates.
+func TestCalculateCostForUsage_MatchesCalculateCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+			},
+		},
+	}
+
+	respCost := s.CalculateCost(resp, nil)
+	usageCost := s.CalculateCostForUsage(usage, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
+
+	assert.Greater(t, respCost, 0.0, "response cost should be positive")
+	assert.Equal(t, respCost, usageCost, "bare-usage cost must equal full-response cost")
+}
+
+// TestCalculateCostForUsage_NilUsageIsZero verifies the helper bills nothing
+// when there is no usage (e.g. a failure that consumed no tokens).
+func TestCalculateCostForUsage_NilUsageIsZero(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	assert.Equal(t, 0.0, s.CalculateCostForUsage(nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil))
 }

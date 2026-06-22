@@ -34,6 +34,7 @@ var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport) b
 	"memory_":           func(f ProviderFeatureSupport) bool { return f.Memory },
 	"text_editor_":      func(f ProviderFeatureSupport) bool { return f.TextEditor },
 	"tool_search_tool_": func(f ProviderFeatureSupport) bool { return f.ToolSearch },
+	"advisor_":          func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
 }
 
 // isAnthropicServerToolSupported returns whether the given Anthropic server-tool
@@ -88,6 +89,68 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, provider schemas.Mod
 	return keep, dropped
 }
 
+// ValidateResponsesToolsForProvider is the Responses-path mirror of
+// ValidateChatToolsForProvider. It partitions []schemas.ResponsesTool into a
+// keep-set (function/custom tools + server tools supported on the target
+// provider) and a dropped-set (server-tool Type strings the provider doesn't
+// support per ProviderFeatures).
+//
+// Does NOT mutate its input. Callers decide the policy (silent strip vs
+// fail-fast). The Bedrock and anthropic-family Responses paths use silent strip
+// so the request still reaches the provider without the unsupported tool — e.g.
+// an `mcp` server tool that points back at Bifrost's own gateway is consumed by
+// Bifrost (exposed to the model as function tools) and must not be forwarded to
+// providers like Bedrock/Vertex whose Converse APIs have no remote-MCP connector.
+//
+// Unknown providers keep all tools (safe default for custom providers),
+// matching ValidateToolsForProvider. The per-type gating mirrors
+// ValidateToolsForProvider exactly — only the control flow differs (partition
+// instead of erroring).
+func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) (keep []schemas.ResponsesTool, dropped []string) {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		// Unknown provider — keep all tools (safe default for custom providers).
+		return tools, nil
+	}
+
+	for _, tool := range tools {
+		supported := true
+		switch tool.Type {
+		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
+			supported = features.WebSearch || features.WebSearchNova
+		case schemas.ResponsesToolTypeWebFetch:
+			supported = features.WebFetch
+		case schemas.ResponsesToolTypeCodeInterpreter:
+			supported = features.CodeExecution || features.CodeExecNova
+		case schemas.ResponsesToolTypeComputerUsePreview:
+			supported = features.ComputerUse
+		case schemas.ResponsesToolTypeMCP:
+			supported = features.MCP
+		case schemas.ResponsesToolTypeLocalShell:
+			supported = features.Bash
+		case schemas.ResponsesToolTypeMemory:
+			supported = features.Memory
+		case schemas.ResponsesToolTypeToolSearch:
+			supported = features.ToolSearch
+		case schemas.ResponsesToolTypeFileSearch:
+			supported = features.FileSearch
+		case schemas.ResponsesToolTypeImageGeneration:
+			supported = features.ImageGeneration
+		case schemas.ResponsesToolTypeAdvisor:
+			supported = features.AdvisorTool
+		}
+		// ResponsesToolTypeFunction, ResponsesToolTypeCustom and unknown
+		// (forward-compat) tool types match no case above, so supported stays
+		// true (Go has no implicit fallthrough).
+		if supported {
+			keep = append(keep, tool)
+		} else {
+			dropped = append(dropped, string(tool.Type))
+		}
+	}
+	return keep, dropped
+}
+
 // ValidateToolsForProvider checks if all tools in the request are supported by the given provider.
 // Returns an error for the first unsupported tool found.
 func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) error {
@@ -137,6 +200,10 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 			}
 		case schemas.ResponsesToolTypeImageGeneration:
 			if !features.ImageGeneration {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeAdvisor:
+			if !features.AdvisorTool {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 			// ResponsesToolTypeFunction, ResponsesToolTypeCustom, etc. are always allowed
@@ -981,6 +1048,10 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 					if !hasProvider || features.ComputerUse {
 						headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20250124)
 					}
+				case AnthropicToolTypeAdvisor20260301:
+					if !hasProvider || features.AdvisorTool {
+						headers = appendUniqueHeader(headers, AnthropicAdvisorBetaHeader)
+					}
 				}
 			}
 			// Check for strict (structured-outputs)
@@ -1080,7 +1151,7 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// supports fast mode AND the model does (Opus 4.6 only per
 	// SupportsFastMode); otherwise sending the header guarantees a 400.
 	if req.Speed != nil {
-		if (!hasProvider || features.FastMode) && SupportsFastMode(req.Model) {
+		if (!hasProvider || features.FastMode) && SupportsFastMode(schemas.ResolveCanonicalModel(ctx, req.Model)) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
@@ -1094,6 +1165,12 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	if req.OutputFormat != nil {
 		if !hasProvider || features.StructuredOutputs {
 			headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
+		}
+	}
+	// Check for cache diagnostics (diagnostics opt-in present)
+	if req.Diagnostics != nil {
+		if !hasProvider || features.Diagnostics {
+			headers = appendUniqueHeader(headers, AnthropicCacheDiagnosisBetaHeader)
 		}
 	}
 	// Check for cache control with scope in system message (only if not already found)
@@ -1174,6 +1251,8 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicRedactThinkingBetaHeaderPrefix,
 	AnthropicTaskBudgetsBetaHeaderPrefix,
 	AnthropicEagerInputStreamingBetaHeaderPrefix,
+	AnthropicAdvisorBetaHeaderPrefix,
+	AnthropicCacheDiagnosisBetaHeaderPrefix,
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -1238,11 +1317,16 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 	schemas.Vertex: {
 		"web_fetch_",     // No web fetch support on Vertex
 		"code_execution", // No code execution on Vertex
+		"advisor_",       // Advisor tool is Anthropic API only
 	},
 	schemas.Bedrock: {
 		"web_search_",    // No web search on Bedrock
 		"web_fetch_",     // No web fetch on Bedrock
 		"code_execution", // No code execution on Bedrock
+		"advisor_",       // Advisor tool is Anthropic API only
+	},
+	schemas.Azure: {
+		"advisor_", // Advisor tool is Anthropic API only (Azure supports all other tools)
 	},
 }
 
@@ -1485,6 +1569,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
 	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
+	AnthropicAdvisorBetaHeaderPrefix:             func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
+	AnthropicCacheDiagnosisBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.Diagnostics },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

@@ -345,6 +345,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 			onClose();
 		} catch (error) {
 			setIsLoading(false);
+			if ((error as any)?.status === 409) {
+				setError("name", { message: getErrorMessage(error) });
+				return;
+			}
 			toast({
 				title: "Error",
 				description: getErrorMessage(error),
@@ -863,6 +867,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 							variant: "destructive",
 						});
 					}}
+					onConflict={(error) => {
+						setOauthFlow(null);
+						setError("name", { message: error });
+					}}
 					authorizeUrl={oauthFlow.authorizeUrl}
 					oauthConfigId={oauthFlow.oauthConfigId}
 					mcpClientId={oauthFlow.mcpClientId}
@@ -888,6 +896,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					}}
 					onError={() => {
 						/* error toast handled by the dialog itself */
+					}}
+					onConflict={(error) => {
+						setHeadersFlow(null);
+						setError("name", { message: error });
 					}}
 					payload={headersFlow.payload}
 					perUserHeaderKeys={perUserHeaderKeys}

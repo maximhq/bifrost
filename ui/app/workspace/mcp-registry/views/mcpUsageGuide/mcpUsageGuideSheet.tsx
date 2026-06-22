@@ -124,12 +124,11 @@ export function MCPUsageGuideSheet() {
 	// ── Render ───────────────────────────────────────────────────────────
 	return (
 		<>
-			<Button
-				type="button"
+			<Button type="button"
 				onClick={() => setOpen(true)}
 				data-testid="mcp-usage-guide-trigger"
 				variant="outline"
-				className="group h-8 gap-1.5 border-dotted border-primary bg-muted/40 px-2.5 font-mono text-xs tracking-tight shadow-none hover:border-primary/50 hover:bg-muted dark:bg-muted/25"
+				className="h-8"
 			>
 				<SquareTerminal />
 				<span className="hidden sm:inline">Connect agent</span>

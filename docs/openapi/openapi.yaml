@@ -140,6 +140,8 @@ tags:
     description: Log search and management endpoints
   - name: Cache
     description: Cache management endpoints
+  - name: Skills
+    description: Skills Repository management, marketplace, and download endpoints
 
 paths:
   # ==================== Unified Inference API ====================
@@ -963,6 +965,8 @@ paths:
     $ref: './paths/management/logging.yaml#/logs-filterdata'
   /api/logs/rankings:
     $ref: './paths/management/logging.yaml#/logs-rankings'
+  /api/logs/dashboard:
+    $ref: './paths/management/logging.yaml#/logs-dashboard'
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
 
@@ -1003,6 +1007,32 @@ paths:
     $ref: './paths/management/prompts.yaml#/sessions-rename'
   /api/prompt-repo/sessions/{id}/commit:
     $ref: './paths/management/prompts.yaml#/sessions-commit'
+
+  # Skills Repository
+  /api/skills/files/upload:
+    $ref: './paths/management/skills.yaml#/skill-file-upload'
+  /api/skills/files/orphans:
+    $ref: './paths/management/skills.yaml#/skill-orphan-files'
+  /api/skills/all/version:
+    $ref: './paths/management/skills.yaml#/all-skills-version'
+  /api/skills:
+    $ref: './paths/management/skills.yaml#/skills'
+  /api/skills/{id}:
+    $ref: './paths/management/skills.yaml#/skills-by-id'
+  /api/skills/{id}/versions:
+    $ref: './paths/management/skills.yaml#/skill-versions'
+  /api/skills/{id}/shift-version:
+    $ref: './paths/management/skills.yaml#/shift-skill-version'
+  /api/skills/serve/claude-code/.claude-plugin/marketplace.json:
+    $ref: './paths/management/skills.yaml#/claude-code-skills-marketplace'
+  /api/skills/serve/codex/.agents/plugins/marketplace.json:
+    $ref: './paths/management/skills.yaml#/codex-skills-marketplace'
+  /api/skills/serve/all/download.zip:
+    $ref: './paths/management/skills.yaml#/all-skills-download'
+  /api/skills/serve/{skill-name}/download.zip:
+    $ref: './paths/management/skills.yaml#/skill-download'
+  /api/skills/serve/{skill-name}/files/{filepath}:
+    $ref: './paths/management/skills.yaml#/skill-file-download'
 
   # Cache
   /api/cache/clear/{cacheId}:
@@ -1530,6 +1560,44 @@ components:
       $ref: './schemas/management/governance.yaml#/PricingOverrideResponse'
     ListPricingOverridesResponse:
       $ref: './schemas/management/governance.yaml#/ListPricingOverridesResponse'
+
+    # Skills Repository
+    SkillSourceType:
+      $ref: './schemas/management/skills.yaml#/SkillSourceType'
+    SkillFileEntry:
+      $ref: './schemas/management/skills.yaml#/SkillFileEntry'
+    SkillFile:
+      $ref: './schemas/management/skills.yaml#/SkillFile'
+    SkillVersion:
+      $ref: './schemas/management/skills.yaml#/SkillVersion'
+    Skill:
+      $ref: './schemas/management/skills.yaml#/Skill'
+    CreateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/CreateSkillRequest'
+    UpdateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/UpdateSkillRequest'
+    SkillResponse:
+      $ref: './schemas/management/skills.yaml#/SkillResponse'
+    ListSkillsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillsResponse'
+    ListSkillVersionsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillVersionsResponse'
+    UploadSkillFileRequest:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileRequest'
+    UploadSkillFileResponse:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileResponse'
+    SkillOrphanCleanupResponse:
+      $ref: './schemas/management/skills.yaml#/SkillOrphanCleanupResponse'
+    AllSkillsVersionResponse:
+      $ref: './schemas/management/skills.yaml#/AllSkillsVersionResponse'
+    BumpAllSkillsVersionRequest:
+      $ref: './schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
+    ShiftSkillVersionRequest:
+      $ref: './schemas/management/skills.yaml#/ShiftSkillVersionRequest'
+    ClaudeCodeSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/ClaudeCodeSkillMarketplace'
+    CodexSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/CodexSkillMarketplace'
 
     # Logging
     LogEntry:

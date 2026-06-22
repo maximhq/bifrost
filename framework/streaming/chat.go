@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -93,6 +94,10 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 				copyName := *tc.Function.Name
 				copyTc.Function.Name = &copyName
 			}
+			// Deep copy ExtraContent (json.RawMessage is a []byte)
+			if len(tc.ExtraContent) > 0 {
+				copyTc.ExtraContent = append(json.RawMessage(nil), tc.ExtraContent...)
+			}
 			copy.ToolCalls[i] = copyTc
 		}
 	}
@@ -140,10 +145,11 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 
 	// Tool call argument builders keyed by delta index
 	type tcAccum struct {
-		id   *string
-		typ  *string
-		name *string
-		args strings.Builder
+		id           *string
+		typ          *string
+		name         *string
+		args         strings.Builder
+		extraContent json.RawMessage
 	}
 	var tcAccums map[uint16]*tcAccum
 
@@ -251,6 +257,10 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			if args := deltaToolCall.Function.Arguments; args != "" {
 				acc.args.WriteString(args)
 			}
+			if len(deltaToolCall.ExtraContent) > 0 {
+				acc.extraContent = make(json.RawMessage, len(deltaToolCall.ExtraContent))
+				copy(acc.extraContent, deltaToolCall.ExtraContent)
+			}
 		}
 	}
 
@@ -333,7 +343,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0, len(tcIndices))
 		for _, idx := range tcIndices {
 			acc := tcAccums[uint16(idx)]
-			toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+			tc := schemas.ChatAssistantMessageToolCall{
 				Index: uint16(idx),
 				ID:    acc.id,
 				Type:  acc.typ,
@@ -341,7 +351,11 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 					Name:      acc.name,
 					Arguments: acc.args.String(),
 				},
-			})
+			}
+			if len(acc.extraContent) > 0 {
+				tc.ExtraContent = acc.extraContent
+			}
+			toolCalls = append(toolCalls, tc)
 		}
 		completeMessage.ChatAssistantMessage.ToolCalls = toolCalls
 	}

@@ -514,8 +514,10 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
+	env_label?: string;
 }
 
 export interface CompatConfig {

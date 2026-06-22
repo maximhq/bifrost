@@ -37,6 +37,11 @@
       "type": "string",
       "description": "You can set the value as env.<ENV_VAR_NAME> to use an environment variable. We also read encryption key from BIFROST_ENCRYPTION_KEY environment variable. Note: once set, the encryption key cannot be changed unless you clean up the database. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF. If not provided, data will be saved in plain text. Recommended: use a passphrase of at least 16 bytes for better security"
     },
+    "env_label": {
+      "type": "string",
+      "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Overrides the BIFROST_ENV_LABEL environment variable when both are set.",
+      "maxLength": 10
+    },
     "auth_config": {
       "$ref": "#/$defs/auth_config"
     },
@@ -312,6 +317,12 @@
           "$ref": "#/$defs/provider"
         },
         "gemini": {
+          "$ref": "#/$defs/provider"
+        },
+        "opencode-go": {
+          "$ref": "#/$defs/provider"
+        },
+        "opencode-zen": {
           "$ref": "#/$defs/provider"
         },
         "openrouter": {
@@ -1037,7 +1048,35 @@
                   },
                   "password": {
                     "type": "string",
-                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                    "description": "Database password. Use password_command instead when the password must be generated dynamically."
+                  },
+                  "password_command": {
+                    "type": "object",
+                    "description": "Command executed without a shell to produce the database password on stdout for each new physical connection.",
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^\\S+$",
+                        "description": "Executable path or name to run"
+                      },
+                      "args": {
+                        "type": "array",
+                        "description": "Arguments passed directly to the executable",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "timeout": {
+                        "type": "string",
+                        "description": "Command timeout as a Go duration string (default: 10s)",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "10s"
+                      }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
                   },
                   "db_name": {
                     "type": "string",
@@ -1058,15 +1097,27 @@
                     "description": "Maximum number of open connections to the database (default: 50)",
                     "minimum": 2,
                     "default": 50
+                  },
+                  "conn_max_lifetime": {
+                    "type": "string",
+                    "description": "Maximum lifetime for physical database connections as a Go duration string",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
                   "host",
                   "port",
                   "user",
-                  "password",
                   "db_name",
                   "ssl_mode"
+                ],
+                "oneOf": [
+                  {
+                    "required": ["password"]
+                  },
+                  {
+                    "required": ["password_command"]
+                  }
                 ],
                 "additionalProperties": false
               }
@@ -1135,7 +1186,35 @@
                   },
                   "password": {
                     "type": "string",
-                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                    "description": "Database password. Use password_command instead when the password must be generated dynamically."
+                  },
+                  "password_command": {
+                    "type": "object",
+                    "description": "Command executed without a shell to produce the database password on stdout for each new physical connection.",
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^\\S+$",
+                        "description": "Executable path or name to run"
+                      },
+                      "args": {
+                        "type": "array",
+                        "description": "Arguments passed directly to the executable",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "timeout": {
+                        "type": "string",
+                        "description": "Command timeout as a Go duration string (default: 10s)",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "10s"
+                      }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
                   },
                   "db_name": {
                     "type": "string",
@@ -1162,20 +1241,69 @@
                     "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
                     "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
                     "default": "1m"
+                  },
+                  "conn_max_lifetime": {
+                    "type": "string",
+                    "description": "Maximum lifetime for physical database connections as a Go duration string",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
                   "host",
                   "port",
                   "user",
-                  "password",
                   "db_name",
                   "ssl_mode"
+                ],
+                "oneOf": [
+                  {
+                    "required": ["password"]
+                  },
+                  {
+                    "required": ["password_command"]
+                  }
                 ],
                 "additionalProperties": false
               }
             }
           ]
+        },
+        "writer": {
+          "type": "object",
+          "description": "Async logging writer queue and batch tuning. Omitted fields use runtime defaults.",
+          "properties": {
+            "max_batch_size": {
+              "type": "integer",
+              "description": "Maximum number of log entries to batch before flushing (default: 1000)",
+              "minimum": 1,
+              "default": 1000
+            },
+            "batch_interval": {
+              "type": "string",
+              "description": "Maximum time to wait before flushing a partial batch as a Go duration string (default: 5s)",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+              "default": "5s"
+            },
+            "max_batch_bytes": {
+              "type": "integer",
+              "description": "Approximate byte-size ceiling for a batch before flushing (default: 314572800)",
+              "minimum": 1,
+              "default": 314572800
+            },
+            "write_queue_capacity": {
+              "type": "integer",
+              "description": "Buffered queue capacity for pending log writes (default: 10000)",
+              "minimum": 1,
+              "default": 10000
+            },
+            "deferred_usage_concurrency": {
+              "type": "integer",
+              "description": "Maximum concurrent deferred usage database updates (default: 5)",
+              "minimum": 1,
+              "default": 5
+            }
+          },
+          "additionalProperties": false
         },
         "object_storage": {
           "type": "object",
@@ -1286,6 +1414,75 @@
           "type": "integer",
           "minimum": 0,
           "description": "Days to retain log entries. 0 disables retention-based cleanup."
+        }
+      },
+      "additionalProperties": false
+    },
+    "skills_registry": {
+      "type": "object",
+      "description": "Declarative Skills Repository definitions reconciled from config.json",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether config-defined skills should be reconciled at startup"
+        },
+        "skills": {
+          "type": "array",
+          "description": "Skills to create or update from config.json",
+          "items": {
+            "type": "object",
+            "required": ["name", "description", "skill_md_body", "version"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "license": { "type": "string" },
+              "compatibility": { "type": "string" },
+              "allowed_tools": { "type": "string" },
+              "extra_frontmatter": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "skill_md_body": { "type": "string" },
+              "version": { "type": "string" },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "source_type"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "source_type": {
+                      "type": "string",
+                      "enum": ["text", "url", "dataurl"]
+                    },
+                    "url": { "type": "string" },
+                    "content": { "type": "string" },
+                    "dataurl": { "type": "string" }
+                  },
+                  "additionalProperties": false,
+                  "oneOf": [
+                    {
+                      "properties": { "source_type": { "const": "url" } },
+                      "required": ["url"]
+                    },
+                    {
+                      "properties": { "source_type": { "const": "text" } },
+                      "required": ["content"]
+                    },
+                    {
+                      "properties": { "source_type": { "const": "dataurl" } },
+                      "required": ["dataurl"]
+                    }
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -1702,13 +1899,31 @@
                     },
                     "agent_addr": {
                       "type": "string",
-                      "description": "Address of the Datadog Agent for APM traces (agent mode only, can use env. prefix)",
+                      "description": "Combined host:port address of the Datadog Agent for APM traces (agent mode only, can use env. prefix). Overridden by agent_host when set.",
                       "default": "localhost:8126"
+                    },
+                    "agent_host": {
+                      "type": "string",
+                      "description": "Host of the Datadog Agent for APM traces, provided separately from the port (agent mode only, can use env. prefix). Takes precedence over agent_addr when set. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)."
+                    },
+                    "agent_port": {
+                      "type": "string",
+                      "description": "Port of the Datadog Agent for APM traces (agent mode only, can use env. prefix). Used only when agent_host is set (defaults to 8126); has no effect when agent_host is unset, in which case agent_addr supplies the port.",
+                      "default": "8126"
                     },
                     "dogstatsd_addr": {
                       "type": "string",
-                      "description": "Address of the DogStatsD server for metrics (agent mode only, can use env. prefix)",
+                      "description": "Combined host:port address of the DogStatsD server for metrics (agent mode only, can use env. prefix). Overridden by dogstatsd_host when set.",
                       "default": "localhost:8125"
+                    },
+                    "dogstatsd_host": {
+                      "type": "string",
+                      "description": "Host of the DogStatsD server for metrics, provided separately from the port (agent mode only, can use env. prefix). Takes precedence over dogstatsd_addr when set. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)."
+                    },
+                    "dogstatsd_port": {
+                      "type": "string",
+                      "description": "Port of the DogStatsD server for metrics (agent mode only, can use env. prefix). Used only when dogstatsd_host is set (defaults to 8125); has no effect when dogstatsd_host is unset, in which case dogstatsd_addr supplies the port.",
+                      "default": "8125"
                     },
                     "env": {
                       "type": "string",
@@ -1739,6 +1954,11 @@
                       "type": "boolean",
                       "description": "Enable LLM Observability (default: true)",
                       "default": true
+                    },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)",
+                      "default": false
                     },
                     "disable_content_logging": {
                       "type": "boolean",
@@ -2723,7 +2943,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -2792,7 +3012,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -4880,6 +5100,12 @@
                 "minimum": 0,
                 "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
               },
+              "evaluation_mode": {
+                "type": "string",
+                "enum": ["bundled", "per_turn"],
+                "default": "bundled",
+                "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
+              },
               "provider_config_ids": {
                 "type": "array",
                 "items": {
@@ -5373,6 +5599,8 @@
             "mistral",
             "ollama",
             "groq",
+            "opencode-go",
+            "opencode-zen",
             "sgl",
             "parasail",
             "perplexity",

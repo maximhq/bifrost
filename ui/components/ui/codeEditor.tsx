@@ -18,7 +18,7 @@ export type CompletionItem = {
 	insertText: string;
 	documentation?: string;
 	description?: string;
-	type: "variable" | "method" | "object";
+	type: "variable" | "method" | "object" | "folder";
 };
 
 export interface CodeEditorProps {
@@ -84,7 +84,14 @@ export function CodeEditor(props: CodeEditorProps) {
 	const { className, lang, code, onChange } = props;
 	const editorContainer = useRef<HTMLDivElement>(null);
 	const [isClient, setIsClient] = useState(false);
-	const [editorHeight, setEditorHeight] = useState<number | string>(props.height || props.minHeight || 200);
+	const [editorHeight, setEditorHeight] = useState<number | string>(
+		props.height || props.minHeight || 200,
+	);
+	const customCompletionsRef = useRef(props.customCompletions);
+
+	useEffect(() => {
+		customCompletionsRef.current = props.customCompletions;
+	}, [props.customCompletions]);
 
 	// Ensure we only render on client
 	useEffect(() => {
@@ -101,9 +108,62 @@ export function CodeEditor(props: CodeEditorProps) {
 	};
 
 	// Handle editor mount
-	const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor) => {
+	const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor, monaco: any) => {
 		if (props.autoFocus) {
 			editor.focus();
+		}
+
+		if (props.customCompletions) {
+			const languageId = lang || "javascript";
+			const provider = monaco.languages.registerCompletionItemProvider(languageId, {
+				triggerCharacters: ["@"],
+				provideCompletionItems: (model: any, position: any) => {
+					const completions = customCompletionsRef.current ?? [];
+					if (!completions.length) return { suggestions: [] };
+
+					const linePrefix = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+					const triggerMatch = linePrefix.match(/@([^\s@]*)$/);
+					if (!triggerMatch) return { suggestions: [] };
+
+					const replacementRange = new monaco.Range(
+						position.lineNumber,
+						position.column - triggerMatch[0].length,
+						position.lineNumber,
+						position.column,
+					);
+
+					const kindByType = {
+						variable: monaco.languages.CompletionItemKind.Variable,
+						method: monaco.languages.CompletionItemKind.Function,
+						object: monaco.languages.CompletionItemKind.File,
+						folder: monaco.languages.CompletionItemKind.Folder,
+					};
+
+					return {
+						suggestions: completions.map((completion) => ({
+							label: completion.label,
+							kind: kindByType[completion.type] ?? monaco.languages.CompletionItemKind.File,
+							insertText: completion.insertText,
+							filterText: `@${completion.label} ${completion.description ?? completion.insertText}`,
+							detail: completion.description,
+							documentation: completion.documentation,
+							range: replacementRange,
+						})),
+					};
+				},
+			});
+			const triggerSuggest = editor.onDidChangeModelContent((event) => {
+				const typedText = event.changes.at(-1)?.text;
+				if (typedText === "@") {
+					window.setTimeout(() => {
+						editor.getAction("editor.action.triggerSuggest")?.run();
+					}, 0);
+				}
+			});
+			editor.onDidDispose(() => {
+				provider.dispose();
+				triggerSuggest.dispose();
+			});
 		}
 
 		// Auto-resize logic
@@ -145,6 +205,9 @@ export function CodeEditor(props: CodeEditorProps) {
 		scrollBeyondLastLine: props.options?.scrollBeyondLastLine ?? false,
 		minimap: { enabled: false },
 		contextmenu: false,
+		// Use Monaco's supported switch instead of mutating window.EditContext. The
+		// native EditContext layer can render a duplicate caret in Chromium.
+		editContext: false,
 		fontFamily: "var(--font-geist-mono)",
 		fontSize: props.fontSize || 12.5,
 		padding: { top: 2, bottom: 2 },
@@ -169,7 +232,9 @@ export function CodeEditor(props: CodeEditorProps) {
 		hover: {
 			enabled: !props.options?.disableHover,
 		},
-		wordBasedSuggestions: "off" as const,
+		quickSuggestions: props.options?.quickSuggestions ?? false,
+		wordBasedSuggestions: "off",
+		suggestOnTriggerCharacters: true,
 		...props.options,
 	} as editor.IStandaloneEditorConstructionOptions;
 

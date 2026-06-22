@@ -1,0 +1,117 @@
+---
+title: "Source of Truth & Reconciliation"
+description: "How config.json, the config store, split mode, and authoritative file sync interact at startup"
+icon: "shuffle"
+---
+
+Bifrost can use `config.json` in two different ways:
+
+- As the only runtime configuration source, with `config_store.enabled: false`.
+- As a declarative bootstrap and reconciliation source for a SQLite or PostgreSQL config store.
+
+That distinction matters at startup. Bifrost uses `source_of_truth` and per-section reconciliation metadata, including `config_hash` for many config rows, to decide when file-backed configuration should preserve DB edits, update stored values, or prune DB-only rows.
+
+<Note>
+`config_hash` is auto-managed. Do not set it manually in `config.json` or API payloads.
+</Note>
+
+---
+
+## Configuration Setups
+
+| Setup | Config store | Web UI / API edits | Startup behavior |
+|-------|--------------|--------------------|------------------|
+| No `config.json` | Default SQLite `config.db` in app-dir | Enabled | Bifrost starts with defaults and stores runtime changes in SQLite |
+| `config.json` with `config_store` omitted | Default SQLite `config.db` in app-dir | Enabled | File sections are reconciled into SQLite, then DB state is used at runtime |
+| `config.json` with `config_store.enabled: true` | Explicit SQLite or PostgreSQL | Enabled | File sections are reconciled into the configured store, then DB state is used at runtime |
+| `config.json` with `config_store.enabled: false` | Disabled | Unavailable for config-backed surfaces | File is loaded into memory at startup; changes require restart |
+
+`source_of_truth` only affects DB-backed reconciliation. In file-only mode there is no config store to reconcile against, so `config.json` is naturally the runtime source.
+
+---
+
+## Default Split Mode
+
+The default mode is:
+
+```json
+{
+  "source_of_truth": "split"
+}
+```
+
+You can also omit `source_of_truth`; `split` is the default.
+
+In split mode, Bifrost treats `config.json` as a bootstrap and drift-detection source:
+
+1. On first startup, file-backed sections from `config.json` are written to the config store.
+2. Stored rows keep reconciliation metadata for the file-backed definition.
+3. UI/API edits update the DB state without changing the file-backed definition.
+4. On later startups, unchanged file-backed definitions preserve DB edits.
+5. If the matching file-backed definition changes, the new file version is applied for that section or entity.
+
+Split mode does not prune DB-only entries just because they are missing from `config.json`. Removing a provider, plugin, MCP client, or governance row from the file leaves the stored row in place; use `source_of_truth: "config.json"` when a present file section should prune DB-only rows.
+
+Use split mode when you want `config.json` to seed or update a deployment while preserving UI/API edits unless the matching file-backed definition changes.
+
+<Warning>
+Split mode preserves runtime edits only while the matching file-backed section or entity is unchanged. If you edit that entity in `config.json`, the file version wins on the next startup.
+</Warning>
+
+---
+
+## config.json as Source of Truth
+
+Use this only when the file should actively control the matching DB state:
+
+```json
+{
+  "source_of_truth": "config.json"
+}
+```
+
+In this mode, explicitly present sections in `config.json` are authoritative at startup. Bifrost applies the file values even if the stored `config_hash` still matches, because UI/API edits do not update the file hash.
+
+This is useful for stricter GitOps setups where the DB should converge back to the file after every restart or redeploy.
+
+---
+
+## Missing vs Empty Sections
+
+In split mode, missing sections are left alone. Authoritative mode is stricter: a missing section is not the same as an empty section.
+
+This leaves stored plugins untouched:
+
+```json
+{
+  "source_of_truth": "config.json"
+}
+```
+
+This makes the `plugins` section authoritative and empty, so DB-only plugins are removed:
+
+```json
+{
+  "source_of_truth": "config.json",
+  "plugins": []
+}
+```
+
+The same pattern applies to other supported top-level sections such as `providers`, `mcp`, and governance sub-sections.
+
+<Warning>
+Before using `source_of_truth: "config.json"` in production, check whether your file contains empty arrays or empty objects for sections you do not intend to prune.
+</Warning>
+
+---
+
+## Recommended Use
+
+| Goal | Recommended setup |
+|------|-------------------|
+| Interactive single-node gateway | Omit `config.json`, or use `config.json` with a config store and default `split` mode |
+| Bootstrap from file, then allow UI/API edits | DB-backed config store, explicit or default, with `source_of_truth: "split"` |
+| Strict GitOps over selected sections | DB-backed config store, explicit or default, plus `source_of_truth: "config.json"` and only the sections you intend to own |
+| File-only OSS multinode deployment | `config_store.enabled: false` with a shared `config.json` |
+
+For DB-backed deployments, prefer `split` unless you explicitly want restarts to revert UI/API changes back to `config.json`.
