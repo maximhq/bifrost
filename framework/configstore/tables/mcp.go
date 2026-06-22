@@ -128,7 +128,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		headersToSerialize := make(map[string]string, len(c.Headers))
 		for key, value := range c.Headers {
 			if value.IsFromSecret() {
-				headersToSerialize[key] = value.SecretRef
+				headersToSerialize[key] = value.Ref()
 			} else {
 				headersToSerialize[key] = value.GetValue()
 			}

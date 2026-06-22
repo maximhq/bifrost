@@ -119,10 +119,10 @@ func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model i
 // vault-backed, non-fragment reference under ownedPrefix. Fragment refs (#key)
 // point at shared, externally-managed secrets and are never auto-deleted.
 func removeOwnedVaultSecretVar(ctx context.Context, ownedPrefix string, field *SecretVar) {
-	if field == nil || !strings.HasPrefix(field.SecretRef, "vault.") || field.SecretRef == "" {
+	if field == nil || !strings.HasPrefix(field.secretRef, "vault.") || field.secretRef == "" {
 		return
 	}
-	path := strings.TrimPrefix(field.SecretRef, "vault.")
+	path := strings.TrimPrefix(field.secretRef, "vault.")
 	if strings.IndexByte(path, '#') >= 0 {
 		return
 	}
@@ -145,8 +145,8 @@ func StoreVaultSecretVar(ctx context.Context, path string, e *SecretVar) error {
 	if err := VaultStoreHook(ctx, path, &e.Val); err != nil {
 		return err
 	}
-	e.SecretRef = "vault." + path
-	e.FromSecret = true
+	e.secretRef = "vault." + path
+	e.fromSecret = true
 	return nil
 }
 

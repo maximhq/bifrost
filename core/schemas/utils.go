@@ -38,7 +38,7 @@ func SecretVarAsString(e *SecretVar) string {
 		return ""
 	}
 	if e.IsFromSecret() {
-		return e.SecretRef
+		return e.secretRef
 	}
 	return e.GetValue()
 }
