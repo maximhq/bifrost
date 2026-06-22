@@ -1224,7 +1224,8 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	}
 
 	if original.Phase != nil {
-		copy.Phase = Ptr(*original.Phase)
+		copy.Phase = new(string)
+		*copy.Phase = *original.Phase
 	}
 
 	if original.Role != nil {
@@ -1394,10 +1395,12 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	// Reasoning replay fields: Signature and EncryptedContent are echoed back
 	// verbatim to the provider, so they must survive the deep copy.
 	if original.Signature != nil {
-		copy.Signature = Ptr(*original.Signature)
+		copy.Signature = new(string)
+		*copy.Signature = *original.Signature
 	}
 	if original.EncryptedContent != nil {
-		copy.EncryptedContent = Ptr(*original.EncryptedContent)
+		copy.EncryptedContent = new(string)
+		*copy.EncryptedContent = *original.EncryptedContent
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage
