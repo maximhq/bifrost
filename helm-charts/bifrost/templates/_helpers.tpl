@@ -201,7 +201,7 @@ false
 {{- end -}}
 
 {{- define "bifrost.config" -}}
-{{- $config := dict "$schema" "https://www.getbifrost.ai/schema" }}
+{{- $config := dict "$schema" (.Values.bifrost.schemaUrl | default "https://www.getbifrost.ai/schema") }}
 {{- if .Values.bifrost.sourceOfTruth }}
 {{- $_ := set $config "source_of_truth" .Values.bifrost.sourceOfTruth }}
 {{- end }}
