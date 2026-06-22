@@ -17702,8 +17702,8 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 
 		// Verify username was resolved from env
 		require.Equal(t, "envadmin", storedAuth.AdminUserName.GetValue(), "username should be resolved from env variable")
-		require.True(t, storedAuth.AdminUserName.IsFromEnv(), "username should be marked as from env")
-		require.Equal(t, "env.TEST_ADMIN_USERNAME", storedAuth.AdminUserName.EnvVar, "env var reference should be preserved")
+		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
+		require.Equal(t, "env.TEST_ADMIN_USERNAME", storedAuth.AdminUserName.GetSecretRef(), "env var reference should be preserved")
 
 		// Verify password was hashed
 		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
@@ -17736,8 +17736,8 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.True(t, match, "hashed password should match the env variable value")
 
 		// Verify env var reference is preserved after hashing
-		require.True(t, storedAuth.AdminPassword.IsFromEnv(), "password should still be marked as from env after hashing")
-		require.Equal(t, "env.TEST_ADMIN_PASSWORD", storedAuth.AdminPassword.EnvVar, "password env var reference should be preserved")
+		require.True(t, storedAuth.AdminPassword.IsFromSecret(), "password should still be marked as from env after hashing")
+		require.Equal(t, "env.TEST_ADMIN_PASSWORD", storedAuth.AdminPassword.GetSecretRef(), "password env var reference should be preserved")
 	})
 
 	t.Run("both username and password from env variables", func(t *testing.T) {
@@ -17763,7 +17763,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 
 		// Verify username was resolved from env
 		require.Equal(t, "envuser", storedAuth.AdminUserName.GetValue(), "username should be resolved from env variable")
-		require.True(t, storedAuth.AdminUserName.IsFromEnv(), "username should be marked as from env")
+		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
 
 		// Verify password was resolved from env and hashed
 		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
@@ -17772,8 +17772,8 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.True(t, match, "hashed password should match the env variable value")
 
 		// Verify env var reference is preserved after hashing
-		require.True(t, storedAuth.AdminPassword.IsFromEnv(), "password should still be marked as from env after hashing")
-		require.Equal(t, "env.TEST_ADMIN_PASS", storedAuth.AdminPassword.EnvVar, "password env var reference should be preserved")
+		require.True(t, storedAuth.AdminPassword.IsFromSecret(), "password should still be marked as from env after hashing")
+		require.Equal(t, "env.TEST_ADMIN_PASS", storedAuth.AdminPassword.GetSecretRef(), "password env var reference should be preserved")
 	})
 
 	t.Run("env variable not set results in empty value", func(t *testing.T) {
@@ -17798,13 +17798,13 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 
 		// Verify username is empty but env var reference is preserved
 		require.Equal(t, "", storedAuth.AdminUserName.GetValue(), "username should be empty when env var not set")
-		require.True(t, storedAuth.AdminUserName.IsFromEnv(), "username should be marked as from env")
-		require.Equal(t, "env.NONEXISTENT_USERNAME", storedAuth.AdminUserName.EnvVar, "env var reference should be preserved")
+		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
+		require.Equal(t, "env.NONEXISTENT_USERNAME", storedAuth.AdminUserName.GetSecretRef(), "env var reference should be preserved")
 
 		// Verify password is empty (not hashed since empty)
 		require.Equal(t, "", storedAuth.AdminPassword.GetValue(), "password should be empty when env var not set")
-		require.True(t, storedAuth.AdminPassword.IsFromEnv(), "password should be marked as from env")
-		require.Equal(t, "env.NONEXISTENT_PASSWORD", storedAuth.AdminPassword.EnvVar, "env var reference should be preserved")
+		require.True(t, storedAuth.AdminPassword.IsFromSecret(), "password should be marked as from env")
+		require.Equal(t, "env.NONEXISTENT_PASSWORD", storedAuth.AdminPassword.GetSecretRef(), "env var reference should be preserved")
 	})
 
 	t.Run("password change flushes existing sessions", func(t *testing.T) {

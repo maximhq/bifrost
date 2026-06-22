@@ -2044,7 +2044,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if clientConfigCopy.Headers != nil {
 			for key, value := range clientConfigCopy.Headers {
 				if value.IsFromSecret() {
-					headersToSerialize[key] = value.Ref()
+					headersToSerialize[key] = value.GetSecretRef()
 				} else {
 					headersToSerialize[key] = value.GetValue()
 				}

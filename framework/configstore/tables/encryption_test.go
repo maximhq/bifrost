@@ -249,7 +249,7 @@ func TestTableKey_SecretVarNotEncrypted(t *testing.T) {
 	var found TableKey
 	require.NoError(t, db.First(&found, key.ID).Error)
 	// The value should be readable (either the env var value or empty if not set)
-	assert.True(t, found.Value.IsFromEnv())
+	assert.True(t, found.Value.IsFromSecret())
 }
 
 // ============================================================================
@@ -350,7 +350,7 @@ func TestTableMCPClient_SecretVarConnectionString_NotEncrypted(t *testing.T) {
 
 	var found TableMCPClient
 	require.NoError(t, db.First(&found, client.ID).Error)
-	assert.True(t, found.ConnectionString.IsFromEnv())
+	assert.True(t, found.ConnectionString.IsFromSecret())
 }
 
 // ============================================================================
@@ -735,7 +735,7 @@ func TestEncryptSecretVar_EnvRefIsNoop(t *testing.T) {
 	require.NoError(t, encryptSecretVar(ev))
 	// Value should not change — env var references are never encrypted
 	assert.Equal(t, originalVal, ev.Val)
-	assert.True(t, ev.IsFromEnv())
+	assert.True(t, ev.IsFromSecret())
 }
 
 func TestDecryptSecretVar_NilIsNoop(t *testing.T) {
@@ -1726,12 +1726,8 @@ func TestTableKey_VertexUnresolvedSecretVar_RoundTrip(t *testing.T) {
 		KeyID:      "vertex-env-uuid-1",
 		Value:      *schemas.NewSecretVar(""),
 		VertexKeyConfig: &schemas.VertexKeyConfig{
-			ProjectID: schemas.SecretVar{
-				Val:     "",
-				EnvVar:  "env.FAKE_VERTEX_PROJECT_ID_FOR_TEST",
-				FromEnv: true,
-			},
-			Region: *schemas.NewSecretVar("us-central1"),
+			ProjectID: *schemas.NewSecretVar("env.FAKE_VERTEX_PROJECT_ID_FOR_TEST"),
+			Region:    *schemas.NewSecretVar("us-central1"),
 		},
 	}
 
@@ -1743,9 +1739,9 @@ func TestTableKey_VertexUnresolvedSecretVar_RoundTrip(t *testing.T) {
 
 	// VertexKeyConfig must NOT be wiped — this was the original bug.
 	require.NotNil(t, found.VertexKeyConfig, "VertexKeyConfig was wiped on reload")
-	assert.Equal(t, "env.FAKE_VERTEX_PROJECT_ID_FOR_TEST", found.VertexKeyConfig.ProjectID.EnvVar,
+	assert.Equal(t, "env.FAKE_VERTEX_PROJECT_ID_FOR_TEST", found.VertexKeyConfig.ProjectID.GetSecretRef(),
 		"env var reference for ProjectID lost on round-trip")
-	assert.True(t, found.VertexKeyConfig.ProjectID.FromEnv,
+	assert.True(t, found.VertexKeyConfig.ProjectID.IsFromSecret(),
 		"FromEnv flag for ProjectID lost on round-trip")
 	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue(),
 		"Plain Region value should survive round-trip unchanged")
@@ -1766,11 +1762,7 @@ func TestTableKey_AzureUnresolvedSecretVar_RoundTrip(t *testing.T) {
 		KeyID:      "azure-env-uuid-1",
 		Value:      *schemas.NewSecretVar(""),
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint: schemas.SecretVar{
-				Val:     "",
-				EnvVar:  "env.FAKE_AZURE_ENDPOINT_FOR_TEST",
-				FromEnv: true,
-			},
+			Endpoint: *schemas.NewSecretVar("env.FAKE_AZURE_ENDPOINT_FOR_TEST"),
 		},
 	}
 
@@ -1780,9 +1772,9 @@ func TestTableKey_AzureUnresolvedSecretVar_RoundTrip(t *testing.T) {
 	require.NoError(t, db.First(&found, key.ID).Error)
 
 	require.NotNil(t, found.AzureKeyConfig, "AzureKeyConfig was wiped on reload")
-	assert.Equal(t, "env.FAKE_AZURE_ENDPOINT_FOR_TEST", found.AzureKeyConfig.Endpoint.EnvVar,
+	assert.Equal(t, "env.FAKE_AZURE_ENDPOINT_FOR_TEST", found.AzureKeyConfig.Endpoint.GetSecretRef(),
 		"env var reference for Endpoint lost on round-trip")
-	assert.True(t, found.AzureKeyConfig.Endpoint.FromEnv,
+	assert.True(t, found.AzureKeyConfig.Endpoint.IsFromSecret(),
 		"FromEnv flag for Endpoint lost on round-trip")
 }
 
@@ -1801,17 +1793,9 @@ func TestTableKey_BedrockUnresolvedSecretVar_RoundTrip(t *testing.T) {
 		KeyID:      "bedrock-env-uuid-1",
 		Value:      *schemas.NewSecretVar(""),
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
-			AccessKey: schemas.SecretVar{
-				Val:     "",
-				EnvVar:  "env.FAKE_AWS_ACCESS_KEY_FOR_TEST",
-				FromEnv: true,
-			},
-			SecretKey: schemas.SecretVar{
-				Val:     "",
-				EnvVar:  "env.FAKE_AWS_SECRET_KEY_FOR_TEST",
-				FromEnv: true,
-			},
-			Region: schemas.NewSecretVar("us-west-2"),
+			AccessKey: *schemas.NewSecretVar("env.FAKE_AWS_ACCESS_KEY_FOR_TEST"),
+			SecretKey: *schemas.NewSecretVar("env.FAKE_AWS_SECRET_KEY_FOR_TEST"),
+			Region:    schemas.NewSecretVar("us-west-2"),
 		},
 	}
 
@@ -1821,9 +1805,9 @@ func TestTableKey_BedrockUnresolvedSecretVar_RoundTrip(t *testing.T) {
 	require.NoError(t, db.First(&found, key.ID).Error)
 
 	require.NotNil(t, found.BedrockKeyConfig, "BedrockKeyConfig was wiped on reload")
-	assert.Equal(t, "env.FAKE_AWS_ACCESS_KEY_FOR_TEST", found.BedrockKeyConfig.AccessKey.EnvVar,
+	assert.Equal(t, "env.FAKE_AWS_ACCESS_KEY_FOR_TEST", found.BedrockKeyConfig.AccessKey.GetSecretRef(),
 		"env var reference for AccessKey lost on round-trip")
-	assert.Equal(t, "env.FAKE_AWS_SECRET_KEY_FOR_TEST", found.BedrockKeyConfig.SecretKey.EnvVar,
+	assert.Equal(t, "env.FAKE_AWS_SECRET_KEY_FOR_TEST", found.BedrockKeyConfig.SecretKey.GetSecretRef(),
 		"env var reference for SecretKey lost on round-trip")
 	require.NotNil(t, found.BedrockKeyConfig.Region)
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
@@ -1843,11 +1827,7 @@ func TestTableKey_OllamaUnresolvedSecretVar_RoundTrip(t *testing.T) {
 		KeyID:      "ollama-env-uuid-1",
 		Value:      *schemas.NewSecretVar(""),
 		OllamaKeyConfig: &schemas.OllamaKeyConfig{
-			URL: schemas.SecretVar{
-				Val:     "",
-				EnvVar:  "env.FAKE_OLLAMA_URL_FOR_TEST",
-				FromEnv: true,
-			},
+			URL: *schemas.NewSecretVar("env.FAKE_OLLAMA_URL_FOR_TEST"),
 		},
 	}
 
@@ -1857,8 +1837,8 @@ func TestTableKey_OllamaUnresolvedSecretVar_RoundTrip(t *testing.T) {
 	require.NoError(t, db.First(&found, key.ID).Error)
 
 	require.NotNil(t, found.OllamaKeyConfig, "OllamaKeyConfig was wiped on reload")
-	assert.Equal(t, "env.FAKE_OLLAMA_URL_FOR_TEST", found.OllamaKeyConfig.URL.EnvVar)
-	assert.True(t, found.OllamaKeyConfig.URL.FromEnv)
+	assert.Equal(t, "env.FAKE_OLLAMA_URL_FOR_TEST", found.OllamaKeyConfig.URL.GetSecretRef())
+	assert.True(t, found.OllamaKeyConfig.URL.IsFromSecret())
 }
 
 func TestTableKey_SGLUnresolvedSecretVar_RoundTrip(t *testing.T) {
@@ -1873,11 +1853,7 @@ func TestTableKey_SGLUnresolvedSecretVar_RoundTrip(t *testing.T) {
 		KeyID:      "sgl-env-uuid-1",
 		Value:      *schemas.NewSecretVar(""),
 		SGLKeyConfig: &schemas.SGLKeyConfig{
-			URL: schemas.SecretVar{
-				Val:     "",
-				EnvVar:  "env.FAKE_SGL_URL_FOR_TEST",
-				FromEnv: true,
-			},
+			URL: *schemas.NewSecretVar("env.FAKE_SGL_URL_FOR_TEST"),
 		},
 	}
 
@@ -1887,8 +1863,8 @@ func TestTableKey_SGLUnresolvedSecretVar_RoundTrip(t *testing.T) {
 	require.NoError(t, db.First(&found, key.ID).Error)
 
 	require.NotNil(t, found.SGLKeyConfig, "SGLKeyConfig was wiped on reload")
-	assert.Equal(t, "env.FAKE_SGL_URL_FOR_TEST", found.SGLKeyConfig.URL.EnvVar)
-	assert.True(t, found.SGLKeyConfig.URL.FromEnv)
+	assert.Equal(t, "env.FAKE_SGL_URL_FOR_TEST", found.SGLKeyConfig.URL.GetSecretRef())
+	assert.True(t, found.SGLKeyConfig.URL.IsFromSecret())
 }
 
 // TestTableKey_VertexPlainValue_RoundTrip is a sanity check ensuring that plain
@@ -1916,7 +1892,7 @@ func TestTableKey_VertexPlainValue_RoundTrip(t *testing.T) {
 
 	require.NotNil(t, found.VertexKeyConfig)
 	assert.Equal(t, "my-gcp-project", found.VertexKeyConfig.ProjectID.GetValue())
-	assert.False(t, found.VertexKeyConfig.ProjectID.FromEnv)
+	assert.False(t, found.VertexKeyConfig.ProjectID.IsFromSecret())
 	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue())
 }
 

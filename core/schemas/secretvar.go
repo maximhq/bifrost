@@ -29,9 +29,7 @@ func NewSecretVar(value string) *SecretVar {
 	// If it's a valid JSON object following the SecretVar schema, unmarshal it
 	if sonic.Valid([]byte(value)) {
 		valueNode, _ := sonic.Get([]byte(val), "value")
-		envNode, _ := sonic.Get([]byte(val), "env_var")
-		secretRefNode, _ := sonic.Get([]byte(val), "secret_ref")
-		if valueNode.Exists() && (envNode.Exists() || secretRefNode.Exists()) {
+		if valueNode.Exists() {
 			type secretVarCompat struct {
 				Val        string `json:"value"`
 				SecretRef  string `json:"secret_ref"`
@@ -124,7 +122,7 @@ func NewSecretVar(value string) *SecretVar {
 
 // Ref returns the secret reference string (e.g. "env.MY_VAR" or "vault.path/to/secret").
 // Returns an empty string for plain-value SecretVars.
-func (e *SecretVar) Ref() string {
+func (e *SecretVar) GetSecretRef() string {
 	if e == nil {
 		return ""
 	}
@@ -268,9 +266,7 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 	}
 	if sonic.Valid(data) {
 		valueNode, _ := sonic.Get(data, "value")
-		envNode, _ := sonic.Get(data, "env_var")
-		secretRefNode, _ := sonic.Get(data, "secret_ref")
-		if valueNode.Exists() && (envNode.Exists() || secretRefNode.Exists()) {
+		if valueNode.Exists() {
 			type secretVarCompat struct {
 				Val        string `json:"value"`
 				SecretRef  string `json:"secret_ref"`

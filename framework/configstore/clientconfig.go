@@ -360,7 +360,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 
 	if c.MCPExternalClientURL.IsSet() {
 		if c.MCPExternalClientURL.IsFromSecret() {
-			hash.Write([]byte("externalClientURL:ref:" + c.MCPExternalClientURL.Ref()))
+			hash.Write([]byte("externalClientURL:ref:" + c.MCPExternalClientURL.GetSecretRef()))
 		} else {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
@@ -652,7 +652,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash.Write([]byte(key.Name))
 	// Hash Value (prefix with source type to prevent collisions between ref and literal)
 	if key.Value.IsFromSecret() {
-		hash.Write([]byte("ref:" + key.Value.Ref()))
+		hash.Write([]byte("ref:" + key.Value.GetSecretRef()))
 	} else {
 		hash.Write([]byte("val:" + key.Value.Val))
 	}
@@ -1326,7 +1326,7 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	// Hash ConnectionString
 	if m.ConnectionString != nil {
 		if m.ConnectionString.IsFromSecret() {
-			hash.Write([]byte(m.ConnectionString.Ref()))
+			hash.Write([]byte(m.ConnectionString.GetSecretRef()))
 		} else {
 			hash.Write([]byte(m.ConnectionString.Val))
 		}
@@ -1372,7 +1372,7 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		for _, k := range keys {
 			val := m.Headers[k]
 			if val.IsFromSecret() {
-				hash.Write([]byte(k + ":ref:" + val.Ref()))
+				hash.Write([]byte(k + ":ref:" + val.GetSecretRef()))
 			} else {
 				hash.Write([]byte(k + ":val:" + val.Val))
 			}

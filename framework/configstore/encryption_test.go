@@ -428,7 +428,7 @@ func TestEncryptPlaintextVirtualKeys_EncryptsAndDecryptsCorrectly(t *testing.T) 
 	// GORM hooks should decrypt on read
 	var found tables.TableVirtualKey
 	require.NoError(t, db.Where("id = ?", "vk-batch-1").First(&found).Error)
-	assert.Equal(t, "vk-batch-secret", found.Value)
+	assert.Equal(t, "vk-batch-secret", found.Value.GetValue())
 }
 
 func TestEncryptPlaintextOAuthConfigs_EncryptsAndDecryptsCorrectly(t *testing.T) {
@@ -986,11 +986,11 @@ func TestBeforeSave_SecretVarBackedFields_NotEncrypted(t *testing.T) {
 	}
 
 	// Verify the SecretVars resolved correctly and are marked as FromEnv
-	require.True(t, azureCfg.Endpoint.IsFromEnv())
+	require.True(t, azureCfg.Endpoint.IsFromSecret())
 	require.Equal(t, "https://env-resource.openai.azure.com", azureCfg.Endpoint.GetValue())
-	require.True(t, azureCfg.ClientSecret.IsFromEnv())
-	require.True(t, vertexCfg.AuthCredentials.IsFromEnv())
-	require.True(t, bedrockCfg.AccessKey.IsFromEnv())
+	require.True(t, azureCfg.ClientSecret.IsFromSecret())
+	require.True(t, vertexCfg.AuthCredentials.IsFromSecret())
+	require.True(t, bedrockCfg.AccessKey.IsFromSecret())
 
 	key := &tables.TableKey{
 		Name:             "env-backed-key",
@@ -1016,53 +1016,53 @@ func TestBeforeSave_SecretVarBackedFields_NotEncrypted(t *testing.T) {
 
 	// The shared config structs must NOT be mutated
 	assert.Equal(t, "https://env-resource.openai.azure.com", azureCfg.Endpoint.GetValue())
-	assert.True(t, azureCfg.Endpoint.IsFromEnv())
+	assert.True(t, azureCfg.Endpoint.IsFromSecret())
 	assert.Equal(t, "env-azure-client-secret", azureCfg.ClientSecret.GetValue())
-	assert.True(t, azureCfg.ClientSecret.IsFromEnv())
+	assert.True(t, azureCfg.ClientSecret.IsFromSecret())
 	assert.Equal(t, "env-vertex-creds-json", vertexCfg.AuthCredentials.GetValue())
-	assert.True(t, vertexCfg.AuthCredentials.IsFromEnv())
+	assert.True(t, vertexCfg.AuthCredentials.IsFromSecret())
 	assert.Equal(t, "env-AKIA-ACCESS", bedrockCfg.AccessKey.GetValue())
-	assert.True(t, bedrockCfg.AccessKey.IsFromEnv())
+	assert.True(t, bedrockCfg.AccessKey.IsFromSecret())
 	assert.Equal(t, "env-bedrock-secret", bedrockCfg.SecretKey.GetValue())
-	assert.True(t, bedrockCfg.SecretKey.IsFromEnv())
+	assert.True(t, bedrockCfg.SecretKey.IsFromSecret())
 	assert.Equal(t, "env-bedrock-session", bedrockCfg.SessionToken.GetValue())
-	assert.True(t, bedrockCfg.SessionToken.IsFromEnv())
+	assert.True(t, bedrockCfg.SessionToken.IsFromSecret())
 
 	// GORM round-trip: AfterFind should reconstruct env-backed SecretVars correctly
 	var found tables.TableKey
 	require.NoError(t, db.Where("name = ?", "env-backed-key").First(&found).Error)
 	assert.Equal(t, "sk-azure-from-env", found.Value.GetValue())
-	assert.True(t, found.Value.IsFromEnv())
+	assert.True(t, found.Value.IsFromSecret())
 
 	require.NotNil(t, found.AzureKeyConfig)
 	assert.Equal(t, "https://env-resource.openai.azure.com", found.AzureKeyConfig.Endpoint.GetValue())
-	assert.True(t, found.AzureKeyConfig.Endpoint.IsFromEnv())
+	assert.True(t, found.AzureKeyConfig.Endpoint.IsFromSecret())
 	assert.Equal(t, "env-azure-client-secret", found.AzureKeyConfig.ClientSecret.GetValue())
-	assert.True(t, found.AzureKeyConfig.ClientSecret.IsFromEnv())
+	assert.True(t, found.AzureKeyConfig.ClientSecret.IsFromSecret())
 	assert.Equal(t, "env-azure-client-id", found.AzureKeyConfig.ClientID.GetValue())
-	assert.True(t, found.AzureKeyConfig.ClientID.IsFromEnv())
+	assert.True(t, found.AzureKeyConfig.ClientID.IsFromSecret())
 	assert.Equal(t, "env-azure-tenant-id", found.AzureKeyConfig.TenantID.GetValue())
-	assert.True(t, found.AzureKeyConfig.TenantID.IsFromEnv())
+	assert.True(t, found.AzureKeyConfig.TenantID.IsFromSecret())
 
 	require.NotNil(t, found.VertexKeyConfig)
 	assert.Equal(t, "env-vertex-project", found.VertexKeyConfig.ProjectID.GetValue())
-	assert.True(t, found.VertexKeyConfig.ProjectID.IsFromEnv())
+	assert.True(t, found.VertexKeyConfig.ProjectID.IsFromSecret())
 	assert.Equal(t, "env-us-central1", found.VertexKeyConfig.Region.GetValue())
-	assert.True(t, found.VertexKeyConfig.Region.IsFromEnv())
+	assert.True(t, found.VertexKeyConfig.Region.IsFromSecret())
 	assert.Equal(t, "env-vertex-creds-json", found.VertexKeyConfig.AuthCredentials.GetValue())
-	assert.True(t, found.VertexKeyConfig.AuthCredentials.IsFromEnv())
+	assert.True(t, found.VertexKeyConfig.AuthCredentials.IsFromSecret())
 
 	require.NotNil(t, found.BedrockKeyConfig)
 	assert.Equal(t, "env-AKIA-ACCESS", found.BedrockKeyConfig.AccessKey.GetValue())
-	assert.True(t, found.BedrockKeyConfig.AccessKey.IsFromEnv())
+	assert.True(t, found.BedrockKeyConfig.AccessKey.IsFromSecret())
 	assert.Equal(t, "env-bedrock-secret", found.BedrockKeyConfig.SecretKey.GetValue())
-	assert.True(t, found.BedrockKeyConfig.SecretKey.IsFromEnv())
+	assert.True(t, found.BedrockKeyConfig.SecretKey.IsFromSecret())
 	assert.Equal(t, "env-bedrock-session", found.BedrockKeyConfig.SessionToken.GetValue())
-	assert.True(t, found.BedrockKeyConfig.SessionToken.IsFromEnv())
+	assert.True(t, found.BedrockKeyConfig.SessionToken.IsFromSecret())
 	assert.Equal(t, "env-us-east-1", found.BedrockKeyConfig.Region.GetValue())
-	assert.True(t, found.BedrockKeyConfig.Region.IsFromEnv())
+	assert.True(t, found.BedrockKeyConfig.Region.IsFromSecret())
 	assert.Equal(t, "arn:aws:iam::env:role/test", found.BedrockKeyConfig.ARN.GetValue())
-	assert.True(t, found.BedrockKeyConfig.ARN.IsFromEnv())
+	assert.True(t, found.BedrockKeyConfig.ARN.IsFromSecret())
 }
 
 func TestEncryptPlaintextKeys_SecretVarBackedFields_SurviveStartupPass(t *testing.T) {
@@ -1101,16 +1101,16 @@ func TestEncryptPlaintextKeys_SecretVarBackedFields_SurviveStartupPass(t *testin
 	var found tables.TableKey
 	require.NoError(t, db.Where("name = ?", "env-startup-key").First(&found).Error)
 	assert.Equal(t, "sk-startup-env-key", found.Value.GetValue())
-	assert.True(t, found.Value.IsFromEnv())
+	assert.True(t, found.Value.IsFromSecret())
 	require.NotNil(t, found.AzureKeyConfig)
 	assert.Equal(t, "https://startup.openai.azure.com", found.AzureKeyConfig.Endpoint.GetValue())
-	assert.True(t, found.AzureKeyConfig.Endpoint.IsFromEnv())
+	assert.True(t, found.AzureKeyConfig.Endpoint.IsFromSecret())
 	require.NotNil(t, found.VertexKeyConfig)
 	assert.Equal(t, "startup-vertex-creds", found.VertexKeyConfig.AuthCredentials.GetValue())
-	assert.True(t, found.VertexKeyConfig.AuthCredentials.IsFromEnv())
+	assert.True(t, found.VertexKeyConfig.AuthCredentials.IsFromSecret())
 	require.NotNil(t, found.BedrockKeyConfig)
 	assert.Equal(t, "AKIA-STARTUP", found.BedrockKeyConfig.AccessKey.GetValue())
-	assert.True(t, found.BedrockKeyConfig.AccessKey.IsFromEnv())
+	assert.True(t, found.BedrockKeyConfig.AccessKey.IsFromSecret())
 }
 
 // ============================================================================
@@ -1306,7 +1306,7 @@ func TestEncryptPlaintextMCPClients_SecretVarConnectionStringSurvivesStartup(t *
 	var found tables.TableMCPClient
 	require.NoError(t, db.Where("client_id = ?", "mcp-env-startup").First(&found).Error)
 	assert.Equal(t, "https://mcp-env.example.com/sse", found.ConnectionString.GetValue())
-	assert.True(t, found.ConnectionString.IsFromEnv())
+	assert.True(t, found.ConnectionString.IsFromSecret())
 }
 
 // ============================================================================
