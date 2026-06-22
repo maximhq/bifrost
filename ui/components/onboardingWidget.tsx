@@ -93,9 +93,9 @@ export default function OnboardingWidget() {
 
 	const authConfig = bifrostConfig?.auth_config;
 	const clientConfig = bifrostConfig?.client_config;
-	const authValueSet = (secretVar: { value?: string; env_var?: string; from_env?: boolean } | undefined) => {
+	const authValueSet = (secretVar: { value?: string; secret_ref?: string; from_secret?: boolean } | undefined) => {
 		if (!secretVar) return false;
-		return !!secretVar.value || !!secretVar.env_var;
+		return !!secretVar.value || !!secretVar.secret_ref;
 	};
 
 	const steps: Step[] = useMemo(() => {

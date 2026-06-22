@@ -359,10 +359,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	if c.MCPExternalClientURL.IsSet() {
-		if c.MCPExternalClientURL.IsFromEnv() {
-			hash.Write([]byte("externalClientURL:env:" + c.MCPExternalClientURL.EnvVar))
-		} else if c.MCPExternalClientURL.IsFromVault() {
-			hash.Write([]byte("externalClientURL:vault:" + c.MCPExternalClientURL.VaultRef))
+		if c.MCPExternalClientURL.IsFromSecret() {
+			hash.Write([]byte("externalClientURL:ref:" + c.MCPExternalClientURL.SecretRef))
 		} else {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
@@ -395,7 +393,7 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 // Redacted returns a copy of ClientConfig with any env-backed SecretVar fields masked.
 func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
-	if c.MCPExternalClientURL != nil && (c.MCPExternalClientURL.IsFromEnv() || c.MCPExternalClientURL.IsFromVault()) {
+	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
 	}
 	return out
@@ -483,7 +481,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			if key.AzureKeyConfig.Endpoint.IsFromEnv() || key.AzureKeyConfig.Endpoint.IsFromVault() {
+			if key.AzureKeyConfig.Endpoint.IsFromSecret() {
 				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			} else {
 				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
@@ -652,11 +650,9 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
-	// Hash Value (prefix with source type to prevent collisions between env and literal)
-	if key.Value.IsFromEnv() {
-		hash.Write([]byte("env:" + key.Value.EnvVar))
-	} else if key.Value.IsFromVault() {
-		hash.Write([]byte("vault:" + key.Value.VaultRef))
+	// Hash Value (prefix with source type to prevent collisions between ref and literal)
+	if key.Value.IsFromSecret() {
+		hash.Write([]byte("ref:" + key.Value.SecretRef))
 	} else {
 		hash.Write([]byte("val:" + key.Value.Val))
 	}
@@ -1329,10 +1325,8 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// Hash ConnectionString
 	if m.ConnectionString != nil {
-		if m.ConnectionString.IsFromEnv() {
-			hash.Write([]byte(m.ConnectionString.EnvVar))
-		} else if m.ConnectionString.IsFromVault() {
-			hash.Write([]byte(m.ConnectionString.VaultRef))
+		if m.ConnectionString.IsFromSecret() {
+			hash.Write([]byte(m.ConnectionString.SecretRef))
 		} else {
 			hash.Write([]byte(m.ConnectionString.Val))
 		}
@@ -1377,8 +1371,8 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			val := m.Headers[k]
-			if val.FromEnv {
-				hash.Write([]byte(k + ":env:" + val.EnvVar))
+			if val.IsFromSecret() {
+				hash.Write([]byte(k + ":ref:" + val.SecretRef))
 			} else {
 				hash.Write([]byte(k + ":val:" + val.Val))
 			}

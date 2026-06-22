@@ -15,7 +15,7 @@ const (
 // encryptSecretVar encrypts the Val field of an SecretVar in place using AES-256-GCM.
 // It is a no-op if the field is nil, references an environment variable or vault, or has an empty value.
 func encryptSecretVar(field *schemas.SecretVar) error {
-	if field == nil || field.IsFromEnv() || field.IsFromVault() || field.GetValue() == "" {
+	if field == nil || field.IsFromSecret() || field.GetValue() == "" {
 		return nil
 	}
 	encrypted, err := encrypt.Encrypt(field.Val)
@@ -29,7 +29,7 @@ func encryptSecretVar(field *schemas.SecretVar) error {
 // decryptSecretVar decrypts the Val field of an SecretVar in place using AES-256-GCM.
 // It is a no-op if the field is nil, references an environment variable or vault, or has an empty value.
 func decryptSecretVar(field *schemas.SecretVar) error {
-	if field == nil || field.IsFromEnv() || field.IsFromVault() || field.GetValue() == "" {
+	if field == nil || field.IsFromSecret() || field.GetValue() == "" {
 		return nil
 	}
 	decrypted, err := encrypt.Decrypt(field.Val)

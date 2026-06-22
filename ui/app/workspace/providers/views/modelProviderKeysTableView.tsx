@@ -232,12 +232,12 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													(() => {
 														// Check if the failure might be due to an env var that the server couldn't resolve
 														const hasSecretVarConfig =
-															key.azure_key_config?.endpoint?.from_env ||
-															key.vertex_key_config?.project_id?.from_env ||
-															key.vertex_key_config?.region?.from_env ||
-															key.bedrock_key_config?.region?.from_env ||
-															key.vllm_key_config?.url?.from_env ||
-															key.value?.from_env;
+															key.azure_key_config?.endpoint?.from_secret ||
+															key.vertex_key_config?.project_id?.from_secret ||
+															key.vertex_key_config?.region?.from_secret ||
+															key.bedrock_key_config?.region?.from_secret ||
+															key.vllm_key_config?.url?.from_secret ||
+															key.value?.from_secret;
 														const isEnvResolutionError =
 															hasSecretVarConfig && key.description && /not set|empty|missing/i.test(key.description);
 
@@ -246,7 +246,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																<TooltipTrigger asChild>
 																	<button
 																		type="button"
-																		aria-label="Key status: env var may not be resolved"
+																		aria-label="Key status: secret reference may not be resolved"
 																		data-testid={`key-status-warning-${key.name}`}
 																		className="inline-flex"
 																	>
@@ -254,7 +254,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																	</button>
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs break-words">
-																	{key.description} — verify the environment variable is set on the server
+																	{key.description} — verify the secret reference is configured on the server
 																</TooltipContent>
 															</Tooltip>
 														) : (
