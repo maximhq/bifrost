@@ -55,8 +55,8 @@ function normalize(value: DeploymentsValue): Record<string, AliasConfig> {
 	return out;
 }
 
-const emptySecretVar: SecretVar = { value: "", env_var: "", from_env: false };
-const isEmptySecretVar = (v: SecretVar | undefined): boolean => !v || (!v.value && !v.env_var);
+const emptySecretVar: SecretVar = { value: "", ref: "" };
+const isEmptySecretVar = (v: SecretVar | undefined): boolean => !v || (!v.value && !v.ref);
 
 function FieldRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
 	return (

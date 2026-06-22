@@ -131,7 +131,7 @@ func TestVaultCallbacks_SelfManagedStoresPlaintext(t *testing.T) {
 			var row tables.TableKey
 			require.NoError(t, db.First(&row, "key_id = ?", keyID).Error)
 			require.NotNil(t, row.BedrockSecretKey)
-			require.Equal(t, "vault."+secretPath, row.BedrockSecretKey.Val, "column should store vault ref")
+			require.Equal(t, "vault."+secretPath, row.BedrockSecretKey.GetRawRef(), "column should store vault ref")
 		})
 	}
 }

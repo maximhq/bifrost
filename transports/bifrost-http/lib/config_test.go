@@ -4536,8 +4536,8 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key",
 		Value:  *schemas.NewSecretVar("sk-original-123"), // SAME
-		Models: []string{"gpt-4", "gpt-3.5-turbo"},    // SAME
-		Weight: 1.5,                                   // SAME
+		Models: []string{"gpt-4", "gpt-3.5-turbo"},       // SAME
+		Weight: 1.5,                                      // SAME
 	}
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
@@ -4634,7 +4634,7 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	changedKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewSecretVar("sk-new-456"),         // CHANGED!
+		Value:  *schemas.NewSecretVar("sk-new-456"),      // CHANGED!
 		Models: []string{"gpt-4", "gpt-3.5-turbo", "o1"}, // CHANGED!
 		Weight: 2.0,                                      // CHANGED!
 	}
@@ -4735,8 +4735,8 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key",
 		Value:  *schemas.NewSecretVar("sk-new-456"), // CHANGED
-		Models: []string{"gpt-4", "o1"},          // CHANGED
-		Weight: 2.0,                              // CHANGED
+		Models: []string{"gpt-4", "o1"},             // CHANGED
+		Weight: 2.0,                                 // CHANGED
 	}
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
@@ -4817,8 +4817,8 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key",
 		Value:  *schemas.NewSecretVar("sk-original-123"), // SAME
-		Models: []string{"gpt-4"},                     // SAME
-		Weight: 1.0,                                   // SAME
+		Models: []string{"gpt-4"},                        // SAME
+		Weight: 1.0,                                      // SAME
 	}
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
@@ -4887,8 +4887,8 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key",
 		Value:  *schemas.NewSecretVar("sk-new-value"), // CHANGED
-		Models: []string{"gpt-4", "gpt-4-turbo"},   // CHANGED
-		Weight: 2.0,                                // CHANGED
+		Models: []string{"gpt-4", "gpt-4-turbo"},      // CHANGED
+		Weight: 2.0,                                   // CHANGED
 	}
 	fileKeyHash, _ := configstore.GenerateKeyHash(fileKey)
 
@@ -5000,8 +5000,8 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key-1",
 		Value:  *schemas.NewSecretVar("sk-key-1"), // SAME
-		Models: []string{"gpt-4"},              // SAME
-		Weight: 1.0,                            // SAME
+		Models: []string{"gpt-4"},                 // SAME
+		Weight: 1.0,                               // SAME
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-2",
@@ -5129,8 +5129,8 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key-1",
 		Value:  *schemas.NewSecretVar("sk-key-1"), // SAME
-		Models: []string{"gpt-4"},              // SAME
-		Weight: 1.0,                            // SAME
+		Models: []string{"gpt-4"},                 // SAME
+		Weight: 1.0,                               // SAME
 	}
 
 	fileConfig := configstore.ProviderConfig{
@@ -5254,15 +5254,15 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 		ID:     "key-unchanged",
 		Name:   "unchanged-key",
 		Value:  *schemas.NewSecretVar("sk-unchanged"), // SAME
-		Models: []string{"gpt-4"},                  // SAME
-		Weight: 1.0,                                // SAME
+		Models: []string{"gpt-4"},                     // SAME
+		Weight: 1.0,                                   // SAME
 	}
 	fileChangedKey := schemas.Key{
 		ID:     "key-changed",
 		Name:   "changed-key",
 		Value:  *schemas.NewSecretVar("sk-NEW-value"), // CHANGED
-		Models: []string{"gpt-4", "gpt-4-turbo"},   // CHANGED
-		Weight: 2.0,                                // CHANGED
+		Models: []string{"gpt-4", "gpt-4-turbo"},      // CHANGED
+		Weight: 2.0,                                   // CHANGED
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-new",
@@ -17702,8 +17702,8 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 
 		// Verify username was resolved from env
 		require.Equal(t, "envadmin", storedAuth.AdminUserName.GetValue(), "username should be resolved from env variable")
-		require.True(t, storedAuth.AdminUserName.IsFromEnv(), "username should be marked as from env")
-		require.Equal(t, "env.TEST_ADMIN_USERNAME", storedAuth.AdminUserName.EnvVar, "env var reference should be preserved")
+		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
+		require.Equal(t, "env.TEST_ADMIN_USERNAME", storedAuth.AdminUserName.GetRawRef(), "env var reference should be preserved")
 
 		// Verify password was hashed
 		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
@@ -17736,8 +17736,8 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.True(t, match, "hashed password should match the env variable value")
 
 		// Verify env var reference is preserved after hashing
-		require.True(t, storedAuth.AdminPassword.IsFromEnv(), "password should still be marked as from env after hashing")
-		require.Equal(t, "env.TEST_ADMIN_PASSWORD", storedAuth.AdminPassword.EnvVar, "password env var reference should be preserved")
+		require.True(t, storedAuth.AdminPassword.IsFromSecret(), "password should still be marked as from env after hashing")
+		require.Equal(t, "env.TEST_ADMIN_PASSWORD", storedAuth.AdminPassword.GetRawRef(), "password env var reference should be preserved")
 	})
 
 	t.Run("both username and password from env variables", func(t *testing.T) {
@@ -17763,7 +17763,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 
 		// Verify username was resolved from env
 		require.Equal(t, "envuser", storedAuth.AdminUserName.GetValue(), "username should be resolved from env variable")
-		require.True(t, storedAuth.AdminUserName.IsFromEnv(), "username should be marked as from env")
+		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
 
 		// Verify password was resolved from env and hashed
 		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
@@ -17772,8 +17772,8 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.True(t, match, "hashed password should match the env variable value")
 
 		// Verify env var reference is preserved after hashing
-		require.True(t, storedAuth.AdminPassword.IsFromEnv(), "password should still be marked as from env after hashing")
-		require.Equal(t, "env.TEST_ADMIN_PASS", storedAuth.AdminPassword.EnvVar, "password env var reference should be preserved")
+		require.True(t, storedAuth.AdminPassword.IsFromSecret(), "password should still be marked as from env after hashing")
+		require.Equal(t, "env.TEST_ADMIN_PASS", storedAuth.AdminPassword.GetRawRef(), "password env var reference should be preserved")
 	})
 
 	t.Run("env variable not set results in empty value", func(t *testing.T) {
@@ -17798,13 +17798,13 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 
 		// Verify username is empty but env var reference is preserved
 		require.Equal(t, "", storedAuth.AdminUserName.GetValue(), "username should be empty when env var not set")
-		require.True(t, storedAuth.AdminUserName.IsFromEnv(), "username should be marked as from env")
-		require.Equal(t, "env.NONEXISTENT_USERNAME", storedAuth.AdminUserName.EnvVar, "env var reference should be preserved")
+		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
+		require.Equal(t, "env.NONEXISTENT_USERNAME", storedAuth.AdminUserName.GetRawRef(), "env var reference should be preserved")
 
 		// Verify password is empty (not hashed since empty)
 		require.Equal(t, "", storedAuth.AdminPassword.GetValue(), "password should be empty when env var not set")
-		require.True(t, storedAuth.AdminPassword.IsFromEnv(), "password should be marked as from env")
-		require.Equal(t, "env.NONEXISTENT_PASSWORD", storedAuth.AdminPassword.EnvVar, "env var reference should be preserved")
+		require.True(t, storedAuth.AdminPassword.IsFromSecret(), "password should be marked as from env")
+		require.Equal(t, "env.NONEXISTENT_PASSWORD", storedAuth.AdminPassword.GetRawRef(), "env var reference should be preserved")
 	})
 
 	t.Run("password change flushes existing sessions", func(t *testing.T) {

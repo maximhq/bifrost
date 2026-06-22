@@ -81,10 +81,10 @@ export interface AzureKeyConfig {
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
-	endpoint: { value: "", env_var: "", from_env: false },
-	client_id: { value: "", env_var: "", from_env: false },
-	client_secret: { value: "", env_var: "", from_env: false },
-	tenant_id: { value: "", env_var: "", from_env: false },
+	endpoint: { value: "", ref: "" },
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	tenant_id: { value: "", ref: "" },
 	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
@@ -97,10 +97,10 @@ export interface VertexKeyConfig {
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
-	project_id: { value: "", env_var: "", from_env: false },
-	project_number: { value: "", env_var: "", from_env: false },
-	region: { value: "", env_var: "", from_env: false },
-	auth_credentials: { value: "", env_var: "", from_env: false },
+	project_id: { value: "", ref: "" },
+	project_number: { value: "", ref: "" },
+	region: { value: "", ref: "" },
+	auth_credentials: { value: "", ref: "" },
 } as const satisfies Required<VertexKeyConfig>;
 
 export interface S3BucketConfig {
@@ -125,11 +125,11 @@ export interface BedrockKeyConfig {
 
 // Default BedrockKeyConfig
 export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
-	access_key: { value: "", env_var: "", from_env: false },
-	secret_key: { value: "", env_var: "", from_env: false },
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
 	session_token: undefined as unknown as SecretVar,
-	region: { value: "us-east-1", env_var: "", from_env: false },
-	arn: { value: "", env_var: "", from_env: false },
+	region: { value: "us-east-1", ref: "" },
+	arn: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
 
@@ -141,7 +141,7 @@ export interface VLLMKeyConfig {
 
 // Default VLLMKeyConfig
 export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
-	url: { value: "", env_var: "", from_env: false },
+	url: { value: "", ref: "" },
 	model_name: "",
 } as const satisfies Required<VLLMKeyConfig>;
 
@@ -162,7 +162,7 @@ export interface OllamaKeyConfig {
 
 // Default OllamaKeyConfig
 export const DefaultOllamaKeyConfig: OllamaKeyConfig = {
-	url: { value: "", env_var: "", from_env: false },
+	url: { value: "", ref: "" },
 } as const satisfies Required<OllamaKeyConfig>;
 
 // SGLKeyConfig matching Go's schemas.SGLKeyConfig
@@ -172,7 +172,7 @@ export interface SGLKeyConfig {
 
 // Default SGLKeyConfig
 export const DefaultSGLKeyConfig: SGLKeyConfig = {
-	url: { value: "", env_var: "", from_env: false },
+	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
 // Key structure matching Go's schemas.Key
@@ -204,8 +204,8 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 	name: "",
 	value: {
 		value: "",
-		env_var: "",
-		from_env: false,
+		ref: "",
+		
 	},
 	models: [],
 	blacklisted_models: [],

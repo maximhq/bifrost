@@ -74,8 +74,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			const tenantId = form.getValues("key.azure_key_config.tenant_id");
 			const apiKey = form.getValues("key.value");
 			const hasEntraField =
-				clientId?.value || clientId?.env_var || clientSecret?.value || clientSecret?.env_var || tenantId?.value || tenantId?.env_var;
-			const hasApiKey = apiKey?.value || apiKey?.env_var;
+				clientId?.value || clientId?.ref || clientSecret?.value || clientSecret?.ref || tenantId?.value || tenantId?.ref;
+			const hasApiKey = apiKey?.value || apiKey?.ref;
 			let detected: "api_key" | "entra_id" | "default_credential" = "api_key";
 			if (hasEntraField) {
 				detected = "entra_id";
@@ -91,9 +91,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 		if (form.formState.isDirty) return;
 		if (isVertex) {
 			const authCredentials = form.getValues("key.vertex_key_config.auth_credentials")?.value;
-			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.env_var;
+			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.ref;
 			const apiKey = form.getValues("key.value")?.value;
-			const apiKeyEnv = form.getValues("key.value")?.env_var;
+			const apiKeyEnv = form.getValues("key.value")?.ref;
 			let detected: "service_account" | "service_account_json" | "api_key" = "service_account";
 			if (authCredentials || authCredentialsEnv) {
 				detected = "service_account_json";
@@ -111,8 +111,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			const accessKey = form.getValues("key.bedrock_key_config.access_key");
 			const secretKey = form.getValues("key.bedrock_key_config.secret_key");
 			const apiKey = form.getValues("key.value");
-			const hasExplicitCreds = accessKey?.value || accessKey?.env_var || secretKey?.value || secretKey?.env_var;
-			const hasApiKey = apiKey?.value || apiKey?.env_var;
+			const hasExplicitCreds = accessKey?.value || accessKey?.ref || secretKey?.value || secretKey?.ref;
+			const hasApiKey = apiKey?.value || apiKey?.ref;
 			let detected: "iam_role" | "explicit" | "api_key" = "iam_role";
 			if (hasExplicitCreds) {
 				detected = "explicit";

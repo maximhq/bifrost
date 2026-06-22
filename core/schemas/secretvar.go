@@ -10,69 +10,100 @@ import (
 	"github.com/bytedance/sonic"
 )
 
+// SecretType identifies the source of a SecretVar's value.
+type SecretType string
+
+const (
+	SecretTypePlainText SecretType = "plain_text"
+	SecretTypeEnv       SecretType = "env"
+	SecretTypeVault     SecretType = "vault"
+)
+
 // SecretVar is a wrapper around a value that can be sourced from an environment variable
 // or an external vault (e.g. AWS Secrets Manager, GCP Secret Manager, HashiCorp Vault).
 // Three reference forms are accepted: plain text, "env.VAR_NAME", and "vault.path/to/secret".
 type SecretVar struct {
-	Val       string `json:"value"`
-	EnvVar    string `json:"env_var"`
-	FromEnv   bool   `json:"from_env"`
-	VaultRef  string `json:"vault_var,omitempty"`
-	FromVault bool   `json:"from_vault,omitempty"`
+	Val        string `json:"value"`
+	ref        string
+	SecretType SecretType `json:"type,omitempty"`
 }
 
-// NewSecretVar creates a new EnvValue from a string.
+// inferSecretType returns the SecretType implied by a reference string prefix.
+func inferSecretType(ref string) SecretType {
+	if strings.HasPrefix(ref, "vault.") {
+		return SecretTypeVault
+	}
+	if strings.HasPrefix(ref, "env.") {
+		return SecretTypeEnv
+	}
+	return SecretTypePlainText
+}
+
+// NewSecretVar creates a new SecretVar from a string.
 func NewSecretVar(value string) *SecretVar {
-	// Cleanup string if required
-	// Use strconv.Unquote to properly handle JSON string escape sequences
-	// This converts "\"{\\\"key\\\":\\\"value\\\"}\"" to "{\"key\":\"value\"}"
 	val := value
 	if unquoted, err := strconv.Unquote(value); err == nil {
 		val = unquoted
 	}
-	// Here we will need to check if the incoming data is a valid JSON object
-	// If it's a valid JSON object and follows the SecretVar schema, then we will unmarshal it into an SecretVar object
+	// If it's a valid JSON object following the SecretVar schema, unmarshal it
 	if sonic.Valid([]byte(value)) {
 		valueNode, _ := sonic.Get([]byte(val), "value")
-		envNode, _ := sonic.Get([]byte(val), "env_var")
-		if valueNode.Exists() && envNode.Exists() {
-			// Use a type alias to avoid infinite recursion (alias doesn't inherit methods)
-			type secretVarAlias SecretVar
-			var secretVar secretVarAlias
-			if err := sonic.Unmarshal([]byte(value), &secretVar); err == nil {
-				e := &SecretVar{
-					Val:       secretVar.Val,
-					FromEnv:   secretVar.FromEnv,
-					EnvVar: secretVar.EnvVar,
-					FromVault: secretVar.FromVault,
-					VaultRef:  secretVar.VaultRef,
-				}
-				// Explicit vault reference: {from_vault: true, vault_var: "vault.path"}
-				if e.FromVault && e.VaultRef != "" {
-					if !strings.HasPrefix(e.VaultRef, "vault.") {
-						e.VaultRef = "vault." + e.VaultRef
+		if valueNode.Exists() {
+			type secretVarCompat struct {
+				Val        string     `json:"value"`
+				Ref        string     `json:"ref"`
+				SecretType SecretType `json:"type"`
+				// shipped backward compat: env_var/from_env
+				EnvVar  string `json:"env_var"`
+				FromEnv bool   `json:"from_env"`
+			}
+			var raw secretVarCompat
+			if err := sonic.Unmarshal([]byte(value), &raw); err == nil {
+				e := &SecretVar{Val: raw.Val}
+				if raw.SecretType != "" {
+					// New format: explicit type field
+					e.ref = raw.Ref
+					e.SecretType = raw.SecretType
+				} else if raw.Ref != "" {
+					// Has ref but no type — infer from prefix
+					e.ref = raw.Ref
+					e.SecretType = inferSecretType(raw.Ref)
+				} else if raw.FromEnv && raw.EnvVar != "" {
+					// Backward compat: from_env/env_var
+					ref := raw.EnvVar
+					if !strings.HasPrefix(ref, "env.") {
+						ref = "env." + ref
 					}
-					e.Val = e.VaultRef
-					if vaultValue, ok := LookupVault(e.VaultRef); ok {
-						e.Val = vaultValue
+					e.ref = ref
+					e.SecretType = SecretTypeEnv
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(ref, "env.")); ok {
+						e.Val = envValue
+					} else {
+						e.Val = ""
+					}
+					return e
+				} else if strings.HasPrefix(raw.Val, "env.") && raw.Val == raw.EnvVar {
+					// Legacy format: value == env_var == "env.XXX"
+					e.ref = raw.EnvVar
+					e.SecretType = SecretTypeEnv
+					e.Val = ""
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(raw.EnvVar, "env.")); ok {
+						e.Val = envValue
 					}
 					return e
 				}
-				// Old format: value == env_var == "env.XXX"
-				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
+				// Resolve references
+				if e.SecretType == SecretTypeVault {
 					e.Val = ""
-					// Load the environment variable value
-					envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env."))
-					if ok {
-						e.Val = envValue
+					if vaultValue, ok := LookupVault(e.ref); ok {
+						e.Val = vaultValue
 					}
-					e.FromEnv = true
 				}
-				// New format: value is empty, from_env=true, env_var holds the reference
-				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
-					e.FromEnv = true
-					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+				if e.SecretType == SecretTypeEnv {
+					if envValue, ok := os.LookupEnv(e.EnvKey()); ok {
 						e.Val = envValue
+					} else {
+						e.Val = ""
 					}
 				}
 				return e
@@ -80,43 +111,99 @@ func NewSecretVar(value string) *SecretVar {
 		}
 	}
 	if strings.HasPrefix(val, "vault.") {
-		e := &SecretVar{
-			Val:       val,
-			VaultRef:  val,
-			FromVault: true,
-		}
-		if vaultValue, ok := LookupVault(e.VaultRef); ok {
+		e := &SecretVar{ref: val, SecretType: SecretTypeVault}
+		if vaultValue, ok := LookupVault(val); ok {
 			e.Val = vaultValue
 		}
 		return e
 	}
 	if envKey, ok := strings.CutPrefix(val, "env."); ok {
+		e := &SecretVar{ref: val, SecretType: SecretTypeEnv}
 		if envValue, ok := os.LookupEnv(envKey); ok {
-			return &SecretVar{
-				Val:       envValue,
-				FromEnv:   true,
-				EnvVar: val,
-			}
+			e.Val = envValue
 		}
-		return &SecretVar{
-			Val:       "",
-			FromEnv:   true,
-			EnvVar: val,
-		}
+		return e
 	}
-	return &SecretVar{
-		Val:       val,
-		FromEnv:   false,
-		EnvVar: "",
-	}
+	return &SecretVar{Val: val}
 }
 
-// IsFromVault returns true if the value is sourced from an external vault.
+// GetRawRef returns the full secret reference string including prefix
+// (e.g. "env.MY_VAR" or "vault.path/to/secret").
+// Returns an empty string for plain-value SecretVars.
+func (e *SecretVar) GetRawRef() string {
+	if e == nil {
+		return ""
+	}
+	return e.ref
+}
+
+// GetRef returns the secret reference without its type prefix.
+// For env secrets it strips "env." (returning "MY_VAR"), for vault it strips "vault."
+// (returning "path/to/secret"), and for plain values it returns the ref as-is.
+func (e *SecretVar) GetRef() string {
+	if e == nil {
+		return ""
+	}
+	switch e.SecretType {
+	case SecretTypeEnv:
+		return strings.TrimPrefix(e.ref, "env.")
+	case SecretTypeVault:
+		return strings.TrimPrefix(e.ref, "vault.")
+	}
+	return e.ref
+}
+
+// Type returns the SecretType of this SecretVar.
+func (e *SecretVar) Type() SecretType {
+	if e == nil {
+		return SecretTypePlainText
+	}
+	if e.SecretType == "" {
+		return SecretTypePlainText
+	}
+	return e.SecretType
+}
+
+// IsFromSecret returns true if the value is sourced from an external secret (env var or vault).
+func (e *SecretVar) IsFromSecret() bool {
+	if e == nil {
+		return false
+	}
+	return e.SecretType == SecretTypeEnv || e.SecretType == SecretTypeVault
+}
+
+// IsFromVault returns true if the value is sourced from a vault path.
 func (e *SecretVar) IsFromVault() bool {
 	if e == nil {
 		return false
 	}
-	return e.FromVault
+	return e.SecretType == SecretTypeVault
+}
+
+// VaultPath returns the vault path without the "vault." prefix.
+// Returns an empty string if the SecretVar is not vault-backed.
+func (e *SecretVar) VaultPath() string {
+	if e == nil || e.SecretType != SecretTypeVault {
+		return ""
+	}
+	return strings.TrimPrefix(e.ref, "vault.")
+}
+
+// EnvKey returns the environment variable name without the "env." prefix.
+// Returns an empty string if the SecretVar is not env-backed.
+func (e *SecretVar) EnvKey() string {
+	if e == nil || e.SecretType != SecretTypeEnv {
+		return ""
+	}
+	return strings.TrimPrefix(e.ref, "env.")
+}
+
+// IsFromEnv returns true if the value is sourced from an environment variable.
+func (e *SecretVar) IsFromEnv() bool {
+	if e == nil {
+		return false
+	}
+	return e.SecretType == SecretTypeEnv
 }
 
 // IsRedacted returns true if the value is redacted.
@@ -124,11 +211,11 @@ func (e *SecretVar) IsRedacted() bool {
 	if e == nil {
 		return false
 	}
-	if e.Val == "" && !e.FromEnv && !e.FromVault {
+	if e.Val == "" && !e.IsFromSecret() {
 		return false
 	}
-	// Vault and env references are treated as redacted (the real value is external)
-	if e.FromEnv || e.FromVault {
+	// Secret references (env/vault) are treated as redacted — the real value is external
+	if e.IsFromSecret() {
 		return true
 	}
 	if len(e.Val) <= 8 {
@@ -152,7 +239,7 @@ func (e *SecretVar) IsRedacted() bool {
 	return false
 }
 
-// Equals checks if two SecretKeys are equal.
+// Equals checks if two SecretVars are equal.
 func (e *SecretVar) Equals(other *SecretVar) bool {
 	if e == nil && other == nil {
 		return true
@@ -161,162 +248,143 @@ func (e *SecretVar) Equals(other *SecretVar) bool {
 		return false
 	}
 	return e.Val == other.Val &&
-		e.EnvVar == other.EnvVar &&
-		e.FromEnv == other.FromEnv &&
-		e.VaultRef == other.VaultRef &&
-		e.FromVault == other.FromVault
+		e.ref == other.ref &&
+		e.SecretType == other.SecretType
 }
 
-// Redacted returns a new SecretKey with the value redacted.
+// Redacted returns a new SecretVar with the value redacted.
 func (e *SecretVar) Redacted() *SecretVar {
 	if e == nil {
 		return nil
 	}
 	if e.Val == "" {
-		return &SecretVar{
-			Val:       "",
-			FromEnv:   e.FromEnv,
-			EnvVar: e.EnvVar,
-			FromVault: e.FromVault,
-			VaultRef:  e.VaultRef,
-		}
+		return &SecretVar{Val: "", ref: e.ref, SecretType: e.SecretType}
 	}
-	// If key is 8 characters or less, just return all asterisks
 	if len(e.Val) <= 8 {
-		return &SecretVar{
-			Val:       strings.Repeat("*", len(e.Val)),
-			FromEnv:   e.FromEnv,
-			EnvVar: e.EnvVar,
-			FromVault: e.FromVault,
-			VaultRef:  e.VaultRef,
-		}
+		return &SecretVar{Val: strings.Repeat("*", len(e.Val)), ref: e.ref, SecretType: e.SecretType}
 	}
-	// Show first 4 and last 4 characters, replace middle with asterisks
 	prefix := e.Val[:4]
 	suffix := e.Val[len(e.Val)-4:]
 	middle := strings.Repeat("*", 24)
-
-	return &SecretVar{
-		Val:       prefix + middle + suffix,
-		FromEnv:   e.FromEnv,
-		EnvVar: e.EnvVar,
-		FromVault: e.FromVault,
-		VaultRef:  e.VaultRef,
-	}
+	return &SecretVar{Val: prefix + middle + suffix, ref: e.ref, SecretType: e.SecretType}
 }
 
 // FullyRedacted returns a copy of the SecretVar with Val replaced by a fixed placeholder
 // so no substring of the original value is exposed. Use for API responses where
-// Redacted is unsafe (e.g. literal proxy passwords). FromEnv/SecretVar and
-// FromVault/VaultRef are preserved so references remain visible.
+// Redacted is unsafe (e.g. literal proxy passwords). secretRef and secretType are
+// preserved so references remain visible.
 func (e *SecretVar) FullyRedacted() *SecretVar {
 	if e == nil {
 		return nil
 	}
 	if e.Val == "" {
-		return &SecretVar{
-			Val:       "",
-			FromEnv:   e.FromEnv,
-			EnvVar: e.EnvVar,
-			FromVault: e.FromVault,
-			VaultRef:  e.VaultRef,
-		}
+		return &SecretVar{Val: "", ref: e.ref, SecretType: e.SecretType}
 	}
-	return &SecretVar{
-		Val:       "<REDACTED>",
-		FromEnv:   e.FromEnv,
-		EnvVar: e.EnvVar,
-		FromVault: e.FromVault,
-		VaultRef:  e.VaultRef,
-	}
+	return &SecretVar{Val: "<REDACTED>", ref: e.ref, SecretType: e.SecretType}
+}
+
+// MarshalJSON serializes the SecretVar, emitting ref and type fields.
+func (e SecretVar) MarshalJSON() ([]byte, error) {
+	return Marshal(struct {
+		Val        string     `json:"value"`
+		Ref        string     `json:"ref,omitempty"`
+		SecretType SecretType `json:"type,omitempty"`
+	}{Val: e.Val, Ref: e.ref, SecretType: e.SecretType})
 }
 
 // UnmarshalJSON unmarshals the value from JSON.
 func (e *SecretVar) UnmarshalJSON(data []byte) error {
 	val := string(data)
-	// Cleanup string if required
-	// Use strconv.Unquote to properly handle JSON string escape sequences
-	// This converts "\"{\\\"key\\\":\\\"value\\\"}\"" to "{\"key\":\"value\"}"
 	if unquoted, err := strconv.Unquote(val); err == nil {
 		val = unquoted
 	}
-	// Check if the incoming data is a valid JSON object matching the SecretVar schema.
 	if sonic.Valid(data) {
 		valueNode, _ := sonic.Get(data, "value")
-		envNode, _ := sonic.Get(data, "env_var")
-		if valueNode.Exists() && envNode.Exists() {
-			// Use a type alias to avoid infinite recursion (alias doesn't inherit methods)
-			type secretVarAlias SecretVar
-			var secretVar secretVarAlias
-			if err := sonic.Unmarshal(data, &secretVar); err == nil {
-				e.Val = secretVar.Val
-				e.FromEnv = secretVar.FromEnv
-				e.EnvVar = secretVar.EnvVar
-				e.FromVault = secretVar.FromVault
-				e.VaultRef = secretVar.VaultRef
-
-				// Explicit vault reference: {from_vault: true, vault_var: "vault.path"}
-				if e.FromVault && e.VaultRef != "" {
-					if !strings.HasPrefix(e.VaultRef, "vault.") {
-						e.VaultRef = "vault." + e.VaultRef
+		if valueNode.Exists() {
+			type secretVarCompat struct {
+				Val        string     `json:"value"`
+				Ref        string     `json:"ref"`
+				SecretType SecretType `json:"type"`
+				// shipped backward compat: env_var/from_env
+				EnvVar  string `json:"env_var"`
+				FromEnv bool   `json:"from_env"`
+			}
+			var raw secretVarCompat
+			if err := sonic.Unmarshal(data, &raw); err == nil {
+				e.Val = raw.Val
+				if raw.SecretType != "" {
+					// New format: explicit type field
+					e.ref = raw.Ref
+					e.SecretType = raw.SecretType
+				} else if raw.Ref != "" {
+					// Has ref but no type — infer from prefix
+					e.ref = raw.Ref
+					e.SecretType = inferSecretType(raw.Ref)
+				} else if raw.FromEnv && raw.EnvVar != "" {
+					// Backward compat: from_env/env_var
+					ref := raw.EnvVar
+					if !strings.HasPrefix(ref, "env.") {
+						ref = "env." + ref
 					}
-					e.Val = e.VaultRef
-					if vaultValue, ok := LookupVault(e.VaultRef); ok {
-						e.Val = vaultValue
+					e.ref = ref
+					e.SecretType = SecretTypeEnv
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(ref, "env.")); ok {
+						e.Val = envValue
+					} else {
+						e.Val = ""
+					}
+					return nil
+				} else if strings.HasPrefix(raw.Val, "env.") && raw.Val == raw.EnvVar {
+					// Legacy format: value == env_var == "env.XXX"
+					e.ref = raw.EnvVar
+					e.SecretType = SecretTypeEnv
+					e.Val = ""
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(raw.EnvVar, "env.")); ok {
+						e.Val = envValue
 					}
 					return nil
 				}
-				// Old format: value == env_var == "env.XXX"
-				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
+				// Resolve references
+				if e.SecretType == SecretTypeVault {
 					e.Val = ""
-					envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env."))
-					if ok {
-						e.Val = envValue
+					if vaultValue, ok := LookupVault(e.ref); ok {
+						e.Val = vaultValue
 					}
-					e.FromEnv = true
 				}
-				// New format: value is empty, from_env=true, env_var holds the reference
-				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
-					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+				if e.SecretType == SecretTypeEnv {
+					if envValue, ok := os.LookupEnv(e.EnvKey()); ok {
 						e.Val = envValue
+					} else {
+						e.Val = ""
 					}
 				}
 				return nil
 			}
-			// Else the value is JSON, so we will treat this as a normal value
 		}
 	}
-	// Plain string forms: "vault.path/to/secret", "env.VAR", or literal value
+	// Plain string forms
 	if strings.HasPrefix(val, "vault.") {
-		e.VaultRef = val
-		e.FromVault = true
-		e.Val = val
-		e.FromEnv = false
-		e.EnvVar = ""
+		e.ref = val
+		e.SecretType = SecretTypeVault
+		e.Val = ""
 		if vaultValue, ok := LookupVault(val); ok {
 			e.Val = vaultValue
 		}
 		return nil
 	}
 	if envKey, ok := strings.CutPrefix(val, "env."); ok {
+		e.ref = val
+		e.SecretType = SecretTypeEnv
 		if envValue, ok := os.LookupEnv(envKey); ok {
 			e.Val = envValue
-			e.FromEnv = true
-			e.EnvVar = val
-			return nil
+		} else {
+			e.Val = ""
 		}
-		e.Val = ""
-		e.FromEnv = true
-		e.EnvVar = val
-		e.FromVault = false
-		e.VaultRef = ""
 		return nil
 	}
 	e.Val = val
-	e.FromEnv = false
-	e.EnvVar = ""
-	e.FromVault = false
-	e.VaultRef = ""
+	e.ref = ""
+	e.SecretType = SecretTypePlainText
 	return nil
 }
 
@@ -332,108 +400,75 @@ func (e *SecretVar) String() string {
 func (e *SecretVar) Scan(value any) error {
 	if value == nil {
 		e.Val = ""
-		e.FromEnv = false
-		e.EnvVar = ""
-		e.FromVault = false
-		e.VaultRef = ""
+		e.ref = ""
+		e.SecretType = SecretTypePlainText
 		return nil
 	}
 	switch v := value.(type) {
 	case []byte:
 		return e.Scan(string(v))
 	case string:
-		// Cleanup string if required
-		// The string may have "\"env.TEST\"", "env.TEST" or "env.TEST\"", we need to clean it up to "env.TEST"
-		val := strings.Trim(v, "\"")
-		// Vault reference: keep the reference in Val so the AfterFind GORM hook
-		// (resolveVaultSecretVar) can resolve it via ResolveString(&e.Val). VaultRef
-		// preserves the original path so it survives resolution and can be surfaced
-		// in API responses and re-stored correctly on writes.
-		if strings.HasPrefix(val, "vault.") {
-			e.Val = val
-			e.VaultRef = val
-			e.FromVault = true
-			e.FromEnv = false
-			e.EnvVar = ""
-			if vaultValue, ok := LookupVault(val); ok {
+		// Check raw value first — quoted strings (e.g. `"vault.x"`) are literals, not refs.
+		if strings.HasPrefix(v, "vault.") {
+			e.Val = ""
+			e.ref = v
+			e.SecretType = SecretTypeVault
+			if vaultValue, ok := LookupVault(v); ok {
 				e.Val = vaultValue
 			}
 			return nil
 		}
-		if envKey, ok := strings.CutPrefix(val, "env."); ok {
+		if envKey, ok := strings.CutPrefix(v, "env."); ok {
+			e.ref = v
+			e.SecretType = SecretTypeEnv
 			if envValue, ok := os.LookupEnv(envKey); ok {
 				e.Val = envValue
-				e.FromEnv = true
-				e.EnvVar = val
-				e.FromVault = false
-				e.VaultRef = ""
-				return nil
+			} else {
+				e.Val = ""
 			}
-			e.Val = ""
-			e.FromEnv = true
-			e.EnvVar = val
-			e.FromVault = false
-			e.VaultRef = ""
 			return nil
 		}
-		e.Val = val
-		e.FromEnv = false
-		e.EnvVar = ""
-		e.FromVault = false
-		e.VaultRef = ""
+		e.Val = strings.Trim(v, "\"")
+		e.ref = ""
+		e.SecretType = SecretTypePlainText
 		return nil
 	}
 	return fmt.Errorf("failed to scan value: %v", value)
 }
 
 // Value implements driver.Valuer for database storage.
-// It stores the vault reference (e.g., "vault.path/to/secret") if FromVault is true,
-// the env reference (e.g., "env.API_KEY") if FromEnv is true, otherwise the raw value.
+// It stores the secret reference (e.g., "env.API_KEY" or "vault.path/to/secret") if
+// the type is env or vault, otherwise the raw value.
 func (e SecretVar) Value() (driver.Value, error) {
-	if e.FromVault {
-		return e.VaultRef, nil
-	}
-	if e.FromEnv {
-		return e.EnvVar, nil
+	if e.IsFromSecret() {
+		return e.ref, nil
 	}
 	return e.Val, nil
 }
 
-// IsFromEnv returns true if the value is sourced from an environment variable.
-func (e *SecretVar) IsFromEnv() bool {
-	if e == nil {
-		return false
-	}
-	return e.FromEnv
-}
-
 // ShouldPreserveStored returns true when the SecretVar is a client-side placeholder
 // that should not overwrite the stored credential. Returns true for a nil receiver,
-// an empty non-env/non-vault value, or a redacted non-env/non-vault value. Returns
-// false for env/vault references (always intentional) and plain non-empty values.
+// an empty non-secret value, or a redacted non-secret value. Returns false for secret
+// references (always intentional) and plain non-empty values.
 func (e *SecretVar) ShouldPreserveStored() bool {
 	if e == nil {
 		return true
 	}
-	if e.IsFromEnv() || e.IsFromVault() {
+	if e.IsFromSecret() {
 		return false
 	}
 	return e.GetValue() == "" || e.IsRedacted()
 }
 
-// IsSet returns true if the SecretVar has a resolved value or an environment variable
-// or vault reference. This should be used instead of GetValue() != "" when checking
-// whether a field was configured, because references may have an empty Val before
-// resolution (e.g., when the env var is not set in the current environment).
+// IsSet returns true if the SecretVar has a resolved value or a secret reference.
+// Use instead of GetValue() != "" when checking whether a field was configured,
+// because references may have an empty Val before resolution.
 func (e *SecretVar) IsSet() bool {
 	if e == nil {
 		return false
 	}
-	if e.IsFromVault() {
-		return e.VaultRef != ""
-	}
-	if e.IsFromEnv() {
-		return e.EnvVar != ""
+	if e.IsFromSecret() {
+		return e.ref != ""
 	}
 	return e.Val != ""
 }

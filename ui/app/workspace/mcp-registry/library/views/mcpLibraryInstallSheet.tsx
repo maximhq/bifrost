@@ -31,13 +31,13 @@ interface MCPLibraryInstallSheetProps {
 	onInstalled: () => void;
 }
 
-const emptySecretVar: SecretVar = { value: "", env_var: "", from_env: false };
+const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 /** Strips empty TLS config so we don't send `{}` to the server. */
 function buildTLSConfigPayload(tls: MCPTLSConfig | undefined): MCPTLSConfig | undefined {
 	if (!tls) return undefined;
 	const hasSkipVerify = tls.insecure_skip_verify === true;
-	const hasCACert = tls.ca_cert_pem?.value || tls.ca_cert_pem?.from_env;
+	const hasCACert = tls.ca_cert_pem?.value?.trim() || tls.ca_cert_pem?.ref?.trim();
 	if (!hasSkipVerify && !hasCACert) return undefined;
 	return { insecure_skip_verify: tls.insecure_skip_verify, ca_cert_pem: hasCACert ? tls.ca_cert_pem : undefined };
 }
@@ -65,10 +65,10 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 		is_code_mode_client: false,
 		is_ping_available: true,
 		connection_type: server.connection_type || "http",
-		connection_string: isStdio ? undefined : server.connection_url ? { value: server.connection_url, env_var: "", from_env: false } : emptySecretVar,
+		connection_string: isStdio ? undefined : server.connection_url ? { value: server.connection_url, ref: "" } : emptySecretVar,
 		stdio_config: isStdio && server.stdio_config ? server.stdio_config : undefined,
 		auth_type: authType,
-		headers: authType === "headers" ? { Authorization: { value: "", env_var: "", from_env: false } } : undefined,
+		headers: authType === "headers" ? { Authorization: { value: "", ref: "" } } : undefined,
 	};
 }
 
@@ -180,7 +180,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		}
 		setValue("auth_type", authScope === "per_user" ? "per_user_headers" : "headers");
 		setValue("oauth_config", undefined);
-		setValue("headers", { Authorization: { value: "", env_var: "", from_env: false } });
+		setValue("headers", { Authorization: { value: "", ref: "" } });
 	};
 
 	const applyAuthScope = (scope: "shared" | "per_user") => {
@@ -218,7 +218,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 	const headersValidationError = useMemo(() => {
 		if ((authType !== "headers" && authType !== "per_user_headers") || !headers) return null;
 		for (const [key, secretVar] of Object.entries(headers)) {
-			if (!secretVar.value && !secretVar.env_var) {
+			if (!secretVar.value && !secretVar.ref) {
 				return `Header "${key}" must have a value`;
 			}
 		}
@@ -288,7 +288,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		const payload: CreateMCPClientRequest = {
 			...data,
 			connection_type: server.connection_type || "http",
-			connection_string: isStdio ? undefined : { value: connectionUrl, env_var: "", from_env: false },
+			connection_string: isStdio ? undefined : { value: connectionUrl, ref: "" },
 			stdio_config: stdioConfig,
 			is_code_mode_client: false,
 			is_ping_available: true,
@@ -298,7 +298,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					? {
 						client_id: data.oauth_config?.client_id ?? emptySecretVar,
 						client_secret:
-							data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env
+							data.oauth_config?.client_secret?.value?.trim() || data.oauth_config?.client_secret?.ref?.trim()
 								? data.oauth_config.client_secret
 								: undefined,
 						authorize_url: data.oauth_config?.authorize_url || undefined,
