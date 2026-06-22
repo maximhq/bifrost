@@ -703,7 +703,7 @@
               },
               "value": {
                 "type": "string",
-                "description": "The virtual key value"
+                "description": "The virtual key value. A literal, or an \"env.VAR\"/\"vault.path\" reference resolved to plaintext at load time."
               },
               "is_active": {
                 "type": "boolean",

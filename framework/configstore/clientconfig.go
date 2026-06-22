@@ -807,8 +807,8 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Name))
 	// Hash Description
 	hash.Write([]byte(vk.Description))
-	// Hash Value
-	hash.Write([]byte(vk.Value))
+	// Hash Value (resolved); a SecretVar stringifies to its resolved value
+	hash.Write([]byte(vk.Value.GetValue()))
 	// Hash IsActive (nil treated as DB default true)
 	if vk.IsActiveValue() {
 		hash.Write([]byte("isActive:true"))

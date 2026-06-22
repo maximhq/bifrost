@@ -153,7 +153,7 @@ func TestStoreOwnedVaultSecretVars_WalksMap(t *testing.T) {
 	m := &model{
 		Headers: map[string]SecretVar{
 			"Authorization": {Val: "secret-token"},
-			"X-Env":         {FromEnv: true, SecretVar: "X"},
+			"X-Env":         {FromEnv: true, EnvVar: "X"},
 		},
 	}
 
