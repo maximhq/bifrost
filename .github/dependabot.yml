@@ -319,3 +319,8 @@ updates:
     directory: /plugins/modelcatalogresolver
     schedule:
       interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /scripts/litellm-to-bifrost
+    schedule:
+      interval: weekly
