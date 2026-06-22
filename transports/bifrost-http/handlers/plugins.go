@@ -618,7 +618,7 @@ func restoreRedactedValue(incoming, existing any) any {
 		// left as-is so clearing a value works.
 		if existingStr, ok := existing.(string); ok {
 			secretVal := schemas.NewSecretVar(val)
-			if !secretVal.IsFromEnv() && !secretVal.IsFromVault() && secretVal.IsRedacted() {
+			if !secretVal.IsFromSecret() && secretVal.IsRedacted() {
 				return existingStr
 			}
 		}
@@ -632,15 +632,27 @@ func restoreRedactedValue(incoming, existing any) any {
 // keys "value", "env_var", and "from_env".
 func isSecretVarObject(m map[string]any) bool {
 	_, hasValue := m["value"]
-	_, hasSecretVar := m["env_var"]
+	_, hasSecretRef := m["secret_ref"]
+	_, hasFromSecret := m["from_secret"]
+	// also accept legacy env_var/from_env keys for backward compat
+	_, hasEnvVar := m["env_var"]
 	_, hasFromEnv := m["from_env"]
-	return hasValue && hasSecretVar && hasFromEnv
+	return hasValue && ((hasSecretRef && hasFromSecret) || (hasEnvVar && hasFromEnv))
 }
 
-// marshalSecretVarObject serialises an SecretVar-shaped map back to the JSON string that
+// marshalSecretVarObject serialises a SecretVar-shaped map back to the JSON string that
 // schemas.NewSecretVar expects so we can call ShouldPreserveStored on it.
 func marshalSecretVarObject(m map[string]any) string {
 	value, _ := m["value"].(string)
+	// new format
+	if secretRef, ok := m["secret_ref"].(string); ok {
+		fromSecret, _ := m["from_secret"].(bool)
+		if fromSecret {
+			return fmt.Sprintf(`{"value":%q,"secret_ref":%q,"from_secret":true}`, value, secretRef)
+		}
+		return fmt.Sprintf(`{"value":%q}`, value)
+	}
+	// backward compat: old env_var/from_env format
 	secretVar, _ := m["env_var"].(string)
 	fromEnv, _ := m["from_env"].(bool)
 	if fromEnv {

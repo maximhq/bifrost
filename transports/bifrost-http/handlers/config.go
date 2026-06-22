@@ -136,23 +136,15 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			// If from env, preserve env_var reference but clear value
 			// If not from env, show <redacted> as the value
 			var passwordSecretVar *schemas.SecretVar
-			if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromEnv() {
+			if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromSecret() {
 				passwordSecretVar = &schemas.SecretVar{
-					Val:     "",
-					EnvVar:  authConfig.AdminPassword.EnvVar,
-					FromEnv: true,
-				}
-			} else if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromVault() {
-				passwordSecretVar = &schemas.SecretVar{
-					Val:       "",
-					FromVault: true,
-					VaultRef:  authConfig.AdminPassword.VaultRef,
+					Val:        "",
+					SecretRef:  authConfig.AdminPassword.SecretRef,
+					FromSecret: true,
 				}
 			} else {
 				passwordSecretVar = &schemas.SecretVar{
-					Val:     "<redacted>",
-					EnvVar:  "",
-					FromEnv: false,
+					Val: "<redacted>",
 				}
 			}
 			mapConfig["auth_config"] = map[string]any{
@@ -163,15 +155,15 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			// No auth config exists yet, return default empty SecretVar values
 			mapConfig["auth_config"] = map[string]any{
-				"admin_username": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
-				"admin_password": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
+				"admin_username": &schemas.SecretVar{},
+				"admin_password": &schemas.SecretVar{},
 				"is_enabled":     false,
 			}
 		}
 	} else {
 		mapConfig["auth_config"] = map[string]any{
-			"admin_username": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
-			"admin_password": &schemas.SecretVar{Val: "", EnvVar: "", FromEnv: false},
+			"admin_username": &schemas.SecretVar{},
+			"admin_password": &schemas.SecretVar{},
 			"is_enabled":     false,
 		}
 	}
@@ -702,20 +694,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 
 			// Validate env variables are set if referenced
-			if (payload.AuthConfig.AdminUserName.IsFromEnv() || payload.AuthConfig.AdminUserName.IsFromVault()) && payload.AuthConfig.AdminUserName.GetValue() == "" {
-				ref := payload.AuthConfig.AdminUserName.EnvVar
-				if payload.AuthConfig.AdminUserName.IsFromVault() {
-					ref = payload.AuthConfig.AdminUserName.VaultRef
-				}
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", ref))
+			if payload.AuthConfig.AdminUserName.IsFromSecret() && payload.AuthConfig.AdminUserName.GetValue() == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", payload.AuthConfig.AdminUserName.SecretRef))
 				return
 			}
-			if (payload.AuthConfig.AdminPassword.IsFromEnv() || payload.AuthConfig.AdminPassword.IsFromVault()) && payload.AuthConfig.AdminPassword.GetValue() == "" {
-				ref := payload.AuthConfig.AdminPassword.EnvVar
-				if payload.AuthConfig.AdminPassword.IsFromVault() {
-					ref = payload.AuthConfig.AdminPassword.VaultRef
-				}
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_password resolved to an empty value", ref))
+			if payload.AuthConfig.AdminPassword.IsFromSecret() && payload.AuthConfig.AdminPassword.GetValue() == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_password resolved to an empty value", payload.AuthConfig.AdminPassword.SecretRef))
 				return
 			}
 
@@ -743,11 +727,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					}
 					// Preserve env/vault reference metadata when storing hashed password
 					payload.AuthConfig.AdminPassword = &schemas.SecretVar{
-						Val:       hashedPassword,
-						FromEnv:   payload.AuthConfig.AdminPassword.IsFromEnv(),
-						EnvVar:    payload.AuthConfig.AdminPassword.EnvVar,
-						FromVault: payload.AuthConfig.AdminPassword.IsFromVault(),
-						VaultRef:  payload.AuthConfig.AdminPassword.VaultRef,
+						Val:        hashedPassword,
+						SecretRef:  payload.AuthConfig.AdminPassword.SecretRef,
+						FromSecret: payload.AuthConfig.AdminPassword.IsFromSecret(),
 					}
 				}
 			}

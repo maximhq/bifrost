@@ -48,7 +48,7 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 
 	if encrypt.IsEnabled() {
 		encrypted := false
-		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && !c.ClientSecret.IsFromVault() && c.ClientSecret.Val != "" {
+		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
 			if err := encryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 			}
@@ -71,7 +71,7 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 	switch c.EncryptionStatus {
 	case EncryptionStatusEncrypted:
-		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && !c.ClientSecret.IsFromVault() && c.ClientSecret.Val != "" {
+		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
 			if err := decryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
 			}

@@ -37,11 +37,8 @@ func SecretVarAsString(e *SecretVar) string {
 	if e == nil {
 		return ""
 	}
-	if e.IsFromEnv() {
-		return e.EnvVar
-	}
-	if e.IsFromVault() {
-		return e.VaultRef
+	if e.IsFromSecret() {
+		return e.SecretRef
 	}
 	return e.GetValue()
 }
