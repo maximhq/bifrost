@@ -19,15 +19,17 @@ import (
 
 // SessionHandler manages HTTP requests for session operations
 type SessionHandler struct {
-	configStore   configstore.ConfigStore
-	wsTicketStore *WSTicketStore
+	configStore         configstore.ConfigStore
+	wsTicketStore       *WSTicketStore
+	loginAttemptLimiter *loginAttemptLimiter
 }
 
 // NewSessionHandler creates a new session handler instance
 func NewSessionHandler(configStore configstore.ConfigStore, wsTicketStore *WSTicketStore) *SessionHandler {
 	return &SessionHandler{
-		configStore:   configStore,
-		wsTicketStore: wsTicketStore,
+		configStore:         configStore,
+		wsTicketStore:       wsTicketStore,
+		loginAttemptLimiter: newLoginAttemptLimiter(),
 	}
 }
 
@@ -120,20 +122,30 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if h.loginAttemptLimiter == nil {
+		h.loginAttemptLimiter = newLoginAttemptLimiter()
+	}
+	limiterKey := loginAttemptKey(ctx, payload.Username)
+	if retryAfter, allowed := h.loginAttemptLimiter.isAllowed(limiterKey); !allowed {
+		sendLoginRateLimited(ctx, retryAfter)
+		return
+	}
+
 	// Verify credentials
 	if payload.Username != authConfig.AdminUserName.GetValue() {
-		SendError(ctx, fasthttp.StatusUnauthorized, "Invalid username or password")
+		h.recordFailedLogin(ctx, limiterKey)
 		return
 	}
 	compare, err := encrypt.CompareHash(authConfig.AdminPassword.GetValue(), payload.Password)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+		h.recordFailedLogin(ctx, limiterKey)
 		return
 	}
 	if !compare {
-		SendError(ctx, fasthttp.StatusUnauthorized, "Invalid username or password")
+		h.recordFailedLogin(ctx, limiterKey)
 		return
 	}
+	h.loginAttemptLimiter.recordSuccess(limiterKey)
 
 	// Creating a new session
 	token := uuid.New().String()
@@ -167,6 +179,21 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{
 		"message": "Login successful",
 	})
+}
+
+func (h *SessionHandler) recordFailedLogin(ctx *fasthttp.RequestCtx, loginAttemptKey string) {
+	retryAfter, locked := h.loginAttemptLimiter.recordFailure(loginAttemptKey)
+	if locked {
+		sendLoginRateLimited(ctx, retryAfter)
+		return
+	}
+	SendError(ctx, fasthttp.StatusUnauthorized, "Invalid username or password")
+}
+
+func sendLoginRateLimited(ctx *fasthttp.RequestCtx, retryAfter time.Duration) {
+	seconds := max(int(retryAfter.Seconds()), 1)
+	ctx.Response.Header.Set("Retry-After", fmt.Sprintf("%d", seconds))
+	SendError(ctx, fasthttp.StatusTooManyRequests, "Too many login attempts. Please try again later.")
 }
 
 // logout handles POST /api/session/logout - Logout a user
