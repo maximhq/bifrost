@@ -31,11 +31,11 @@ func TestStoreVaultSecretVar_StoresPlaintext(t *testing.T) {
 	if got := stored["bifrost/tbl/id/value"]; got != "secret-key" {
 		t.Errorf("stored plaintext = %q, want %q", got, "secret-key")
 	}
-	if !e.FromSecret {
-		t.Error("FromSecret should be true after store")
+	if !e.IsFromVault() {
+		t.Error("IsFromVault() should be true after store")
 	}
-	if e.SecretRef != "vault.bifrost/tbl/id/value" {
-		t.Errorf("SecretRef = %q, want %q", e.SecretRef, "vault.bifrost/tbl/id/value")
+	if e.Ref() != "vault.bifrost/tbl/id/value" {
+		t.Errorf("Ref() = %q, want %q", e.Ref(), "vault.bifrost/tbl/id/value")
 	}
 	if e.Val != "vault.bifrost/tbl/id/value" {
 		t.Errorf("Val = %q, want rewritten to vault ref", e.Val)
@@ -48,8 +48,8 @@ func TestStoreVaultSecretVar_NoOps(t *testing.T) {
 		e    *SecretVar
 	}{
 		{"nil", nil},
-		{"env-sourced", &SecretVar{FromSecret: true, SecretRef: "env.MY_VAR"}},
-		{"already-vault", &SecretVar{FromSecret: true, SecretRef: "vault.some/path", Val: "vault.some/path"}},
+		{"env-sourced", NewSecretVarFromRef("env.MY_VAR", "")},
+		{"already-vault", NewSecretVarFromRef("vault.some/path", "vault.some/path")},
 		{"empty", &SecretVar{Val: ""}},
 	}
 	for _, tc := range cases {
@@ -74,8 +74,8 @@ func TestStoreVaultSecretVar_NoHookNoOp(t *testing.T) {
 	if err := StoreVaultSecretVar(context.Background(), "p", e); err != nil {
 		t.Fatalf("StoreVaultSecretVar: %v", err)
 	}
-	if e.FromSecret || e.SecretRef != "" || e.Val != "secret" {
-		t.Errorf("expected no mutation when hook nil, got %+v", e)
+	if e.IsFromSecret() || e.Ref() != "" || e.Val != "secret" {
+		t.Errorf("expected no mutation when hook nil, got val=%q ref=%q fromSecret=%v", e.Val, e.Ref(), e.IsFromSecret())
 	}
 }
 
@@ -93,8 +93,8 @@ func TestRemoveOwnedVaultSecretVars_SkipsFragmentRefs(t *testing.T) {
 		Fragment SecretVar `gorm:"column:fragment"`
 	}
 	m := &model{
-		Normal:   SecretVar{FromSecret: true, SecretRef: "vault.bifrost/m/1/normal", Val: "vault.bifrost/m/1/normal"},
-		Fragment: SecretVar{FromSecret: true, SecretRef: "vault.external/db#apiKey", Val: "vault.external/db#apiKey"},
+		Normal:   *NewSecretVarFromRef("vault.bifrost/m/1/normal", "vault.bifrost/m/1/normal"),
+		Fragment: *NewSecretVarFromRef("vault.external/db#apiKey", "vault.external/db#apiKey"),
 	}
 
 	RemoveOwnedVaultSecretVars(context.Background(), "bifrost/m/1", m)
@@ -119,7 +119,7 @@ func TestStoreOwnedVaultSecretVars_WalksFields(t *testing.T) {
 		Plain:    SecretVar{Val: "p1"},
 		Ptr:      &SecretVar{Val: "p2"},
 		Snake:    SecretVar{Val: "p3"},
-		EnvBased: SecretVar{FromSecret: true, SecretRef: "env.X"},
+		EnvBased: *NewSecretVarFromRef("env.X", ""),
 	}
 
 	if err := StoreOwnedVaultSecretVars(context.Background(), "bifrost/m/1", m); err != nil {
@@ -139,8 +139,8 @@ func TestStoreOwnedVaultSecretVars_WalksFields(t *testing.T) {
 			t.Errorf("stored[%q] = %q, want %q", path, stored[path], val)
 		}
 	}
-	if !m.Plain.FromSecret || !m.Ptr.FromSecret || !m.Snake.FromSecret {
-		t.Error("SecretVar fields should be marked FromSecret after store")
+	if !m.Plain.IsFromVault() || !m.Ptr.IsFromVault() || !m.Snake.IsFromVault() {
+		t.Error("SecretVar fields should be vault-backed after store")
 	}
 }
 
@@ -153,7 +153,7 @@ func TestStoreOwnedVaultSecretVars_WalksMap(t *testing.T) {
 	m := &model{
 		Headers: map[string]SecretVar{
 			"Authorization": {Val: "secret-token"},
-			"X-Env":         {FromSecret: true, SecretRef: "env.X"},
+			"X-Env":         *NewSecretVarFromRef("env.X", ""),
 		},
 	}
 
@@ -168,11 +168,10 @@ func TestStoreOwnedVaultSecretVars_WalksMap(t *testing.T) {
 		t.Errorf("stored Authorization = %q, want %q", got, "secret-token")
 	}
 	auth := m.Headers["Authorization"]
-	if !auth.FromSecret || auth.SecretRef != "vault.bifrost/m/1/headers/Authorization" {
-		t.Errorf("map entry not converted to ref: %+v", auth)
+	if !auth.IsFromVault() || auth.Ref() != "vault.bifrost/m/1/headers/Authorization" {
+		t.Errorf("map entry not converted to vault ref: val=%q ref=%q fromVault=%v", auth.Val, auth.Ref(), auth.IsFromVault())
 	}
-	if env := m.Headers["X-Env"]; env.FromSecret && env.SecretRef == "env.X" {
-		// still FromSecret=true (it was env-sourced), but it should NOT have been vault-stored
+	if env := m.Headers["X-Env"]; env.IsFromSecret() && env.Ref() == "env.X" {
 		if stored["bifrost/m/1/headers/X-Env"] != "" {
 			t.Error("env-sourced header should not be vault-stored")
 		}
@@ -193,8 +192,8 @@ func TestRemoveOwnedVaultSecretVars_WalksMap(t *testing.T) {
 	}
 	m := &model{
 		Headers: map[string]SecretVar{
-			"Owned":    {FromSecret: true, SecretRef: "vault.bifrost/m/1/headers/Owned", Val: "vault.bifrost/m/1/headers/Owned"},
-			"External": {FromSecret: true, SecretRef: "vault.external/db#key", Val: "vault.external/db#key"},
+			"Owned":    *NewSecretVarFromRef("vault.bifrost/m/1/headers/Owned", "vault.bifrost/m/1/headers/Owned"),
+			"External": *NewSecretVarFromRef("vault.external/db#key", "vault.external/db#key"),
 		},
 	}
 

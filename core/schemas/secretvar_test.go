@@ -54,8 +54,8 @@ func TestSecretVar_UnmarshalJSON_DoubleEscapedJSON(t *testing.T) {
 			if secretVar.Val != tt.expected {
 				t.Errorf("Expected Val=%q, got Val=%q", tt.expected, secretVar.Val)
 			}
-			if secretVar.FromSecret {
-				t.Errorf("Expected FromSecret=false, got FromSecret=true")
+			if secretVar.IsFromSecret() {
+				t.Errorf("Expected IsFromSecret()=false, got true")
 			}
 		})
 	}
@@ -98,11 +98,11 @@ func TestSecretVar_UnmarshalJSON_SecretVarReference(t *testing.T) {
 			if secretVar.Val != tt.expectedVal {
 				t.Errorf("Expected Val=%q, got Val=%q", tt.expectedVal, secretVar.Val)
 			}
-			if secretVar.SecretRef != tt.expectedSecretRef {
-				t.Errorf("Expected SecretRef=%q, got SecretRef=%q", tt.expectedSecretRef, secretVar.SecretRef)
+			if secretVar.Ref() != tt.expectedSecretRef {
+				t.Errorf("Expected Ref()=%q, got %q", tt.expectedSecretRef, secretVar.Ref())
 			}
-			if secretVar.FromSecret != tt.expectedFromSecret {
-				t.Errorf("Expected FromSecret=%v, got FromSecret=%v", tt.expectedFromSecret, secretVar.FromSecret)
+			if secretVar.IsFromSecret() != tt.expectedFromSecret {
+				t.Errorf("Expected IsFromSecret()=%v, got %v", tt.expectedFromSecret, secretVar.IsFromSecret())
 			}
 		})
 	}
@@ -121,17 +121,16 @@ func TestSecretVar_UnmarshalJSON_BackwardCompat(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UnmarshalJSON failed: %v", err)
 		}
-		if secretVar.SecretRef != "env.MY_KEY" {
-			t.Errorf("Expected SecretRef=%q, got %q", "env.MY_KEY", secretVar.SecretRef)
+		if secretVar.Ref() != "env.MY_KEY" {
+			t.Errorf("Expected Ref()=%q, got %q", "env.MY_KEY", secretVar.Ref())
 		}
-		if !secretVar.FromSecret {
-			t.Error("Expected FromSecret=true, got false")
+		if !secretVar.IsFromSecret() {
+			t.Error("Expected IsFromSecret()=true, got false")
 		}
 		if secretVar.Val != "resolved-value" {
 			t.Errorf("Expected Val=%q, got %q", "resolved-value", secretVar.Val)
 		}
 	})
-
 }
 
 func TestNewSecretVar_DoubleEscapedJSON(t *testing.T) {
@@ -180,28 +179,28 @@ func TestNewSecretVar_SecretVarReference(t *testing.T) {
 		name               string
 		input              string
 		expectedVal        string
-		expectedSecretRef  string
+		expectedRef        string
 		expectedFromSecret bool
 	}{
 		{
 			name:               "env var reference with value present",
 			input:              "env.TEST_NEW_ENVVAR_KEY",
 			expectedVal:        "resolved-value",
-			expectedSecretRef:  "env.TEST_NEW_ENVVAR_KEY",
+			expectedRef:        "env.TEST_NEW_ENVVAR_KEY",
 			expectedFromSecret: true,
 		},
 		{
 			name:               "env var reference with quotes",
 			input:              `"env.TEST_NEW_ENVVAR_KEY"`,
 			expectedVal:        "resolved-value",
-			expectedSecretRef:  "env.TEST_NEW_ENVVAR_KEY",
+			expectedRef:        "env.TEST_NEW_ENVVAR_KEY",
 			expectedFromSecret: true,
 		},
 		{
 			name:               "env var reference missing",
 			input:              "env.MISSING_VAR",
 			expectedVal:        "",
-			expectedSecretRef:  "env.MISSING_VAR",
+			expectedRef:        "env.MISSING_VAR",
 			expectedFromSecret: true,
 		},
 	}
@@ -212,11 +211,11 @@ func TestNewSecretVar_SecretVarReference(t *testing.T) {
 			if secretVar.Val != tt.expectedVal {
 				t.Errorf("Expected Val=%q, got Val=%q", tt.expectedVal, secretVar.Val)
 			}
-			if secretVar.SecretRef != tt.expectedSecretRef {
-				t.Errorf("Expected SecretRef=%q, got SecretRef=%q", tt.expectedSecretRef, secretVar.SecretRef)
+			if secretVar.Ref() != tt.expectedRef {
+				t.Errorf("Expected Ref()=%q, got %q", tt.expectedRef, secretVar.Ref())
 			}
-			if secretVar.FromSecret != tt.expectedFromSecret {
-				t.Errorf("Expected FromSecret=%v, got FromSecret=%v", tt.expectedFromSecret, secretVar.FromSecret)
+			if secretVar.IsFromSecret() != tt.expectedFromSecret {
+				t.Errorf("Expected IsFromSecret()=%v, got %v", tt.expectedFromSecret, secretVar.IsFromSecret())
 			}
 		})
 	}
@@ -280,16 +279,16 @@ func TestSecretVar_MixedConfigParsing(t *testing.T) {
 	if config.ProjectID.Val != "env-project-id" {
 		t.Errorf("Expected ProjectID=%q, got %q", "env-project-id", config.ProjectID.Val)
 	}
-	if !config.ProjectID.FromSecret {
-		t.Errorf("Expected ProjectID.FromSecret=true")
+	if !config.ProjectID.IsFromSecret() {
+		t.Error("Expected ProjectID.IsFromSecret()=true")
 	}
 
 	expectedCreds := `{"type":"service_account","key":"value"}`
 	if config.Credentials.Val != expectedCreds {
 		t.Errorf("Expected Credentials=%q, got %q", expectedCreds, config.Credentials.Val)
 	}
-	if config.Credentials.FromSecret {
-		t.Errorf("Expected Credentials.FromSecret=false")
+	if config.Credentials.IsFromSecret() {
+		t.Error("Expected Credentials.IsFromSecret()=false")
 	}
 }
 
@@ -320,8 +319,8 @@ func TestSecretVar_Equals(t *testing.T) {
 		},
 		{
 			name:     "equal values",
-			a:        &SecretVar{Val: "test", SecretRef: "env.TEST", FromSecret: true},
-			b:        &SecretVar{Val: "test", SecretRef: "env.TEST", FromSecret: true},
+			a:        NewSecretVarFromRef("env.TEST", "test"),
+			b:        NewSecretVarFromRef("env.TEST", "test"),
 			expected: true,
 		},
 		{
@@ -384,11 +383,11 @@ func TestSecretVar_FullyRedacted(t *testing.T) {
 	})
 
 	tests := []struct {
-		name               string
-		input              SecretVar
-		wantVal            string
-		wantFromSecret     bool
-		wantSecretRef      string
+		name           string
+		input          SecretVar
+		wantVal        string
+		wantFromSecret bool
+		wantRef        string
 	}{
 		{
 			name:           "empty value",
@@ -404,10 +403,10 @@ func TestSecretVar_FullyRedacted(t *testing.T) {
 		},
 		{
 			name:           "resolved env password preserves reference metadata",
-			input:          SecretVar{Val: "resolved-secret", FromSecret: true, SecretRef: "env.PROXY_PASS"},
+			input:          *NewSecretVarFromRef("env.PROXY_PASS", "resolved-secret"),
 			wantVal:        "<REDACTED>",
 			wantFromSecret: true,
-			wantSecretRef:  "env.PROXY_PASS",
+			wantRef:        "env.PROXY_PASS",
 		},
 	}
 
@@ -417,11 +416,11 @@ func TestSecretVar_FullyRedacted(t *testing.T) {
 			if result.Val != tt.wantVal {
 				t.Errorf("Val: want %q, got %q", tt.wantVal, result.Val)
 			}
-			if result.FromSecret != tt.wantFromSecret {
-				t.Errorf("FromSecret: want %v, got %v", tt.wantFromSecret, result.FromSecret)
+			if result.IsFromSecret() != tt.wantFromSecret {
+				t.Errorf("IsFromSecret(): want %v, got %v", tt.wantFromSecret, result.IsFromSecret())
 			}
-			if result.SecretRef != tt.wantSecretRef {
-				t.Errorf("SecretRef: want %q, got %q", tt.wantSecretRef, result.SecretRef)
+			if result.Ref() != tt.wantRef {
+				t.Errorf("Ref(): want %q, got %q", tt.wantRef, result.Ref())
 			}
 		})
 	}
@@ -440,7 +439,7 @@ func TestSecretVar_IsRedacted(t *testing.T) {
 		},
 		{
 			name:     "from secret",
-			input:    SecretVar{Val: "test", FromSecret: true, SecretRef: "env.KEY"},
+			input:    *NewSecretVarFromRef("env.KEY", "test"),
 			expected: true,
 		},
 		{
@@ -501,28 +500,23 @@ func TestSecretVar_IsSet(t *testing.T) {
 		},
 		{
 			name:     "env reference not yet resolved",
-			input:    &SecretVar{SecretRef: "env.MISSING", FromSecret: true},
+			input:    NewSecretVarFromRef("env.MISSING", ""),
 			expected: true,
 		},
 		{
 			name:     "env reference resolved",
-			input:    &SecretVar{Val: "resolved-secret", SecretRef: "env.X", FromSecret: true},
+			input:    NewSecretVarFromRef("env.X", "resolved-secret"),
 			expected: true,
 		},
 		{
-			name:     "FromSecret true but no reference and no value",
-			input:    &SecretVar{FromSecret: true},
+			name:     "fromSecret true but no reference and no value",
+			input:    NewSecretVarFromRef("", ""),
 			expected: false,
 		},
 		{
 			name:     "vault reference set",
-			input:    &SecretVar{SecretRef: "vault.bifrost/key", FromSecret: true, Val: "vault.bifrost/key"},
+			input:    NewSecretVarFromRef("vault.bifrost/key", "vault.bifrost/key"),
 			expected: true,
-		},
-		{
-			name:     "FromSecret true but empty SecretRef",
-			input:    &SecretVar{FromSecret: true, SecretRef: ""},
-			expected: false,
 		},
 	}
 
@@ -537,17 +531,17 @@ func TestSecretVar_IsSet(t *testing.T) {
 
 func TestSecretVar_Scan_VaultRef(t *testing.T) {
 	tests := []struct {
-		name               string
-		input              string
-		wantVal            string
-		wantSecretRef      string
-		wantFromSecret     bool
+		name           string
+		input          string
+		wantVal        string
+		wantRef        string
+		wantFromSecret bool
 	}{
 		{
 			name:           "plain vault reference",
 			input:          "vault.bifrost/providers/openai/key",
 			wantVal:        "",
-			wantSecretRef:  "vault.bifrost/providers/openai/key",
+			wantRef:        "vault.bifrost/providers/openai/key",
 			wantFromSecret: true,
 		},
 		{
@@ -558,7 +552,7 @@ func TestSecretVar_Scan_VaultRef(t *testing.T) {
 		{
 			name:           "env reference",
 			input:          "env.MY_VAR",
-			wantSecretRef:  "env.MY_VAR",
+			wantRef:        "env.MY_VAR",
 			wantFromSecret: true,
 		},
 		{
@@ -574,13 +568,11 @@ func TestSecretVar_Scan_VaultRef(t *testing.T) {
 			if err := e.Scan(tt.input); err != nil {
 				t.Fatalf("Scan() error: %v", err)
 			}
-			if tt.wantFromSecret {
-				if !e.FromSecret {
-					t.Errorf("FromSecret = false, want true")
-				}
-				if e.SecretRef != tt.wantSecretRef {
-					t.Errorf("SecretRef = %q, want %q", e.SecretRef, tt.wantSecretRef)
-				}
+			if e.IsFromSecret() != tt.wantFromSecret {
+				t.Errorf("IsFromSecret() = %v, want %v", e.IsFromSecret(), tt.wantFromSecret)
+			}
+			if tt.wantFromSecret && e.Ref() != tt.wantRef {
+				t.Errorf("Ref() = %q, want %q", e.Ref(), tt.wantRef)
 			}
 			if tt.wantVal != "" && e.Val != tt.wantVal {
 				t.Errorf("Val = %q, want %q", e.Val, tt.wantVal)
@@ -594,21 +586,21 @@ func TestSecretVar_UnmarshalJSON_VaultRef(t *testing.T) {
 		name           string
 		input          string
 		wantVal        string
-		wantSecretRef  string
+		wantRef        string
 		wantFromSecret bool
 	}{
 		{
 			name:           "new format: secret_ref/from_secret",
 			input:          `{"value":"vault.bifrost/key","secret_ref":"vault.bifrost/key","from_secret":true}`,
 			wantVal:        "",
-			wantSecretRef:  "vault.bifrost/key",
+			wantRef:        "vault.bifrost/key",
 			wantFromSecret: true,
 		},
 		{
 			name:           "plain string vault reference",
 			input:          `"vault.myproject/secret"`,
 			wantVal:        "",
-			wantSecretRef:  "vault.myproject/secret",
+			wantRef:        "vault.myproject/secret",
 			wantFromSecret: true,
 		},
 	}
@@ -619,11 +611,11 @@ func TestSecretVar_UnmarshalJSON_VaultRef(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.input), &e); err != nil {
 				t.Fatalf("UnmarshalJSON() error: %v", err)
 			}
-			if e.FromSecret != tt.wantFromSecret {
-				t.Errorf("FromSecret = %v, want %v", e.FromSecret, tt.wantFromSecret)
+			if e.IsFromSecret() != tt.wantFromSecret {
+				t.Errorf("IsFromSecret() = %v, want %v", e.IsFromSecret(), tt.wantFromSecret)
 			}
-			if e.SecretRef != tt.wantSecretRef {
-				t.Errorf("SecretRef = %q, want %q", e.SecretRef, tt.wantSecretRef)
+			if e.Ref() != tt.wantRef {
+				t.Errorf("Ref() = %q, want %q", e.Ref(), tt.wantRef)
 			}
 			if e.Val != tt.wantVal {
 				t.Errorf("Val = %q, want %q", e.Val, tt.wantVal)
@@ -633,11 +625,7 @@ func TestSecretVar_UnmarshalJSON_VaultRef(t *testing.T) {
 }
 
 func TestSecretVar_Value_VaultRef(t *testing.T) {
-	e := &SecretVar{
-		Val:        "actual-secret",
-		SecretRef:  "vault.bifrost/key",
-		FromSecret: true,
-	}
+	e := NewSecretVarFromRef("vault.bifrost/key", "actual-secret")
 	got, err := e.Value()
 	if err != nil {
 		t.Fatalf("Value() error: %v", err)
@@ -648,27 +636,23 @@ func TestSecretVar_Value_VaultRef(t *testing.T) {
 }
 
 func TestSecretVar_Redacted_VaultRef(t *testing.T) {
-	e := &SecretVar{
-		Val:        "actual-secret-value",
-		SecretRef:  "vault.bifrost/key",
-		FromSecret: true,
-	}
+	e := NewSecretVarFromRef("vault.bifrost/key", "actual-secret-value")
 	r := e.Redacted()
 	wantVal := "actu************************alue"
 	if r.Val != wantVal {
 		t.Errorf("Redacted().Val = %q, want %q", r.Val, wantVal)
 	}
-	if !r.FromSecret {
-		t.Errorf("Redacted().FromSecret = false, want true")
+	if !r.IsFromSecret() {
+		t.Error("Redacted().IsFromSecret() = false, want true")
 	}
-	if r.SecretRef != "vault.bifrost/key" {
-		t.Errorf("Redacted().SecretRef = %q, want %q", r.SecretRef, "vault.bifrost/key")
+	if r.Ref() != "vault.bifrost/key" {
+		t.Errorf("Redacted().Ref() = %q, want %q", r.Ref(), "vault.bifrost/key")
 	}
 }
 
 func TestSecretVar_IsSet_VaultRef(t *testing.T) {
-	set := &SecretVar{SecretRef: "vault.bifrost/key", FromSecret: true, Val: "vault.bifrost/key"}
-	unset := &SecretVar{FromSecret: true}
+	set := NewSecretVarFromRef("vault.bifrost/key", "vault.bifrost/key")
+	unset := NewSecretVarFromRef("", "")
 	if !set.IsSet() {
 		t.Error("IsSet() = false for vault ref, want true")
 	}
@@ -679,13 +663,49 @@ func TestSecretVar_IsSet_VaultRef(t *testing.T) {
 
 func TestNewSecretVar_VaultRef(t *testing.T) {
 	e := NewSecretVar("vault.bifrost/mykey")
-	if !e.FromSecret {
-		t.Error("FromSecret = false, want true")
+	if !e.IsFromVault() {
+		t.Error("IsFromVault() = false, want true")
 	}
-	if e.SecretRef != "vault.bifrost/mykey" {
-		t.Errorf("SecretRef = %q, want %q", e.SecretRef, "vault.bifrost/mykey")
+	if e.Ref() != "vault.bifrost/mykey" {
+		t.Errorf("Ref() = %q, want %q", e.Ref(), "vault.bifrost/mykey")
 	}
 	if e.Val != "" {
 		t.Errorf("Val = %q, want empty string when vault lookup fails", e.Val)
+	}
+}
+
+func TestSecretVar_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		input SecretVar
+		want  string
+	}{
+		{
+			name:  "plain value",
+			input: SecretVar{Val: "my-api-key"},
+			want:  `{"value":"my-api-key"}`,
+		},
+		{
+			name:  "env reference",
+			input: *NewSecretVarFromRef("env.MY_KEY", "resolved"),
+			want:  `{"value":"resolved","secret_ref":"env.MY_KEY","from_secret":true}`,
+		},
+		{
+			name:  "vault reference",
+			input: *NewSecretVarFromRef("vault.path/to/secret", ""),
+			want:  `{"value":"","secret_ref":"vault.path/to/secret","from_secret":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatalf("MarshalJSON() error: %v", err)
+			}
+			if string(b) != tt.want {
+				t.Errorf("MarshalJSON() = %s, want %s", b, tt.want)
+			}
+		})
 	}
 }

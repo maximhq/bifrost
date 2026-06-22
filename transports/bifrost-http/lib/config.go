@@ -3643,11 +3643,12 @@ func preserveSecretVar(source *schemas.SecretVar, value string) *schemas.SecretV
 	if source == nil {
 		return schemas.NewSecretVar(value)
 	}
-	return &schemas.SecretVar{
-		Val:        value,
-		SecretRef:  source.SecretRef,
-		FromSecret: source.IsFromSecret(),
+	if source.IsFromSecret() {
+		sv := *source
+		sv.Val = value
+		return &sv
 	}
+	return &schemas.SecretVar{Val: value}
 }
 
 // loadAuthConfig loads auth config from file.
@@ -3692,18 +3693,10 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	}
 	// Fail-closed: if env/vault reference is unresolved, don't persist empty credentials.
 	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromSecret() {
-		logger.Warn("username set with external reference but value is empty: %s — skipping auth config", authConfig.AdminUserName.SecretRef)
-		if dbAuthConfig != nil {
-			config.GovernanceConfig.AuthConfig = dbAuthConfig
-		}
-		return
+		logger.Warn("username set with external reference but value is empty: %s", authConfig.AdminUserName.Ref())
 	}
 	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromSecret() {
-		logger.Warn("password set with external reference but value is empty: %s — skipping auth config", authConfig.AdminPassword.SecretRef)
-		if dbAuthConfig != nil {
-			config.GovernanceConfig.AuthConfig = dbAuthConfig
-		}
-		return
+		logger.Warn("password set with external reference but value is empty: %s", authConfig.AdminPassword.Ref())
 	}
 	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
 		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")
