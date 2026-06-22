@@ -1164,12 +1164,20 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 type AnthropicStreamState struct {
 	nextToolCallIndex         int
 	contentBlockToToolCallIdx map[int]int
+	// sawArgsDelta records, per content_block index, whether any non-empty
+	// input_json_delta has been forwarded for that tool_use block. Anthropic
+	// emits a spurious empty partial_json marker right after content_block_start;
+	// suppressing it would leave tools with no input fields (struct{} schema)
+	// with an empty accumulated arguments string. We track this so content_block_stop
+	// can flush a synthetic "{}" delta when no real arguments arrived.
+	sawArgsDelta map[int]bool
 }
 
 // NewAnthropicStreamState returns an initialised stream state for one streaming response.
 func NewAnthropicStreamState() *AnthropicStreamState {
 	return &AnthropicStreamState{
 		contentBlockToToolCallIdx: make(map[int]int),
+		sawArgsDelta:              make(map[int]bool),
 	}
 }
 
@@ -1177,8 +1185,12 @@ func NewAnthropicStreamState() *AnthropicStreamState {
 func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.BifrostContext, structuredOutputToolName string, state *AnthropicStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	if state == nil {
 		state = NewAnthropicStreamState()
-	} else if state.contentBlockToToolCallIdx == nil {
+	}
+	if state.contentBlockToToolCallIdx == nil {
 		state.contentBlockToToolCallIdx = make(map[int]int)
+	}
+	if state.sawArgsDelta == nil {
+		state.sawArgsDelta = make(map[int]bool)
 	}
 
 	switch chunk.Type {
@@ -1280,10 +1292,23 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			case AnthropicStreamDeltaTypeInputJSON:
 				// Handle tool use streaming - accumulate partial JSON.
 				if chunk.Delta.PartialJSON != nil {
+					// Anthropic emits a spurious empty partial_json marker right
+					// after a tool_use content_block_start. Suppress it: the
+					// initial setup chunk already carries arguments:"" and
+					// downstream OpenAI clients concatenate the deltas, so an
+					// extra empty re-declaration trips strict parsers. Tools
+					// with no input fields (struct{} schemas) get a single "{}"
+					// flushed on content_block_stop (see below).
+					if *chunk.Delta.PartialJSON == "" {
+						return nil, nil, false
+					}
+
 					// Resolve which tool-call this delta belongs to via the content-block index.
 					toolCallIdx := state.contentBlockToToolCallIdx[*chunk.Index]
+					state.sawArgsDelta[*chunk.Index] = true
 
-					// Create streaming response for tool input delta
+					// Continuation chunks must omit function.type; only the initial
+					// setup chunk declares it (strict OpenAI parsers reject re-declaration).
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
 						Choices: []schemas.BifrostResponseChoice{
@@ -1294,7 +1319,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 										ToolCalls: []schemas.ChatAssistantMessageToolCall{
 											{
 												Index: uint16(toolCallIdx),
-												Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
 												Function: schemas.ChatAssistantMessageToolCallFunction{
 													Arguments: *chunk.Delta.PartialJSON,
 												},
@@ -1366,7 +1390,41 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 		}
 
 	case AnthropicStreamEventTypeContentBlockStop:
-		// Content block is complete, no specific action needed for streaming
+		// If this closes a tool_use block whose arguments were never streamed
+		// (i.e. the tool has no input fields — its JSON schema is `{}`), flush
+		// a single synthetic arguments:"{}" delta so downstream OpenAI clients
+		// can unmarshal the accumulated arguments as valid JSON. Without this,
+		// the only chunk emitted for the block was the initial setup chunk
+		// with arguments:"" — concatenation yields "" and json.Unmarshal fails
+		// with "unexpected end of JSON input" on strict clients (genkit-go).
+		if chunk.Index != nil {
+			toolCallIdx, isToolBlock := state.contentBlockToToolCallIdx[*chunk.Index]
+			needsFlush := isToolBlock && !state.sawArgsDelta[*chunk.Index]
+			delete(state.contentBlockToToolCallIdx, *chunk.Index)
+			delete(state.sawArgsDelta, *chunk.Index)
+			if needsFlush {
+				return &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									ToolCalls: []schemas.ChatAssistantMessageToolCall{
+										{
+											Index: uint16(toolCallIdx),
+											Function: schemas.ChatAssistantMessageToolCallFunction{
+												Arguments: "{}",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				}, nil, false
+			}
+		}
 		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageDelta:
