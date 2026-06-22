@@ -1,17 +1,16 @@
-import { createFileRoute, Outlet, useChildMatches } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { NoPermissionView } from "@/components/noPermissionView";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import SCIMPage from "./page";
+import OAuthDiscoverCallbackPage from "./page";
 
 function RouteComponent() {
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
-	const childMatches = useChildMatches();
 	if (!hasUserProvisioningAccess) {
 		return <NoPermissionView entity="user provisioning" />;
 	}
-	return childMatches.length === 0 ? <SCIMPage /> : <Outlet />;
+	return <OAuthDiscoverCallbackPage />;
 }
 
-export const Route = createFileRoute("/workspace/scim")({
+export const Route = createFileRoute("/workspace/scim/oauth-discover-callback")({
 	component: RouteComponent,
 });
