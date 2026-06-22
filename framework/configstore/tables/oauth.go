@@ -46,13 +46,6 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	if schemas.VaultStoreEnabled() {
-		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context,
-			schemas.VaultBasePath(c.TableName(), c.ID), c); err != nil {
-			return err
-		}
-	}
-
 	if encrypt.IsEnabled() {
 		encrypted := false
 		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && !c.ClientSecret.IsFromVault() && c.ClientSecret.Val != "" {
@@ -90,12 +83,9 @@ func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (c *TableOauthConfig) AfterDelete(tx *gorm.DB) error {
-	base := schemas.VaultBasePath(c.TableName(), c.ID)
-	schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, c)
-	return nil
-}
+// VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
+// callback can compute the vault base path for this model automatically.
+func (c *TableOauthConfig) VaultPathKey() string { return c.ID }
 
 // GetResolvedClientID returns the resolved ClientID value, expanding env var references at runtime.
 func (c *TableOauthConfig) GetResolvedClientID() string {
