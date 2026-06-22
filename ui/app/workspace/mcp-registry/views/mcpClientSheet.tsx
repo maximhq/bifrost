@@ -506,8 +506,8 @@ export default function MCPClientSheet({
 												{mcpClient.config.connection_type === "stdio"
 													? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
 													"-"
-													: mcpClient.config.connection_string?.from_env
-														? `env.${mcpClient.config.connection_string.env_var}`
+													: mcpClient.config.connection_string?.from_secret
+														? mcpClient.config.connection_string.secret_ref
 														: mcpClient.config.connection_string?.value || "-"}
 											</span>
 										</div>

@@ -37,7 +37,7 @@ interface PrometheusFormFragmentProps {
 }
 
 const hasAuth = (v?: string | SecretVar): boolean =>
-	typeof v === "string" ? !!v.trim() : !!(v?.value?.trim() || (v?.from_env && !!v?.env_var?.trim()) || (v?.from_vault && !!v?.vault_var?.trim()));
+	typeof v === "string" ? !!v.trim() : !!(v?.value?.trim() || (v?.from_secret && !!v?.secret_ref?.trim()));
 
 const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfig"]): PrometheusFormSchema => ({
 	metrics_enabled: initialConfig?.metrics_enabled ?? true,

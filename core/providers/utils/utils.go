@@ -343,12 +343,8 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	case schemas.NoProxy:
 		return client
 	case schemas.HTTPProxy:
-		if proxyConfig.URL != nil && (proxyConfig.URL.IsFromEnv() || proxyConfig.URL.IsFromVault()) && proxyConfig.URL.GetValue() == "" {
-			ref := proxyConfig.URL.EnvVar
-			if proxyConfig.URL.IsFromVault() {
-				ref = proxyConfig.URL.VaultRef
-			}
-			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", ref)
+		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
+			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.SecretRef)
 			getLogger().Error(errMsg)
 			client.Dial = dialErrorFunc(errMsg)
 			return client
@@ -373,12 +369,8 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		}
 		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
 	case schemas.Socks5Proxy:
-		if proxyConfig.URL != nil && (proxyConfig.URL.IsFromEnv() || proxyConfig.URL.IsFromVault()) && proxyConfig.URL.GetValue() == "" {
-			ref := proxyConfig.URL.EnvVar
-			if proxyConfig.URL.IsFromVault() {
-				ref = proxyConfig.URL.VaultRef
-			}
-			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", ref)
+		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
+			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.SecretRef)
 			getLogger().Error(errMsg)
 			client.Dial = dialErrorFunc(errMsg)
 			return client
@@ -416,12 +408,8 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	// Configure custom CA certificate if provided
-	if proxyConfig.CACertPEM != nil && (proxyConfig.CACertPEM.IsFromEnv() || proxyConfig.CACertPEM.IsFromVault()) && proxyConfig.CACertPEM.GetValue() == "" {
-		ref := proxyConfig.CACertPEM.EnvVar
-		if proxyConfig.CACertPEM.IsFromVault() {
-			ref = proxyConfig.CACertPEM.VaultRef
-		}
-		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", ref)
+	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
+		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.SecretRef)
 		getLogger().Error(errMsg)
 		client.Dial = dialErrorFunc(errMsg)
 		return client
@@ -463,12 +451,8 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
-	if networkConfig.CACertPEM != nil && (networkConfig.CACertPEM.IsFromEnv() || networkConfig.CACertPEM.IsFromVault()) && networkConfig.CACertPEM.GetValue() == "" {
-		ref := networkConfig.CACertPEM.EnvVar
-		if networkConfig.CACertPEM.IsFromVault() {
-			ref = networkConfig.CACertPEM.VaultRef
-		}
-		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", ref)
+	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromSecret() && networkConfig.CACertPEM.GetValue() == "" {
+		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.SecretRef)
 		logger.Error(errMsg)
 		client.Dial = dialErrorFunc(errMsg)
 		return client

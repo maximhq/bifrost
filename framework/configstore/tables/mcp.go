@@ -127,10 +127,8 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	if c.Headers != nil {
 		headersToSerialize := make(map[string]string, len(c.Headers))
 		for key, value := range c.Headers {
-			if value.IsFromEnv() {
-				headersToSerialize[key] = value.EnvVar
-			} else if value.IsFromVault() {
-				headersToSerialize[key] = value.VaultRef
+			if value.IsFromSecret() {
+				headersToSerialize[key] = value.SecretRef
 			} else {
 				headersToSerialize[key] = value.GetValue()
 			}
@@ -197,7 +195,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
 	if encrypt.IsEnabled() {
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && !c.ConnectionString.IsFromVault() && c.ConnectionString.GetValue() != "" {
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromSecret() && c.ConnectionString.GetValue() != "" {
 			// Copy to avoid encrypting the shared ConnectionString through the pointer
 			cs := *c.ConnectionString
 			enc, err := encrypt.Encrypt(cs.Val)
@@ -231,7 +229,7 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			}
 			c.HeadersJSON = decrypted
 		}
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && !c.ConnectionString.IsFromVault() && c.ConnectionString.GetValue() != "" {
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromSecret() && c.ConnectionString.GetValue() != "" {
 			decrypted, err := encrypt.Decrypt(c.ConnectionString.Val)
 			if err != nil {
 				return fmt.Errorf("failed to decrypt mcp connection string: %w", err)
