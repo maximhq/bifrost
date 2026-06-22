@@ -325,10 +325,15 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
-	if schemas.VaultStoreEnabled() {
-		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context,
-			schemas.VaultBasePath(k.TableName(), k.KeyID), k); err != nil {
-			return err
+	// Store plaintext SecretVar columns into the vault and rewrite them to vault refs.
+	// This must run after the columns are populated (above) and before encryption (below):
+	// encryptSecretVar skips fields that are already vault refs, so vault-owned secrets are
+	// stored as plaintext and never double-protected. The global vault callback skips this
+	// model (see VaultStoreSelfManaged) because that midpoint is only reachable here.
+	if schemas.VaultStoreWriteEnabled() {
+		base := schemas.VaultBasePath(tx.Statement.Table, k.VaultPathKey())
+		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context, base, k); err != nil {
+			return fmt.Errorf("failed to store key secrets to vault: %w", err)
 		}
 	}
 
@@ -632,9 +637,13 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (k *TableKey) AfterDelete(tx *gorm.DB) error {
-	base := schemas.VaultBasePath(k.TableName(), k.KeyID)
-	schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, k)
-	return nil
-}
+// VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
+// callback can compute the vault base path for this model automatically.
+func (k *TableKey) VaultPathKey() string { return k.KeyID }
+
+// VaultStoreSelfManaged marks TableKey as storing its own vault secrets from within
+// BeforeSave (see the vault block there), so the global vault callback skips it. The
+// flat *SecretVar columns (AzureClientSecret, BedrockSecretKey, etc.) are populated
+// inside BeforeSave and then encrypted in the same hook; the vault store must run at
+// the midpoint between those two steps, which only BeforeSave itself can reach.
+func (k *TableKey) VaultStoreSelfManaged() {}

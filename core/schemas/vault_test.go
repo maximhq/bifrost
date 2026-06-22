@@ -143,3 +143,61 @@ func TestStoreOwnedVaultSecretVars_WalksFields(t *testing.T) {
 		t.Error("SecretVar fields should be marked FromVault after store")
 	}
 }
+
+func TestStoreOwnedVaultSecretVars_WalksMap(t *testing.T) {
+	stored := withStubVaultStore(t)
+
+	type model struct {
+		Headers map[string]SecretVar `gorm:"column:headers"`
+	}
+	m := &model{
+		Headers: map[string]SecretVar{
+			"Authorization": {Val: "secret-token"},
+			"X-Env":         {FromEnv: true, SecretVar: "X"},
+		},
+	}
+
+	if err := StoreOwnedVaultSecretVars(context.Background(), "bifrost/m/1", m); err != nil {
+		t.Fatalf("StoreOwnedVaultSecretVars: %v", err)
+	}
+
+	if len(stored) != 1 {
+		t.Fatalf("stored %d entries, want 1: %v", len(stored), stored)
+	}
+	if got := stored["bifrost/m/1/headers/Authorization"]; got != "secret-token" {
+		t.Errorf("stored Authorization = %q, want %q", got, "secret-token")
+	}
+	auth := m.Headers["Authorization"]
+	if !auth.FromVault || auth.VaultRef != "vault.bifrost/m/1/headers/Authorization" {
+		t.Errorf("map entry not converted to ref: %+v", auth)
+	}
+	if env := m.Headers["X-Env"]; env.FromVault {
+		t.Error("env-sourced header should not be vault-stored")
+	}
+}
+
+func TestRemoveOwnedVaultSecretVars_WalksMap(t *testing.T) {
+	var removed []string
+	prev := VaultRemoveHook
+	VaultRemoveHook = func(_ context.Context, path string) error {
+		removed = append(removed, path)
+		return nil
+	}
+	t.Cleanup(func() { VaultRemoveHook = prev })
+
+	type model struct {
+		Headers map[string]SecretVar `gorm:"column:headers"`
+	}
+	m := &model{
+		Headers: map[string]SecretVar{
+			"Owned":    {FromVault: true, VaultRef: "vault.bifrost/m/1/headers/Owned", Val: "vault.bifrost/m/1/headers/Owned"},
+			"External": {FromVault: true, VaultRef: "vault.external/db#key", Val: "vault.external/db#key"},
+		},
+	}
+
+	RemoveOwnedVaultSecretVars(context.Background(), "bifrost/m/1", m)
+
+	if len(removed) != 1 || removed[0] != "bifrost/m/1/headers/Owned" {
+		t.Errorf("removed = %v, want only [bifrost/m/1/headers/Owned]", removed)
+	}
+}
