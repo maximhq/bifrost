@@ -18,6 +18,13 @@ func isValidJSON(s string) bool {
 	return json.Unmarshal([]byte(s), &js) == nil
 }
 
+// addColumnIfNotExists is a package-local alias for migrator.AddColumnIfNotExists,
+// the idempotent column-add helper shared with configstore. Declared at package
+// scope (where `migrator` resolves to the package, not the `migrator :=
+// tx.Migrator()` locals inside migration closures) so every call site can keep
+// calling addColumnIfNotExists(tx, ...) directly.
+var addColumnIfNotExists = migrator.AddColumnIfNotExists
+
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes.
@@ -464,12 +471,8 @@ func migrationAddParentRequestIDColumn(ctx context.Context, db *gorm.DB, logger 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "parent_request_id") {
-				logger.Info("[logstore] %s: adding column parent_request_id to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "parent_request_id"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "parent_request_id"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -502,36 +505,20 @@ func migrationAddResponsesOutputColumn(ctx context.Context, db *gorm.DB, logger 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "responses_output") {
-				logger.Info("[logstore] %s: adding column responses_output to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "responses_output"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "responses_output"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "input_history") {
-				logger.Info("[logstore] %s: adding column input_history to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "input_history"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "input_history"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "output_message") {
-				logger.Info("[logstore] %s: adding column output_message to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "output_message"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "output_message"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "embedding_output") {
-				logger.Info("[logstore] %s: adding column embedding_output to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "embedding_output"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "embedding_output"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "raw_response") {
-				logger.Info("[logstore] %s: adding column raw_response to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "raw_response"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "raw_response"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -579,18 +566,11 @@ func migrationAddCostAndCacheDebugColumn(ctx context.Context, db *gorm.DB, logge
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "cost") {
-				logger.Info("[logstore] %s: adding column cost to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "cost"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "cost"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "cache_debug") {
-				logger.Info("[logstore] %s: adding column cache_debug to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "cache_debug"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "cache_debug"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -626,12 +606,8 @@ func migrationAddResponsesInputHistoryColumn(ctx context.Context, db *gorm.DB, l
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "responses_input_history") {
-				logger.Info("[logstore] %s: adding column responses_input_history to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "responses_input_history"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "responses_input_history"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -664,42 +640,23 @@ func migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColum
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "number_of_retries") {
-				logger.Info("[logstore] %s: adding column number_of_retries to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "number_of_retries"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "number_of_retries"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "fallback_index") {
-				logger.Info("[logstore] %s: adding column fallback_index to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "fallback_index"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "fallback_index"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "selected_key_id") {
-				logger.Info("[logstore] %s: adding column selected_key_id to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "selected_key_id"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "selected_key_id"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "selected_key_name") {
-				logger.Info("[logstore] %s: adding column selected_key_name to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "selected_key_name"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "selected_key_name"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "virtual_key_id") {
-				logger.Info("[logstore] %s: adding column virtual_key_id to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "virtual_key_id"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "virtual_key_id"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "virtual_key_name") {
-				logger.Info("[logstore] %s: adding column virtual_key_name to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "virtual_key_name"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "virtual_key_name"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1025,12 +982,8 @@ func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB, logger schem
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "raw_request") {
-				logger.Info("[logstore] %s: adding column raw_request to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "raw_request"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "raw_request"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1143,11 +1096,8 @@ func migrationAddCostColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, logge
 			migrator := tx.Migrator()
 
 			// Add cost column if it doesn't exist
-			if !migrator.HasColumn(&MCPToolLog{}, "cost") {
-				logger.Info("[logstore] %s: adding column cost to MCPToolLog", migrationName)
-				if err := migrator.AddColumn(&MCPToolLog{}, "cost"); err != nil {
-					return fmt.Errorf("failed to add cost column: %w", err)
-				}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "cost"); err != nil {
+				return fmt.Errorf("failed to add cost column: %w", err)
 			}
 
 			// Create index on cost column
@@ -1201,12 +1151,8 @@ func migrationAddImageGenerationOutputColumn(ctx context.Context, db *gorm.DB, l
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "image_generation_output") {
-				logger.Info("[logstore] %s: adding column image_generation_output to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "image_generation_output"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "image_generation_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1240,12 +1186,8 @@ func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB, lo
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "image_generation_input") {
-				logger.Info("[logstore] %s: adding column image_generation_input to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "image_generation_input"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "image_generation_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1279,18 +1221,11 @@ func migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx context.Context, db 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "routing_rule_id") {
-				logger.Info("[logstore] %s: adding column routing_rule_id to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "routing_rule_id"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "routing_rule_id"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "routing_rule_name") {
-				logger.Info("[logstore] %s: adding column routing_rule_name to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "routing_rule_name"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "routing_rule_name"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1333,19 +1268,13 @@ func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB
 			migrator := tx.Migrator()
 
 			// Add virtual_key_id column if it doesn't exist
-			if !migrator.HasColumn(&MCPToolLog{}, "virtual_key_id") {
-				logger.Info("[logstore] %s: adding column virtual_key_id to MCPToolLog", migrationName)
-				if err := migrator.AddColumn(&MCPToolLog{}, "virtual_key_id"); err != nil {
-					return fmt.Errorf("failed to add virtual_key_id column: %w", err)
-				}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "virtual_key_id"); err != nil {
+				return fmt.Errorf("failed to add virtual_key_id column: %w", err)
 			}
 
 			// Add virtual_key_name column if it doesn't exist
-			if !migrator.HasColumn(&MCPToolLog{}, "virtual_key_name") {
-				logger.Info("[logstore] %s: adding column virtual_key_name to MCPToolLog", migrationName)
-				if err := migrator.AddColumn(&MCPToolLog{}, "virtual_key_name"); err != nil {
-					return fmt.Errorf("failed to add virtual_key_name column: %w", err)
-				}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "virtual_key_name"); err != nil {
+				return fmt.Errorf("failed to add virtual_key_name column: %w", err)
 			}
 
 			// Create index on virtual_key_id column
@@ -1501,12 +1430,8 @@ func migrationAddListModelsOutputColumn(ctx context.Context, db *gorm.DB, logger
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "list_models_output") {
-				logger.Info("[logstore] %s: adding column list_models_output to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "list_models_output"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "list_models_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1540,12 +1465,8 @@ func migrationAddRerankOutputColumn(ctx context.Context, db *gorm.DB, logger sch
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "rerank_output") {
-				logger.Info("[logstore] %s: adding column rerank_output to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "rerank_output"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "rerank_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1579,12 +1500,8 @@ func migrationAddRoutingEngineLogsColumn(ctx context.Context, db *gorm.DB, logge
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "routing_engine_logs") {
-				logger.Info("[logstore] %s: adding column routing_engine_logs to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "routing_engine_logs"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "routing_engine_logs"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1618,18 +1535,11 @@ func migrationAddLargePayloadColumns(ctx context.Context, db *gorm.DB, logger sc
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "is_large_payload_request") {
-				logger.Info("[logstore] %s: adding column is_large_payload_request to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "is_large_payload_request"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "is_large_payload_request"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "is_large_payload_response") {
-				logger.Info("[logstore] %s: adding column is_large_payload_response to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "is_large_payload_response"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "is_large_payload_response"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1723,12 +1633,8 @@ func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "metadata") {
-				logger.Info("[logstore] %s: adding column metadata to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "metadata"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "metadata"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1762,12 +1668,8 @@ func migrationAddMetadataColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, l
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&MCPToolLog{}, "metadata") {
-				logger.Info("[logstore] %s: adding column metadata to MCPToolLog", migrationName)
-				if err := migrator.AddColumn(&MCPToolLog{}, "metadata"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "metadata"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1804,11 +1706,8 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
-			if !migrator.HasColumn(&MCPToolLog{}, "request_id") {
-				logger.Info("[logstore] %s: adding column request_id to MCPToolLog", migrationName)
-				if err := migrator.AddColumn(&MCPToolLog{}, "request_id"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "request_id"); err != nil {
+				return err
 			}
 
 			if tx.Dialector.Name() == "postgres" {
@@ -1958,7 +1857,6 @@ func migrationAddVideoColumns(ctx context.Context, db *gorm.DB, logger schemas.L
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			videoColumns := []string{
 				"video_generation_input",
@@ -1970,11 +1868,8 @@ func migrationAddVideoColumns(ctx context.Context, db *gorm.DB, logger schemas.L
 			}
 
 			for _, column := range videoColumns {
-				if !migrator.HasColumn(&Log{}, column) {
-					logger.Info("[logstore] %s: adding column %s to Log", migrationName, column)
-					if err := migrator.AddColumn(&Log{}, column); err != nil {
-						return err
-					}
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return err
 				}
 			}
 
@@ -2056,12 +1951,8 @@ func migrationAddPassthroughRequestBodyColumn(ctx context.Context, db *gorm.DB, 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "passthrough_request_body") {
-				logger.Info("[logstore] %s: adding column passthrough_request_body to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "passthrough_request_body"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "passthrough_request_body"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2095,12 +1986,8 @@ func migrationAddPassthroughResponseBodyColumn(ctx context.Context, db *gorm.DB,
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "passthrough_response_body") {
-				logger.Info("[logstore] %s: adding column passthrough_response_body to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "passthrough_response_body"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "passthrough_response_body"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2345,13 +2232,9 @@ func migrationAddDashboardEnhancements(ctx context.Context, db *gorm.DB, logger 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			dbMigrator := tx.Migrator()
 
-			if !dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
-				logger.Info("[logstore] %s: adding column cached_read_tokens to Log", migrationName)
-				if err := dbMigrator.AddColumn(&Log{}, "CachedReadTokens"); err != nil {
-					return fmt.Errorf("failed to add cached_read_tokens column: %w", err)
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "CachedReadTokens"); err != nil {
+				return fmt.Errorf("failed to add cached_read_tokens column: %w", err)
 			}
 			return nil
 		},
@@ -2823,12 +2706,8 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "image_edit_input") {
-				logger.Info("[logstore] %s: adding column image_edit_input to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "image_edit_input"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "image_edit_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2862,12 +2741,8 @@ func migrationAddPluginLogsColumn(ctx context.Context, db *gorm.DB, logger schem
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "plugin_logs") {
-				logger.Info("[logstore] %s: adding column plugin_logs to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "plugin_logs"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "plugin_logs"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2905,12 +2780,8 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if !mig.HasColumn(&Log{}, "alias") {
-				logger.Info("[logstore] %s: adding column alias to Log", migrationName)
-				if err := mig.AddColumn(&Log{}, "alias"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "alias"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2948,12 +2819,9 @@ func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB, logger 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, column := range []string{"canonical_model_name", "alias_model_family"} {
-				if !mig.HasColumn(&Log{}, column) {
-					if err := mig.AddColumn(&Log{}, column); err != nil {
-						return err
-					}
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -2989,13 +2857,8 @@ func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB, logger schema
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mgr := tx.Migrator()
-			if !mgr.HasColumn(&Log{}, "has_object") {
-				logger.Info("[logstore] %s: adding column has_object to Log", migrationName)
-				if err := mgr.AddColumn(&Log{}, "has_object"); err != nil {
-
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "has_object"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3030,12 +2893,8 @@ func migrationAddHasObjectColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mgr := tx.Migrator()
-			if !mgr.HasColumn(&MCPToolLog{}, "has_object") {
-				logger.Info("[logstore] %s: adding column has_object to MCPToolLog", migrationName)
-				if err := mgr.AddColumn(&MCPToolLog{}, "has_object"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "has_object"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3069,12 +2928,8 @@ func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB, log
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "image_variation_input") {
-				logger.Info("[logstore] %s: adding column image_variation_input to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "image_variation_input"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "image_variation_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3109,12 +2964,8 @@ func migrationAddUserNameColumn(ctx context.Context, db *gorm.DB, logger schemas
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if !mig.HasColumn(&Log{}, "user_name") {
-				logger.Info("[logstore] %s: adding column user_name to Log", migrationName)
-				if err := mig.AddColumn(&Log{}, "user_name"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "user_name"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3151,13 +3002,9 @@ func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB, logg
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if !mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: adding column %s to Log", migrationName, col)
-					if err := mig.AddColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := addColumnIfNotExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -3200,13 +3047,9 @@ func migrationAddMultiTeamBusinessUnitColumns(ctx context.Context, db *gorm.DB, 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if !mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: adding column %s to Log", migrationName, col)
-					if err := mig.AddColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := addColumnIfNotExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -3316,12 +3159,8 @@ func migrationAddOCROutputColumn(ctx context.Context, db *gorm.DB, logger schema
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "ocr_output") {
-				logger.Info("[logstore] %s: adding column ocr_output to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "ocr_output"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "ocr_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3357,12 +3196,8 @@ func migrationAddAttemptTrailColumn(ctx context.Context, db *gorm.DB, logger sch
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "attempt_trail") {
-				logger.Info("[logstore] %s: adding column attempt_trail to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "attempt_trail"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "attempt_trail"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3399,13 +3234,9 @@ func migrationAddSelectedPromptColumns(ctx context.Context, db *gorm.DB, logger 
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if !mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: adding column %s to Log", migrationName, col)
-					if err := mig.AddColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := addColumnIfNotExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -3442,12 +3273,8 @@ func migrationAddOCRInputColumn(ctx context.Context, db *gorm.DB, logger schemas
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if !mig.HasColumn(&Log{}, "ocr_input") {
-				logger.Info("[logstore] %s: adding column ocr_input to Log", migrationName)
-				if err := mig.AddColumn(&Log{}, "ocr_input"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "ocr_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3481,12 +3308,8 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB, logger schem
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if !mig.HasColumn(&Log{}, "stop_reason") {
-				logger.Info("[logstore] %s: adding column stop_reason to Log", migrationName)
-				if err := mig.AddColumn(&Log{}, "stop_reason"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "stop_reason"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3591,14 +3414,10 @@ func migrationAddDACColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logge
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 
 			for _, col := range []string{"user_id", "team_id", "customer_id", "business_unit_id"} {
-				if !mg.HasColumn(&MCPToolLog{}, col) {
-					logger.Info("[logstore] %s: adding column %s to MCPToolLog", migrationName, col)
-					if err := mg.AddColumn(&MCPToolLog{}, col); err != nil {
-						return fmt.Errorf("failed to add %s column to mcp_tool_logs: %w", col, err)
-					}
+				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return fmt.Errorf("failed to add %s column to mcp_tool_logs: %w", col, err)
 				}
 			}
 			return nil
@@ -3635,24 +3454,14 @@ func migrationAddClusterGovernanceColumns(ctx context.Context, db *gorm.DB, logg
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "cluster_node_id") {
-				logger.Info("[logstore] %s: adding column cluster_node_id to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "cluster_node_id"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "cluster_node_id"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "budget_ids") {
-				logger.Info("[logstore] %s: adding column budget_ids to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "budget_ids"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "budget_ids"); err != nil {
+				return err
 			}
-			if !migrator.HasColumn(&Log{}, "rate_limit_ids") {
-				logger.Info("[logstore] %s: adding column rate_limit_ids to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "rate_limit_ids"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "rate_limit_ids"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3702,12 +3511,8 @@ func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB, logger sch
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "inc_number") {
-				logger.Info("[logstore] %s: adding column inc_number to Log", migrationName)
-				if err := migrator.AddColumn(&Log{}, "IncNumber"); err != nil {
-					return err
-				}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "IncNumber"); err != nil {
+				return err
 			}
 
 			if tx.Dialector.Name() == "postgres" {
@@ -3837,13 +3642,9 @@ func migrationAddCustomerArrayColumns(ctx context.Context, db *gorm.DB, logger s
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if !mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: adding column %s to Log", migrationName, col)
-					if err := mig.AddColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := addColumnIfNotExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
