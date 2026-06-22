@@ -66,10 +66,26 @@ func (panicReader) Read([]byte) (int, error) {
 // nil-derefs in (*HostClient).CloseConn and panics. It implements
 // streamCloserWithError (not io.Closer) so closeBodyStream takes the
 // CloseWithError branch — the path the idle timer hits.
-type timerPanicCloser struct{}
+//
+// called is closed the instant CloseWithError is entered (just before the
+// panic), so a test can deterministically wait for the guarded path to be
+// exercised rather than rely on a fixed sleep — which a slow runner could
+// outrun, letting cleanup stop the timer before it ever fired and passing the
+// test without touching the recover.
+type timerPanicCloser struct {
+	called chan struct{}
+}
 
-func (timerPanicCloser) Read([]byte) (int, error)   { return 0, io.EOF }
-func (timerPanicCloser) CloseWithError(error) error { panic("simulated fasthttp CloseConn nil-deref") }
+func newTimerPanicCloser() *timerPanicCloser {
+	return &timerPanicCloser{called: make(chan struct{})}
+}
+
+func (*timerPanicCloser) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (c *timerPanicCloser) CloseWithError(error) error {
+	close(c.called)
+	panic("simulated fasthttp CloseConn nil-deref")
+}
 
 // captureLogger records Debug messages so a test can assert that a recovered
 // panic value is logged (not silently swallowed). It embeds noopLogger to
@@ -443,14 +459,22 @@ func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 // down (observed crashing a router under sustained streaming load).
 func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
 	t.Parallel()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, timerPanicCloser{}, 10*time.Millisecond, nil)
+	body := newTimerPanicCloser()
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
 
-	// Wait past the idle timeout so the timer fires and invokes closeBodyStream,
-	// which panics. cleanup() then blocks on timerDone, which is only closed
-	// once the (now-recovered) timer callback has returned — so reaching the end
-	// of the test proves the panic was swallowed in the timer goroutine. Without
-	// the recover, the process would have already crashed.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the timer goroutine has actually entered CloseWithError (about to
+	// panic). This proves the guarded path was exercised; a fixed sleep could be
+	// outrun by a slow runner, letting cleanup stop the timer before it fired and
+	// passing the test without ever touching the recover.
+	select {
+	case <-body.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle timer never fired CloseWithError within 2s")
+	}
+
+	// cleanup() blocks on timerDone, closed only after the (now-recovered) timer
+	// callback returns — so reaching the end proves the panic was recovered in the
+	// timer goroutine. Without the recover, the process would already have crashed.
 	cleanup()
 }
 
@@ -465,8 +489,13 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 	SetLogger(capLog)
 	t.Cleanup(func() { SetLogger(prev) })
 
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, timerPanicCloser{}, 10*time.Millisecond, nil)
-	time.Sleep(50 * time.Millisecond)
+	body := newTimerPanicCloser()
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	select {
+	case <-body.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle timer never fired CloseWithError within 2s")
+	}
 	cleanup() // blocks until the timer callback (recover + log) has returned
 
 	if !capLog.contains("idle-timeout timer") || !capLog.contains("nil-deref") {
