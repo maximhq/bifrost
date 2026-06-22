@@ -28,7 +28,7 @@ var VaultStoreHook func(ctx context.Context, path string, value *string) error
 var VaultPrefixHook func() string
 
 // VaultStoreEnabled reports whether vault storage is available (i.e. VaultStoreHook
-// has been wired by enterprise startup). Use this to guard StoreOwnedVaultEnvVars
+// has been wired by enterprise startup). Use this to guard StoreOwnedVaultSecretVars
 // calls in BeforeSave hooks.
 func VaultStoreEnabled() bool {
 	return VaultStoreHook != nil
@@ -63,14 +63,14 @@ func LookupVault(ref string) (string, bool) {
 }
 
 var (
-	envVarType    = reflect.TypeOf(EnvVar{})
-	envVarPtrType = reflect.TypeOf((*EnvVar)(nil))
+	secretVarType    = reflect.TypeOf(SecretVar{})
+	secretVarPtrType = reflect.TypeOf((*SecretVar)(nil))
 )
 
-// RemoveOwnedVaultEnvVars best-effort deletes the vault secret for every
-// EnvVar / *EnvVar field in model whose VaultRef starts with
+// RemoveOwnedVaultSecretVars best-effort deletes the vault secret for every
+// SecretVar / *SecretVar field in model whose VaultRef starts with
 // ownedPrefix+"/". Refs outside that prefix are user-provided and are left alone.
-func RemoveOwnedVaultEnvVars(ctx context.Context, ownedPrefix string, model interface{}) {
+func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model interface{}) {
 	if VaultRemoveHook == nil {
 		return
 	}
@@ -84,13 +84,13 @@ func RemoveOwnedVaultEnvVars(ctx context.Context, ownedPrefix string, model inte
 	rt := rv.Type()
 	for i := 0; i < rt.NumField(); i++ {
 		fv := rv.Field(i)
-		var field *EnvVar
+		var field *SecretVar
 		switch fv.Type() {
-		case envVarType:
-			field = fv.Addr().Interface().(*EnvVar)
-		case envVarPtrType:
+		case secretVarType:
+			field = fv.Addr().Interface().(*SecretVar)
+		case secretVarPtrType:
 			if !fv.IsNil() {
-				field = fv.Interface().(*EnvVar)
+				field = fv.Interface().(*SecretVar)
 			}
 		}
 		if field == nil || !field.IsFromVault() || field.VaultRef == "" {
@@ -107,10 +107,10 @@ func RemoveOwnedVaultEnvVars(ctx context.Context, ownedPrefix string, model inte
 	}
 }
 
-// StoreVaultEnvVar pushes a single plaintext EnvVar value into the vault at path
+// StoreVaultSecretVar pushes a single plaintext SecretVar value into the vault at path
 // and converts the field to a vault reference. No-op when vault disabled, field
 // is nil, env/vault-sourced, empty, or redacted.
-func StoreVaultEnvVar(ctx context.Context, path string, e *EnvVar) error {
+func StoreVaultSecretVar(ctx context.Context, path string, e *SecretVar) error {
 	if VaultStoreHook == nil || e == nil {
 		return nil
 	}
@@ -125,10 +125,10 @@ func StoreVaultEnvVar(ctx context.Context, path string, e *EnvVar) error {
 	return nil
 }
 
-// StoreOwnedVaultEnvVars stores every plaintext EnvVar / *EnvVar struct field of
+// StoreOwnedVaultSecretVars stores every plaintext SecretVar / *SecretVar struct field of
 // model into the vault under basePath/<column>, converting each to a vault ref.
-// The reflection walk mirrors RemoveOwnedVaultEnvVars.
-func StoreOwnedVaultEnvVars(ctx context.Context, basePath string, model interface{}) error {
+// The reflection walk mirrors RemoveOwnedVaultSecretVars.
+func StoreOwnedVaultSecretVars(ctx context.Context, basePath string, model interface{}) error {
 	if VaultStoreHook == nil {
 		return nil
 	}
@@ -142,13 +142,13 @@ func StoreOwnedVaultEnvVars(ctx context.Context, basePath string, model interfac
 	rt := rv.Type()
 	for i := 0; i < rt.NumField(); i++ {
 		fv := rv.Field(i)
-		var field *EnvVar
+		var field *SecretVar
 		switch fv.Type() {
-		case envVarType:
-			field = fv.Addr().Interface().(*EnvVar)
-		case envVarPtrType:
+		case secretVarType:
+			field = fv.Addr().Interface().(*SecretVar)
+		case secretVarPtrType:
 			if !fv.IsNil() {
-				field = fv.Interface().(*EnvVar)
+				field = fv.Interface().(*SecretVar)
 			}
 		default:
 			continue
@@ -158,7 +158,7 @@ func StoreOwnedVaultEnvVars(ctx context.Context, basePath string, model interfac
 		}
 		seg := vaultFieldSegment(rt.Field(i))
 		path := basePath + "/" + seg
-		if err := StoreVaultEnvVar(ctx, path, field); err != nil {
+		if err := StoreVaultSecretVar(ctx, path, field); err != nil {
 			return fmt.Errorf("vault store field %s: %w", rt.Field(i).Name, err)
 		}
 	}

@@ -164,7 +164,7 @@ type ConfigData struct {
 	Server        *ServerConfig             `json:"server,omitempty"`
 	SourceOfTruth string                    `json:"source_of_truth,omitempty"`
 	Client        *configstore.ClientConfig `json:"client"`
-	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
+	EncryptionKey *schemas.SecretVar           `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -378,7 +378,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Server            *ServerConfig                         `json:"server,omitempty"`
 		Client            *configstore.ClientConfig             `json:"client"`
-		EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
+		EncryptionKey     *schemas.SecretVar                       `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -3639,15 +3639,15 @@ func isBcryptHash(s string) bool {
 		strings.HasPrefix(s, "$2y$")
 }
 
-// preserveEnvVar returns a new EnvVar with the given value but preserving
-// env var metadata (EnvVar reference and FromEnv flag) from the source.
+// preserveSecretVar returns a new SecretVar with the given value but preserving
+// env var metadata (SecretVar reference and FromEnv flag) from the source.
 // This allows the hashed password to be used as the value while retaining
 // the original env var reference for display in the UI.
-func preserveEnvVar(source *schemas.EnvVar, value string) *schemas.EnvVar {
+func preserveSecretVar(source *schemas.SecretVar, value string) *schemas.SecretVar {
 	if source == nil {
-		return schemas.NewEnvVar(value)
+		return schemas.NewSecretVar(value)
 	}
-	return &schemas.EnvVar{
+	return &schemas.SecretVar{
 		Val:     value,
 		EnvVar:  source.EnvVar,
 		FromEnv: source.FromEnv,
@@ -3722,7 +3722,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 			// DB matches file -- use DB hash but preserve file env var references
 			config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
 				AdminUserName: authConfig.AdminUserName,
-				AdminPassword: preserveEnvVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
+				AdminPassword: preserveSecretVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
 				IsEnabled:     authConfig.IsEnabled,
 			}
 			return
@@ -3751,7 +3751,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	// Build auth config with hashed password but preserve env var references
 	config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
 		AdminUserName: authConfig.AdminUserName,
-		AdminPassword: preserveEnvVar(authConfig.AdminPassword, hashedPassword),
+		AdminPassword: preserveSecretVar(authConfig.AdminPassword, hashedPassword),
 		IsEnabled:     authConfig.IsEnabled,
 	}
 	// Persist to config store
@@ -4414,7 +4414,7 @@ func initEncryption(configData *ConfigData) error {
 	if configData.EncryptionKey == nil || configData.EncryptionKey.GetValue() == "" {
 		// Checking if BIFROST_ENCRYPTION_KEY environment variable is set
 		if os.Getenv("BIFROST_ENCRYPTION_KEY") != "" {
-			configData.EncryptionKey = schemas.NewEnvVar("env.BIFROST_ENCRYPTION_KEY")
+			configData.EncryptionKey = schemas.NewSecretVar("env.BIFROST_ENCRYPTION_KEY")
 		}
 	}
 	// Checking if encryption key is set
@@ -6242,7 +6242,7 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 
 	// Redact Header values if present
 	if config.Headers != nil {
-		configCopy.Headers = make(map[string]schemas.EnvVar, len(config.Headers))
+		configCopy.Headers = make(map[string]schemas.SecretVar, len(config.Headers))
 		for header, value := range config.Headers {
 			configCopy.Headers[header] = *value.Redacted()
 		}
@@ -6302,7 +6302,7 @@ func (c *Config) autoDetectProviders(ctx context.Context) {
 						{
 							ID:     keyID,
 							Name:   fmt.Sprintf("%s_auto_detected", envVar),
-							Value:  *schemas.NewEnvVar(apiKey),
+							Value:  *schemas.NewSecretVar(apiKey),
 							Models: schemas.WhiteList{"*"},
 							Weight: 1.0,
 						},

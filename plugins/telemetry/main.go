@@ -40,7 +40,7 @@ type PushGatewayConfig struct {
 	// Enabled controls whether pushing metrics to the Push Gateway is active
 	Enabled bool `json:"enabled"`
 	// PushGatewayURL is the URL of the Prometheus Push Gateway (e.g., http://pushgateway:9091). Supports env.VAR_NAME.
-	PushGatewayURL *schemas.EnvVar `json:"push_gateway_url"`
+	PushGatewayURL *schemas.SecretVar `json:"push_gateway_url"`
 	// JobName is the job label for pushed metrics (default: "bifrost")
 	JobName string `json:"job_name"`
 	// InstanceID is the instance label for grouping metrics. If empty, hostname is used.
@@ -53,13 +53,13 @@ type PushGatewayConfig struct {
 
 // BasicAuthConfig holds basic authentication credentials for the Push Gateway
 type BasicAuthConfig struct {
-	Username *schemas.EnvVar `json:"username"`
-	Password *schemas.EnvVar `json:"password"`
+	Username *schemas.SecretVar `json:"username"`
+	Password *schemas.SecretVar `json:"password"`
 }
 
-// MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
+// MarshalForStorage serializes Config to JSON with *SecretVar fields as plain strings
 // ("env.VAR_NAME" or the literal value) for database/config-file persistence.
-// For HTTP API responses use json.Marshal directly so clients receive full EnvVar objects.
+// For HTTP API responses use json.Marshal directly so clients receive full SecretVar objects.
 func (c *Config) MarshalForStorage() ([]byte, error) {
 	type basicAuthStorage struct {
 		Username string `json:"username,omitempty"`
@@ -85,15 +85,15 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
 			Enabled:        c.PushGateway.Enabled,
-			PushGatewayURL: schemas.EnvVarAsString(c.PushGateway.PushGatewayURL),
+			PushGatewayURL: schemas.SecretVarAsString(c.PushGateway.PushGatewayURL),
 			JobName:        c.PushGateway.JobName,
 			InstanceID:     c.PushGateway.InstanceID,
 			PushInterval:   c.PushGateway.PushInterval,
 		}
 		if c.PushGateway.BasicAuth != nil {
 			pgw.BasicAuth = &basicAuthStorage{
-				Username: schemas.EnvVarAsString(c.PushGateway.BasicAuth.Username),
-				Password: schemas.EnvVarAsString(c.PushGateway.BasicAuth.Password),
+				Username: schemas.SecretVarAsString(c.PushGateway.BasicAuth.Username),
+				Password: schemas.SecretVarAsString(c.PushGateway.BasicAuth.Password),
 			}
 		}
 		storage.PushGateway = pgw
@@ -101,7 +101,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 	return sonic.Marshal(storage)
 }
 
-// Redacted returns a copy of the config with sensitive EnvVar fields redacted for API responses.
+// Redacted returns a copy of the config with sensitive SecretVar fields redacted for API responses.
 // PushGatewayURL is not a secret and is returned unchanged so the UI can display and re-submit
 // it without failing URL validation. For env var references on that field, only the resolved
 // value is hidden; the env_var name is preserved. Basic auth credentials are masked.
@@ -127,7 +127,7 @@ func (c *Config) Redacted() *Config {
 // hideResolvedEnvValue returns v unchanged for literal values (URLs are not secrets).
 // For env var references it zeroes out the resolved Val so the actual env content is
 // not leaked in API responses, while keeping the env_var name for round-trip edits.
-func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
+func hideResolvedEnvValue(v *schemas.SecretVar) *schemas.SecretVar {
 	if v == nil || (!v.IsFromEnv() && !v.IsFromVault()) {
 		return v
 	}

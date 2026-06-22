@@ -18,7 +18,7 @@ type TableKey struct {
 	ProviderID            uint           `gorm:"index;not null" json:"provider_id"`
 	Provider              string         `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
 	KeyID                 string         `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
-	Value                 schemas.EnvVar `gorm:"type:text;not null" json:"value"`
+	Value                 schemas.SecretVar `gorm:"type:text;not null" json:"value"`
 	ModelsJSON            string         `gorm:"type:text" json:"-"` // JSON serialized []string
 	BlacklistedModelsJSON string         `gorm:"type:text" json:"-"` // JSON serialized []string
 	Weight                *float64       `json:"weight"`
@@ -33,41 +33,41 @@ type TableKey struct {
 	AliasesJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.KeyAliases
 
 	// Azure config fields (embedded instead of separate table for simplicity)
-	AzureEndpoint     *schemas.EnvVar `gorm:"type:text" json:"azure_endpoint,omitempty"`
-	AzureClientID     *schemas.EnvVar `gorm:"type:text" json:"azure_client_id,omitempty"`
-	AzureClientSecret *schemas.EnvVar `gorm:"type:text" json:"azure_client_secret,omitempty"`
-	AzureTenantID     *schemas.EnvVar `gorm:"type:text" json:"azure_tenant_id,omitempty"`
+	AzureEndpoint     *schemas.SecretVar `gorm:"type:text" json:"azure_endpoint,omitempty"`
+	AzureClientID     *schemas.SecretVar `gorm:"type:text" json:"azure_client_id,omitempty"`
+	AzureClientSecret *schemas.SecretVar `gorm:"type:text" json:"azure_client_secret,omitempty"`
+	AzureTenantID     *schemas.SecretVar `gorm:"type:text" json:"azure_tenant_id,omitempty"`
 	AzureScopesJSON   *string         `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
 
 	// Vertex config fields (embedded)
-	VertexProjectID       *schemas.EnvVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
-	VertexProjectNumber   *schemas.EnvVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
-	VertexRegion          *schemas.EnvVar `gorm:"type:text" json:"vertex_region,omitempty"`
-	VertexAuthCredentials *schemas.EnvVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexProjectID       *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber   *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
+	VertexRegion          *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
+	VertexAuthCredentials *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
 
 	// Bedrock config fields (embedded)
-	BedrockAccessKey         *schemas.EnvVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
-	BedrockSecretKey         *schemas.EnvVar `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
-	BedrockSessionToken      *schemas.EnvVar `gorm:"type:text" json:"bedrock_session_token,omitempty"`
-	BedrockRegion            *schemas.EnvVar `gorm:"type:text" json:"bedrock_region,omitempty"`
-	BedrockARN               *schemas.EnvVar `gorm:"type:text" json:"bedrock_arn,omitempty"`
-	BedrockRoleARN           *schemas.EnvVar `gorm:"type:text" json:"bedrock_role_arn,omitempty"`
-	BedrockExternalID        *schemas.EnvVar `gorm:"type:text" json:"bedrock_external_id,omitempty"`
-	BedrockRoleSessionName   *schemas.EnvVar `gorm:"type:text" json:"bedrock_role_session_name,omitempty"`
+	BedrockAccessKey         *schemas.SecretVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
+	BedrockSecretKey         *schemas.SecretVar `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
+	BedrockSessionToken      *schemas.SecretVar `gorm:"type:text" json:"bedrock_session_token,omitempty"`
+	BedrockRegion            *schemas.SecretVar `gorm:"type:text" json:"bedrock_region,omitempty"`
+	BedrockARN               *schemas.SecretVar `gorm:"type:text" json:"bedrock_arn,omitempty"`
+	BedrockRoleARN           *schemas.SecretVar `gorm:"type:text" json:"bedrock_role_arn,omitempty"`
+	BedrockExternalID        *schemas.SecretVar `gorm:"type:text" json:"bedrock_external_id,omitempty"`
+	BedrockRoleSessionName   *schemas.SecretVar `gorm:"type:text" json:"bedrock_role_session_name,omitempty"`
 	BedrockBatchS3ConfigJSON *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
 	// VLLM config fields (embedded)
-	VLLMUrl       *schemas.EnvVar `gorm:"type:text" json:"vllm_url,omitempty"`
+	VLLMUrl       *schemas.SecretVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
 
 	// Replicate config fields (embedded)
 	ReplicateUseDeploymentsEndpoint *bool `gorm:"column:replicate_use_deployments_endpoint" json:"replicate_use_deployments_endpoint,omitempty"`
 
 	// Ollama config fields (embedded)
-	OllamaUrl *schemas.EnvVar `gorm:"type:text" json:"ollama_url,omitempty"`
+	OllamaUrl *schemas.SecretVar `gorm:"type:text" json:"ollama_url,omitempty"`
 
 	// SGL config fields (embedded)
-	SGLUrl *schemas.EnvVar `gorm:"type:text" json:"sgl_url,omitempty"`
+	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
@@ -123,7 +123,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		useForBatchAPI := false // DB default
 		k.UseForBatchAPI = &useForBatchAPI
 	}
-	// IMPORTANT: All *EnvVar fields assigned from provider config structs (AzureKeyConfig,
+	// IMPORTANT: All *SecretVar fields assigned from provider config structs (AzureKeyConfig,
 	// VertexKeyConfig, BedrockKeyConfig) MUST be value-copied before assignment. The caller
 	// may retain the config struct pointer; if BeforeSave (or future encryption) mutates a
 	// shared pointer, the caller's in-memory config is silently corrupted.
@@ -326,7 +326,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if schemas.VaultStoreEnabled() {
-		if err := schemas.StoreOwnedVaultEnvVars(tx.Statement.Context,
+		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context,
 			schemas.VaultBasePath(k.TableName(), k.KeyID), k); err != nil {
 			return err
 		}
@@ -334,58 +334,58 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 
 	// Encrypt sensitive fields after serialization
 	if encrypt.IsEnabled() {
-		if err := encryptEnvVar(&k.Value); err != nil {
+		if err := encryptSecretVar(&k.Value); err != nil {
 			return fmt.Errorf("failed to encrypt key value: %w", err)
 		}
 		// Azure
-		if err := encryptEnvVarPtr(&k.AzureEndpoint); err != nil {
+		if err := encryptSecretVarPtr(&k.AzureEndpoint); err != nil {
 			return fmt.Errorf("failed to encrypt azure endpoint: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.AzureClientID); err != nil {
+		if err := encryptSecretVarPtr(&k.AzureClientID); err != nil {
 			return fmt.Errorf("failed to encrypt azure client id: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.AzureClientSecret); err != nil {
+		if err := encryptSecretVarPtr(&k.AzureClientSecret); err != nil {
 			return fmt.Errorf("failed to encrypt azure client secret: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.AzureTenantID); err != nil {
+		if err := encryptSecretVarPtr(&k.AzureTenantID); err != nil {
 			return fmt.Errorf("failed to encrypt azure tenant id: %w", err)
 		}
 		// Vertex
-		if err := encryptEnvVarPtr(&k.VertexProjectID); err != nil {
+		if err := encryptSecretVarPtr(&k.VertexProjectID); err != nil {
 			return fmt.Errorf("failed to encrypt vertex project id: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.VertexProjectNumber); err != nil {
+		if err := encryptSecretVarPtr(&k.VertexProjectNumber); err != nil {
 			return fmt.Errorf("failed to encrypt vertex project number: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.VertexRegion); err != nil {
+		if err := encryptSecretVarPtr(&k.VertexRegion); err != nil {
 			return fmt.Errorf("failed to encrypt vertex region: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.VertexAuthCredentials); err != nil {
+		if err := encryptSecretVarPtr(&k.VertexAuthCredentials); err != nil {
 			return fmt.Errorf("failed to encrypt vertex auth credentials: %w", err)
 		}
 		// Bedrock
-		if err := encryptEnvVarPtr(&k.BedrockAccessKey); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock access key: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.BedrockSecretKey); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockSecretKey); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock secret key: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.BedrockSessionToken); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockSessionToken); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock session token: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.BedrockRegion); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockRegion); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock region: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.BedrockARN); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockARN); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock arn: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.BedrockRoleARN); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockRoleARN); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock role arn: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.BedrockExternalID); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockExternalID); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock external id: %w", err)
 		}
-		if err := encryptEnvVarPtr(&k.BedrockRoleSessionName); err != nil {
+		if err := encryptSecretVarPtr(&k.BedrockRoleSessionName); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock role session name: %w", err)
 		}
 		if err := encryptString(k.BedrockBatchS3ConfigJSON); err != nil {
@@ -396,15 +396,15 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 			return fmt.Errorf("failed to encrypt aliases: %w", err)
 		}
 		// VLLM
-		if err := encryptEnvVarPtr(&k.VLLMUrl); err != nil {
+		if err := encryptSecretVarPtr(&k.VLLMUrl); err != nil {
 			return fmt.Errorf("failed to encrypt vllm url: %w", err)
 		}
 		// Ollama
-		if err := encryptEnvVarPtr(&k.OllamaUrl); err != nil {
+		if err := encryptSecretVarPtr(&k.OllamaUrl); err != nil {
 			return fmt.Errorf("failed to encrypt ollama url: %w", err)
 		}
 		// SGL
-		if err := encryptEnvVarPtr(&k.SGLUrl); err != nil {
+		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
@@ -418,58 +418,58 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	switch k.EncryptionStatus {
 	case EncryptionStatusEncrypted:
-		if err := decryptEnvVar(&k.Value); err != nil {
+		if err := decryptSecretVar(&k.Value); err != nil {
 			return fmt.Errorf("failed to decrypt key value: %w", err)
 		}
 		// Azure
-		if err := decryptEnvVarPtr(&k.AzureEndpoint); err != nil {
+		if err := decryptSecretVarPtr(&k.AzureEndpoint); err != nil {
 			return fmt.Errorf("failed to decrypt azure endpoint: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.AzureClientID); err != nil {
+		if err := decryptSecretVarPtr(&k.AzureClientID); err != nil {
 			return fmt.Errorf("failed to decrypt azure client id: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.AzureClientSecret); err != nil {
+		if err := decryptSecretVarPtr(&k.AzureClientSecret); err != nil {
 			return fmt.Errorf("failed to decrypt azure client secret: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.AzureTenantID); err != nil {
+		if err := decryptSecretVarPtr(&k.AzureTenantID); err != nil {
 			return fmt.Errorf("failed to decrypt azure tenant id: %w", err)
 		}
 		// Vertex
-		if err := decryptEnvVarPtr(&k.VertexProjectID); err != nil {
+		if err := decryptSecretVarPtr(&k.VertexProjectID); err != nil {
 			return fmt.Errorf("failed to decrypt vertex project id: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.VertexProjectNumber); err != nil {
+		if err := decryptSecretVarPtr(&k.VertexProjectNumber); err != nil {
 			return fmt.Errorf("failed to decrypt vertex project number: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.VertexRegion); err != nil {
+		if err := decryptSecretVarPtr(&k.VertexRegion); err != nil {
 			return fmt.Errorf("failed to decrypt vertex region: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.VertexAuthCredentials); err != nil {
+		if err := decryptSecretVarPtr(&k.VertexAuthCredentials); err != nil {
 			return fmt.Errorf("failed to decrypt vertex auth credentials: %w", err)
 		}
 		// Bedrock
-		if err := decryptEnvVarPtr(&k.BedrockAccessKey); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock access key: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.BedrockSecretKey); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockSecretKey); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock secret key: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.BedrockSessionToken); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockSessionToken); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock session token: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.BedrockRegion); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockRegion); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock region: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.BedrockARN); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockARN); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock arn: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.BedrockRoleARN); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockRoleARN); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock role arn: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.BedrockExternalID); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockExternalID); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock external id: %w", err)
 		}
-		if err := decryptEnvVarPtr(&k.BedrockRoleSessionName); err != nil {
+		if err := decryptSecretVarPtr(&k.BedrockRoleSessionName); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock role session name: %w", err)
 		}
 		if err := decryptString(k.BedrockBatchS3ConfigJSON); err != nil {
@@ -480,15 +480,15 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 			return fmt.Errorf("failed to decrypt aliases: %w", err)
 		}
 		// VLLM
-		if err := decryptEnvVarPtr(&k.VLLMUrl); err != nil {
+		if err := decryptSecretVarPtr(&k.VLLMUrl); err != nil {
 			return fmt.Errorf("failed to decrypt vllm url: %w", err)
 		}
 		// Ollama
-		if err := decryptEnvVarPtr(&k.OllamaUrl); err != nil {
+		if err := decryptSecretVarPtr(&k.OllamaUrl); err != nil {
 			return fmt.Errorf("failed to decrypt ollama url: %w", err)
 		}
 		// SGL
-		if err := decryptEnvVarPtr(&k.SGLUrl); err != nil {
+		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
 		}
 	}
@@ -520,7 +520,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 			}
 		}
 		azureConfig := &schemas.AzureKeyConfig{
-			Endpoint:     *schemas.NewEnvVar(""),
+			Endpoint:     *schemas.NewSecretVar(""),
 			ClientID:     k.AzureClientID,
 			ClientSecret: k.AzureClientSecret,
 			TenantID:     k.AzureTenantID,
@@ -635,6 +635,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 // AfterDelete hook for best-effort vault cleanup on row deletion.
 func (k *TableKey) AfterDelete(tx *gorm.DB) error {
 	base := schemas.VaultBasePath(k.TableName(), k.KeyID)
-	schemas.RemoveOwnedVaultEnvVars(tx.Statement.Context, base, k)
+	schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, k)
 	return nil
 }

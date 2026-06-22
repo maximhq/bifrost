@@ -209,16 +209,16 @@ func TestConnectHook_AuthorizationHidden_HeadersAuth(t *testing.T) {
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	url := *schemas.NewEnvVar("http://example.invalid")
+	url := *schemas.NewSecretVar("http://example.invalid")
 	cfg := &schemas.MCPClientConfig{
 		ID:               "auth_strip-id",
 		Name:             "auth_strip",
 		ConnectionType:   schemas.MCPConnectionTypeHTTP,
 		ConnectionString: &url,
 		AuthType:         schemas.MCPAuthTypeHeaders,
-		Headers: map[string]schemas.EnvVar{
-			"Authorization": *schemas.NewEnvVar("Bearer super-secret-token"),
-			"X-Custom":      *schemas.NewEnvVar("plugin-visible"),
+		Headers: map[string]schemas.SecretVar{
+			"Authorization": *schemas.NewSecretVar("Bearer super-secret-token"),
+			"X-Custom":      *schemas.NewSecretVar("plugin-visible"),
 		},
 		ToolsToExecute: []string{"*"},
 	}

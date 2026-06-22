@@ -14,9 +14,9 @@ const (
 	EncryptionStatusVault = "vault"
 )
 
-// encryptEnvVar encrypts the Val field of an EnvVar in place using AES-256-GCM.
+// encryptSecretVar encrypts the Val field of an SecretVar in place using AES-256-GCM.
 // It is a no-op if the field is nil, references an environment variable or vault, or has an empty value.
-func encryptEnvVar(field *schemas.EnvVar) error {
+func encryptSecretVar(field *schemas.SecretVar) error {
 	if field == nil || field.IsFromEnv() || field.IsFromVault() || field.GetValue() == "" {
 		return nil
 	}
@@ -28,9 +28,9 @@ func encryptEnvVar(field *schemas.EnvVar) error {
 	return nil
 }
 
-// decryptEnvVar decrypts the Val field of an EnvVar in place using AES-256-GCM.
+// decryptSecretVar decrypts the Val field of an SecretVar in place using AES-256-GCM.
 // It is a no-op if the field is nil, references an environment variable or vault, or has an empty value.
-func decryptEnvVar(field *schemas.EnvVar) error {
+func decryptSecretVar(field *schemas.SecretVar) error {
 	if field == nil || field.IsFromEnv() || field.IsFromVault() || field.GetValue() == "" {
 		return nil
 	}
@@ -42,22 +42,22 @@ func decryptEnvVar(field *schemas.EnvVar) error {
 	return nil
 }
 
-// encryptEnvVarPtr encrypts the Val field of a pointer-to-EnvVar in place.
-// It is a no-op if the pointer or the EnvVar it points to is nil.
-func encryptEnvVarPtr(field **schemas.EnvVar) error {
+// encryptSecretVarPtr encrypts the Val field of a pointer-to-SecretVar in place.
+// It is a no-op if the pointer or the SecretVar it points to is nil.
+func encryptSecretVarPtr(field **schemas.SecretVar) error {
 	if field == nil || *field == nil {
 		return nil
 	}
-	return encryptEnvVar(*field)
+	return encryptSecretVar(*field)
 }
 
-// decryptEnvVarPtr decrypts the Val field of a pointer-to-EnvVar in place.
-// It is a no-op if the pointer or the EnvVar it points to is nil.
-func decryptEnvVarPtr(field **schemas.EnvVar) error {
+// decryptSecretVarPtr decrypts the Val field of a pointer-to-SecretVar in place.
+// It is a no-op if the pointer or the SecretVar it points to is nil.
+func decryptSecretVarPtr(field **schemas.SecretVar) error {
 	if field == nil || *field == nil {
 		return nil
 	}
-	return decryptEnvVar(*field)
+	return decryptSecretVar(*field)
 }
 
 // encryptString encrypts the string pointed to by value in place using AES-256-GCM.

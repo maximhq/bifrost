@@ -364,7 +364,7 @@ func TestFireworksProviderUsesNativeEndpoints(t *testing.T) {
 
 			provider := newTestFireworksProvider(t, server.URL)
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			key := schemas.Key{Value: *schemas.NewEnvVar("test-key")}
+			key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
 
 			tt.run(t, provider, ctx, key)
 
@@ -392,7 +392,7 @@ func TestFireworksResponsesStreamUsesNativeResponsesEndpoint(t *testing.T) {
 
 	provider := newTestFireworksProvider(t, server.URL)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	key := schemas.Key{Value: *schemas.NewEnvVar("test-key")}
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
 	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return result, err
 	}
