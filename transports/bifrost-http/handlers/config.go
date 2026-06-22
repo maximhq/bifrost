@@ -142,6 +142,12 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 					EnvVar:  authConfig.AdminPassword.EnvVar,
 					FromEnv: true,
 				}
+			} else if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromVault() {
+				passwordEnvVar = &schemas.EnvVar{
+					Val:       "",
+					FromVault: true,
+					VaultRef:  authConfig.AdminPassword.VaultRef,
+				}
 			} else {
 				passwordEnvVar = &schemas.EnvVar{
 					Val:     "<redacted>",

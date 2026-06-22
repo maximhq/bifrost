@@ -517,6 +517,16 @@ func TestEnvVar_IsSet(t *testing.T) {
 			input:    &EnvVar{FromEnv: true},
 			expected: false,
 		},
+		{
+			name:     "vault reference set",
+			input:    &EnvVar{VaultRef: "vault.bifrost/key", FromVault: true, Val: "vault.bifrost/key"},
+			expected: true,
+		},
+		{
+			name:     "FromVault true but no reference",
+			input:    &EnvVar{FromVault: true},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -525,6 +535,176 @@ func TestEnvVar_IsSet(t *testing.T) {
 				t.Errorf("IsSet() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestEnvVar_Scan_VaultRef(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             string
+		wantVal           string
+		wantVaultRef      string
+		wantFromVault     bool
+		wantFromEnv       bool
+	}{
+		{
+			name:          "plain vault reference",
+			input:         "vault.bifrost/providers/openai/key",
+			wantVal:       "vault.bifrost/providers/openai/key",
+			wantVaultRef:  "vault.bifrost/providers/openai/key",
+			wantFromVault: true,
+		},
+		{
+			name:          "vault reference with quoted wrapping",
+			input:         `"vault.myproject/secret"`,
+			wantVal:       "vault.myproject/secret",
+			wantVaultRef:  "vault.myproject/secret",
+			wantFromVault: true,
+		},
+		{
+			name:        "env reference still works",
+			input:       "env.MY_VAR",
+			wantFromEnv: true,
+		},
+		{
+			name:    "plain string unaffected",
+			input:   "sk-abc123",
+			wantVal: "sk-abc123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var e EnvVar
+			if err := e.Scan(tt.input); err != nil {
+				t.Fatalf("Scan() error: %v", err)
+			}
+			if tt.wantFromVault {
+				if !e.FromVault {
+					t.Errorf("FromVault = false, want true")
+				}
+				if e.VaultRef != tt.wantVaultRef {
+					t.Errorf("VaultRef = %q, want %q", e.VaultRef, tt.wantVaultRef)
+				}
+				if e.Val != tt.wantVal {
+					t.Errorf("Val = %q, want %q", e.Val, tt.wantVal)
+				}
+			}
+			if tt.wantFromEnv && !e.FromEnv {
+				t.Errorf("FromEnv = false, want true")
+			}
+			if !tt.wantFromVault && !tt.wantFromEnv && e.Val != tt.wantVal {
+				t.Errorf("Val = %q, want %q", e.Val, tt.wantVal)
+			}
+		})
+	}
+}
+
+func TestEnvVar_UnmarshalJSON_VaultRef(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantVal       string
+		wantVaultRef  string
+		wantFromVault bool
+	}{
+		{
+			name:          "struct form with from_vault",
+			input:         `{"value":"","env_var":"","from_env":false,"vault_var":"vault.bifrost/key","from_vault":true}`,
+			wantVal:       "vault.bifrost/key",
+			wantVaultRef:  "vault.bifrost/key",
+			wantFromVault: true,
+		},
+		{
+			name:          "struct form vault_var without vault. prefix — prefix auto-added",
+			input:         `{"value":"","env_var":"","from_env":false,"vault_var":"bifrost/key","from_vault":true}`,
+			wantVal:       "vault.bifrost/key",
+			wantVaultRef:  "vault.bifrost/key",
+			wantFromVault: true,
+		},
+		{
+			name:          "plain string vault reference",
+			input:         `"vault.myproject/secret"`,
+			wantVal:       "vault.myproject/secret",
+			wantVaultRef:  "vault.myproject/secret",
+			wantFromVault: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var e EnvVar
+			if err := json.Unmarshal([]byte(tt.input), &e); err != nil {
+				t.Fatalf("UnmarshalJSON() error: %v", err)
+			}
+			if e.FromVault != tt.wantFromVault {
+				t.Errorf("FromVault = %v, want %v", e.FromVault, tt.wantFromVault)
+			}
+			if e.VaultRef != tt.wantVaultRef {
+				t.Errorf("VaultRef = %q, want %q", e.VaultRef, tt.wantVaultRef)
+			}
+			if e.Val != tt.wantVal {
+				t.Errorf("Val = %q, want %q", e.Val, tt.wantVal)
+			}
+		})
+	}
+}
+
+func TestEnvVar_Value_VaultRef(t *testing.T) {
+	e := &EnvVar{
+		Val:       "actual-secret",
+		VaultRef:  "vault.bifrost/key",
+		FromVault: true,
+	}
+	got, err := e.Value()
+	if err != nil {
+		t.Fatalf("Value() error: %v", err)
+	}
+	if got != "vault.bifrost/key" {
+		t.Errorf("Value() = %q, want %q", got, "vault.bifrost/key")
+	}
+}
+
+func TestEnvVar_Redacted_VaultRef(t *testing.T) {
+	e := &EnvVar{
+		Val:       "actual-secret-value",
+		VaultRef:  "vault.bifrost/key",
+		FromVault: true,
+	}
+	r := e.Redacted()
+	wantVal := "actu************************alue"
+	if r.Val != wantVal {
+		t.Errorf("Redacted().Val = %q, want %q", r.Val, wantVal)
+	}
+	if !r.FromVault {
+		t.Errorf("Redacted().FromVault = false, want true")
+	}
+	if r.VaultRef != "vault.bifrost/key" {
+		t.Errorf("Redacted().VaultRef = %q, want %q", r.VaultRef, "vault.bifrost/key")
+	}
+}
+
+func TestEnvVar_IsSet_VaultRef(t *testing.T) {
+	set := &EnvVar{VaultRef: "vault.bifrost/key", FromVault: true, Val: "vault.bifrost/key"}
+	unset := &EnvVar{FromVault: true}
+	if !set.IsSet() {
+		t.Error("IsSet() = false for vault ref, want true")
+	}
+	if unset.IsSet() {
+		t.Error("IsSet() = true for empty vault ref, want false")
+	}
+}
+
+func TestNewEnvVar_VaultRef(t *testing.T) {
+	e := NewEnvVar("vault.bifrost/mykey")
+	if !e.FromVault {
+		t.Error("FromVault = false, want true")
+	}
+	if e.VaultRef != "vault.bifrost/mykey" {
+		t.Errorf("VaultRef = %q, want %q", e.VaultRef, "vault.bifrost/mykey")
+	}
+	if e.Val != "vault.bifrost/mykey" {
+		t.Errorf("Val = %q, want %q", e.Val, "vault.bifrost/mykey")
 	}
 }
 
