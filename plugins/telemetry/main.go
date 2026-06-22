@@ -128,7 +128,7 @@ func (c *Config) Redacted() *Config {
 // For env var references it zeroes out the resolved Val so the actual env content is
 // not leaked in API responses, while keeping the env_var name for round-trip edits.
 func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
-	if v == nil || !v.IsFromEnv() {
+	if v == nil || (!v.IsFromEnv() && !v.IsFromVault()) {
 		return v
 	}
 	return v.Redacted()
