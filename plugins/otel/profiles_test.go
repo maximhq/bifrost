@@ -169,7 +169,7 @@ func TestInitSkipsDisabledProfile(t *testing.T) {
 }
 
 // TestMarshalForStorageRoundTrip verifies storage marshalling produces the canonical
-// wrapper with EnvVar fields flattened to strings, and that it round-trips back.
+// wrapper with SecretVar fields flattened to strings, and that it round-trips back.
 func TestMarshalForStorageRoundTrip(t *testing.T) {
 	t.Setenv("OTEL_TOKEN", "secret-token")
 	t.Setenv("OTEL_SECOND_TOKEN", "second-token")

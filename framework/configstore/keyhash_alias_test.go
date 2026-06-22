@@ -24,7 +24,7 @@ import (
 func TestGenerateKeyHash_LegacyAliasesPreserveByteShape(t *testing.T) {
 	key := schemas.Key{
 		Name:    "openai-key",
-		Value:   *schemas.NewEnvVar("sk-test"),
+		Value:   *schemas.NewSecretVar("sk-test"),
 		Weight:  1.0,
 		Aliases: schemas.KeyAliases{"best-model": {ModelID: "gpt-4o-deployment"}},
 	}
@@ -52,13 +52,13 @@ func TestGenerateKeyHash_RichAliasesProduceDifferentHash(t *testing.T) {
 
 	legacy := schemas.Key{
 		Name:    "k",
-		Value:   *schemas.NewEnvVar("sk"),
+		Value:   *schemas.NewSecretVar("sk"),
 		Weight:  1.0,
 		Aliases: schemas.KeyAliases{"x": {ModelID: "y"}},
 	}
 	rich := schemas.Key{
 		Name:   "k",
-		Value:  *schemas.NewEnvVar("sk"),
+		Value:  *schemas.NewSecretVar("sk"),
 		Weight: 1.0,
 		Aliases: schemas.KeyAliases{"x": {
 			ModelID:     "y",

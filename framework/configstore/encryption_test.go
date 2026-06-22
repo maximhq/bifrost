@@ -184,7 +184,7 @@ func TestEncryptPlaintextRows_SkipsAlreadyEncrypted(t *testing.T) {
 		ProviderID: 1,
 		Provider:   "openai",
 		KeyID:      "enc-key-1",
-		Value:      *schemas.NewEnvVar("sk-secret"),
+		Value:      *schemas.NewSecretVar("sk-secret"),
 	}
 	require.NoError(t, db.Create(key).Error)
 
@@ -851,25 +851,25 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	// save it to DB, and verify the original config structs are not mutated by BeforeSave
 	// (encryption uses value-copies so shared pointers are never corrupted).
 	azureCfg := &schemas.AzureKeyConfig{
-		Endpoint: *schemas.NewEnvVar("https://myresource.openai.azure.com"),
-		ClientID: schemas.NewEnvVar("my-azure-client-id"),
-		TenantID: schemas.NewEnvVar("my-azure-tenant-id"),
+		Endpoint: *schemas.NewSecretVar("https://myresource.openai.azure.com"),
+		ClientID: schemas.NewSecretVar("my-azure-client-id"),
+		TenantID: schemas.NewSecretVar("my-azure-tenant-id"),
 	}
-	azureCfg.ClientSecret = schemas.NewEnvVar("azure-client-secret")
+	azureCfg.ClientSecret = schemas.NewSecretVar("azure-client-secret")
 
 	vertexCfg := &schemas.VertexKeyConfig{
-		ProjectID:       *schemas.NewEnvVar("my-project"),
-		ProjectNumber:   *schemas.NewEnvVar("123456789"),
-		Region:          *schemas.NewEnvVar("us-central1"),
-		AuthCredentials: *schemas.NewEnvVar("vertex-creds"),
+		ProjectID:       *schemas.NewSecretVar("my-project"),
+		ProjectNumber:   *schemas.NewSecretVar("123456789"),
+		Region:          *schemas.NewSecretVar("us-central1"),
+		AuthCredentials: *schemas.NewSecretVar("vertex-creds"),
 	}
 
 	bedrockCfg := &schemas.BedrockKeyConfig{
-		AccessKey:    *schemas.NewEnvVar("AKIAEXAMPLE"),
-		SecretKey:    *schemas.NewEnvVar("secret-key"),
-		SessionToken: schemas.NewEnvVar("session-tok"),
-		Region:       schemas.NewEnvVar("us-east-1"),
-		ARN:          schemas.NewEnvVar("arn:aws:iam::123456789:role/test"),
+		AccessKey:    *schemas.NewSecretVar("AKIAEXAMPLE"),
+		SecretKey:    *schemas.NewSecretVar("secret-key"),
+		SessionToken: schemas.NewSecretVar("session-tok"),
+		Region:       schemas.NewSecretVar("us-east-1"),
+		ARN:          schemas.NewSecretVar("arn:aws:iam::123456789:role/test"),
 	}
 
 	// Save a key using the shared config pointers (mimics UpdateProvidersConfig)
@@ -878,7 +878,7 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 		ProviderID:       1,
 		Provider:         "azure",
 		KeyID:            "sp-1",
-		Value:            *schemas.NewEnvVar("sk-test-value"),
+		Value:            *schemas.NewSecretVar("sk-test-value"),
 		AzureKeyConfig:   azureCfg,
 		VertexKeyConfig:  vertexCfg,
 		BedrockKeyConfig: bedrockCfg,
@@ -944,13 +944,13 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 }
 
 // ============================================================================
-// EnvVar-backed fields must not be encrypted (encryption is a no-op for FromEnv)
+// SecretVar-backed fields must not be encrypted (encryption is a no-op for FromEnv)
 // ============================================================================
 
-func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
+func TestBeforeSave_SecretVarBackedFields_NotEncrypted(t *testing.T) {
 	_, db := setupEncryptionTestStore(t)
 
-	// Set environment variables that the EnvVars will resolve to
+	// Set environment variables that the SecretVars will resolve to
 	t.Setenv("TEST_AZURE_KEY", "sk-azure-from-env")
 	t.Setenv("TEST_AZURE_ENDPOINT", "https://env-resource.openai.azure.com")
 	t.Setenv("TEST_AZURE_SECRET", "env-azure-client-secret")
@@ -965,27 +965,27 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 	t.Setenv("TEST_BEDROCK_REGION", "env-us-east-1")
 	t.Setenv("TEST_BEDROCK_ARN", "arn:aws:iam::env:role/test")
 
-	// Create EnvVars backed by environment variables
+	// Create SecretVars backed by environment variables
 	azureCfg := &schemas.AzureKeyConfig{
-		Endpoint:     *schemas.NewEnvVar("env.TEST_AZURE_ENDPOINT"),
-		ClientID:     schemas.NewEnvVar("env.TEST_AZURE_CLIENT_ID"),
-		ClientSecret: schemas.NewEnvVar("env.TEST_AZURE_SECRET"),
-		TenantID:     schemas.NewEnvVar("env.TEST_AZURE_TENANT_ID"),
+		Endpoint:     *schemas.NewSecretVar("env.TEST_AZURE_ENDPOINT"),
+		ClientID:     schemas.NewSecretVar("env.TEST_AZURE_CLIENT_ID"),
+		ClientSecret: schemas.NewSecretVar("env.TEST_AZURE_SECRET"),
+		TenantID:     schemas.NewSecretVar("env.TEST_AZURE_TENANT_ID"),
 	}
 	vertexCfg := &schemas.VertexKeyConfig{
-		ProjectID:       *schemas.NewEnvVar("env.TEST_VERTEX_PROJECT"),
-		Region:          *schemas.NewEnvVar("env.TEST_VERTEX_REGION"),
-		AuthCredentials: *schemas.NewEnvVar("env.TEST_VERTEX_CREDS"),
+		ProjectID:       *schemas.NewSecretVar("env.TEST_VERTEX_PROJECT"),
+		Region:          *schemas.NewSecretVar("env.TEST_VERTEX_REGION"),
+		AuthCredentials: *schemas.NewSecretVar("env.TEST_VERTEX_CREDS"),
 	}
 	bedrockCfg := &schemas.BedrockKeyConfig{
-		AccessKey:    *schemas.NewEnvVar("env.TEST_BEDROCK_ACCESS"),
-		SecretKey:    *schemas.NewEnvVar("env.TEST_BEDROCK_SECRET"),
-		SessionToken: schemas.NewEnvVar("env.TEST_BEDROCK_SESSION"),
-		Region:       schemas.NewEnvVar("env.TEST_BEDROCK_REGION"),
-		ARN:          schemas.NewEnvVar("env.TEST_BEDROCK_ARN"),
+		AccessKey:    *schemas.NewSecretVar("env.TEST_BEDROCK_ACCESS"),
+		SecretKey:    *schemas.NewSecretVar("env.TEST_BEDROCK_SECRET"),
+		SessionToken: schemas.NewSecretVar("env.TEST_BEDROCK_SESSION"),
+		Region:       schemas.NewSecretVar("env.TEST_BEDROCK_REGION"),
+		ARN:          schemas.NewSecretVar("env.TEST_BEDROCK_ARN"),
 	}
 
-	// Verify the EnvVars resolved correctly and are marked as FromEnv
+	// Verify the SecretVars resolved correctly and are marked as FromEnv
 	require.True(t, azureCfg.Endpoint.IsFromEnv())
 	require.Equal(t, "https://env-resource.openai.azure.com", azureCfg.Endpoint.GetValue())
 	require.True(t, azureCfg.ClientSecret.IsFromEnv())
@@ -997,7 +997,7 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 		ProviderID:       1,
 		Provider:         "azure",
 		KeyID:            "env-1",
-		Value:            *schemas.NewEnvVar("env.TEST_AZURE_KEY"),
+		Value:            *schemas.NewSecretVar("env.TEST_AZURE_KEY"),
 		AzureKeyConfig:   azureCfg,
 		VertexKeyConfig:  vertexCfg,
 		BedrockKeyConfig: bedrockCfg,
@@ -1005,7 +1005,7 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 	require.NoError(t, db.Create(key).Error)
 
 	// Raw DB should store the env var references, NOT encrypted ciphertext.
-	// EnvVar.Value() returns the env var name (e.g. "env.TEST_AZURE_KEY") when FromEnv=true.
+	// SecretVar.Value() returns the env var name (e.g. "env.TEST_AZURE_KEY") when FromEnv=true.
 	var raw map[string]any
 	db.Table("config_keys").Where("name = ?", "env-backed-key").Take(&raw)
 	assert.Equal(t, "encrypted", raw["encryption_status"])
@@ -1028,7 +1028,7 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 	assert.Equal(t, "env-bedrock-session", bedrockCfg.SessionToken.GetValue())
 	assert.True(t, bedrockCfg.SessionToken.IsFromEnv())
 
-	// GORM round-trip: AfterFind should reconstruct env-backed EnvVars correctly
+	// GORM round-trip: AfterFind should reconstruct env-backed SecretVars correctly
 	var found tables.TableKey
 	require.NoError(t, db.Where("name = ?", "env-backed-key").First(&found).Error)
 	assert.Equal(t, "sk-azure-from-env", found.Value.GetValue())
@@ -1065,7 +1065,7 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 	assert.True(t, found.BedrockKeyConfig.ARN.IsFromEnv())
 }
 
-func TestEncryptPlaintextKeys_EnvVarBackedFields_SurviveStartupPass(t *testing.T) {
+func TestEncryptPlaintextKeys_SecretVarBackedFields_SurviveStartupPass(t *testing.T) {
 	store, db := setupEncryptionTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
@@ -1181,7 +1181,7 @@ func TestEncryptPlaintextRows_EncryptionDisabled_GORMHooksStorePlaintext(t *test
 		ProviderID: 1,
 		Provider:   "openai",
 		KeyID:      "hne-1",
-		Value:      *schemas.NewEnvVar("sk-stays-plain-via-hook"),
+		Value:      *schemas.NewSecretVar("sk-stays-plain-via-hook"),
 	}
 	require.NoError(t, db.Create(key).Error)
 
@@ -1282,7 +1282,7 @@ func TestEncryptPlaintextVirtualKeys_HashComputedDuringStartup(t *testing.T) {
 // MCP client env var connection string survives startup pass
 // ============================================================================
 
-func TestEncryptPlaintextMCPClients_EnvVarConnectionStringSurvivesStartup(t *testing.T) {
+func TestEncryptPlaintextMCPClients_SecretVarConnectionStringSurvivesStartup(t *testing.T) {
 	store, db := setupEncryptionTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")

@@ -1,14 +1,14 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
-import { EnvVar } from "@/lib/types/schemas";
+import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -139,7 +139,7 @@ export default function SecurityView() {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
 
-	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: EnvVar) => {
+	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
@@ -212,7 +212,7 @@ export default function SecurityView() {
 							<div className="space-y-4">
 								<div className="space-y-2">
 									<Label htmlFor="admin-username">Username</Label>
-									<EnvVarInput
+									<SecretVarInput
 										id="admin-username"
 										type="text"
 										placeholder="Enter admin username or env.VAR_NAME"
@@ -223,7 +223,7 @@ export default function SecurityView() {
 								</div>
 								<div className="space-y-2">
 									<Label htmlFor="admin-password">Password</Label>
-									<EnvVarInput
+									<SecretVarInput
 										id="admin-password"
 										type="password"
 										placeholder="Enter admin password or env.VAR_NAME"

@@ -1,12 +1,12 @@
-import { EnvVar } from "@/lib/types/schemas";
+import { SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import * as React from "react";
 import { useEffect, useRef } from "react";
 import { Badge } from "./badge";
 
-type BaseEnvVarInputProps = {
-	value?: EnvVar;
-	onChange?: (value: EnvVar) => void;
+type BaseSecretVarInputProps = {
+	value?: SecretVar;
+	onChange?: (value: SecretVar) => void;
 	inputClassName?: string;
 	variant?: "input" | "textarea";
 	rows?: number;
@@ -17,15 +17,15 @@ type BaseEnvVarInputProps = {
 	maskVisibleSuffix?: number;
 };
 
-type InputVariantProps = BaseEnvVarInputProps & {
+type InputVariantProps = BaseSecretVarInputProps & {
 	variant?: "input";
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">;
 
-type TextareaVariantProps = BaseEnvVarInputProps & {
+type TextareaVariantProps = BaseSecretVarInputProps & {
 	variant: "textarea";
 } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange">;
 
-export type EnvVarInputProps = InputVariantProps | TextareaVariantProps;
+export type SecretVarInputProps = InputVariantProps | TextareaVariantProps;
 
 const maskValue = (value: string, visiblePrefix: number, visibleSuffix: number) => {
 	if (!value) return "";
@@ -40,7 +40,7 @@ const maskValue = (value: string, visiblePrefix: number, visibleSuffix: number) 
 	return `${prefix}****${suffix}`;
 };
 
-export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaElement, EnvVarInputProps>(
+export const SecretVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaElement, SecretVarInputProps>(
 	(
 		{
 			className,
@@ -170,4 +170,4 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
 	},
 );
 
-EnvVarInput.displayName = "EnvVarInput";
+SecretVarInput.displayName = "SecretVarInput";

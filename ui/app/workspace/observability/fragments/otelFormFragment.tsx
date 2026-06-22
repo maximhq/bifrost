@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -9,8 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { RequestHeadersTextarea } from "@/components/ui/requestHeadersTextarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { otelFormSchema, type EnvVar, type OtelFormSchema } from "@/lib/types/schemas";
-import { emptyEnvVar, toEnvVarFormValue, toEnvVarMapFormValue } from "@/lib/utils/envVarForm";
+import { otelFormSchema, type SecretVar, type OtelFormSchema } from "@/lib/types/schemas";
+import { emptySecretVar, toSecretVarFormValue, toSecretVarMapFormValue } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
@@ -21,18 +21,18 @@ import { useFieldArray, useForm, type Control, type Resolver, type UseFormReturn
 type ProfileForm = OtelFormSchema["profiles"][number];
 
 // StoredOtelProfile is one profile as persisted/returned by the API (headers are strings,
-// EnvVar fields may be plain strings or full objects).
+// SecretVar fields may be plain strings or full objects).
 interface StoredOtelProfile {
 	enabled?: boolean;
 	service_name?: string;
-	collector_url?: string | EnvVar;
-	headers?: Record<string, string | EnvVar>;
+	collector_url?: string | SecretVar;
+	headers?: Record<string, string | SecretVar>;
 	trace_type?: "genai_extension" | "vercel" | "open_inference";
 	protocol?: "http" | "grpc";
 	tls_ca_cert?: string;
 	insecure?: boolean;
 	metrics_enabled?: boolean;
-	metrics_endpoint?: string | EnvVar;
+	metrics_endpoint?: string | SecretVar;
 	metrics_push_interval?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
@@ -87,31 +87,31 @@ const protocolOptions: {
 const emptyProfile = (): ProfileForm => ({
 	enabled: true,
 	service_name: "bifrost",
-	collector_url: emptyEnvVar(),
+	collector_url: emptySecretVar(),
 	headers: {},
 	trace_type: "genai_extension",
 	protocol: "http",
 	tls_ca_cert: "",
 	insecure: true,
 	metrics_enabled: false,
-	metrics_endpoint: emptyEnvVar(),
+	metrics_endpoint: emptySecretVar(),
 	metrics_push_interval: 15,
 	request_headers: [],
 	disable_content_logging: false,
 });
 
-// toProfileForm normalizes a stored profile into the EnvVar-based form representation.
+// toProfileForm normalizes a stored profile into the SecretVar-based form representation.
 const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	enabled: p?.enabled ?? true,
 	service_name: p?.service_name ?? "bifrost",
-	collector_url: toEnvVarFormValue(p?.collector_url),
-	headers: toEnvVarMapFormValue(p?.headers),
+	collector_url: toSecretVarFormValue(p?.collector_url),
+	headers: toSecretVarMapFormValue(p?.headers),
 	trace_type: p?.trace_type ?? "genai_extension",
 	protocol: p?.protocol ?? "http",
 	tls_ca_cert: p?.tls_ca_cert ?? "",
 	insecure: p?.insecure ?? true,
 	metrics_enabled: p?.metrics_enabled ?? false,
-	metrics_endpoint: toEnvVarFormValue(p?.metrics_endpoint),
+	metrics_endpoint: toSecretVarFormValue(p?.metrics_endpoint),
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
@@ -390,7 +390,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									<code>{protocol === "http" ? "http(s)://<host>:<port>/v1/traces" : "<host>:<port>"}</code>
 								</div>
 								<FormControl>
-									<EnvVarInput
+									<SecretVarInput
 										placeholder={
 											protocol === "http"
 												? "https://otel-collector.example.com:4318/v1/traces or env.OTEL_COLLECTOR_URL"
@@ -410,7 +410,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						render={({ field }) => (
 							<FormItem className="w-full">
 								<FormControl>
-									<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} useEnvVarInput />
+									<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} useSecretVarInput />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -613,7 +613,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 												<code>{protocol === "http" ? "http(s)://<host>:<port>/v1/metrics" : "<host>:<port>"}</code>
 											</div>
 											<FormControl>
-												<EnvVarInput
+												<SecretVarInput
 													placeholder={
 														protocol === "http"
 															? "https://otel-collector:4318/v1/metrics or env.OTEL_METRICS_ENDPOINT"

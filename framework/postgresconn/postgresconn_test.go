@@ -11,7 +11,7 @@ import (
 
 func TestValidatePasswordCommandAllowsEmptyPassword(t *testing.T) {
 	cfg := validConfig()
-	cfg.Password = schemas.NewEnvVar("")
+	cfg.Password = schemas.NewSecretVar("")
 	cfg.PasswordCommand = &PasswordCommandConfig{Command: "printf", Args: []string{"secret"}}
 
 	require.NoError(t, Validate(cfg, true))
@@ -26,7 +26,7 @@ func TestValidatePasswordAndPasswordCommandAreExclusive(t *testing.T) {
 
 func TestValidateRequiresStaticPasswordWhenConfigured(t *testing.T) {
 	cfg := validConfig()
-	cfg.Password = schemas.NewEnvVar("")
+	cfg.Password = schemas.NewSecretVar("")
 
 	require.ErrorContains(t, Validate(cfg, true), "postgres password is required")
 }
@@ -197,11 +197,11 @@ func TestRunPasswordCommandStartErrorIsNotTimeout(t *testing.T) {
 
 func validConfig() *Config {
 	return &Config{
-		Host:     schemas.NewEnvVar("localhost"),
-		Port:     schemas.NewEnvVar("5432"),
-		User:     schemas.NewEnvVar("bifrost"),
-		Password: schemas.NewEnvVar("password"),
-		DBName:   schemas.NewEnvVar("bifrost"),
-		SSLMode:  schemas.NewEnvVar("disable"),
+		Host:     schemas.NewSecretVar("localhost"),
+		Port:     schemas.NewSecretVar("5432"),
+		User:     schemas.NewSecretVar("bifrost"),
+		Password: schemas.NewSecretVar("password"),
+		DBName:   schemas.NewSecretVar("bifrost"),
+		SSLMode:  schemas.NewSecretVar("disable"),
 	}
 }

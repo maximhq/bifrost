@@ -1,4 +1,4 @@
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
@@ -203,7 +203,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<FormItem>
 							<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
 							<FormControl>
-								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+								<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 							</FormControl>
 							<FormMessage />
 						</FormItem>
@@ -398,7 +398,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}
 									</FormLabel>
 									<FormControl>
-										<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+										<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -419,7 +419,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Endpoint (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} />
+									<SecretVarInput placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -434,7 +434,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Client ID (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} />
+											<SecretVarInput placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -447,7 +447,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Client Secret (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} />
+											<SecretVarInput placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -460,7 +460,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Tenant ID (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} />
+											<SecretVarInput placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -552,7 +552,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Project ID (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} />
+									<SecretVarInput placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -565,7 +565,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Project Number (Required only for fine-tuned models)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} />
+									<SecretVarInput placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -578,7 +578,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="us-central1 or env.VERTEX_REGION" {...field} />
+									<SecretVarInput placeholder="us-central1 or env.VERTEX_REGION" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -594,7 +594,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormLabel>Auth Credentials (Required)</FormLabel>
 									<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
 									<FormControl>
-										<EnvVarInput
+										<SecretVarInput
 											data-testid="apikey-vertex-auth-credentials-input"
 											variant="textarea"
 											rows={4}
@@ -623,7 +623,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormItem>
 									<FormLabel>API Key (Supported only for gemini and fine-tuned models)</FormLabel>
 									<FormControl>
-										<EnvVarInput data-testid="apikey-vertex-api-key-input" placeholder="API Key or env.MY_KEY" type="text" {...field} />
+										<SecretVarInput data-testid="apikey-vertex-api-key-input" placeholder="API Key or env.MY_KEY" type="text" {...field} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -666,7 +666,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormLabel>Server URL (Required)</FormLabel>
 								<FormDescription>Base URL of the vLLM server (e.g. http://vllm-server:8000 or env.VLLM_URL)</FormDescription>
 								<FormControl>
-									<EnvVarInput data-testid="key-input-vllm-url" placeholder="http://vllm-server:8000" {...field} />
+									<SecretVarInput data-testid="key-input-vllm-url" placeholder="http://vllm-server:8000" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -701,7 +701,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									{isOllama ? "http://localhost:11434" : "http://localhost:30000"} or {isOllama ? "env.OLLAMA_URL" : "env.SGL_URL"})
 								</FormDescription>
 								<FormControl>
-									<EnvVarInput
+									<SecretVarInput
 										data-testid={`key-input-${isOllama ? "ollama" : "sgl"}-url`}
 										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
 										{...field}
@@ -772,7 +772,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Access Key (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID" {...field} />
+											<SecretVarInput placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -785,7 +785,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Secret Key (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY" {...field} />
+											<SecretVarInput placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -798,7 +798,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Session Token (Optional)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN" {...field} />
+											<SecretVarInput placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -815,7 +815,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormItem>
 									<FormLabel>API Key</FormLabel>
 									<FormControl>
-										<EnvVarInput
+										<SecretVarInput
 											data-testid="apikey-bedrock-api-key-input"
 											placeholder="API Key or env.BEDROCK_API_KEY"
 											type="text"
@@ -835,7 +835,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="us-east-1 or env.AWS_REGION" {...field} />
+									<SecretVarInput placeholder="us-east-1 or env.AWS_REGION" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -853,7 +853,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											Assume an IAM role before requests. Works with both explicit credentials and inherited IAM (EC2, ECS, EKS).
 										</FormDescription>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-bedrock-role-arn-input"
 												placeholder="arn:aws:iam::123456789:role/MyRole or env.AWS_ROLE_ARN"
 												{...field}
@@ -871,7 +871,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										<FormLabel>External ID (Optional)</FormLabel>
 										<FormDescription>Required by the role's trust policy when using cross-account access</FormDescription>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-bedrock-external-id-input"
 												placeholder="external-id or env.AWS_EXTERNAL_ID"
 												{...field}
@@ -889,7 +889,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										<FormLabel>Session Name (Optional)</FormLabel>
 										<FormDescription>AssumeRole session name (defaults to bifrost-session)</FormDescription>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-bedrock-session-name-input"
 												placeholder="bifrost-session or env.AWS_SESSION_NAME"
 												{...field}
@@ -908,7 +908,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>ARN (Optional)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN" {...field} />
+									<SecretVarInput placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

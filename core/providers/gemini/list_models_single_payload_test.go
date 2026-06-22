@@ -47,7 +47,7 @@ func TestListModelsByKey_ParsesSingleModelPayload(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyURLPath, "/models/gemini-2.5-pro")
 
-	key := schemas.Key{Value: *schemas.NewEnvVar("dummy-key")}
+	key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
 	// Unfiltered=true bypasses the allowed/alias/blacklist filter pipeline so
 	// this test can focus on the single-model-payload parsing code path in
 	// listModelsByKey (gemini.go:215-220).

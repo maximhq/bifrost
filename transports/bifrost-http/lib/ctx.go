@@ -692,7 +692,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			key := schemas.Key{
 				ID:     "header-provided",
 				Name:   "header-provided",
-				Value:  schemas.EnvVar{Val: apiKey},
+				Value:  schemas.SecretVar{Val: apiKey},
 				Models: []string{},
 				Weight: 1.0,
 			}

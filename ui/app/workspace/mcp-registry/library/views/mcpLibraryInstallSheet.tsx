@@ -1,7 +1,7 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPLibraryEntry, MCPTLSConfig } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, SecretVar, MCPAuthType, MCPLibraryEntry, MCPTLSConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Globe, Info, KeyRound, Radio, ShieldCheck, Terminal } from "lucide-react";
@@ -31,7 +31,7 @@ interface MCPLibraryInstallSheetProps {
 	onInstalled: () => void;
 }
 
-const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
+const emptySecretVar: SecretVar = { value: "", env_var: "", from_env: false };
 
 /** Strips empty TLS config so we don't send `{}` to the server. */
 function buildTLSConfigPayload(tls: MCPTLSConfig | undefined): MCPTLSConfig | undefined {
@@ -65,7 +65,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 		is_code_mode_client: false,
 		is_ping_available: true,
 		connection_type: server.connection_type || "http",
-		connection_string: isStdio ? undefined : server.connection_url ? { value: server.connection_url, env_var: "", from_env: false } : emptyEnvVar,
+		connection_string: isStdio ? undefined : server.connection_url ? { value: server.connection_url, env_var: "", from_env: false } : emptySecretVar,
 		stdio_config: isStdio && server.stdio_config ? server.stdio_config : undefined,
 		auth_type: authType,
 		headers: authType === "headers" ? { Authorization: { value: "", env_var: "", from_env: false } } : undefined,
@@ -217,8 +217,8 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 
 	const headersValidationError = useMemo(() => {
 		if ((authType !== "headers" && authType !== "per_user_headers") || !headers) return null;
-		for (const [key, envVar] of Object.entries(headers)) {
-			if (!envVar.value && !envVar.env_var) {
+		for (const [key, secretVar] of Object.entries(headers)) {
+			if (!secretVar.value && !secretVar.env_var) {
 				return `Header "${key}" must have a value`;
 			}
 		}
@@ -296,7 +296,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-						client_id: data.oauth_config?.client_id ?? emptyEnvVar,
+						client_id: data.oauth_config?.client_id ?? emptySecretVar,
 						client_secret:
 							data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env
 								? data.oauth_config.client_secret
@@ -544,7 +544,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													keyPlaceholder="Header name"
 													valuePlaceholder="Header value"
 													label="Headers"
-													useEnvVarInput
+													useSecretVarInput
 												/>
 												{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
 												<FormMessage />
@@ -590,7 +590,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 														keyPlaceholder="Header name"
 														valuePlaceholder="Header value"
 														label="Static Headers (optional, applied alongside user values)"
-														useEnvVarInput
+														useSecretVarInput
 													/>
 													{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
 													<FormMessage />
@@ -626,7 +626,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 																</TooltipProvider>
 															</div>
 															<FormControl>
-																<EnvVarInput
+																<SecretVarInput
 																	value={field.value}
 																	onChange={field.onChange}
 																	placeholder="your-client-id"
@@ -645,7 +645,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 														<FormItem>
 															<FormLabel>OAuth client secret</FormLabel>
 															<FormControl>
-																<EnvVarInput
+																<SecretVarInput
 																	value={field.value}
 																	onChange={field.onChange}
 																	placeholder="optional for PKCE"
@@ -780,7 +780,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 														<FormItem>
 															<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 															<FormControl>
-																<EnvVarInput
+																<SecretVarInput
 																	variant="textarea"
 																	placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
 																	className="font-mono text-xs"

@@ -66,7 +66,7 @@ type Profile struct {
 	// are sent for it. Defaults to true when omitted.
 	Enabled      bool              `json:"enabled"`
 	ServiceName  string            `json:"service_name"`
-	CollectorURL *schemas.EnvVar   `json:"collector_url"`
+	CollectorURL *schemas.SecretVar   `json:"collector_url"`
 	Headers      map[string]string `json:"headers,omitempty"`
 	TraceType    TraceType         `json:"trace_type"`
 	Protocol     Protocol          `json:"protocol"`
@@ -75,7 +75,7 @@ type Profile struct {
 
 	// Metrics push configuration
 	MetricsEnabled      bool            `json:"metrics_enabled"`
-	MetricsEndpoint     *schemas.EnvVar `json:"metrics_endpoint,omitempty"`
+	MetricsEndpoint     *schemas.SecretVar `json:"metrics_endpoint,omitempty"`
 	MetricsPushInterval int             `json:"metrics_push_interval,omitempty"` // in seconds, default 15
 
 	// RequestHeaders lists request-header name patterns (exact or wildcard like "x-custom-*"
@@ -190,7 +190,7 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 	return nil
 }
 
-// profileForStorage is the persisted form of a single profile: *EnvVar fields are
+// profileForStorage is the persisted form of a single profile: *SecretVar fields are
 // flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
 // persistence.
 type profileForStorage struct {
@@ -215,10 +215,10 @@ type configForStorage struct {
 	PluginSpanFilter *PluginSpanFilter   `json:"plugin_span_filter,omitempty"`
 }
 
-// MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
+// MarshalForStorage serializes Config to JSON with *SecretVar fields as plain strings
 // ("env.VAR_NAME" or the literal value) for database/config-file persistence. Output is
 // always the canonical {"profiles": [...]} wrapper regardless of the input shape.
-// For HTTP API responses use json.Marshal directly so clients receive full EnvVar objects.
+// For HTTP API responses use json.Marshal directly so clients receive full SecretVar objects.
 func (c *Config) MarshalForStorage() ([]byte, error) {
 	out := configForStorage{
 		Profiles:         make([]profileForStorage, 0, len(c.Profiles)),
@@ -231,14 +231,14 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		out.Profiles = append(out.Profiles, profileForStorage{
 			Enabled:               p.Enabled,
 			ServiceName:           p.ServiceName,
-			CollectorURL:          schemas.EnvVarAsString(p.CollectorURL),
+			CollectorURL:          schemas.SecretVarAsString(p.CollectorURL),
 			Headers:               p.Headers,
 			TraceType:             p.TraceType,
 			Protocol:              p.Protocol,
 			TLSCACert:             p.TLSCACert,
 			Insecure:              p.Insecure,
 			MetricsEnabled:        p.MetricsEnabled,
-			MetricsEndpoint:       schemas.EnvVarAsString(p.MetricsEndpoint),
+			MetricsEndpoint:       schemas.SecretVarAsString(p.MetricsEndpoint),
 			MetricsPushInterval:   p.MetricsPushInterval,
 			RequestHeaders:        p.RequestHeaders,
 			DisableContentLogging: p.DisableContentLogging,
@@ -282,19 +282,19 @@ func (c *Config) Redacted() *Config {
 
 // redactHeaderValue masks a plain-string header value for API responses. "env." references
 // are returned unchanged (they are not secrets), while literal values are masked using the
-// same scheme as EnvVar.Redacted so the API surface stays consistent.
+// same scheme as SecretVar.Redacted so the API surface stays consistent.
 func redactHeaderValue(v string) string {
 	if strings.HasPrefix(v, "env.") {
 		return v
 	}
-	return schemas.EnvVarAsString(schemas.NewEnvVar(v).Redacted())
+	return schemas.SecretVarAsString(schemas.NewSecretVar(v).Redacted())
 }
 
 // hideResolvedEnvValue returns v unchanged for literal values (URLs are not secrets).
 // For env var references it replaces a resolved Val with a redaction marker so API
 // consumers can tell the value exists without leaking env content. Unresolved env
 // references keep an empty Val, while preserving env_var for round-trip edits.
-func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
+func hideResolvedEnvValue(v *schemas.SecretVar) *schemas.SecretVar {
 	if v == nil || (!v.IsFromEnv() && !v.IsFromVault()) {
 		return v
 	}

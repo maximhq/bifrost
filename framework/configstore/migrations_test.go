@@ -1204,7 +1204,7 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 			{
 				ID:     "key-uuid-1",
 				Name:   "openai-primary",
-				Value:  *schemas.NewEnvVar("sk-test-secret-key-12345"),
+				Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			},
@@ -1297,7 +1297,7 @@ func TestFullMigration_MCPClientCRUD(t *testing.T) {
 		ID:               "mcp-client-001",
 		Name:             "test_mcp_server",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.example.com/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.example.com/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	}
 
@@ -1421,7 +1421,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 			Keys: []schemas.Key{{
 				ID:     p.keyID,
 				Name:   p.keyName,
-				Value:  *schemas.NewEnvVar(p.keyValue),
+				Value:  *schemas.NewSecretVar(p.keyValue),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			}},
@@ -1448,7 +1448,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		ID:               "mcp-e2e-1",
 		Name:             "e2e_mcp_client",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.e2e.test/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.e2e.test/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	})
 	require.NoError(t, err)

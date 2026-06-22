@@ -1,5 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { aliasConfigSchema, envVarSchema } from "@/lib/types/schemas";
+import { aliasConfigSchema, secretVarSchema } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -38,7 +38,7 @@ const NetworkConfigSchema = z
 		retry_backoff_initial: z.number(),
 		retry_backoff_max: z.number(),
 		insecure_skip_verify: z.boolean().optional(),
-		ca_cert_pem: z.union([z.string(), envVarSchema]).optional(),
+		ca_cert_pem: z.union([z.string(), secretVarSchema]).optional(),
 		stream_idle_timeout_in_seconds: z.number().int().min(5).max(3600).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
 		enforce_http2: z.boolean().optional(),
