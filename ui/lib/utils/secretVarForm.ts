@@ -56,11 +56,7 @@ export const toHeaderStringMap = (headers?: Record<string, SecretVar>): Record<s
 	return out;
 };
 
-export const toOptionalSecretVarPayload = (field?: {
-	value?: string;
-	ref?: string;
-	type?: string;
-}) => {
+export const toOptionalSecretVarPayload = (field?: SecretVar) => {
 	const secretRef = field?.ref?.trim();
 	const value = field?.value?.trim();
 	const effectiveType = field?.type ?? inferType(field?.ref);
