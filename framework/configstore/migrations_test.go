@@ -1204,7 +1204,7 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 			{
 				ID:     "key-uuid-1",
 				Name:   "openai-primary",
-				Value:  *schemas.NewEnvVar("sk-test-secret-key-12345"),
+				Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			},
@@ -1249,7 +1249,7 @@ func TestFullMigration_VirtualKeyCRUD(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:        "vk-test-001",
 		Name:      "test-virtual-key",
-		Value:     "vk-secret-value-12345",
+		Value:     *schemas.NewSecretVar("vk-secret-value-12345"),
 		IsActive:  bifrost.Ptr(true),
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1265,7 +1265,7 @@ func TestFullMigration_VirtualKeyCRUD(t *testing.T) {
 
 	assert.Equal(t, "vk-test-001", vks[0].ID)
 	assert.Equal(t, "test-virtual-key", vks[0].Name)
-	assert.Equal(t, "vk-secret-value-12345", vks[0].Value) // AfterFind decrypts
+	assert.Equal(t, "vk-secret-value-12345", vks[0].Value.GetValue()) // AfterFind decrypts
 	assert.True(t, vks[0].IsActiveValue())
 
 	// Verify encryption at raw DB level
@@ -1297,7 +1297,7 @@ func TestFullMigration_MCPClientCRUD(t *testing.T) {
 		ID:               "mcp-client-001",
 		Name:             "test_mcp_server",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.example.com/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.example.com/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	}
 
@@ -1395,7 +1395,7 @@ func TestFullMigration_EncryptPlaintextRows(t *testing.T) {
 	var vk tables.TableVirtualKey
 	err = db.Where("id = ?", "vk-plain-1").First(&vk).Error
 	require.NoError(t, err)
-	assert.Equal(t, "vk-plain-secret", vk.Value)
+	assert.Equal(t, "vk-plain-secret", vk.Value.GetValue())
 }
 
 func TestFullMigration_EndToEnd(t *testing.T) {
@@ -1421,7 +1421,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 			Keys: []schemas.Key{{
 				ID:     p.keyID,
 				Name:   p.keyName,
-				Value:  *schemas.NewEnvVar(p.keyValue),
+				Value:  *schemas.NewSecretVar(p.keyValue),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			}},
@@ -1437,7 +1437,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		{"vk-2", "vk-beta", "vk-beta-secret"},
 	} {
 		err := store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
-			ID: vk.id, Name: vk.name, Value: vk.value,
+			ID: vk.id, Name: vk.name, Value: *schemas.NewSecretVar(vk.value),
 			IsActive: bifrost.Ptr(true), CreatedAt: now, UpdatedAt: now,
 		})
 		require.NoError(t, err, "CreateVirtualKey %s", vk.name)
@@ -1448,7 +1448,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		ID:               "mcp-e2e-1",
 		Name:             "e2e_mcp_client",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.e2e.test/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.e2e.test/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	})
 	require.NoError(t, err)

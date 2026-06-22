@@ -656,7 +656,7 @@ func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t
 	require.NoError(t, err)
 
 	updated := *vk
-	updated.Value = "sk-bf-new"
+	updated.Value = *schemas.NewSecretVar("sk-bf-new")
 	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil, nil)
 
 	oldVK, oldFound := store.GetVirtualKey(context.Background(), "sk-bf-old")

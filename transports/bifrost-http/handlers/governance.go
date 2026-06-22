@@ -143,8 +143,12 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 
 // CreateVirtualKeyRequest represents the request body for creating a virtual key
 type CreateVirtualKeyRequest struct {
-	Name            string `json:"name" validate:"required"`
-	Description     string `json:"description,omitempty"`
+	Name        string `json:"name" validate:"required"`
+	Description string `json:"description,omitempty"`
+	// Value optionally sets the virtual key value. Accepts a literal, an "env.X"/"vault.X" string,
+	// or a SecretVar object. When unset, a value is generated server-side. References resolve to
+	// plaintext while the source is preserved for API responses.
+	Value           *schemas.SecretVar `json:"value,omitempty"`
 	ProviderConfigs []struct {
 		Provider          string                  `json:"provider" validate:"required"`
 		Weight            *float64                `json:"weight,omitempty"`
@@ -1298,12 +1302,20 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
-			Value:           governance.GenerateVirtualKey(),
+			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
+		}
+		// If the caller supplied a value (literal or env/vault reference), use it; the SecretVar
+		// resolves the reference and the source round-trips through persistence and API responses.
+		// Only override the generated key when the value resolves to a non-empty plaintext: an
+		// unresolved env/vault reference (e.g. the env var is unset) would otherwise replace the
+		// generated credential with an empty, unusable value.
+		if req.Value.IsSet() && req.Value.GetValue() != "" {
+			vk.Value = *req.Value
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1911,9 +1923,9 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, err
 	}
-	oldValue := vk.Value
-	vk.Value = governance.GenerateVirtualKey()
-	if vk.Value == oldValue {
+	oldValue := vk.Value.GetValue()
+	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {

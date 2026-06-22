@@ -1,14 +1,14 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
-import { EnvVar } from "@/lib/types/schemas";
+import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -39,8 +39,8 @@ export default function SecurityView() {
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
-		admin_username: { value: "", env_var: "", from_env: false },
-		admin_password: { value: "", env_var: "", from_env: false },
+		admin_username: { value: "", ref: "" },
+		admin_password: { value: "", ref: "" },
 		is_enabled: false,
 	});
 
@@ -71,12 +71,12 @@ export default function SecurityView() {
 
 		const usernameChanged =
 			authConfig.admin_username?.value !== bifrostConfig?.auth_config?.admin_username?.value ||
-			authConfig.admin_username?.env_var !== bifrostConfig?.auth_config?.admin_username?.env_var ||
-			authConfig.admin_username?.from_env !== bifrostConfig?.auth_config?.admin_username?.from_env;
+			authConfig.admin_username?.ref !== bifrostConfig?.auth_config?.admin_username?.ref ||
+			authConfig.admin_username?.type !== bifrostConfig?.auth_config?.admin_username?.type;
 		const passwordChanged =
 			authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value ||
-			authConfig.admin_password?.env_var !== bifrostConfig?.auth_config?.admin_password?.env_var ||
-			authConfig.admin_password?.from_env !== bifrostConfig?.auth_config?.admin_password?.from_env;
+			authConfig.admin_password?.ref !== bifrostConfig?.auth_config?.admin_password?.ref ||
+			authConfig.admin_password?.type !== bifrostConfig?.auth_config?.admin_password?.type;
 		const authChanged = showPasswordSection
 			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled || usernameChanged || passwordChanged
 			: false;
@@ -139,7 +139,7 @@ export default function SecurityView() {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
 
-	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: EnvVar) => {
+	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
@@ -153,8 +153,8 @@ export default function SecurityView() {
 				);
 				return;
 			}
-			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.env_var;
-			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.env_var;
+			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
+			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
 			await updateCoreConfig({
 				...bifrostConfig!,
 				client_config: localConfig,
@@ -212,7 +212,7 @@ export default function SecurityView() {
 							<div className="space-y-4">
 								<div className="space-y-2">
 									<Label htmlFor="admin-username">Username</Label>
-									<EnvVarInput
+									<SecretVarInput
 										id="admin-username"
 										type="text"
 										placeholder="Enter admin username or env.VAR_NAME"
@@ -223,7 +223,7 @@ export default function SecurityView() {
 								</div>
 								<div className="space-y-2">
 									<Label htmlFor="admin-password">Password</Label>
-									<EnvVarInput
+									<SecretVarInput
 										id="admin-password"
 										type="password"
 										placeholder="Enter admin password or env.VAR_NAME"

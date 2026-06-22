@@ -532,7 +532,7 @@ func TestConvertToBifrostContext_DirectKey_EnvPrefixNotResolved(t *testing.T) {
 	if key.Value.GetValue() != "env.SOME_SECRET" {
 		t.Errorf("direct key value = %q, want literal %q (must not resolve env vars)", key.Value.GetValue(), "env.SOME_SECRET")
 	}
-	if key.Value.IsFromEnv() {
-		t.Error("direct key must not be marked as from-env")
+	if key.Value.IsFromSecret() {
+		t.Error("direct key must not be marked as from-secret")
 	}
 }

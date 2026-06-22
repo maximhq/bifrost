@@ -25,11 +25,11 @@ const (
 type WeaviateConfig struct {
 	// Connection settings
 	Scheme     string              `json:"scheme"`                // "http" or "https" - REQUIRED
-	Host       *schemas.EnvVar     `json:"host"`                  // "localhost:8080" - REQUIRED
+	Host       *schemas.SecretVar     `json:"host"`                  // "localhost:8080" - REQUIRED
 	GrpcConfig *WeaviateGrpcConfig `json:"grpc_config,omitempty"` // grpc config for weaviate (optional)
 
 	// Authentication settings (optional)
-	APIKey  *schemas.EnvVar   `json:"api_key,omitempty"` // API key for authentication
+	APIKey  *schemas.SecretVar   `json:"api_key,omitempty"` // API key for authentication
 	Headers map[string]string `json:"headers,omitempty"` // Additional headers
 
 	// Connection settings
@@ -41,7 +41,7 @@ type WeaviateConfig struct {
 type WeaviateGrpcConfig struct {
 	// Host is the host of the weaviate server (host:port).
 	// If host is without a port number then the 80 port for insecured and 443 port for secured connections will be used.
-	Host *schemas.EnvVar `json:"host"`
+	Host *schemas.SecretVar `json:"host"`
 	// Secured is a boolean flag indicating if the connection is secured
 	Secured bool `json:"secured"`
 }

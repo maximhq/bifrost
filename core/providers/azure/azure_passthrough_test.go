@@ -15,7 +15,7 @@ func TestBuildPassthroughURL(t *testing.T) {
 	makeKey := func(endpoint string) schemas.Key {
 		return schemas.Key{
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint: *schemas.NewEnvVar(endpoint),
+				Endpoint: *schemas.NewSecretVar(endpoint),
 			},
 		}
 	}
@@ -140,7 +140,7 @@ func TestBuildPassthroughURL_AliasAPIVersionOverride(t *testing.T) {
 	endpoint := "https://my-resource.openai.azure.com"
 	makeKey := schemas.Key{
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint: *schemas.NewEnvVar(endpoint),
+			Endpoint: *schemas.NewSecretVar(endpoint),
 		},
 	}
 
@@ -202,7 +202,7 @@ func TestResolveAzureEndpoint_AliasOverride(t *testing.T) {
 	aliasEndpoint := "https://anthropic-resource.openai.azure.com"
 	key := schemas.Key{
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint: *schemas.NewEnvVar(keyEndpoint),
+			Endpoint: *schemas.NewSecretVar(keyEndpoint),
 		},
 	}
 
@@ -216,7 +216,7 @@ func TestResolveAzureEndpoint_AliasOverride(t *testing.T) {
 	}
 
 	// With alias-level Endpoint override, alias wins.
-	override := schemas.NewEnvVar(aliasEndpoint)
+	override := schemas.NewSecretVar(aliasEndpoint)
 	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
 		Key: "best-claude",
 		Config: &schemas.AliasConfig{
@@ -232,7 +232,7 @@ func TestResolveAzureEndpoint_AliasOverride(t *testing.T) {
 
 	// Alias with empty Endpoint value falls through to key-level — guards against
 	// a misconfigured alias accidentally erasing the endpoint.
-	emptyOverride := schemas.NewEnvVar("")
+	emptyOverride := schemas.NewSecretVar("")
 	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
 		Key: "x",

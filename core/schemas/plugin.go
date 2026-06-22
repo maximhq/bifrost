@@ -366,7 +366,7 @@ type ConfigMarshallerPlugin interface {
 	BasePlugin
 
 	// MarshalConfigForStorage converts the raw config map (as received from the API)
-	// into the canonical DB-storage format (e.g. *EnvVar fields as plain strings).
+	// into the canonical DB-storage format (e.g. *SecretVar fields as plain strings).
 	MarshalConfigForStorage(config map[string]any) (map[string]any, error)
 	// RedactConfig converts a stored config map into the API-response format,
 	// masking sensitive literal values.

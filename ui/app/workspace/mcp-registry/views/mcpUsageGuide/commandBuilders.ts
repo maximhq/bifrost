@@ -1,5 +1,5 @@
 import type { CoreConfig } from "@/lib/types/config";
-import type { VirtualKey } from "@/lib/types/governance";
+import { resolveVirtualKeyValue, type VirtualKey } from "@/lib/types/governance";
 import type { MCPClient } from "@/lib/types/mcp";
 import type { ClaudeScope } from "./types";
 import { encodeBase64, getExternalBaseUrl, getIncludeClients, getRegistrationName, quoteShellValue, quoteTomlString } from "./utils";
@@ -22,7 +22,7 @@ export function buildClaudeCodeCommand({
 
 	const lines = [
 		`claude mcp add --transport http ${quoteShellValue(registrationName)} --scope ${scope} ${quoteShellValue(gatewayUrl)} \\`,
-		`  --header ${quoteShellValue(`x-bf-vk: ${virtualKey.value}`)}`,
+		`  --header ${quoteShellValue(`x-bf-vk: ${resolveVirtualKeyValue(virtualKey.value)}`)}`,
 	];
 
 	const includeClients = getIncludeClients(selectedServers);
@@ -49,7 +49,7 @@ export function buildCodexConfig({
 	const registrationName = getRegistrationName(selectedServers);
 	const includeClients = getIncludeClients(selectedServers);
 
-	const headerEntries = [`"x-bf-vk" = ${quoteTomlString(virtualKey.value)}`];
+	const headerEntries = [`"x-bf-vk" = ${quoteTomlString(resolveVirtualKeyValue(virtualKey.value))}`];
 	if (includeClients) {
 		headerEntries.push(`"x-bf-mcp-include-clients" = ${quoteTomlString(includeClients)}`);
 	}
@@ -74,7 +74,7 @@ function buildCursorServer({
 }): { name: string; server: { url: string; headers: Record<string, string> } } {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
+	const headers: Record<string, string> = { "x-bf-vk": resolveVirtualKeyValue(virtualKey.value) };
 
 	const includeClients = getIncludeClients(selectedServers);
 	if (includeClients) {
@@ -113,7 +113,7 @@ export function buildWindsurfConfig({
 }): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
+	const headers: Record<string, string> = { "x-bf-vk": resolveVirtualKeyValue(virtualKey.value) };
 
 	const includeClients = getIncludeClients(selectedServers);
 	if (includeClients) {
@@ -147,7 +147,7 @@ function buildVSCodeServer({
 }): { name: string; server: { type: "http"; url: string; headers: Record<string, string> } } {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
+	const headers: Record<string, string> = { "x-bf-vk": resolveVirtualKeyValue(virtualKey.value) };
 
 	const includeClients = getIncludeClients(selectedServers);
 	if (includeClients) {
@@ -190,7 +190,7 @@ export function buildOpenCodeConfig({
 }): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
+	const headers: Record<string, string> = { "x-bf-vk": resolveVirtualKeyValue(virtualKey.value) };
 
 	const includeClients = getIncludeClients(selectedServers);
 	if (includeClients) {
@@ -227,7 +227,7 @@ export function buildAntigravityConfig({
 }): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
+	const headers: Record<string, string> = { "x-bf-vk": resolveVirtualKeyValue(virtualKey.value) };
 
 	const includeClients = getIncludeClients(selectedServers);
 	if (includeClients) {
