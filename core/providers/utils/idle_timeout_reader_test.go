@@ -3,7 +3,9 @@ package utils
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -68,6 +70,32 @@ type timerPanicCloser struct{}
 
 func (timerPanicCloser) Read([]byte) (int, error)   { return 0, io.EOF }
 func (timerPanicCloser) CloseWithError(error) error { panic("simulated fasthttp CloseConn nil-deref") }
+
+// captureLogger records Debug messages so a test can assert that a recovered
+// panic value is logged (not silently swallowed). It embeds noopLogger to
+// satisfy the rest of the schemas.Logger interface.
+type captureLogger struct {
+	noopLogger
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (c *captureLogger) Debug(format string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.msgs = append(c.msgs, fmt.Sprintf(format, args...))
+}
+
+func (c *captureLogger) contains(sub string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, m := range c.msgs {
+		if strings.Contains(m, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 type blockingCloserSpy struct {
 	started chan struct{}
@@ -424,6 +452,26 @@ func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
 	// the recover, the process would have already crashed.
 	time.Sleep(50 * time.Millisecond)
 	cleanup()
+}
+
+// TestIdleTimeoutReader_LogsRecoveredTimerPanic verifies that the recovered
+// panic value is logged (not silently swallowed), so an unexpected future
+// panic on this path leaves a forensic trace. Not parallel: it swaps the
+// package-global logger and restores it via t.Cleanup before parallel tests
+// resume.
+func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
+	capLog := &captureLogger{}
+	prev := getLogger()
+	SetLogger(capLog)
+	t.Cleanup(func() { SetLogger(prev) })
+
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, timerPanicCloser{}, 10*time.Millisecond, nil)
+	time.Sleep(50 * time.Millisecond)
+	cleanup() // blocks until the timer callback (recover + log) has returned
+
+	if !capLog.contains("idle-timeout timer") || !capLog.contains("nil-deref") {
+		t.Fatalf("expected recovered panic to be logged; got %v", capLog.msgs)
+	}
 }
 
 func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
