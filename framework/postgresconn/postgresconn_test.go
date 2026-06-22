@@ -47,9 +47,9 @@ func TestValidateRejectsNonPositiveConnMaxLifetime(t *testing.T) {
 
 func TestBuildDSNQuotesValuesForPasswordCommandParsing(t *testing.T) {
 	cfg := validConfig()
-	cfg.Host = schemas.NewEnvVar("127.0.0.1")
-	cfg.User = schemas.NewEnvVar("service-account@example-project.iam")
-	cfg.Password = schemas.NewEnvVar("")
+	cfg.Host = schemas.NewSecretVar("127.0.0.1")
+	cfg.User = schemas.NewSecretVar("service-account@example-project.iam")
+	cfg.Password = schemas.NewSecretVar("")
 	cfg.PasswordCommand = &PasswordCommandConfig{Command: "printf", Args: []string{"unused-iam-auth"}}
 
 	pgxConfig, err := pgx.ParseConfig(BuildDSN(cfg))
@@ -70,7 +70,7 @@ func TestBuildDSNQuotesSpecialCharacters(t *testing.T) {
 		{
 			name: "single quote",
 			mutate: func(cfg *Config) {
-				cfg.User = schemas.NewEnvVar("service'account")
+				cfg.User = schemas.NewSecretVar("service'account")
 			},
 			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
 				require.Equal(t, "service'account", pgxConfig.User)
@@ -79,7 +79,7 @@ func TestBuildDSNQuotesSpecialCharacters(t *testing.T) {
 		{
 			name: "backslash",
 			mutate: func(cfg *Config) {
-				cfg.Host = schemas.NewEnvVar(`C:\postgres\socket`)
+				cfg.Host = schemas.NewSecretVar(`C:\postgres\socket`)
 			},
 			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
 				require.Equal(t, `C:\postgres\socket`, pgxConfig.Host)
@@ -88,7 +88,7 @@ func TestBuildDSNQuotesSpecialCharacters(t *testing.T) {
 		{
 			name: "backslash and single quote",
 			mutate: func(cfg *Config) {
-				cfg.DBName = schemas.NewEnvVar(`bifrost\tenant's`)
+				cfg.DBName = schemas.NewSecretVar(`bifrost\tenant's`)
 			},
 			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
 				require.Equal(t, `bifrost\tenant's`, pgxConfig.Database)
