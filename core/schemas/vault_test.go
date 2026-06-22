@@ -48,8 +48,8 @@ func TestStoreVaultSecretVar_NoOps(t *testing.T) {
 		e    *SecretVar
 	}{
 		{"nil", nil},
-		{"env-sourced", &SecretVar{secretRef: "env.MY_VAR", fromSecret: true}},
-		{"already-vault", &SecretVar{Val: "vault.some/path", secretRef: "vault.some/path", fromSecret: true}},
+		{"env-sourced", &SecretVar{secretRef: "env.MY_VAR", SecretType: SecretTypeEnv}},
+		{"already-vault", &SecretVar{Val: "vault.some/path", secretRef: "vault.some/path", SecretType: SecretTypeVault}},
 		{"empty", &SecretVar{Val: ""}},
 	}
 	for _, tc := range cases {
@@ -93,8 +93,8 @@ func TestRemoveOwnedVaultSecretVars_SkipsFragmentRefs(t *testing.T) {
 		Fragment SecretVar `gorm:"column:fragment"`
 	}
 	m := &model{
-		Normal:   SecretVar{Val: "vault.bifrost/m/1/normal", secretRef: "vault.bifrost/m/1/normal", fromSecret: true},
-		Fragment: SecretVar{Val: "vault.external/db#apiKey", secretRef: "vault.external/db#apiKey", fromSecret: true},
+		Normal:   SecretVar{Val: "vault.bifrost/m/1/normal", secretRef: "vault.bifrost/m/1/normal", SecretType: SecretTypeVault},
+		Fragment: SecretVar{Val: "vault.external/db#apiKey", secretRef: "vault.external/db#apiKey", SecretType: SecretTypeVault},
 	}
 
 	RemoveOwnedVaultSecretVars(context.Background(), "bifrost/m/1", m)
@@ -119,7 +119,7 @@ func TestStoreOwnedVaultSecretVars_WalksFields(t *testing.T) {
 		Plain:    SecretVar{Val: "p1"},
 		Ptr:      &SecretVar{Val: "p2"},
 		Snake:    SecretVar{Val: "p3"},
-		EnvBased: SecretVar{secretRef: "env.X", fromSecret: true},
+		EnvBased: SecretVar{secretRef: "env.X", SecretType: SecretTypeEnv},
 	}
 
 	if err := StoreOwnedVaultSecretVars(context.Background(), "bifrost/m/1", m); err != nil {
@@ -153,7 +153,7 @@ func TestStoreOwnedVaultSecretVars_WalksMap(t *testing.T) {
 	m := &model{
 		Headers: map[string]SecretVar{
 			"Authorization": {Val: "secret-token"},
-			"X-Env":         SecretVar{secretRef: "env.X", fromSecret: true},
+			"X-Env":         SecretVar{secretRef: "env.X", SecretType: SecretTypeEnv},
 		},
 	}
 
@@ -192,8 +192,8 @@ func TestRemoveOwnedVaultSecretVars_WalksMap(t *testing.T) {
 	}
 	m := &model{
 		Headers: map[string]SecretVar{
-			"Owned":    SecretVar{Val: "vault.bifrost/m/1/headers/Owned", secretRef: "vault.bifrost/m/1/headers/Owned", fromSecret: true},
-			"External": SecretVar{Val: "vault.external/db#key", secretRef: "vault.external/db#key", fromSecret: true},
+			"Owned":    SecretVar{Val: "vault.bifrost/m/1/headers/Owned", secretRef: "vault.bifrost/m/1/headers/Owned", SecretType: SecretTypeVault},
+			"External": SecretVar{Val: "vault.external/db#key", secretRef: "vault.external/db#key", SecretType: SecretTypeVault},
 		},
 	}
 

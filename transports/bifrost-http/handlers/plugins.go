@@ -628,24 +628,27 @@ func restoreRedactedValue(incoming, existing any) any {
 	}
 }
 
-// isSecretVarObject returns true if m has exactly the shape of a serialised SecretVar:
-// keys "value", "env_var", and "from_env".
+// isSecretVarObject returns true if m has the shape of a serialised SecretVar.
 func isSecretVarObject(m map[string]any) bool {
 	_, hasValue := m["value"]
 	_, hasSecretRef := m["secret_ref"]
-	_, hasFromSecret := m["from_secret"]
-	// also accept legacy env_var/from_env keys for backward compat
-	_, hasEnvVar := m["env_var"]
-	_, hasFromEnv := m["from_env"]
-	return hasValue && ((hasSecretRef && hasFromSecret) || (hasEnvVar && hasFromEnv))
+	_, hasType := m["type"]
+	_, hasFromSecret := m["from_secret"] // backward compat
+	_, hasEnvVar := m["env_var"]         // backward compat
+	_, hasFromEnv := m["from_env"]       // backward compat
+	return hasValue && ((hasSecretRef && (hasType || hasFromSecret)) || (hasEnvVar && hasFromEnv))
 }
 
 // marshalSecretVarObject serialises a SecretVar-shaped map back to the JSON string that
 // schemas.NewSecretVar expects so we can call ShouldPreserveStored on it.
 func marshalSecretVarObject(m map[string]any) string {
 	value, _ := m["value"].(string)
-	// new format
 	if secretRef, ok := m["secret_ref"].(string); ok {
+		secretType, _ := m["type"].(string)
+		if secretType != "" {
+			return fmt.Sprintf(`{"value":%q,"secret_ref":%q,"type":%q}`, value, secretRef, secretType)
+		}
+		// backward compat: from_secret bool
 		fromSecret, _ := m["from_secret"].(bool)
 		if fromSecret {
 			return fmt.Sprintf(`{"value":%q,"secret_ref":%q,"from_secret":true}`, value, secretRef)

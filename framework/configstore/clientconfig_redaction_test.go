@@ -42,9 +42,9 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	require.NoError(t, err)
 
 	var out struct {
-		Value     string `json:"value"`
-		SecretRef string `json:"secret_ref"`
-		FromSecret bool  `json:"from_secret"`
+		Value      string `json:"value"`
+		SecretRef  string `json:"secret_ref"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
@@ -52,7 +52,7 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 		"resolved env value leaked through Endpoint JSON output: %q", out.Value)
 	assert.Equal(t, "env.MY_AZURE_ENDPOINT_SECRET", out.SecretRef,
 		"secret ref must be preserved so the UI can show it")
-	assert.True(t, out.FromSecret, "from_secret flag must be preserved")
+	assert.Equal(t, "env", out.SecretType, "type field must be preserved")
 }
 
 // TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields verifies that the
@@ -80,13 +80,13 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 
 	var out struct {
 		Value      string `json:"value"`
-		FromSecret bool   `json:"from_secret"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.Equal(t, "https://foo.openai.azure.com", out.Value,
 		"plain Endpoint was incorrectly redacted")
-	assert.False(t, out.FromSecret)
+	assert.Empty(t, out.SecretType)
 }
 
 // TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that
@@ -118,14 +118,14 @@ func TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex(t *testing
 	var out struct {
 		Value      string `json:"value"`
 		SecretRef  string `json:"secret_ref"`
-		FromSecret bool   `json:"from_secret"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.NotContains(t, out.Value, "super-secret-project",
 		"resolved Vertex ProjectID env value leaked: %q", out.Value)
 	assert.Equal(t, "env.MY_VERTEX_PROJECT_ID_SECRET", out.SecretRef)
-	assert.True(t, out.FromSecret)
+	assert.Equal(t, "env", out.SecretType)
 }
 
 // TestProviderConfig_Redacted_DoesNotMutateOriginal ensures Redacted() does not

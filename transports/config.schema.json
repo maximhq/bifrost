@@ -266,6 +266,7 @@
               "properties": {
                 "value": { "type": "string" },
                 "secret_ref": { "type": "string" },
+                "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
                 "from_secret": { "type": "boolean" },
                 "env_var": { "type": "string" },
                 "from_env": { "type": "boolean" }
