@@ -6,6 +6,7 @@ package runware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -251,19 +252,189 @@ func (provider *RunwareProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
-// VideoGeneration is not supported by the Runware provider.
-func (provider *RunwareProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
+// sendTaskArray wraps a single task object in the Runware array envelope, posts it to the
+// unified endpoint, and returns the wrapped request body, decoded response body, and latency.
+func (provider *RunwareProvider) sendTaskArray(ctx *schemas.BifrostContext, key schemas.Key, jsonData []byte) (reqBody []byte, respBody []byte, latency time.Duration, bifrostErr *schemas.BifrostError) {
+	reqBody = make([]byte, 0, len(jsonData)+2)
+	reqBody = append(reqBody, '[')
+	reqBody = append(reqBody, jsonData...)
+	reqBody = append(reqBody, ']')
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, ""))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+	req.SetBody(reqBody)
+
+	lat, bErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bErr != nil {
+		return reqBody, nil, 0, bErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return reqBody, nil, 0, parseRunwareError(resp)
+	}
+	decoded, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return reqBody, nil, 0, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	// Copy out: the fasthttp response buffer is released when this function returns.
+	return reqBody, append([]byte(nil), decoded...), lat, nil
 }
 
-// VideoRetrieve is not supported by the Runware provider.
-func (provider *RunwareProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
+// VideoGeneration submits an async videoInference task and returns the queued job.
+// The caller polls VideoRetrieve to fetch the finished video.
+func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToRunwareVideoGenerationRequest(bifrostReq)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	reqBody, respBody, latency, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	var videoResp RunwareResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	result, bifrostErr := firstVideoResult(&videoResp)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	bifrostResp := ToBifrostVideoGenerationResponse(result)
+	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(result.TaskUUID, providerName)
+	bifrostResp.Model = bifrostReq.Model
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
 }
 
-// VideoDownload is not supported by the Runware provider.
-func (provider *RunwareProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
+// VideoRetrieve polls a previously submitted videoInference task via a getResponse task.
+func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, providerName)
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	jsonData, err := providerUtils.MarshalSorted(RunwareGetResponseRequest{TaskType: taskTypeGetResponse, TaskUUID: taskID})
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
+	reqBody, respBody, latency, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	var videoResp RunwareResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	result, bifrostErr := firstVideoResult(&videoResp)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	bifrostResp := ToBifrostVideoGenerationResponse(result)
+	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(taskID, providerName)
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
+}
+
+// VideoDownload retrieves the task, then downloads the finished video from its URL.
+func (provider *RunwareProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	taskDetails, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if taskDetails.Status != schemas.VideoStatusCompleted {
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("video not ready, current status: %s", taskDetails.Status), nil)
+	}
+	if len(taskDetails.Videos) == 0 || taskDetails.Videos[0].URL == nil || *taskDetails.Videos[0].URL == "" {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+	}
+	videoURL := *taskDetails.Videos[0].URL
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI(videoURL)
+	req.Header.SetMethod(http.MethodGet)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+	}
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	contentType := string(resp.Header.ContentType())
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+
+	bifrostResp := &schemas.BifrostVideoDownloadResponse{
+		VideoID:     request.ID,
+		Content:     append([]byte(nil), body...),
+		ContentType: contentType,
+	}
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+
+	return bifrostResp, nil
+}
+
+// firstVideoResult returns the first video task result, surfacing task-level errors.
+func firstVideoResult(resp *RunwareResponse) (*RunwareResult, *schemas.BifrostError) {
+	if len(resp.Data) == 0 {
+		if msg := firstRunwareErrorMessage(resp.Errors); msg != "" {
+			return nil, providerUtils.NewBifrostOperationError(msg, nil)
+		}
+		return nil, providerUtils.NewBifrostOperationError("runware returned no video task", nil)
+	}
+	return &resp.Data[0], nil
 }
 
 // VideoDelete is not supported by the Runware provider.
