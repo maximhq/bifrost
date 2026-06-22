@@ -36,6 +36,7 @@ interface StoredOtelProfile {
 	metrics_push_interval?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
+	group_traces_by_session?: boolean;
 }
 
 // StoredOtelConfig is either the canonical { profiles: [...] } wrapper or a legacy single
@@ -98,6 +99,7 @@ const emptyProfile = (): ProfileForm => ({
 	metrics_push_interval: 15,
 	request_headers: [],
 	disable_content_logging: false,
+	group_traces_by_session: false,
 });
 
 // toProfileForm normalizes a stored profile into the EnvVar-based form representation.
@@ -115,6 +117,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
+	group_traces_by_session: p?.group_traces_by_session ?? false,
 });
 
 // buildDefaults handles both stored shapes: the { profiles: [...] } wrapper and the legacy
@@ -455,6 +458,25 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								</div>
 								<FormControl>
 									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-disable-content-logging-toggle`} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`${base}.group_traces_by_session`}
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between">
+								<div className="space-y-0.5">
+									<FormLabel className="text-base">Group Traces by Session</FormLabel>
+									<FormDescription>
+										When enabled, requests sharing the same x-bf-session-id header are grouped into a single trace, each request
+										appearing as a top-level sibling span. A request carrying an inbound W3C traceparent stays on its own
+										distributed trace and is unaffected.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-group-traces-by-session-toggle`} />
 								</FormControl>
 							</FormItem>
 						)}

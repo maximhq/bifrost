@@ -86,6 +86,13 @@ type Profile struct {
 	// When true, only metadata (model, tokens, latency, etc.) is exported; input/output message
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
+
+	// GroupTracesBySession, when true, groups all requests sharing the same x-bf-session-id
+	// header into a single OTEL trace: every span adopts a session-derived trace ID and each
+	// request's root span becomes a top-level sibling under one synthetic session parent
+	// (default: false). An inbound W3C traceparent always takes precedence, leaving that
+	// request on its own distributed trace.
+	GroupTracesBySession bool `json:"group_traces_by_session,omitempty"`
 }
 
 // UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
@@ -207,6 +214,7 @@ type profileForStorage struct {
 	MetricsPushInterval   int               `json:"metrics_push_interval,omitempty"`
 	RequestHeaders        []string          `json:"request_headers,omitempty"`
 	DisableContentLogging bool              `json:"disable_content_logging,omitempty"`
+	GroupTracesBySession  bool              `json:"group_traces_by_session,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -242,6 +250,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			MetricsPushInterval:   p.MetricsPushInterval,
 			RequestHeaders:        p.RequestHeaders,
 			DisableContentLogging: p.DisableContentLogging,
+			GroupTracesBySession:  p.GroupTracesBySession,
 		})
 	}
 	return sonic.Marshal(out)
@@ -312,6 +321,7 @@ type otelTarget struct {
 	metricsExporter       *MetricsExporter
 	requestHeaders        []string
 	disableContentLogging bool
+	groupTracesBySession  bool
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -434,6 +444,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		traceType:             profile.TraceType,
 		requestHeaders:        slices.Clone(profile.RequestHeaders),
 		disableContentLogging: profile.DisableContentLogging,
+		groupTracesBySession:  profile.GroupTracesBySession,
 	}
 
 	var err error
@@ -645,7 +656,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		go func(t *otelTarget) {
 			defer wg.Done()
 			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging)
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession)
 				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
 					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
 				}
