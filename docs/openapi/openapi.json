@@ -40053,7 +40053,13 @@
         ],
         "security": [
           {
-            "ManagementBearerAuth": []
+            "VirtualKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
           }
         ],
         "responses": {
