@@ -1,6 +1,13 @@
 import { type SecretVar } from "@/lib/types/schemas";
 
-export const emptySecretVar = (): SecretVar => ({ value: "", secret_ref: "", from_secret: false });
+function inferType(ref: string | undefined): SecretVar["type"] | undefined {
+	if (!ref) return undefined;
+	if (ref.startsWith("vault.")) return "vault";
+	if (ref.startsWith("env.")) return "env";
+	return undefined;
+}
+
+export const emptySecretVar = (): SecretVar => ({ value: "", ref: "" });
 
 export const toSecretVarFormValue = (field?: SecretVar | string): SecretVar => {
 	if (!field) return emptySecretVar();
@@ -10,14 +17,14 @@ export const toSecretVarFormValue = (field?: SecretVar | string): SecretVar => {
 		const isSecretRef = value.startsWith("env.") || value.startsWith("vault.");
 		return {
 			value: isSecretRef ? "" : value,
-			secret_ref: isSecretRef ? value : "",
-			from_secret: isSecretRef,
+			ref: isSecretRef ? value : "",
+			type: isSecretRef ? (value.startsWith("vault.") ? "vault" : "env") : undefined,
 		};
 	}
 	return {
 		value: field.value || "",
-		secret_ref: field.secret_ref || "",
-		from_secret: field.from_secret ?? false,
+		ref: field.ref || "",
+		type: field.type ?? inferType(field.ref),
 	};
 };
 
@@ -30,7 +37,8 @@ export const toSecretVarMapFormValue = (map?: Record<string, string | SecretVar>
 // the "vault.path" or "env.VAR" reference when secret-backed, otherwise the literal value.
 export const toEnvRefString = (field?: SecretVar): string => {
 	if (!field) return "";
-	if (field.from_secret) return (field.secret_ref || "").trim();
+	const effectiveType = field.type ?? inferType(field.ref);
+	if (effectiveType && effectiveType !== "plain_text") return (field.ref || "").trim();
 	return (field.value || "").trim();
 };
 
@@ -50,15 +58,17 @@ export const toHeaderStringMap = (headers?: Record<string, SecretVar>): Record<s
 
 export const toOptionalSecretVarPayload = (field?: {
 	value?: string;
-	secret_ref?: string;
-	from_secret?: boolean;
+	ref?: string;
+	type?: string;
 }) => {
-	const secretRef = field?.secret_ref?.trim();
+	const secretRef = field?.ref?.trim();
 	const value = field?.value?.trim();
-	if (!value && !(field?.from_secret && secretRef)) return undefined;
+	const effectiveType = field?.type ?? inferType(field?.ref);
+	const isSecret = effectiveType && effectiveType !== "plain_text";
+	if (!value && !(isSecret && secretRef)) return undefined;
 	return {
 		value: value || "",
-		secret_ref: secretRef || "",
-		from_secret: field?.from_secret ?? false,
+		ref: secretRef || "",
+		type: effectiveType,
 	};
 };

@@ -311,7 +311,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 	// without expanding every collapsed section.
 	const hasError = Boolean(form.formState.errors?.profiles?.[index]);
 
-	const collectorPreview = typeof collectorUrl === "string" ? collectorUrl : collectorUrl?.from_secret ? collectorUrl.secret_ref : collectorUrl?.value;
+	const collectorPreview = typeof collectorUrl === "string" ? collectorUrl : (collectorUrl?.type === "env" || collectorUrl?.type === "vault") ? collectorUrl.ref : collectorUrl?.value;
 
 	return (
 		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-sm border" data-testid={`otel-profile-${index}`}>

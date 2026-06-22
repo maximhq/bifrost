@@ -30,8 +30,8 @@ import { toast } from "sonner";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
   (a?.value ?? "") === (b?.value ?? "") &&
-  (a?.secret_ref ?? "") === (b?.secret_ref ?? "") &&
-  (a?.from_secret ?? false) === (b?.from_secret ?? false);
+  (a?.ref ?? "") === (b?.ref ?? "") &&
+  (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
 
 export default function MCPView() {
   const hasSettingsUpdateAccess = useRbac(

@@ -59,20 +59,20 @@ export const modelProviderNameSchema = z.union([knownProviderSchema, customProvi
 // SecretVar schema - matches the Go SecretVar type from schemas/secretvar.go
 export const _secretVarBase = z.object({
 	value: z.string().optional(),
-	secret_ref: z.string().optional(),
-	from_secret: z.boolean().optional(),
+	ref: z.string().optional(),
+	type: z.enum(["plain_text", "env", "vault"]).optional(),
 });
 
 // Extending the base schema
 export const secretVarSchema = Object.assign(_secretVarBase, {
 	required: (message: string) =>
-		_secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.secret_ref?.trim(), message),
+		_secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
 });
 
 // Helper to check if a secretVar field has a value or secret reference
-function isSecretVarSet(v: { value?: string; secret_ref?: string } | undefined): boolean {
+function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
 	if (!v) return false;
-	return !!v.value?.trim() || !!v.secret_ref?.trim();
+	return !!v.value?.trim() || !!v.ref?.trim();
 }
 
 // Azure key config schema
@@ -454,7 +454,7 @@ export const proxyConfigSchema = z
 	.refine(
 		(data) =>
 			!(data.type === "http" || data.type === "socks5") ||
-			data.url?.from_secret === true ||
+			data.url?.type === "env" || data.url?.type === "vault" ||
 			(data.url?.value && data.url.value.trim().length > 0),
 		{
 			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
@@ -499,7 +499,7 @@ export const proxyFormConfigSchema = z
 			// URL is required when proxy type is http or socks5
 			if (data.type === "http" || data.type === "socks5") {
 				// Env-backed URLs may have empty resolved value before env resolution.
-				if (data.url?.from_secret || data.url?.secret_ref) return true;
+				if (!!(data.url?.type && data.url?.type !== "plain_text") || data.url?.ref) return true;
 				// Literal URLs must be non-empty.
 				if (!data.url?.value || data.url.value.trim().length === 0) return false;
 			}
@@ -877,9 +877,9 @@ export const otelConfigSchema = z
 
 		// Validate collector_url format — skip format check for env var references
 		const collectorUrl = (data.collector_url?.value || "").trim();
-		if (collectorUrl && !data.collector_url?.from_secret && protocol === "http") {
+		if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
 			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && !data.collector_url?.from_secret && protocol === "grpc") {
+		} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
 			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
 		}
 
@@ -892,9 +892,9 @@ export const otelConfigSchema = z
 					path: ["metrics_endpoint"],
 					message: "Metrics endpoint is required when metrics push is enabled",
 				});
-			} else if (metricsEndpoint && !data.metrics_endpoint?.from_secret && protocol === "http") {
+			} else if (metricsEndpoint && (data.metrics_endpoint?.type === "plain_text" || !data.metrics_endpoint?.type) && protocol === "http") {
 				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
-			} else if (metricsEndpoint && !data.metrics_endpoint?.from_secret && protocol === "grpc") {
+			} else if (metricsEndpoint && (data.metrics_endpoint?.type === "plain_text" || !data.metrics_endpoint?.type) && protocol === "grpc") {
 				validateHostPort(metricsEndpoint, ["metrics_endpoint"], "otel-collector:4317");
 			}
 		}
@@ -952,7 +952,7 @@ export const prometheusConfigSchema = z
 	.superRefine((data, ctx) => {
 		// Validate push_gateway_url format — skip for env var references
 		const url = (data.push_gateway_url?.value || "").trim();
-		if (url && !data.push_gateway_url?.from_secret) {
+		if (url && (data.push_gateway_url?.type === "plain_text" || !data.push_gateway_url?.type)) {
 			try {
 				const u = new URL(url);
 				if (!(u.protocol === "http:" || u.protocol === "https:")) {

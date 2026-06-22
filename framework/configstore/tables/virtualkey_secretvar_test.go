@@ -38,7 +38,7 @@ func TestTableVirtualKey_EnvSourcedRoundTrip(t *testing.T) {
 	var found TableVirtualKey
 	require.NoError(t, db.First(&found, "id = ?", "vk-env").Error)
 	assert.True(t, found.Value.IsFromSecret())
-	assert.Equal(t, "env.TEST_VK_ENV", found.Value.GetSecretRef())
+	assert.Equal(t, "env.TEST_VK_ENV", found.Value.GetRawRef())
 	assert.Equal(t, "sk-bf-env-resolved", found.Value.GetValue())
 }
 
@@ -97,7 +97,7 @@ func TestTableVirtualKey_MarshalJSON_SecretVarShape(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 	assert.True(t, out.Value.IsFromSecret())
-	assert.Equal(t, "env.TEST_VK_MARSHAL", out.Value.GetSecretRef())
+	assert.Equal(t, "env.TEST_VK_MARSHAL", out.Value.GetRawRef())
 }
 
 // TestTableVirtualKey_UnmarshalJSON_Forms verifies `value` accepts a bare string and an "env.X"
@@ -117,7 +117,7 @@ func TestTableVirtualKey_UnmarshalJSON_Forms(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(`{"name":"n","value":"env.TEST_VK_UMARSHAL"}`), &vk))
 		assert.Equal(t, "sk-bf-um", vk.Value.GetValue())
 		assert.True(t, vk.Value.IsFromSecret())
-		assert.Equal(t, "env.TEST_VK_UMARSHAL", vk.Value.GetSecretRef())
+		assert.Equal(t, "env.TEST_VK_UMARSHAL", vk.Value.GetRawRef())
 	})
 }
 

@@ -232,12 +232,12 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													(() => {
 														// Check if the failure might be due to an env var that the server couldn't resolve
 														const hasSecretVarConfig =
-															key.azure_key_config?.endpoint?.from_secret ||
-															key.vertex_key_config?.project_id?.from_secret ||
-															key.vertex_key_config?.region?.from_secret ||
-															key.bedrock_key_config?.region?.from_secret ||
-															key.vllm_key_config?.url?.from_secret ||
-															key.value?.from_secret;
+															(key.azure_key_config?.endpoint?.type && key.azure_key_config.endpoint.type !== "plain_text") ||
+															(key.vertex_key_config?.project_id?.type && key.vertex_key_config.project_id.type !== "plain_text") ||
+															(key.vertex_key_config?.region?.type && key.vertex_key_config.region.type !== "plain_text") ||
+															(key.bedrock_key_config?.region?.type && key.bedrock_key_config.region.type !== "plain_text") ||
+															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
+															(key.value?.type && key.value.type !== "plain_text");
 														const isEnvResolutionError =
 															hasSecretVarConfig && key.description && /not set|empty|missing/i.test(key.description);
 

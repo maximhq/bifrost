@@ -40,7 +40,7 @@ interface HeadersTableProps<T extends HeaderValue> {
 }
 
 // Empty SecretVar for new rows
-const emptySecretVar: SecretVar = { value: "", secret_ref: "", from_secret: false };
+const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 // Helper to check if a value is an SecretVar object
 const isSecretVar = (val: HeaderValue): val is SecretVar => {
@@ -58,7 +58,7 @@ const getDisplayValue = (val: HeaderValue): string => {
 // Helper to check if a HeaderValue is empty
 const isValueEmpty = (val: HeaderValue): boolean => {
 	if (isSecretVar(val)) {
-		return !val.value && !val.secret_ref;
+		return !val.value && !val.ref;
 	}
 	return !val;
 };
@@ -152,7 +152,7 @@ export function HeadersTable<T extends HeaderValue>({
 				newHeaders[currentKey] = newValue as T;
 			} else {
 				// When user types, create a new SecretVar with the typed value
-				newHeaders[currentKey] = { value: newValue, secret_ref: "", from_secret: false} as T;
+				newHeaders[currentKey] = { value: newValue, ref: ""} as T;
 			}
 		} else {
 			newHeaders[currentKey] = (typeof newValue === "string" ? newValue : newValue.value) as T;

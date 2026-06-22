@@ -39,8 +39,8 @@ export default function SecurityView() {
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
-		admin_username: { value: "", secret_ref: "", from_secret: false },
-		admin_password: { value: "", secret_ref: "", from_secret: false },
+		admin_username: { value: "", ref: "" },
+		admin_password: { value: "", ref: "" },
 		is_enabled: false,
 	});
 
@@ -71,12 +71,12 @@ export default function SecurityView() {
 
 		const usernameChanged =
 			authConfig.admin_username?.value !== bifrostConfig?.auth_config?.admin_username?.value ||
-			authConfig.admin_username?.secret_ref !== bifrostConfig?.auth_config?.admin_username?.secret_ref ||
-			authConfig.admin_username?.from_secret !== bifrostConfig?.auth_config?.admin_username?.from_secret;
+			authConfig.admin_username?.ref !== bifrostConfig?.auth_config?.admin_username?.ref ||
+			authConfig.admin_username?.type !== bifrostConfig?.auth_config?.admin_username?.type;
 		const passwordChanged =
 			authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value ||
-			authConfig.admin_password?.secret_ref !== bifrostConfig?.auth_config?.admin_password?.secret_ref ||
-			authConfig.admin_password?.from_secret !== bifrostConfig?.auth_config?.admin_password?.from_secret;
+			authConfig.admin_password?.ref !== bifrostConfig?.auth_config?.admin_password?.ref ||
+			authConfig.admin_password?.type !== bifrostConfig?.auth_config?.admin_password?.type;
 		const authChanged = showPasswordSection
 			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled || usernameChanged || passwordChanged
 			: false;
@@ -153,8 +153,8 @@ export default function SecurityView() {
 				);
 				return;
 			}
-			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.secret_ref;
-			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.secret_ref;
+			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
+			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
 			await updateCoreConfig({
 				...bifrostConfig!,
 				client_config: localConfig,

@@ -120,7 +120,7 @@ export default function MCPLibraryPage() {
 				.filter((server) =>
 					clients.some((client) => {
 						const connectionString = client.config.connection_string;
-						const connectionUrl = connectionString?.from_secret ? connectionString.secret_ref : connectionString?.value;
+						const connectionUrl = (connectionString?.type === "env" || connectionString?.type === "vault") ? connectionString.ref : connectionString?.value;
 						return (
 							(server.connection_url && connectionUrl === server.connection_url) ||
 							client.config.name.toLowerCase() === sanitizeServerName(server.name).toLowerCase()

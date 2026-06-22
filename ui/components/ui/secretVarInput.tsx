@@ -72,18 +72,20 @@ export const SecretVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEl
 		}, [value]);
 
 		// Show badge when value is from a secret reference (env or vault)
-		const showEnvBadge = value?.from_secret && value?.secret_ref?.startsWith("env.");
-		const showVaultBadge = value?.from_secret && value?.secret_ref?.startsWith("vault.");
-		const showBadge = value?.from_secret && !!value?.secret_ref;
+		const showEnvBadge = value?.type === "env";
+		const showVaultBadge = value?.type === "vault";
+		const showBadge = (value?.type === "env" || value?.type === "vault") && !!value?.ref;
 		const rawValue = value?.value ?? "";
 		const displayValue =
-			showBadge && hideValueWhenEnv && !hasChanged.current
-				? ""
-				: redactNonEnvValue && !showBadge && !hasChanged.current && rawValue
-					? "<REDACTED>"
-					: maskNonEnvValue && !showBadge && !hasChanged.current
-						? maskValue(rawValue, maskVisiblePrefix, maskVisibleSuffix)
-						: rawValue;
+			showBadge && hasChanged.current
+				? (value?.ref ?? "")
+				: showBadge && hideValueWhenEnv
+					? ""
+					: redactNonEnvValue && !showBadge && !hasChanged.current && rawValue
+						? "<REDACTED>"
+						: maskNonEnvValue && !showBadge && !hasChanged.current
+							? maskValue(rawValue, maskVisiblePrefix, maskVisibleSuffix)
+							: rawValue;
 
 		const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
 			const inputValue = e.target.value;
@@ -100,15 +102,17 @@ export const SecretVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEl
 			hasChanged.current = true;
 			isUserChange.current = true;
 			// Auto-detect env var / vault reference prefix
-			if (newValue.startsWith("env.") || newValue.startsWith("vault.")) {
-				onChange?.({ value: "", secret_ref: newValue, from_secret: true });
+			if (newValue.startsWith("vault.")) {
+				onChange?.({ value: "", ref: newValue, type: "vault" });
+			} else if (newValue.startsWith("env.")) {
+				onChange?.({ value: "", ref: newValue, type: "env" });
 			} else {
-				onChange?.({ value: newValue, secret_ref: "", from_secret: false });
+				onChange?.({ value: newValue, ref: "" });
 			}
 		};
 
 		// Show hint when user is typing a secret reference (reference set but no resolved value yet)
-		const showEnvHint = (value?.from_secret && value?.secret_ref) && hasChanged.current;
+		const showEnvHint = ((value?.type === "env" || value?.type === "vault") && value?.ref) && hasChanged.current;
 
 		const isTextarea = variant === "textarea";
 
@@ -153,12 +157,12 @@ export const SecretVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEl
 					)}
 					{showEnvBadge && (
 						<Badge variant="success" className={cn("mr-2 whitespace-nowrap", isTextarea && "mb-2")}>
-							{value?.secret_ref}
+							{value?.ref}
 						</Badge>
 					)}
 					{showVaultBadge && (
 						<Badge variant="warning" className={cn("mr-2 whitespace-nowrap", isTextarea && "mb-2")}>
-							{value?.secret_ref}
+							{value?.ref}
 						</Badge>
 					)}
 				</div>
