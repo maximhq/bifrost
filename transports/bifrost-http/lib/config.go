@@ -3693,10 +3693,10 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	}
 	// Fail-closed: if env/vault reference is unresolved, don't persist empty credentials.
 	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromSecret() {
-		logger.Warn("username set with external reference but value is empty: %s", authConfig.AdminUserName.Ref())
+		logger.Warn("username set with external reference but value is empty: %s", authConfig.AdminUserName.GetSecretRef())
 	}
 	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromSecret() {
-		logger.Warn("password set with external reference but value is empty: %s", authConfig.AdminPassword.Ref())
+		logger.Warn("password set with external reference but value is empty: %s", authConfig.AdminPassword.GetSecretRef())
 	}
 	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
 		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")
