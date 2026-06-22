@@ -59,6 +59,16 @@ func (panicReader) Read([]byte) (int, error) {
 	panic(errPanicReader)
 }
 
+// timerPanicCloser mimics fasthttp's streaming body when the underlying
+// connection has already been released to / reused from the pool: CloseWithError
+// nil-derefs in (*HostClient).CloseConn and panics. It implements
+// streamCloserWithError (not io.Closer) so closeBodyStream takes the
+// CloseWithError branch — the path the idle timer hits.
+type timerPanicCloser struct{}
+
+func (timerPanicCloser) Read([]byte) (int, error)   { return 0, io.EOF }
+func (timerPanicCloser) CloseWithError(error) error { panic("simulated fasthttp CloseConn nil-deref") }
+
 type blockingCloserSpy struct {
 	started chan struct{}
 	release chan struct{}
@@ -389,6 +399,31 @@ func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 	if !errors.Is(err, ErrStreamIdleTimeout) {
 		t.Fatalf("expected ErrStreamIdleTimeout, got %v", err)
 	}
+}
+
+// TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire verifies that a
+// panic raised by closeBodyStream WHEN THE IDLE TIMER FIRES — e.g. fasthttp's
+// CloseWithError nil-dereffing in (*HostClient).CloseConn because the stream's
+// connection was already released to / reused from the pool (an orphaned timer
+// on a completed stream) — is recovered inside the timer goroutine and does not
+// crash the process.
+//
+// This is the timer-callback counterpart to RecoversReadPanicAfterTimeout
+// (#3677), which guarded the Read() path but not the AfterFunc's own
+// closeBodyStream call. Without the recover in the AfterFunc, the panic runs in
+// the timer goroutine, is unrecoverable by callers, and takes the whole process
+// down (observed crashing a router under sustained streaming load).
+func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
+	t.Parallel()
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, timerPanicCloser{}, 10*time.Millisecond, nil)
+
+	// Wait past the idle timeout so the timer fires and invokes closeBodyStream,
+	// which panics. cleanup() then blocks on timerDone, which is only closed
+	// once the (now-recovered) timer callback has returned — so reaching the end
+	// of the test proves the panic was swallowed in the timer goroutine. Without
+	// the recover, the process would have already crashed.
+	time.Sleep(50 * time.Millisecond)
+	cleanup()
 }
 
 func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
