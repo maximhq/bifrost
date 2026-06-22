@@ -259,7 +259,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_customer_array_columns"}, run: migrationAddCustomerArrayColumns},
 	{IDs: []string{"logs_add_customer_array_gin_indexes_v1"}, run: migrationAddCustomerArrayGINIndexes},
 	{IDs: []string{"logs_recreate_filter_customers_matview_multivalue"}, run: migrationRecreateFilterCustomersMatView},
-	{IDs: []string{"logs_add_canonical_model_columns"}, run: migrationAddCanonicalModelColumns},
+	{IDs: []string{"logs_add_canonical_model_columns_v2"}, run: migrationAddCanonicalModelColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2939,16 +2939,13 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 // alias config when the request's model was resolved via alias mapping and the
 // alias defines them.
 func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "logs_recreate_filter_customers_matview_multivalue"
+	migrationName := "logs_add_canonical_model_columns_v2"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "logs_add_canonical_model_columns",
+		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()

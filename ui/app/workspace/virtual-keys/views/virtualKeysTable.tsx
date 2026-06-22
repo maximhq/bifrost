@@ -362,14 +362,6 @@ export default function VirtualKeysTable({
 	const allVisibleSelected = visibleIds.length > 0 && selectedVisibleIds.length === visibleIds.length;
 	const someVisibleSelected = selectedVisibleIds.length > 0 && selectedVisibleIds.length < visibleIds.length;
 
-	useEffect(() => {
-		setSelectedIds((prev) => {
-			const visible = new Set(visibleIds);
-			const next = new Set([...prev].filter((id) => visible.has(id)));
-			return next.size === prev.size ? prev : next;
-		});
-	}, [visibleIds]);
-
 	const toggleSelectAllVisible = (checked: boolean) => {
 		setSelectedIds((prev) => {
 			const next = new Set(prev);

@@ -1423,6 +1423,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, err.Error())
 			return
 		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A virtual key with this name already exists")
+			return
+		}
 		SendError(ctx, 500, err.Error())
 		return
 	}
@@ -1856,10 +1860,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return nil
 	}); err != nil {
 		var badReqErr *badRequestError
-		if errors.As(err, &badReqErr) ||
-			strings.Contains(err.Error(), "already exists") ||
-			strings.Contains(err.Error(), "duplicate key") {
+		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, fmt.Sprintf("Failed to update virtual key: %v", err))
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A virtual key with this name already exists")
 			return
 		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update virtual key: %v", err))
@@ -2171,6 +2177,10 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A team with this name already exists")
 			return
 		}
 		logger.Error("failed to create team: %v", err)
@@ -2597,6 +2607,10 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A customer with this name already exists")
 			return
 		}
 		SendError(ctx, 500, "failed to create customer")

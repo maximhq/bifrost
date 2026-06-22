@@ -194,6 +194,40 @@ Use a markdown link to the contributor's GitHub profile: `[@username](https://gi
 
 If multiple PRs from the same outside contributor are grouped into one entry, credit them once.
 
+#### Collect Closed GitHub Issues
+
+Gather **every** GitHub issue closed in this release so they can be listed in the `## 🐙 Closed GitHub Issues` section of `transports/changelog.md`. Each issue MUST be rendered as a markdown link.
+
+For each PR in the release window, query its linked closing issues (this catches `Closes #N` / `Fixes #N` links even when the commit subject doesn't mention them):
+
+```bash
+# For each PR number in the release window:
+gh api graphql -f query="query{repository(owner:\"maximhq\",name:\"bifrost\"){pullRequest(number:PR_NUMBER){closingIssuesReferences(first:100){nodes{number title}}}}}" \
+  --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[]? | "#\(.number)\t\(.title)"'
+```
+
+Also grep commit bodies for closing keywords as a fallback (some issues are linked only in the message text):
+
+```bash
+git log ${BASE}..HEAD --no-merges --pretty=format:"%B" | grep -ioE "(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+" | sort -u
+```
+
+Merge both sources and **deduplicate by issue number** before confirming/rendering (e.g. collect all `#N` values and `sort -un`), so an issue linked via both `closingIssuesReferences` and a commit-body keyword appears only once.
+
+Confirm each issue's state and final title before listing it:
+
+```bash
+gh api repos/maximhq/bifrost/issues/<ISSUE_NUMBER> --jq '"#\(.number) [\(.state)] \(.title)"'
+```
+
+Render every closed issue as a markdown link in ascending issue-number order:
+
+```markdown
+- [#3795](https://github.com/maximhq/bifrost/issues/3795) — MCP tools fail with Bedrock provider in v1.5.0
+```
+
+If an issue's title is generic or unhelpful (e.g. just `[Bug Report]`), read the issue body and write a short, specific description instead.
+
 **Present the draft entries to the user for review before writing files.**
 
 #### Per-Module changelog.md (core, framework, plugins)
@@ -234,6 +268,11 @@ The transports changelog uses a categorized format with bold names. Write it usi
 
 - **Bug Name** — Description of what was fixed
 - **Bug Name** — Description of what was fixed
+
+## 🐙 Closed GitHub Issues
+
+- [#1234](https://github.com/maximhq/bifrost/issues/1234) — Issue title
+- [#1235](https://github.com/maximhq/bifrost/issues/1235) — Issue title
 ```
 
 **Formatting rules for transports/changelog.md:**
@@ -245,6 +284,7 @@ The transports changelog uses a categorized format with bold names. Write it usi
 - Breaking changes get a `<Warning>` or `<Note>` block indented under the entry
 - Omit sections that have no entries (e.g., if there are no features, skip the Features section)
 - If the release has only cascading bumps and no meaningful features or fixes, add a `## 🔧 Maintenance` section with an entry like: `- **Dependency Upgrades** — Bumped core to v1.5.0 and framework to v1.3.0 across all modules`
+- Add a `## 🐙 Closed GitHub Issues` section listing **every** issue closed in this release (see "Collect Closed GitHub Issues" below). Each entry MUST be a markdown link to the issue: `- [#NUMBER](https://github.com/maximhq/bifrost/issues/NUMBER) — Issue title`. Omit the section only if no issues were closed.
 
 ### Step 6: Update Version Files
 
@@ -339,7 +379,7 @@ bifrost/
 │   └── telemetry/version
 ├── transports/
 │   ├── version              # Plain text: "1.5.0"
-│   ├── changelog.md         # Enterprise-style format (✨ Features / 🐞 Fixed)
+│   ├── changelog.md         # Enterprise-style format (✨ Features / 🐞 Fixed / 🐙 Closed GitHub Issues)
 │   └── go.mod
 └── docs/
     ├── changelogs/          # ⚠️ DO NOT TOUCH — MDX files managed separately

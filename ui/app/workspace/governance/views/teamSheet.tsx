@@ -127,11 +127,13 @@ export default function TeamSheet({
     ...initialState,
     isDirty: false,
   });
+  const [nameError, setNameError] = useState<string | null>(null);
 
   useEffect(() => {
     const nextInitial = createInitialState(team);
     setInitialState(nextInitial);
     setFormData({ ...nextInitial, isDirty: false });
+    setNameError(null);
     setShowCalendarAlignWarning(false);
   }, [team]);
 
@@ -290,6 +292,9 @@ export default function TeamSheet({
     field: K,
     value: TeamFormData[K],
   ) => {
+    if (field === "name") {
+      setNameError(null);
+    }
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -381,7 +386,11 @@ export default function TeamSheet({
       }
 
       onSave();
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.status === 409) {
+        setNameError(getErrorMessage(error));
+        return;
+      }
       toast.error(getErrorMessage(error));
     }
   };
@@ -422,6 +431,7 @@ export default function TeamSheet({
                   onChange={(e) => updateField("name", e.target.value)}
                   data-testid="team-name-input"
                 />
+                {nameError && <p className="text-destructive text-sm">{nameError}</p>}
               </div>
 
               {/* Customer Assignment */}

@@ -242,6 +242,8 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.getModelRankings, middlewares...))
 	r.GET("/api/logs/rankings/by-dimension", lib.ChainMiddlewares(h.getDimensionRankings, middlewares...))
+	// Consolidated, public-facing dashboard payload (all of the above in one call)
+	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.getDashboard, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 
@@ -1104,6 +1106,196 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		logger.Error("failed to get dimension rankings: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dimension rankings calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// dashboardRankingDimensions is the fixed set of dimensions returned in the
+// consolidated dashboard payload, mirroring the dimension-ranking tabs on the
+// /workspace/dashboard page (Team, User, Virtual Key, Customer, Business Unit).
+var dashboardRankingDimensions = []logstore.RankingDimension{
+	logstore.RankingDimensionTeam,
+	logstore.RankingDimensionUser,
+	logstore.RankingDimensionVirtualKey,
+	logstore.RankingDimensionCustomer,
+	logstore.RankingDimensionBusinessUnit,
+}
+
+const dashboardMCPTopToolsLimit = 10
+
+// getDashboard handles GET /api/logs/dashboard - returns every metric shown on
+// the /workspace/dashboard page in a single consolidated, public-facing payload.
+//
+// It accepts the same filter query parameters as the individual histogram and
+// rankings endpoints (period OR start_time/end_time, providers, models, status,
+// virtual_key_ids, team_ids, etc., plus metadata_<key> filters) and the MCP
+// filter params (tool_names, server_labels). Filters are parsed once and the
+// histogram bucket size is derived once from the resolved time range, so every
+// section is computed against an identical window. All sub-queries run
+// concurrently; if any fails the whole request fails, so consumers always get a
+// complete payload or a clear error, never partial data.
+func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
+	filters := parseHistogramFilters(ctx)
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	mcpFilters, err := parseMCPHistogramFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	result := &logstore.DashboardResult{
+		Meta: logstore.DashboardMeta{
+			GeneratedAt:       time.Now().UTC(),
+			BucketSizeSeconds: bucketSizeSeconds,
+			StartTime:         filters.StartTime,
+			EndTime:           filters.EndTime,
+		},
+		DimensionRankings: make(map[string]*logstore.DimensionRankingResult, len(dashboardRankingDimensions)),
+	}
+
+	// dimensionResults is written concurrently (one goroutine per dimension),
+	// so guard the map; the other sections each write a distinct field.
+	var dimMu sync.Mutex
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// ---- Overview ----
+	g.Go(func() error {
+		stats, err := h.logManager.GetStats(gCtx, filters)
+		if err != nil {
+			return fmt.Errorf("stats: %w", err)
+		}
+		result.Overview.Stats = stats
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("request histogram: %w", err)
+		}
+		result.Overview.Requests = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetTokenHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("token histogram: %w", err)
+		}
+		result.Overview.Tokens = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetCostHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("cost histogram: %w", err)
+		}
+		result.Overview.Cost = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetLatencyHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("latency histogram: %w", err)
+		}
+		result.Overview.Latency = res
+		return nil
+	})
+
+	// modelHistogram backs both the Overview "Model Usage" card and the Model
+	// Rankings "Top Models" chart; compute it once and share the pointer.
+	g.Go(func() error {
+		res, err := h.logManager.GetModelHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("model histogram: %w", err)
+		}
+		result.Overview.Models = res
+		result.ModelRankings.Histogram = res
+		return nil
+	})
+
+	// ---- Provider Usage ----
+	g.Go(func() error {
+		res, err := h.logManager.GetProviderCostHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("provider cost histogram: %w", err)
+		}
+		result.ProviderUsage.Cost = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetProviderTokenHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("provider token histogram: %w", err)
+		}
+		result.ProviderUsage.Tokens = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetProviderLatencyHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("provider latency histogram: %w", err)
+		}
+		result.ProviderUsage.Latency = res
+		return nil
+	})
+
+	// ---- Model Rankings table ----
+	g.Go(func() error {
+		res, err := h.logManager.GetModelRankings(gCtx, filters)
+		if err != nil {
+			return fmt.Errorf("model rankings: %w", err)
+		}
+		result.ModelRankings.Rankings = res
+		return nil
+	})
+
+	// ---- Dimension Rankings (one query per dimension) ----
+	for _, dim := range dashboardRankingDimensions {
+		dim := dim
+		g.Go(func() error {
+			res, err := h.logManager.GetDimensionRankings(gCtx, filters, dim)
+			if err != nil {
+				return fmt.Errorf("%s rankings: %w", dim, err)
+			}
+			dimMu.Lock()
+			result.DimensionRankings[string(dim)] = res
+			dimMu.Unlock()
+			return nil
+		})
+	}
+
+	// ---- MCP usage ----
+	g.Go(func() error {
+		res, err := h.logManager.GetMCPHistogram(gCtx, *mcpFilters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("mcp histogram: %w", err)
+		}
+		result.MCP.Volume = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetMCPCostHistogram(gCtx, *mcpFilters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("mcp cost histogram: %w", err)
+		}
+		result.MCP.Cost = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetMCPTopTools(gCtx, *mcpFilters, dashboardMCPTopToolsLimit)
+		if err != nil {
+			return fmt.Errorf("mcp top tools: %w", err)
+		}
+		result.MCP.TopTools = res
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		logger.Error("failed to build dashboard data: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dashboard data calculation failed: %v", err))
 		return
 	}
 

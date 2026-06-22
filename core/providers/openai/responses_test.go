@@ -184,7 +184,7 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -243,7 +243,7 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 			}},
 		}
 
-		result := ToOpenAIResponsesRequest(bifrostReq)
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
 		original := bifrostReq.Input[0].Content
 		if original == nil || original.ContentStr == nil || *original.ContentStr != "" {
 			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
@@ -278,7 +278,7 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 			}},
 		}
 
-		result := ToOpenAIResponsesRequest(bifrostReq)
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
 		original := bifrostReq.Input[0].Content
 		if original == nil || original.ContentStr == nil || *original.ContentStr != "thinking" {
 			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
@@ -422,7 +422,7 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			if provider == "" {
 				provider = schemas.OpenAI
 			}
-			req := ToOpenAIResponsesRequest(&schemas.BifrostResponsesRequest{
+			req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
 				Provider: provider,
 				Model:    tt.model,
 				Input: []schemas.ResponsesMessage{{
@@ -543,7 +543,7 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -1678,7 +1678,7 @@ func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1750,7 +1750,7 @@ func TestToOpenAIResponsesRequest_PreservesExplicitEmptyToolParameters(t *testin
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1876,7 +1876,7 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1957,4 +1957,46 @@ func valuesEqual(v1, v2 interface{}) bool {
 		// For primitives, use direct comparison
 		return v1 == v2
 	}
+}
+
+func TestToOpenAIResponsesRequest_OpenRouterServerToolsPreserved(t *testing.T) {
+	makeReq := func(provider schemas.ModelProvider, toolType schemas.ResponsesToolType) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-haiku-4.5",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				},
+			},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			},
+		}
+	}
+
+	// Any tool under the "openrouter:" namespace must survive for the OpenRouter
+	// provider (web_search, web_fetch, and any future server tool).
+	for _, toolType := range []schemas.ResponsesToolType{"openrouter:web_search", "openrouter:web_fetch"} {
+		t.Run("openrouter keeps "+string(toolType), func(t *testing.T) {
+			result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenRouter, toolType))
+			if result == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			if len(result.Tools) != 1 || result.Tools[0].Type != toolType {
+				t.Fatalf("expected %s to be preserved for OpenRouter, got %+v", toolType, result.Tools)
+			}
+		})
+	}
+
+	t.Run("openai strips openrouter: namespace tools", func(t *testing.T) {
+		result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenAI, "openrouter:web_search"))
+		if result == nil {
+			t.Fatal("ToOpenAIResponsesRequest returned nil")
+		}
+		if len(result.Tools) != 0 {
+			t.Fatalf("expected openrouter: tools to be stripped for OpenAI, got %+v", result.Tools)
+		}
+	})
 }

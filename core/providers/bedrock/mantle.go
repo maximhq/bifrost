@@ -169,7 +169,7 @@ func (provider *BedrockProvider) responsesViaMantle(
 	maps.Copy(extraHeaders, provider.networkConfig.ExtraHeaders)
 	if key.Value.GetValue() == "" {
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return openai.ToOpenAIResponsesRequest(request), nil
+			return openai.ToOpenAIResponsesRequest(ctx, request), nil
 		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -223,7 +223,7 @@ func (provider *BedrockProvider) responsesStreamViaMantle(
 	}
 
 	// SigV4: pre-build body to sign.
-	openaiReq := openai.ToOpenAIResponsesRequest(request)
+	openaiReq := openai.ToOpenAIResponsesRequest(ctx, request)
 	openaiReq.Stream = schemas.Ptr(true)
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {

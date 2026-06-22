@@ -4,24 +4,25 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
-import { ScrollArea, ScrollBar } from "@/components/ui/scrollArea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { lazy, Suspense, type ComponentProps } from "react";
 import { Tree, type BaseNodeData, type TreeNode } from "@/components/ui/treeView";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { SkillFileEntry } from "@/lib/types/skills";
-import { getApiBaseUrl } from "@/lib/utils/port";
 import { cn } from "@/lib/utils";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import {
-	Check,
-	Bot,
 	BookOpen,
+	Bot,
+	Check,
 	ChevronDown,
 	ChevronRight,
 	ChevronsDownUp,
 	ChevronsUpDown,
-	ArrowLeft,
 	Copy,
 	Download,
 	ExternalLink,
@@ -29,15 +30,15 @@ import {
 	Folder,
 	FolderOpen,
 	Hammer,
+	Info,
 	MoreHorizontal,
-	PanelLeftClose,
-	PanelLeftOpen,
 	Scale,
+	Search,
 	X,
 } from "lucide-react";
-import { useState, useMemo } from "react";
-import { formatYamlRecord } from "./helpers";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { FilePreviewPane, getFileServeUrl } from "./filePreview";
+import { formatYamlRecord } from "./helpers";
 
 const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
 const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
@@ -82,6 +83,60 @@ export function HeaderMetaItem({
 	);
 }
 
+// ---------- ClampedDescription ----------
+
+/** Shows the description clamped to 3 lines with a Show more/less toggle when it overflows. */
+function ClampedDescription({ description }: { description: string }) {
+	const [expanded, setExpanded] = useState(false);
+	const [isOverflowing, setIsOverflowing] = useState(false);
+	const textRef = useRef<HTMLParagraphElement>(null);
+
+	useEffect(() => {
+		// Only measure while collapsed — once expanded the clamp is removed so the
+		// element always fits, which would otherwise reset isOverflowing to false.
+		if (expanded) return;
+		const el = textRef.current;
+		if (!el) return;
+		const check = () => setIsOverflowing(el.scrollHeight > el.clientHeight + 1);
+		check();
+		const observer = new ResizeObserver(check);
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, [description, expanded]);
+
+	if (!description) return null;
+
+	return (
+		<div className="relative max-w-3xl">
+			<p
+				ref={textRef}
+				className={cn("text-muted-foreground text-xs", !expanded && "line-clamp-3")}
+			>
+				{description}
+				{expanded && isOverflowing && (
+					<button
+						type="button"
+						onClick={() => setExpanded(false)}
+						className="ml-1 cursor-pointer text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
+					>
+						Show less
+					</button>
+				)}
+			</p>
+			{!expanded && isOverflowing && (
+				<button
+					type="button"
+					onClick={() => setExpanded(true)}
+					className="bg-card absolute right-0 bottom-0 cursor-pointer pl-8 pr-4 text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
+				>
+					<span className="from-card pointer-events-none absolute top-0 right-full h-full w-8 bg-gradient-to-l to-transparent" />
+					Show more
+				</button>
+			)}
+		</div>
+	);
+}
+
 // ---------- SkillHeader ----------
 
 export function SkillHeader({
@@ -119,50 +174,66 @@ export function SkillHeader({
 
 	return (
 		<>
-			<div className={cn("flex flex-col items-start gap-2 bg-white dark:bg-card w-full", sticky && "sticky top-0 z-30 py-4")}>
-				<div className="flex w-full flex-row items-center gap-2">
-					<div className="flex flex-row items-center gap-2 align-middle">
-						{onBack && (
-							<Button variant="ghost" size="sm" className="h-8 w-8 shrink-0 p-0" onClick={onBack} aria-label="Go back">
-								<ArrowLeft className="h-4 w-4" />
-							</Button>
-						)}
-						<h2 className="min-w-0 truncate text-xl font-semibold tracking-tight">{name}</h2>
-						<Badge variant="secondary" className="shrink-0 font-mono text-xs" role="status">
-							v{version}
-						</Badge>
-						{composedSkillMd && (
-							<Button
-								variant="link"
-								size="sm"
-								className="h-auto shrink-0 px-1 py-0 text-xs text-blue-600 dark:text-blue-400"
-								onClick={() => setShowRawDialog(true)}
-							>
-								View raw SKILL.md
-							</Button>
-						)}
-					</div>
-					<div className="ml-auto flex flex-row items-center align-middle">
-						{decorators}
-						{(actions || downloadSkillName) && (
-							<div className="ml-auto flex shrink-0 items-center gap-1.5">
-								{downloadSkillName && (
-									<Button variant="outline" size="sm" asChild>
-										<a href={`${getApiBaseUrl()}/skills/serve/${encodeURIComponent(downloadSkillName)}/download.zip`} download>
-											Download ZIP
-										</a>
-									</Button>
-								)}
-								{actions}
-							</div>
-						)}
-					</div>
+			<div className={cn("flex w-full flex-row items-center gap-2 bg-card relative", sticky && "sticky top-0 z-30 py-4")}>
+				<div className="flex flex-row items-center gap-2 align-middle h-5">
+					{onBack ? (
+						<nav aria-label="Breadcrumb" className="min-w-0">
+							<ol className="text-muted-foreground flex items-center gap-1.5 text-sm">
+								<li>
+									<button
+										type="button"
+										data-testid="skill-back-btn"
+										onClick={onBack}
+										className="hover:text-foreground cursor-pointer transition-colors"
+									>
+										Skills
+									</button>
+								</li>
+								<li aria-hidden="true" className="text-muted-foreground/60">
+									/
+								</li>
+								<li aria-current="page" className="text-foreground truncate font-medium">
+									{name}
+								</li>
+							</ol>
+						</nav>
+					) : (
+						<h2 className="truncate text-xl font-semibold">{name}</h2>
+					)}
+					<Badge variant="secondary" className="shrink-0 font-mono text-xs" role="status">
+						v{version}
+					</Badge>
+					{composedSkillMd && (
+						<Button
+							variant="link"
+							size="sm"
+							className="h-auto shrink-0 px-1 py-0 text-xs text-blue-600 dark:text-blue-400"
+							onClick={() => setShowRawDialog(true)}
+						>
+							View raw SKILL.md
+						</Button>
+					)}
+				</div>
+				<div className="ml-auto flex flex-row items-center align-middle absolute right-0 top-4">
+					{decorators}
+					{(actions || downloadSkillName) && (
+						<div className="ml-auto flex shrink-0 items-center gap-1.5">
+							{downloadSkillName && (
+								<Button variant="outline" size="sm" asChild>
+									<a href={`${getApiBaseUrl()}/skills/serve/${encodeURIComponent(downloadSkillName)}/download.zip`} download>
+										Download ZIP
+									</a>
+								</Button>
+							)}
+							{actions}
+						</div>
+					)}
 				</div>
 			</div>
 			<div className="w-full">
-				<p className="text-muted-foreground max-w-3xl text-xs">{description}</p>
+				<ClampedDescription description={description} />
 				<TooltipProvider>
-					<div className="mt-3 flex flex-wrap items-center gap-2 pb-2">
+					<div className="mt-4 flex flex-wrap items-center gap-2 pb-2">
 						<HeaderMetaItem label="License" value={license} missingText="No license defined" icon={Scale} />
 						<HeaderMetaItem label="Compatibility" value={compatibility} missingText="No compatibility defined" icon={Bot} />
 						<HeaderMetaItem label="Allowed tools" value={allowedTools} missingText="No allowed tools defined" icon={Hammer} />
@@ -171,7 +242,7 @@ export function SkillHeader({
 			</div>
 			{composedSkillMd && (
 				<Dialog open={showRawDialog} onOpenChange={setShowRawDialog}>
-					<DialogContent showCloseButton={false} className="w-full max-w-full border-0 p-0 sm:w-4/5 sm:max-w-4xl md:w-1/2 md:max-w-3xl">
+					<DialogContent showCloseButton={false} className="w-full h-[90vh] border-0 p-0 sm:w-[85vw] sm:max-w-[85vw] md:w-[75vw] md:max-w-[75vw]">
 						<DialogHeader className="sr-only">
 							<DialogTitle>Raw SKILL.md</DialogTitle>
 						</DialogHeader>
@@ -180,19 +251,19 @@ export function SkillHeader({
 								<Button
 									variant="ghost"
 									size="icon"
-									className="bg-background/70 text-muted-foreground hover:bg-background/90 hover:text-foreground h-8 w-8 rounded-sm"
+									className="bg-background/70 text-muted-foreground hover:bg-card hover:text-foreground h-8 w-8 rounded-sm"
 									onClick={() => copyRawSkillMd(composedSkillMd)}
 									aria-label={copiedRawSkillMd ? "Raw SKILL.md copied" : "Copy raw SKILL.md"}
 								>
 									{copiedRawSkillMd ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
 								</Button>
-								<DialogClose className="text-muted-foreground hover:bg-background/80 hover:text-foreground cursor-pointer rounded-sm p-1.5 transition-colors">
+								<DialogClose className="text-muted-foreground hover:bg-card hover:text-foreground cursor-pointer rounded-sm h-8 w-8 flex justify-center items-center transition-colors">
 									<X className="h-4 w-4" />
 									<span className="sr-only">Close</span>
 								</DialogClose>
 							</div>
-							<ScrollArea className="h-screen" viewportClassName="bg-muted">
-								<pre className="bg-muted min-h-96 p-5 pr-24 font-mono text-xs leading-5 whitespace-pre-wrap">{composedSkillMd}</pre>
+							<ScrollArea className="h-full" viewportClassName="bg-muted">
+								<pre className="bg-muted p-5 pr-24 font-mono text-xs leading-5 whitespace-pre-wrap">{composedSkillMd}</pre>
 							</ScrollArea>
 						</div>
 					</DialogContent>
@@ -216,11 +287,24 @@ export function FormSection({
 	helperText?: React.ReactNode;
 }) {
 	return (
-		<section className={cn("flex flex-col gap-3", className)}>
-			<div className="flex items-baseline gap-2 pb-1">
-				<h2 className="text-foreground text-base font-semibold tracking-tight">{title}</h2>
+		<section className={cn("flex flex-col gap-2", className)}>
+			<div className="flex items-center gap-1.5">
+				<Label>{title}</Label>
 				{optional && <span className="text-muted-foreground text-xs">optional</span>}
-				{helperText && <span className="text-muted-foreground text-xs">{helperText}</span>}
+				{helperText && (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								className="text-muted-foreground hover:text-foreground inline-flex h-4 w-4 items-center justify-center"
+								aria-label={`About ${title}`}
+							>
+								<Info className="h-3.5 w-3.5" aria-hidden="true" />
+							</button>
+						</TooltipTrigger>
+						<TooltipContent className="max-w-xs text-xs">{helperText}</TooltipContent>
+					</Tooltip>
+				)}
 			</div>
 			{children}
 		</section>
@@ -254,8 +338,8 @@ export function ReadOnlyMetadataTable({ value, className }: { value: Record<stri
 				<div className="text-muted-foreground flex-1 divide-y overflow-y-auto">
 					{entries.map(([key, item]) => (
 						<div key={key} className="grid grid-cols-2 gap-3 px-3 py-2.5 text-sm">
-							<p className="min-w-0 truncate font-mono text-xs">{key}</p>
-							<p className="min-w-0 font-mono text-xs leading-5 break-words">{String(item)}</p>
+							<p className="truncate font-mono text-xs">{key}</p>
+							<p className="font-mono text-xs leading-5 break-words">{String(item)}</p>
 						</div>
 					))}
 				</div>
@@ -265,8 +349,57 @@ export function ReadOnlyMetadataTable({ value, className }: { value: Record<stri
 }
 // ---------- ReadOnlySkillBody ----------
 
-export function ReadOnlySkillBody({ body }: { body: string }) {
-	const [activeTab, setActiveTab] = useState("rendered");
+// Resolve a relative markdown link (e.g. "./tui/activity.go", "../foo.md") to a
+// known skill file path so it can be opened in the sidebar instead of navigated.
+function resolveSkillFilePath(href: string, files: SkillFileEntry[]): string | null {
+	if (!href) return null;
+	// Ignore anchors and protocol-ish links (mailto:, //example.com, etc.).
+	if (href.startsWith("#") || href.startsWith("//") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
+
+	// Strip query/hash and any leading "./".
+	const cleaned = href.split(/[?#]/)[0].replace(/^\.\//, "");
+	if (!cleaned) return null;
+
+	const normalize = (p: string) => p.replace(/^\.?\//, "").replace(/^\/+/, "");
+	const target = normalize(cleaned);
+
+	// Exact match on the full path first.
+	const exact = files.find((f) => normalize(f.path) === target);
+	if (exact) return exact.path;
+
+	// Fall back to matching by trailing path segments (handles "../" prefixes).
+	const targetTail = target.replace(/^(\.\.\/)+/, "");
+	const byTail = files.find((f) => {
+		const fp = normalize(f.path);
+		return fp === targetTail || fp.endsWith(`/${targetTail}`);
+	});
+	if (byTail) return byTail.path;
+
+	// Last resort: match on the bare filename if unambiguous.
+	const fileName = target.split("/").pop();
+	if (fileName) {
+		const matches = files.filter((f) => normalize(f.path).split("/").pop() === fileName);
+		if (matches.length === 1) return matches[0].path;
+	}
+
+	return null;
+}
+
+// Renders SKILL.md markdown with skill-aware links: relative links that resolve to
+// a sibling file open it via onSelectFile, external links route through a confirm
+// dialog instead of navigating away. Shared by the read-only view and the edit-form
+// preview so both behave identically.
+export function SkillMarkdown({
+	content,
+	files = [],
+	onSelectFile,
+	className,
+}: {
+	content: string;
+	files?: SkillFileEntry[];
+	onSelectFile?: (path: string) => void;
+	className?: string;
+}) {
 	const [externalLink, setExternalLink] = useState<{
 		href: string;
 		label: string;
@@ -274,28 +407,46 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
 
 	const markdownComponents = {
 		a: ({ href, children, ...props }: React.ComponentProps<"a">) => {
-			const isExternal = Boolean(href && /^https?:\/\//i.test(href));
+			const isExternal = Boolean(href && (href.startsWith("//") || /^https?:\/\//i.test(href)));
 			const label = typeof children === "string" ? children : href || "external link";
 
-			if (!isExternal || !href) {
+			if (isExternal && href) {
 				return (
-					<a href={href} {...props}>
+					<a
+						href={href}
+						{...props}
+						onClick={(event) => {
+							props.onClick?.(event);
+							if (event.defaultPrevented) return;
+							event.preventDefault();
+							setExternalLink({ href, label });
+						}}
+					>
 						{children}
 					</a>
 				);
 			}
 
+			// Internal/relative link: resolve to a sibling file and select it in the
+			// sidebar instead of letting the browser navigate to a broken path.
+			const matchedPath = href ? resolveSkillFilePath(href, files) : null;
+
+			// Resolvable file link: render as a primary-styled button (matching the
+			// markdown preview's link treatment) that selects the file in the sidebar.
+			if (matchedPath && onSelectFile) {
+				return (
+					<button
+						type="button"
+						className="wrap-anywhere cursor-pointer appearance-none text-left font-medium text-primary underline"
+						onClick={() => onSelectFile(matchedPath)}
+					>
+						{children}
+					</button>
+				);
+			}
+
 			return (
-				<a
-					href={href}
-					{...props}
-					onClick={(event) => {
-						props.onClick?.(event);
-						if (event.defaultPrevented) return;
-						event.preventDefault();
-						setExternalLink({ href, label });
-					}}
-				>
+				<a href={href} {...props}>
 					{children}
 				</a>
 			);
@@ -303,33 +454,8 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
 	};
 
 	return (
-		<FormSection title="SKILL.md Body" className="flex min-h-0 flex-1 flex-col">
-			<Tabs defaultValue="rendered" onValueChange={setActiveTab} className="flex min-h-0 w-full flex-1 flex-col">
-				<div className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-sm border")}>
-					<div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
-						<TabsList className="bg-muted h-8 shadow-sm backdrop-blur">
-							<TabsTrigger value="rendered" className="h-6 px-2.5 text-xs">
-								Rendered
-							</TabsTrigger>
-							<TabsTrigger value="raw" className="h-6 px-2.5 text-xs">
-								Raw
-							</TabsTrigger>
-						</TabsList>
-					</div>
-					<TabsContent value="rendered" className="m-0 flex-1 overflow-y-auto">
-						<div className="min-w-0 p-4">
-							<Markdown
-								content={body || ""}
-								className="max-w-full text-sm break-words [&_*]:max-w-full [&_*]:break-words [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:whitespace-pre-wrap [&_table]:table-fixed"
-								components={markdownComponents}
-							/>
-						</div>
-					</TabsContent>
-					<TabsContent value="raw" className="m-0 flex-1 overflow-y-auto">
-						<pre className="min-h-full p-4 font-mono text-xs leading-5 whitespace-pre-wrap">{body || "(empty)"}</pre>
-					</TabsContent>
-				</div>
-			</Tabs>
+		<>
+			<Markdown content={content || ""} className={className} components={markdownComponents} />
 
 			<Dialog open={externalLink != null} onOpenChange={(open) => !open && setExternalLink(null)}>
 				<DialogContent>
@@ -337,7 +463,7 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
 						<DialogTitle>Open external link?</DialogTitle>
 						<DialogDescription>This link opens outside Bifrost in a new browser tab.</DialogDescription>
 					</DialogHeader>
-					<div className="bg-muted/40 min-w-0 rounded-sm border px-3 py-2">
+					<div className="bg-muted/40 rounded-sm border px-3 py-2">
 						<p className="truncate text-sm font-medium">{externalLink?.label}</p>
 						<p className="text-muted-foreground truncate font-mono text-xs">{externalLink?.href}</p>
 					</div>
@@ -358,7 +484,54 @@ export function ReadOnlySkillBody({ body }: { body: string }) {
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
-		</FormSection>
+		</>
+	);
+}
+
+export function ReadOnlySkillBody({
+	body,
+	files = [],
+	onSelectFile,
+}: {
+	body: string;
+	files?: SkillFileEntry[];
+	onSelectFile?: (path: string) => void;
+}) {
+	const [activeTab, setActiveTab] = useState("preview");
+
+	return (
+		<Tabs
+			defaultValue="preview"
+			onValueChange={setActiveTab}
+			className="flex min-h-0 w-full flex-1 flex-col gap-2"
+		>
+			<div className="flex items-center justify-between gap-2">
+				<h2 className="text-foreground text-base font-semibold leading-[normal]">SKILL.md Body</h2>
+				<TabsList className="bg-muted h-8">
+					<TabsTrigger value="preview" className="h-6 px-2.5 text-xs">
+						Preview
+					</TabsTrigger>
+					<TabsTrigger value="raw" className="h-6 px-2.5 text-xs">
+						Raw
+					</TabsTrigger>
+				</TabsList>
+			</div>
+			<div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden rounded-sm border")}>
+				<TabsContent value="preview" className="m-0 flex-1 overflow-y-auto">
+					<div className="p-4">
+						<SkillMarkdown
+							content={body}
+							files={files}
+							onSelectFile={onSelectFile}
+							className="max-w-full text-sm break-words [&_*]:max-w-full [&_*]:break-words [&_a]:break-all [&_code]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:whitespace-pre-wrap [&_table]:table-fixed"
+						/>
+					</div>
+				</TabsContent>
+				<TabsContent value="raw" className="m-0 flex-1 overflow-y-auto">
+					<pre className="min-h-full p-4 font-mono text-xs leading-5 whitespace-pre-wrap">{body || "(empty)"}</pre>
+				</TabsContent>
+			</div>
+		</Tabs>
 	);
 }
 
@@ -422,6 +595,7 @@ export function ReadOnlyFileTree({
 	bare = false,
 	selectedPath,
 	onSelectPath,
+	searchQuery = "",
 }: {
 	skillName: string;
 	files: SkillFileEntry[];
@@ -434,7 +608,14 @@ export function ReadOnlyFileTree({
 	// is reported as SKILLMD_KEY.
 	selectedPath?: string;
 	onSelectPath?: (path: string) => void;
+	// Filters the tree to files whose path matches (case-insensitive substring).
+	searchQuery?: string;
 }) {
+	const query = searchQuery.trim().toLowerCase();
+	const filteredFiles = useMemo(
+		() => (query ? files.filter((f) => f.path.toLowerCase().includes(query)) : files),
+		[files, query],
+	);
 	const treeData = useMemo((): TreeNode<FileTreeNodeData>[] => {
 		interface FolderBucket {
 			files: SkillFileEntry[];
@@ -442,7 +623,7 @@ export function ReadOnlyFileTree({
 		}
 		const rootBucket: FolderBucket = { files: [], subfolders: {} };
 
-		for (const file of files) {
+		for (const file of filteredFiles) {
 			const segments = file.path.split("/").filter(Boolean);
 			if (segments.length === 0) continue;
 			segments.pop();
@@ -495,10 +676,35 @@ export function ReadOnlyFileTree({
 					type: "root",
 					childCount: Object.keys(rootBucket.subfolders).length + rootBucket.files.length,
 				},
-				children: [{ data: { id: "skillmd", name: "SKILL.md", type: "skillmd" } }, ...bucketToNodes(rootBucket, "")],
+				children: [
+					...(query ? [] : [{ data: { id: "skillmd", name: "SKILL.md", type: "skillmd" as const } }]),
+					...bucketToNodes(rootBucket, ""),
+				],
 			},
 		];
-	}, [skillName, files]);
+	}, [skillName, filteredFiles, query]);
+
+	// Own the expansion state so we can programmatically reveal a file selected from
+	// outside the tree (e.g. a markdown link), expanding its ancestor folders.
+	const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
+
+	useEffect(() => {
+		if (!selectedPath || selectedPath === SKILLMD_KEY) return;
+		const segments = selectedPath.split("/").filter(Boolean);
+		segments.pop(); // drop the file name, keep folder ancestors
+		if (segments.length === 0) return;
+		setExpandedNodes((prev) => {
+			const next: Record<string, boolean> = { ...prev, root: true };
+			let path = "";
+			for (const segment of segments) {
+				path = path ? `${path}/${segment}` : segment;
+				next[`folder-${path}`] = true;
+			}
+			// Skip the state update if every ancestor is already expanded.
+			const changed = Object.keys(next).some((id) => next[id] !== prev[id]);
+			return changed ? next : prev;
+		});
+	}, [selectedPath]);
 
 	const downloadUrl = `${getApiBaseUrl()}/skills/serve/${encodeURIComponent(skillName)}/download.zip`;
 
@@ -506,8 +712,10 @@ export function ReadOnlyFileTree({
 		<TooltipProvider>
 			<Tree<FileTreeNodeData>
 				data={treeData}
-				levelsToExpandByDefault={1}
+				levelsToExpandByDefault={query ? 99 : 1}
+				states={{ expandedNodes, setExpandedNodes }}
 				indentSize={28}
+				fitContainer
 				renderItem={({ item, isExpanded, hasChildren, onToggle, onExpandAll, onCollapseAll, isAllExpanded, isAllCollapsed }) => {
 					const isFolder = item.type === "root" || item.type === "folder";
 					const isSkillMd = item.type === "skillmd";
@@ -673,8 +881,8 @@ export function SkillReadOnlyContent({
 	const hasFrontmatter = extraFrontmatter && Object.keys(extraFrontmatter).length > 0;
 
 	return (
-		<div className={cn("flex min-h-0 w-full gap-3", className)}>
-			<div className="flex w-72 shrink-0 flex-col gap-2">
+		<ResizablePanelGroup direction="horizontal" className={cn("min-h-0 w-full", className)}>
+			<ResizablePanel defaultSize="28%" minSize="18%" maxSize="50%" className="flex min-h-0 flex-col gap-2">
 				{/* Metadata & Frontmatter buttons */}
 				{(hasMetadata || hasFrontmatter) && (
 					<div className="flex gap-1.5">
@@ -717,10 +925,12 @@ export function SkillReadOnlyContent({
 					selectedPath={selected === METADATA_KEY || selected === FRONTMATTER_KEY ? undefined : selected}
 					onSelectPath={setSelected}
 				/>
-			</div>
+			</ResizablePanel>
+
+			<ResizableHandle className="mx-1.5 bg-transparent" />
 
 			{/* Right: content pane */}
-			<div className="flex grow flex-col overflow-auto">
+			<ResizablePanel defaultSize="72%" minSize="30%" className="flex min-h-0 flex-col overflow-auto">
 				{selected === METADATA_KEY && metadata ? (
 					<ReadOnlyMetadataTable value={metadata} />
 				) : selected === FRONTMATTER_KEY && extraFrontmatter ? (
@@ -728,14 +938,12 @@ export function SkillReadOnlyContent({
 				) : selectedFile ? (
 					<FilePreviewPane file={selectedFile} skillName={skillName} mode="view" />
 				) : (
-					<ReadOnlySkillBody body={skillMdBody} />
+					<ReadOnlySkillBody body={skillMdBody} files={files} onSelectFile={setSelected} />
 				)}
-			</div>
-		</div>
+			</ResizablePanel>
+		</ResizablePanelGroup>
 	);
 }
-
-const FILES_COLLAPSE_STORAGE_KEY = "skill-files-sidebar-collapsed";
 
 function SkillFilesSidebar({
 	skillName,
@@ -750,54 +958,22 @@ function SkillFilesSidebar({
 	selectedPath?: string;
 	onSelectPath?: (path: string) => void;
 }) {
-	const [collapsed, setCollapsed] = useState(() => {
-		if (typeof window === "undefined") return false;
-		return window.localStorage.getItem(FILES_COLLAPSE_STORAGE_KEY) === "true";
-	});
-
-	const toggleCollapsed = () => {
-		setCollapsed((prev) => {
-			const next = !prev;
-			if (typeof window !== "undefined") {
-				window.localStorage.setItem(FILES_COLLAPSE_STORAGE_KEY, String(next));
-			}
-			return next;
-		});
-	};
-
-	// Collapsed: thin rail with a vertical "Files" label — the whole rail expands on click
-	if (collapsed) {
-		return (
-			<button
-				type="button"
-				data-testid="skill-files-sidebar-show-btn"
-				onClick={toggleCollapsed}
-				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-md border py-4 text-sm font-medium"
-				title="Show files"
-				aria-label="Show files"
-			>
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Files</span>
-			</button>
-		);
-	}
+	const [searchQuery, setSearchQuery] = useState("");
 
 	return (
-		<div className="bg-card flex h-full w-72 shrink-0 flex-col rounded-md border">
-			{/* Header */}
-			<div className="flex h-11 items-center justify-between border-b pr-2 pl-4">
-				<span className="text-sm font-semibold">Files</span>
-				<Button
-					variant="ghost"
-					size="icon"
-					data-testid="skill-files-sidebar-hide-btn"
-					className="size-7"
-					onClick={toggleCollapsed}
-					title="Hide files"
-					aria-label="Hide files"
-				>
-					<PanelLeftClose className="size-4" />
-				</Button>
+		<div className="bg-card flex h-full w-full min-w-0 flex-col rounded-md border">
+			{/* Header: search */}
+			<div className="flex h-9 items-center border-b">
+				<div className="relative grow">
+					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2" />
+					<Input
+						placeholder="Search files..."
+						value={searchQuery}
+						onChange={(e) => setSearchQuery(e.target.value)}
+						data-testid="sidebar-search"
+						className="h-9 border-none pl-8 shadow-none focus-visible:ring-0"
+					/>
+				</div>
 			</div>
 
 			{/* Scrollable tree */}
@@ -810,6 +986,7 @@ function SkillFilesSidebar({
 						composedSkillMd={composedSkillMd}
 						selectedPath={selectedPath}
 						onSelectPath={onSelectPath}
+						searchQuery={searchQuery}
 					/>
 				</div>
 			</ScrollArea>
