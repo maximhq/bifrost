@@ -299,6 +299,11 @@ func (bc *BifrostContext) Value(key any) any {
 		return nil
 	}
 
+	// Never read through to a pooled *fasthttp.RequestCtx parent — it's recycled once the handler returns.
+	if isNonCancellingContext(bc.parent) {
+		return nil
+	}
+
 	return bc.parent.Value(key)
 }
 
