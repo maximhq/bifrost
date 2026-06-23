@@ -43,6 +43,46 @@ var securityHeaders = []string{
 	"x-bf-vk",
 }
 
+func getPasswordPolicyFailures(password string) []string {
+	failures := make([]string, 0, 5)
+	hasUppercase := false
+	hasLowercase := false
+	hasDigit := false
+	hasSpecial := false
+
+	for i := 0; i < len(password); i++ {
+		char := password[i]
+		switch {
+		case char >= 'A' && char <= 'Z':
+			hasUppercase = true
+		case char >= 'a' && char <= 'z':
+			hasLowercase = true
+		case char >= '0' && char <= '9':
+			hasDigit = true
+		default:
+			hasSpecial = true
+		}
+	}
+
+	if len(password) < 12 {
+		failures = append(failures, "at least 12 characters")
+	}
+	if !hasUppercase {
+		failures = append(failures, "one uppercase letter")
+	}
+	if !hasLowercase {
+		failures = append(failures, "one lowercase letter")
+	}
+	if !hasDigit {
+		failures = append(failures, "one number")
+	}
+	if !hasSpecial {
+		failures = append(failures, "one special character")
+	}
+
+	return failures
+}
+
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
@@ -713,6 +753,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 				} else {
 					// Password has been changed
+					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
+					if len(passwordPolicyFailures) > 0 {
+						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
+						return
+					}
 					// We will hash the password
 					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
 					if err != nil {
