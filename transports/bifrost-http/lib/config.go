@@ -3857,8 +3857,10 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 				config.PluginConfigs = append(config.PluginConfigs, plugin)
 				continue
 			}
+			existingPlugin := config.PluginConfigs[idx]
+			placementChanged := !placementEqual(existingPlugin.Placement, plugin.Placement) || !orderEqual(existingPlugin.Order, plugin.Order)
 
-			if config.PluginConfigs[idx].ConfigHash != hash {
+			if config.PluginConfigs[idx].ConfigHash != hash || placementChanged {
 				logger.Debug("updating plugin %s", plugin.Name)
 				config.PluginConfigs[idx] = plugin
 			}
