@@ -256,6 +256,94 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 	}
 }
 
+// TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys locks in the explicit
+// promise that the keys-guard only rejects NON-empty `keys` arrays. A future
+// refactor that accidentally tightens the guard to `payload.Keys != nil` (or
+// silently strips the field with `json:",omitempty"`) would silently break
+// provider-level config saves that legitimately include an empty/null `keys`
+// field, so we assert the guard does NOT fire for those cases.
+//
+// We can't easily run the handler all the way through to a 200 here because
+// `inMemoryStore.UpdateProviderConfig` requires a real *bifrost.Bifrost client
+// that's out of scope for a unit test. Instead, we deliberately send
+// `concurrency: 0` so the handler short-circuits with a deterministic 400
+// from the concurrency validator that lives AFTER the keys-guard. The
+// invariant under test is: the error we get is the concurrency error, not the
+// keys-not-accepted error.
+func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "keys field omitted entirely",
+			body: `{
+				"network_config": {},
+				"concurrency_and_buffer_size": {"concurrency": 0, "buffer_size": 0}
+			}`,
+		},
+		{
+			name: "keys explicitly null",
+			body: `{
+				"keys": null,
+				"network_config": {},
+				"concurrency_and_buffer_size": {"concurrency": 0, "buffer_size": 0}
+			}`,
+		},
+		{
+			name: "keys explicitly empty array",
+			body: `{
+				"keys": [],
+				"network_config": {},
+				"concurrency_and_buffer_size": {"concurrency": 0, "buffer_size": 0}
+			}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-existing"}}},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/openai")
+			ctx.Request.SetBody([]byte(tc.body))
+			ctx.SetUserValue("provider", string(schemas.OpenAI))
+
+			h.updateProvider(ctx)
+
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("expected 400 (from concurrency validator, NOT keys-guard), got %d: %s",
+					ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			}
+
+			var bifrostErr schemas.BifrostError
+			if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+				t.Fatalf("failed to unmarshal error response: %v", err)
+			}
+			if bifrostErr.Error == nil {
+				t.Fatalf("expected error in response, got %#v", bifrostErr)
+			}
+			if strings.Contains(bifrostErr.Error.Message, "keys are not accepted on this endpoint") {
+				t.Fatalf("keys-guard should NOT fire for empty/absent keys, got: %s", bifrostErr.Error.Message)
+			}
+			if !strings.Contains(bifrostErr.Error.Message, "Concurrency") {
+				t.Fatalf("expected concurrency error (proves we passed the keys-guard), got: %s", bifrostErr.Error.Message)
+			}
+		})
+	}
+}
+
 // boolPtr keeps pointer-valued key fixtures inline without pulling in pointer helpers.
 func boolPtr(v bool) *bool {
 	return &v
