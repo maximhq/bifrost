@@ -1062,6 +1062,37 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
 
+    # Vault store for external secret management (enterprise).
+    # Resolves "vault.<path>" references in config fields at load time.
+    # vaultStore:
+    #   enabled: true
+    #   type: aws-secrets-manager  # Options: aws-secrets-manager, gcp-secret-manager, hashicorp-vault
+    #   prefix: bifrost             # Path prefix applied to every secret (default: bifrost)
+    #   accessMode: read_only       # read_only or read_and_write
+    #
+    #   # AWS Secrets Manager
+    #   aws:
+    #     region: us-east-1
+    #     accessKeyId: ""           # Leave empty to use default AWS credential chain
+    #     secretAccessKey: ""
+    #     sessionToken: ""          # AWS STS session token (optional)
+    #     roleArn: ""               # IAM role ARN to assume via STS
+    #     kmsKeyId: ""              # Customer-managed KMS key for encryption
+    #
+    #   # GCP Secret Manager
+    #   gcp:
+    #     projectId: ""
+    #     credentialsJson: ""       # Service account JSON; omit for default credentials
+    #
+    #   # HashiCorp Vault (KV v2)
+    #   hashicorp:
+    #     address: https://vault.example.com
+    #     token: ""                 # Static token; omit to use AppRole auth
+    #     namespace: ""             # Vault namespace (HCP Vault / Enterprise)
+    #     mountPath: secret         # KV v2 mount path
+    #     roleId: ""                # AppRole role_id
+    #     secretId: ""              # AppRole secret_id
+
   # Logs store settings
   logsStore:
     enabled: true
