@@ -1,2 +1,3 @@
+- fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: recover from idle-timeout timer-goroutine panic that could crash the process
 - fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)
