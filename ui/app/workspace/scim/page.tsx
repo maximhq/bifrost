@@ -1,12 +1,11 @@
-import { ScrollArea } from "@/components/ui/scrollArea";
 import SCIMView from "@enterprise/components/scim/scimView";
 
 export default function SCIMPage() {
 	return (
-		<ScrollArea className="no-padding-parent w-full h-[calc(100dvh-1rem)]">
-			<div className="mx-auto max-w-7xl px-4">
+		<div className="no-padding-parent bg-background no-border-parent flex flex-col w-full h-[calc(100dvh-1rem)]">
+			<div className="mx-auto w-full grow overflow-y-auto">
 				<SCIMView />
 			</div>
-		</ScrollArea>
+		</div>
 	);
 }

@@ -1,15 +1,15 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
+import { RequestHeadersTextarea } from "@/components/ui/requestHeadersTextarea";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { RequestHeadersTextarea } from "@/components/ui/requestHeadersTextarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { otelFormSchema, type SecretVar, type OtelFormSchema } from "@/lib/types/schemas";
+import { otelFormSchema, type OtelFormSchema, type SecretVar } from "@/lib/types/schemas";
 import { emptySecretVar, toSecretVarFormValue, toSecretVarMapFormValue } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -61,29 +61,29 @@ const traceTypeOptions: {
 	disabled?: boolean;
 	disabledReason?: string;
 }[] = [
-	{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
-	{
-		value: "vercel",
-		label: "Vercel AI SDK",
-		disabled: true,
-		disabledReason: "Coming soon",
-	},
-	{
-		value: "open_inference",
-		label: "Arize OpenInference",
-		disabled: true,
-		disabledReason: "Coming soon",
-	},
-];
+		{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
+		{
+			value: "vercel",
+			label: "Vercel AI SDK",
+			disabled: true,
+			disabledReason: "Coming soon",
+		},
+		{
+			value: "open_inference",
+			label: "Arize OpenInference",
+			disabled: true,
+			disabledReason: "Coming soon",
+		},
+	];
 const protocolOptions: {
 	value: string;
 	label: string;
 	disabled?: boolean;
 	disabledReason?: string;
 }[] = [
-	{ value: "http", label: "HTTP" },
-	{ value: "grpc", label: "GRPC" },
-];
+		{ value: "http", label: "HTTP" },
+		{ value: "grpc", label: "GRPC" },
+	];
 
 // emptyProfile returns a fresh profile with the same defaults a newly created collector uses.
 const emptyProfile = (): ProfileForm => ({
@@ -493,8 +493,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									<FormLabel className="text-base">Disable Root Span Content</FormLabel>
 									<FormDescription>
 										When enabled, input/output message content is dropped from the root span only; the underlying generation
-										(llm.call) span keeps the full content. This removes the duplicate input/output stored at the trace level
-										(e.g. Langfuse trace Input/Output goes empty) to reduce downstream storage.
+										(llm.call) span keeps the full content.
 									</FormDescription>
 								</div>
 								<FormControl>
