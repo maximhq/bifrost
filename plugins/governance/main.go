@@ -986,6 +986,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// pointer columns still participate in customer-level enforcement.
 	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow && hierarchyVK != nil {
 		var customerID string
+		customerFromTeam := false
 		switch {
 		case hierarchyVK.CustomerID != nil:
 			customerID = *hierarchyVK.CustomerID
@@ -993,10 +994,18 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			customerID = hierarchyVK.Customer.ID
 		case hierarchyVK.Team != nil && hierarchyVK.Team.CustomerID != nil:
 			customerID = *hierarchyVK.Team.CustomerID
+			customerFromTeam = true
 		case hierarchyVK.Team != nil && hierarchyVK.Team.Customer != nil:
 			customerID = hierarchyVK.Team.Customer.ID
+			customerFromTeam = true
 		}
-		if customerID != "" {
+		// When the request is scoped to a specific customer (header-driven, team-VK
+		// path; stamped by the enterprise plugin), skip enforcing the scalar
+		// team.CustomerID customer if it is not the scoped one — the enterprise layer
+		// enforces the scoped customer instead. Mirrors collectBudgetsFromHierarchy.
+		scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
+		scopedAway := customerFromTeam && scopedCustomerID != "" && scopedCustomerID != customerID
+		if customerID != "" && !scopedAway {
 			result = p.resolver.EvaluateCustomerRequest(ctx, customerID, evaluationRequest)
 		}
 	}
