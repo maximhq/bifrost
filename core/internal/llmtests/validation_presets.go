@@ -534,6 +534,12 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveTimestamps = false
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Runware:
+		// Runware is image generation only
+		expectations.ShouldHaveUsageStats = false
+		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveLatency = true
+
 	default:
 		// Keep default expectations — all true from BasicChatExpectations
 	}
