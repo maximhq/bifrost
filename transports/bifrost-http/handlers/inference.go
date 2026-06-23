@@ -878,6 +878,21 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 				if len(pricingEntry.AdditionalAttributes) > 0 && resp.Data[i].AdditionalAttributes == nil {
 					resp.Data[i].AdditionalAttributes = pricingEntry.AdditionalAttributes
 				}
+				if pricingEntry.ContextLength != nil && resp.Data[i].ContextLength == nil {
+					resp.Data[i].ContextLength = pricingEntry.ContextLength
+				} else if pricingEntry.MaxInputTokens != nil && resp.Data[i].ContextLength == nil {
+					resp.Data[i].ContextLength = pricingEntry.MaxInputTokens // fallback to MaxInputTokens if ContextLength is not set
+				}
+
+				if pricingEntry.MaxInputTokens != nil && resp.Data[i].MaxInputTokens == nil {
+					resp.Data[i].MaxInputTokens = pricingEntry.MaxInputTokens
+				}
+				if pricingEntry.MaxOutputTokens != nil && resp.Data[i].MaxOutputTokens == nil {
+					resp.Data[i].MaxOutputTokens = pricingEntry.MaxOutputTokens
+				}
+				if pricingEntry.Architecture != nil && resp.Data[i].Architecture == nil {
+					resp.Data[i].Architecture = pricingEntry.Architecture
+				}
 				if modelEntry.Pricing == nil {
 					pricing := &schemas.Pricing{}
 					if pricingEntry.InputCostPerToken != nil {
@@ -894,6 +909,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 					}
 					if pricingEntry.CacheCreationInputTokenCost != nil {
 						pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
+					}
+					if pricingEntry.SearchContextCostPerQuery != nil {
+						pricing.WebSearch = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.SearchContextCostPerQuery))
 					}
 					resp.Data[i].Pricing = pricing
 				}
