@@ -368,6 +368,9 @@
         },
         "runway": {
           "$ref": "#/$defs/provider"
+        },
+        "runware": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -5811,6 +5814,7 @@
             "replicate",
             "vllm",
             "runway",
+            "runware",
             "fireworks"
           ],
           "description": "Base provider type to extend"

@@ -2726,3 +2726,81 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 		t.Errorf("expected no UpdateBudget call when calendar_aligned was already true, got %d", len(store.updatedBudgets))
 	}
 }
+
+// TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget is a
+// regression test for BF-1497: VKs provisioned via an access profile / config.json
+// carry their global budget directly (TableBudget.VirtualKeyID set, preloaded into
+// vk.Budgets) and have no VK-scoped model config. Hydration must not wipe that
+// budget when no model config matches.
+func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *testing.T) {
+	directBudget := configstoreTables.TableBudget{
+		ID:            "bud-direct",
+		MaxLimit:      2500.0,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr("vk-ap"),
+		CurrentUsage:  120.0,
+	}
+	directRL := &configstoreTables.TableRateLimit{ID: "rl-direct"}
+	// A config.json-provisioned VK can also carry directly-attached per-provider
+	// budgets (TableBudget.ProviderConfigID set), which must survive hydration too.
+	pcBudget := configstoreTables.TableBudget{
+		ID:               "bud-direct-pc",
+		MaxLimit:         500.0,
+		ResetDuration:    "1M",
+		ProviderConfigID: schemas.Ptr(uint(7)),
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID:          "vk-ap",
+		Budgets:     []configstoreTables.TableBudget{directBudget},
+		RateLimit:   directRL,
+		RateLimitID: schemas.Ptr("rl-direct"),
+		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "anthropic", Budgets: []configstoreTables.TableBudget{pcBudget}},
+		},
+	}
+
+	// No VK-scoped model config exists for this VK.
+	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{})
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-direct" {
+		t.Fatalf("directly attached budget was wiped: got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != directRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-direct" {
+		t.Errorf("directly attached rate limit was wiped: rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
+	}
+	if len(vk.ProviderConfigs[0].Budgets) != 1 || vk.ProviderConfigs[0].Budgets[0].ID != "bud-direct-pc" {
+		t.Errorf("directly attached per-provider budget was wiped: got %+v", vk.ProviderConfigs[0].Budgets)
+	}
+}
+
+// TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the
+// existing overlay path: when a VK-scoped model config owns the governance
+// (TableBudget.ModelConfigID set, not preloaded onto the VK), hydration overlays it.
+func TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance(t *testing.T) {
+	mcBudget := configstoreTables.TableBudget{
+		ID:            "bud-mc",
+		MaxLimit:      999.0,
+		ResetDuration: "1M",
+		ModelConfigID: schemas.Ptr("mc-top"),
+	}
+	mcRL := &configstoreTables.TableRateLimit{ID: "rl-mc"}
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-sheet"}
+
+	byKey := map[string]*configstoreTables.TableModelConfig{
+		vkModelConfigIndexKey("vk-sheet", nil): {
+			ID:          "mc-top",
+			Budgets:     []configstoreTables.TableBudget{mcBudget},
+			RateLimit:   mcRL,
+			RateLimitID: schemas.Ptr("rl-mc"),
+		},
+	}
+
+	applyVKGovernanceFromModelConfigs(vk, byKey)
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-mc" {
+		t.Fatalf("expected model-config budget overlaid, got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != mcRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-mc" {
+		t.Errorf("expected model-config rate limit overlaid, got rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
+	}
+}

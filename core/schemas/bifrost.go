@@ -61,6 +61,7 @@ const (
 	Replicate   ModelProvider = "replicate"
 	VLLM        ModelProvider = "vllm"
 	Runway      ModelProvider = "runway"
+	Runware     ModelProvider = "runware"
 	Fireworks   ModelProvider = "fireworks"
 )
 
@@ -102,6 +103,7 @@ var StandardProviders = []ModelProvider{
 	Replicate,
 	VLLM,
 	Runway,
+	Runware,
 	Fireworks,
 }
 
