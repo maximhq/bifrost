@@ -1,0 +1,1 @@
+- fix: include allow_all_keys and blacklisted_models in virtual key hash (closes #4640)
