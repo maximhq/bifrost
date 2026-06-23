@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/runway"
+	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -4049,6 +4050,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
+	case schemas.Runware:
+		return runware.NewRunwareProvider(config, bifrost.logger)
 	case schemas.Fireworks:
 		return fireworks.NewFireworksProvider(config, bifrost.logger)
 	default:
