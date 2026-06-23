@@ -16,8 +16,8 @@ import (
 func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	t.Setenv("MY_AZURE_ENDPOINT_SECRET", "https://secret-resource.openai.azure.com")
 
-	endpoint := schemas.NewEnvVar("env.MY_AZURE_ENDPOINT_SECRET")
-	require.True(t, endpoint.IsFromEnv(), "setup: Endpoint should be FromEnv")
+	endpoint := schemas.NewSecretVar("env.MY_AZURE_ENDPOINT_SECRET")
+	require.True(t, endpoint.IsFromSecret(), "setup: Endpoint should be FromSecret")
 	require.Equal(t, "https://secret-resource.openai.azure.com", endpoint.GetValue(),
 		"setup: Endpoint should be resolved")
 
@@ -25,7 +25,7 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 		Keys: []schemas.Key{{
 			ID:    "k1",
 			Name:  "test",
-			Value: schemas.EnvVar{Val: ""},
+			Value: schemas.SecretVar{Val: ""},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *endpoint,
 			},
@@ -42,17 +42,17 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	require.NoError(t, err)
 
 	var out struct {
-		Value   string `json:"value"`
-		EnvVar  string `json:"env_var"`
-		FromEnv bool   `json:"from_env"`
+		Value      string `json:"value"`
+		Ref        string `json:"ref"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.NotContains(t, out.Value, "secret-resource",
 		"resolved env value leaked through Endpoint JSON output: %q", out.Value)
-	assert.Equal(t, "env.MY_AZURE_ENDPOINT_SECRET", out.EnvVar,
-		"env var reference must be preserved so the UI can show it")
-	assert.True(t, out.FromEnv, "from_env flag must be preserved")
+	assert.Equal(t, "env.MY_AZURE_ENDPOINT_SECRET", out.Ref,
+		"secret ref must be preserved so the UI can show it")
+	assert.Equal(t, "env", out.SecretType, "type field must be preserved")
 }
 
 // TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields verifies that the
@@ -63,9 +63,9 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 		Keys: []schemas.Key{{
 			ID:    "k1",
 			Name:  "test",
-			Value: schemas.EnvVar{Val: ""},
+			Value: schemas.SecretVar{Val: ""},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint: *schemas.NewEnvVar("https://foo.openai.azure.com"),
+				Endpoint: *schemas.NewSecretVar("https://foo.openai.azure.com"),
 			},
 		}},
 	}
@@ -79,34 +79,34 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	require.NoError(t, err)
 
 	var out struct {
-		Value   string `json:"value"`
-		FromEnv bool   `json:"from_env"`
+		Value      string `json:"value"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.Equal(t, "https://foo.openai.azure.com", out.Value,
 		"plain Endpoint was incorrectly redacted")
-	assert.False(t, out.FromEnv)
+	assert.Empty(t, out.SecretType)
 }
 
-// TestProviderConfig_Redacted_PreservesEnvVarReferenceForVertex verifies that
+// TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that
 // env-backed Vertex fields appear in the redacted output with the env reference
 // intact and the resolved value masked. This is the user-facing fix for the
 // "I see resolved env values in the UI" bug.
-func TestProviderConfig_Redacted_PreservesEnvVarReferenceForVertex(t *testing.T) {
+func TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex(t *testing.T) {
 	t.Setenv("MY_VERTEX_PROJECT_ID_SECRET", "super-secret-project-12345")
 
-	projectID := schemas.NewEnvVar("env.MY_VERTEX_PROJECT_ID_SECRET")
+	projectID := schemas.NewSecretVar("env.MY_VERTEX_PROJECT_ID_SECRET")
 	require.Equal(t, "super-secret-project-12345", projectID.GetValue())
 
 	config := ProviderConfig{
 		Keys: []schemas.Key{{
 			ID:    "k1",
 			Name:  "test",
-			Value: schemas.EnvVar{Val: ""},
+			Value: schemas.SecretVar{Val: ""},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *projectID,
-				Region:    *schemas.NewEnvVar("us-central1"),
+				Region:    *schemas.NewSecretVar("us-central1"),
 			},
 		}},
 	}
@@ -116,16 +116,16 @@ func TestProviderConfig_Redacted_PreservesEnvVarReferenceForVertex(t *testing.T)
 	require.NoError(t, err)
 
 	var out struct {
-		Value   string `json:"value"`
-		EnvVar  string `json:"env_var"`
-		FromEnv bool   `json:"from_env"`
+		Value      string `json:"value"`
+		Ref        string `json:"ref"`
+		SecretType string `json:"type"`
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
 	assert.NotContains(t, out.Value, "super-secret-project",
 		"resolved Vertex ProjectID env value leaked: %q", out.Value)
-	assert.Equal(t, "env.MY_VERTEX_PROJECT_ID_SECRET", out.EnvVar)
-	assert.True(t, out.FromEnv)
+	assert.Equal(t, "env.MY_VERTEX_PROJECT_ID_SECRET", out.Ref)
+	assert.Equal(t, "env", out.SecretType)
 }
 
 // TestProviderConfig_Redacted_DoesNotMutateOriginal ensures Redacted() does not
@@ -134,7 +134,7 @@ func TestProviderConfig_Redacted_PreservesEnvVarReferenceForVertex(t *testing.T)
 func TestProviderConfig_Redacted_DoesNotMutateOriginal(t *testing.T) {
 	t.Setenv("MY_REAL_KEY", "sk-real-secret-1234567890abcdef")
 
-	keyValue := schemas.NewEnvVar("env.MY_REAL_KEY")
+	keyValue := schemas.NewSecretVar("env.MY_REAL_KEY")
 	require.Equal(t, "sk-real-secret-1234567890abcdef", keyValue.GetValue())
 
 	config := ProviderConfig{
@@ -170,40 +170,40 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 			{
 				ID:    "openai-k",
 				Name:  "openai",
-				Value: *schemas.NewEnvVar("env.LEAK_TEST_OPENAI_KEY"),
+				Value: *schemas.NewSecretVar("env.LEAK_TEST_OPENAI_KEY"),
 			},
 			{
 				ID:    "azure-k",
 				Name:  "azure",
-				Value: schemas.EnvVar{Val: ""},
+				Value: schemas.SecretVar{Val: ""},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewEnvVar("env.LEAK_TEST_AZURE_ENDPOINT"),
+					Endpoint: *schemas.NewSecretVar("env.LEAK_TEST_AZURE_ENDPOINT"),
 				},
 			},
 			{
 				ID:    "vertex-k",
 				Name:  "vertex",
-				Value: schemas.EnvVar{Val: ""},
+				Value: schemas.SecretVar{Val: ""},
 				VertexKeyConfig: &schemas.VertexKeyConfig{
-					ProjectID: *schemas.NewEnvVar("env.LEAK_TEST_VERTEX_PROJECT"),
-					Region:    *schemas.NewEnvVar("us-central1"),
+					ProjectID: *schemas.NewSecretVar("env.LEAK_TEST_VERTEX_PROJECT"),
+					Region:    *schemas.NewSecretVar("us-central1"),
 				},
 			},
 			{
 				ID:    "bedrock-k",
 				Name:  "bedrock",
-				Value: schemas.EnvVar{Val: ""},
+				Value: schemas.SecretVar{Val: ""},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewEnvVar("env.LEAK_TEST_BEDROCK_ACCESS"),
-					SecretKey: schemas.EnvVar{Val: ""},
+					AccessKey: *schemas.NewSecretVar("env.LEAK_TEST_BEDROCK_ACCESS"),
+					SecretKey: schemas.SecretVar{Val: ""},
 				},
 			},
 			{
 				ID:    "gigachat-k",
 				Name:  "gigachat",
-				Value: schemas.EnvVar{Val: ""},
+				Value: schemas.SecretVar{Val: ""},
 				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-					Credentials:  schemas.NewEnvVar("env.LEAK_TEST_GIGACHAT_CREDENTIALS"),
+					Credentials:  schemas.NewSecretVar("env.LEAK_TEST_GIGACHAT_CREDENTIALS"),
 					CertFile:     "/secure/client.pem",
 					KeyFile:      "/secure/client.key",
 					CABundleFile: "/secure/ca.pem",

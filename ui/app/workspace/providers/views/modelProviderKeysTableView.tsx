@@ -231,27 +231,27 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												)}
 												{key.status === "list_models_failed" &&
 													(() => {
-														// Check if the failure might be due to an env var that the server couldn't resolve
-														const hasEnvVarConfig =
-															key.azure_key_config?.endpoint?.from_env ||
-															key.vertex_key_config?.project_id?.from_env ||
-															key.vertex_key_config?.region?.from_env ||
-															key.bedrock_key_config?.region?.from_env ||
-															key.vllm_key_config?.url?.from_env ||
-															key.gigachat_key_config?.credentials?.from_env ||
-															key.gigachat_key_config?.access_token?.from_env ||
-															key.gigachat_key_config?.user?.from_env ||
-															key.gigachat_key_config?.password?.from_env ||
-															key.value?.from_env;
-														const isEnvResolutionError =
-															hasEnvVarConfig && key.description && /not set|empty|missing/i.test(key.description);
+														// Check if the failure might be due to a secret reference that the server couldn't resolve
+														const hasSecretVarConfig =
+															(key.azure_key_config?.endpoint?.type && key.azure_key_config.endpoint.type !== "plain_text") ||
+															(key.vertex_key_config?.project_id?.type && key.vertex_key_config.project_id.type !== "plain_text") ||
+															(key.vertex_key_config?.region?.type && key.vertex_key_config.region.type !== "plain_text") ||
+															(key.bedrock_key_config?.region?.type && key.bedrock_key_config.region.type !== "plain_text") ||
+															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
+															(key.gigachat_key_config?.credentials?.type && key.gigachat_key_config.credentials.type !== "plain_text") ||
+															(key.gigachat_key_config?.access_token?.type && key.gigachat_key_config.access_token.type !== "plain_text") ||
+															(key.gigachat_key_config?.user?.type && key.gigachat_key_config.user.type !== "plain_text") ||
+															(key.gigachat_key_config?.password?.type && key.gigachat_key_config.password.type !== "plain_text") ||
+															(key.value?.type && key.value.type !== "plain_text");
+														const isSecretResolutionError =
+															hasSecretVarConfig && key.description && /not set|empty|missing/i.test(key.description);
 
-														return isEnvResolutionError ? (
+														return isSecretResolutionError ? (
 															<Tooltip>
 																<TooltipTrigger asChild>
 																	<button
 																		type="button"
-																		aria-label="Key status: env var may not be resolved"
+																		aria-label="Key status: secret reference may not be resolved"
 																		data-testid={`key-status-warning-${key.name}`}
 																		className="inline-flex"
 																	>
@@ -259,7 +259,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																	</button>
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs break-words">
-																	{key.description} — verify the environment variable is set on the server
+																	{key.description} — verify the secret reference is configured on the server
 																</TooltipContent>
 															</Tooltip>
 														) : (

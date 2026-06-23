@@ -263,8 +263,8 @@ func TestGigaChatIntegrationConfigUsesAccessToken(t *testing.T) {
 	if key.GigaChatKeyConfig == nil || !key.GigaChatKeyConfig.AccessToken.IsSet() {
 		t.Fatalf("inference key did not use access-token auth: %#v", key.GigaChatKeyConfig)
 	}
-	if key.GigaChatKeyConfig.AccessToken.EnvVar != "env.GIGACHAT_ACCESS_TOKEN" {
-		t.Fatalf("access token env var mismatch: got %q", key.GigaChatKeyConfig.AccessToken.EnvVar)
+	if key.GigaChatKeyConfig.AccessToken.GetRawRef() != "env.GIGACHAT_ACCESS_TOKEN" {
+		t.Fatalf("access token env var mismatch: got %q", key.GigaChatKeyConfig.AccessToken.GetRawRef())
 	}
 }
 
@@ -355,7 +355,7 @@ func (config gigaChatIntegrationConfig) inferenceKey() schemas.Key {
 
 func (config gigaChatIntegrationConfig) accessTokenKey() schemas.Key {
 	keyConfig := config.keyConfig()
-	keyConfig.AccessToken = schemas.NewEnvVar("env.GIGACHAT_ACCESS_TOKEN")
+	keyConfig.AccessToken = schemas.NewSecretVar("env.GIGACHAT_ACCESS_TOKEN")
 	return schemas.Key{
 		Name:              "gigachat-integration-access-token",
 		Models:            schemas.WhiteList{"*"},
@@ -365,7 +365,7 @@ func (config gigaChatIntegrationConfig) accessTokenKey() schemas.Key {
 
 func (config gigaChatIntegrationConfig) oauthKey() schemas.Key {
 	keyConfig := config.keyConfig()
-	keyConfig.Credentials = schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS")
+	keyConfig.Credentials = schemas.NewSecretVar("env.GIGACHAT_CREDENTIALS")
 	keyConfig.Scope = config.scope
 	return schemas.Key{
 		Name:              "gigachat-integration-oauth",
@@ -376,8 +376,8 @@ func (config gigaChatIntegrationConfig) oauthKey() schemas.Key {
 
 func (config gigaChatIntegrationConfig) passwordKey() schemas.Key {
 	keyConfig := config.keyConfig()
-	keyConfig.User = schemas.NewEnvVar("env.GIGACHAT_USER")
-	keyConfig.Password = schemas.NewEnvVar("env.GIGACHAT_PASSWORD")
+	keyConfig.User = schemas.NewSecretVar("env.GIGACHAT_USER")
+	keyConfig.Password = schemas.NewSecretVar("env.GIGACHAT_PASSWORD")
 	return schemas.Key{
 		Name:              "gigachat-integration-password",
 		Models:            schemas.WhiteList{"*"},

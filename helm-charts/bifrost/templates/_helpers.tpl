@@ -739,6 +739,45 @@ false
 {{- $sqliteConfigStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/config.db" .Values.bifrost.appDir)) }}
 {{- $_ := set $config "config_store" $sqliteConfigStore }}
 {{- end }}
+{{- /* Vault Store (enterprise secret management) */ -}}
+{{- if and .Values.storage.configStore.vaultStore .Values.storage.configStore.vaultStore.enabled }}
+{{- $vs := .Values.storage.configStore.vaultStore }}
+{{- $vaultStore := dict "enabled" true "type" $vs.type }}
+{{- if $vs.prefix }}
+{{- $_ := set $vaultStore "prefix" $vs.prefix }}
+{{- end }}
+{{- if $vs.accessMode }}
+{{- $_ := set $vaultStore "access_mode" $vs.accessMode }}
+{{- end }}
+{{- if $vs.aws }}
+{{- $aws := dict }}
+{{- if $vs.aws.region }}{{- $_ := set $aws "region" $vs.aws.region }}{{- end }}
+{{- if $vs.aws.accessKeyId }}{{- $_ := set $aws "access_key_id" $vs.aws.accessKeyId }}{{- end }}
+{{- if $vs.aws.secretAccessKey }}{{- $_ := set $aws "secret_access_key" $vs.aws.secretAccessKey }}{{- end }}
+{{- if $vs.aws.sessionToken }}{{- $_ := set $aws "session_token" $vs.aws.sessionToken }}{{- end }}
+{{- if $vs.aws.roleArn }}{{- $_ := set $aws "role_arn" $vs.aws.roleArn }}{{- end }}
+{{- if $vs.aws.kmsKeyId }}{{- $_ := set $aws "kms_key_id" $vs.aws.kmsKeyId }}{{- end }}
+{{- $_ := set $vaultStore "aws" $aws }}
+{{- end }}
+{{- if $vs.gcp }}
+{{- $gcp := dict }}
+{{- if $vs.gcp.projectId }}{{- $_ := set $gcp "project_id" $vs.gcp.projectId }}{{- end }}
+{{- if $vs.gcp.credentialsJson }}{{- $_ := set $gcp "credentials_json" $vs.gcp.credentialsJson }}{{- end }}
+{{- $_ := set $vaultStore "gcp" $gcp }}
+{{- end }}
+{{- if $vs.hashicorp }}
+{{- $hashicorp := dict }}
+{{- if $vs.hashicorp.address }}{{- $_ := set $hashicorp "address" $vs.hashicorp.address }}{{- end }}
+{{- if $vs.hashicorp.token }}{{- $_ := set $hashicorp "token" $vs.hashicorp.token }}{{- end }}
+{{- if $vs.hashicorp.namespace }}{{- $_ := set $hashicorp "namespace" $vs.hashicorp.namespace }}{{- end }}
+{{- if $vs.hashicorp.mountPath }}{{- $_ := set $hashicorp "mount_path" $vs.hashicorp.mountPath }}{{- end }}
+{{- if $vs.hashicorp.roleId }}{{- $_ := set $hashicorp "role_id" $vs.hashicorp.roleId }}{{- end }}
+{{- if $vs.hashicorp.secretId }}{{- $_ := set $hashicorp "secret_id" $vs.hashicorp.secretId }}{{- end }}
+{{- $_ := set $vaultStore "hashicorp" $hashicorp }}
+{{- end }}
+{{- $cs := index $config "config_store" }}
+{{- $_ := set $cs "vault_store" $vaultStore }}
+{{- end }}
 {{- end }}
 {{- /* Logs Store */ -}}
 {{- if .Values.storage.logsStore.enabled }}

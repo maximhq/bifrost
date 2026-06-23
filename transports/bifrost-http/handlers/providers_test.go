@@ -1007,14 +1007,14 @@ func TestValidateProviderKeyURL_GigaChat(t *testing.T) {
 			name: "credentials config without key value is valid",
 			key: schemas.Key{
 				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-					Credentials: schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS"),
+					Credentials: schemas.NewSecretVar("env.GIGACHAT_CREDENTIALS"),
 				},
 			},
 		},
 		{
 			name: "plain key value is valid",
 			key: schemas.Key{
-				Value: *schemas.NewEnvVar("legacy-api-key"),
+				Value: *schemas.NewSecretVar("legacy-api-key"),
 			},
 		},
 		{
@@ -1035,7 +1035,7 @@ func TestValidateProviderKeyURL_GigaChat(t *testing.T) {
 			name: "partial user password config is invalid",
 			key: schemas.Key{
 				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-					User: schemas.NewEnvVar("env.GIGACHAT_USER"),
+					User: schemas.NewSecretVar("env.GIGACHAT_USER"),
 				},
 			},
 			wantErr: true,

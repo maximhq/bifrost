@@ -30,7 +30,7 @@ const (
 
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
-	EnvVar     string                // The environment variable name (without env. prefix)
+	SecretVar  string                // The environment variable name (without env. prefix)
 	Provider   schemas.ModelProvider // The provider this key belongs to (empty for core/mcp configs)
 	KeyType    EnvKeyType            // Type of key (e.g., "api_key", "azure_config", "vertex_config", "bedrock_config", "connection_string", "mcp_header")
 	ConfigPath string                // Path in config where this env var is used
@@ -97,7 +97,7 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalClientURL                  *schemas.EnvVar                  `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	MCPExternalClientURL                  *schemas.SecretVar               `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
@@ -359,8 +359,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	if c.MCPExternalClientURL.IsSet() {
-		if c.MCPExternalClientURL.IsFromEnv() {
-			hash.Write([]byte("externalClientURL:env:" + c.MCPExternalClientURL.EnvVar))
+		if c.MCPExternalClientURL.IsFromSecret() {
+			hash.Write([]byte("externalClientURL:ref:" + c.MCPExternalClientURL.GetRawRef()))
 		} else {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
@@ -390,10 +390,10 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.
+// Redacted returns a copy of ClientConfig with any env-backed SecretVar fields masked.
 func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
-	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromEnv() {
+	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
 	}
 	return out
@@ -481,7 +481,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			if key.AzureKeyConfig.Endpoint.IsFromEnv() {
+			if key.AzureKeyConfig.Endpoint.IsFromSecret() {
 				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			} else {
 				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
@@ -654,9 +654,9 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
-	// Hash Value (prefix with source type to prevent collisions between env and literal)
-	if key.Value.IsFromEnv() {
-		hash.Write([]byte("env:" + key.Value.EnvVar))
+	// Hash Value (prefix with source type to prevent collisions between ref and literal)
+	if key.Value.IsFromSecret() {
+		hash.Write([]byte("ref:" + key.Value.GetRawRef()))
 	} else {
 		hash.Write([]byte("val:" + key.Value.Val))
 	}
@@ -807,8 +807,8 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Name))
 	// Hash Description
 	hash.Write([]byte(vk.Description))
-	// Hash Value
-	hash.Write([]byte(vk.Value))
+	// Hash Value (resolved); a SecretVar stringifies to its resolved value
+	hash.Write([]byte(vk.Value.GetValue()))
 	// Hash IsActive (nil treated as DB default true)
 	if vk.IsActiveValue() {
 		hash.Write([]byte("isActive:true"))
@@ -1329,8 +1329,8 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// Hash ConnectionString
 	if m.ConnectionString != nil {
-		if m.ConnectionString.IsFromEnv() {
-			hash.Write([]byte(m.ConnectionString.EnvVar))
+		if m.ConnectionString.IsFromSecret() {
+			hash.Write([]byte(m.ConnectionString.GetRawRef()))
 		} else {
 			hash.Write([]byte(m.ConnectionString.Val))
 		}
@@ -1375,8 +1375,8 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			val := m.Headers[k]
-			if val.FromEnv {
-				hash.Write([]byte(k + ":env:" + val.EnvVar))
+			if val.IsFromSecret() {
+				hash.Write([]byte(k + ":ref:" + val.GetRawRef()))
 			} else {
 				hash.Write([]byte(k + ":val:" + val.Val))
 			}
@@ -1488,9 +1488,9 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
-	AdminUserName *schemas.EnvVar `json:"admin_username"`
-	AdminPassword *schemas.EnvVar `json:"admin_password"`
-	IsEnabled     bool            `json:"is_enabled"`
+	AdminUserName *schemas.SecretVar `json:"admin_username"`
+	AdminPassword *schemas.SecretVar `json:"admin_password"`
+	IsEnabled     bool               `json:"is_enabled"`
 }
 
 // ConfigMap maps provider names to their configurations.

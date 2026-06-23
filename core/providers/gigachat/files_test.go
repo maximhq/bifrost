@@ -404,7 +404,7 @@ func testGigaChatFileListUsesKeyBaseURLAndAuthHeaders(t *testing.T) {
 	provider := newTestGigaChatChatProvider(t, networkServer.URL)
 	key := schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			AccessToken: schemas.NewEnvVar("key-base-url-token"),
+			AccessToken: schemas.NewSecretVar("key-base-url-token"),
 			BaseURL:     keyServer.URL + "/custom-api",
 		},
 	}

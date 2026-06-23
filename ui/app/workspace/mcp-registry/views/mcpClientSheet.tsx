@@ -15,7 +15,7 @@ import { Fragment } from "react";
 
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { CodeEditor } from "@/components/ui/codeEditor";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -506,8 +506,8 @@ export default function MCPClientSheet({
 												{mcpClient.config.connection_type === "stdio"
 													? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
 													"-"
-													: mcpClient.config.connection_string?.from_env
-														? `env.${mcpClient.config.connection_string.env_var}`
+													: (mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault")
+														? mcpClient.config.connection_string.ref
 														: mcpClient.config.connection_string?.value || "-"}
 											</span>
 										</div>
@@ -698,7 +698,7 @@ export default function MCPClientSheet({
 															<FormItem>
 																<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 																<FormControl>
-																	<EnvVarInput
+																	<SecretVarInput
 																		variant="textarea"
 																		placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
 																		className="font-mono text-xs"
@@ -779,7 +779,7 @@ export default function MCPClientSheet({
 														keyPlaceholder="Header name"
 														valuePlaceholder="Header value"
 														label="Headers"
-														useEnvVarInput
+														useSecretVarInput
 													/>
 												</FormControl>
 												<FormMessage />
@@ -908,7 +908,7 @@ export default function MCPClientSheet({
 													<FormItem className="flex flex-col gap-2">
 														<FormLabel>Client ID</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																data-testid="mcpclient-input-oauth-client-id"
 																placeholder="Enter new OAuth client ID"
 																disabled={isDisabled}
@@ -930,7 +930,7 @@ export default function MCPClientSheet({
 													<FormItem className="flex flex-col gap-2">
 														<FormLabel>Client Secret</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																data-testid="mcpclient-input-oauth-client-secret"
 																placeholder="Enter new OAuth client secret"
 																disabled={isDisabled}

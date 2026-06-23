@@ -2316,7 +2316,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	// Build virtual keys map and track active VKs
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
-		gs.virtualKeys.Store(vk.Value, vk)
+		gs.virtualKeys.Store(vk.Value.GetValue(), vk)
 	}
 
 	// Build model configs map.
@@ -2451,6 +2451,10 @@ func (gs *LocalGovernanceStore) collectRateLimitsFromHierarchy(ctx context.Conte
 	rateLimitsWithCategories := map[string][]*configstoreTables.TableRateLimit{}
 	seen := map[string]bool{}
 
+	// See collectBudgetsFromHierarchy: when a team-VK request is scoped to a specific
+	// customer, only charge the scalar team.CustomerID customer if it is the scoped one.
+	scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
+
 	for _, pc := range vk.ProviderConfigs {
 		if pc.RateLimitID != nil && pc.Provider == string(requestedProvider) {
 			if rateLimitValue, exists := gs.rateLimits.Load(*pc.RateLimitID); exists && rateLimitValue != nil {
@@ -2494,10 +2498,12 @@ func (gs *LocalGovernanceStore) collectRateLimitsFromHierarchy(ctx context.Conte
 					}
 				}
 
-				// Check if team belongs to a customer
+				// Check if team belongs to a customer. Skip charging it when the request
+				// is scoped to a different customer (header-driven, team-VK path).
 				if team.CustomerID != nil {
 					teamCustomerID = *team.CustomerID
-					if customerValue, exists := gs.customers.Load(*team.CustomerID); exists && customerValue != nil {
+					chargeTeamCustomer := scopedCustomerID == "" || scopedCustomerID == teamCustomerID
+					if customerValue, exists := gs.customers.Load(*team.CustomerID); chargeTeamCustomer && exists && customerValue != nil {
 						if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
 							if customer.RateLimitID != nil {
 								if rateLimitValue, exists := gs.rateLimits.Load(*customer.RateLimitID); exists && rateLimitValue != nil {
@@ -2539,10 +2545,16 @@ func (gs *LocalGovernanceStore) collectRateLimitsFromHierarchy(ctx context.Conte
 }
 
 // collectBudgetsFromHierarchy collects budgets and their metadata from the hierarchy (Provider Configs → VK → Customer -> User -> Team → BusinessUnit)
-func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(_ context.Context, vk *configstoreTables.TableVirtualKey, requestedProvider schemas.ModelProvider) EntityWiseBudgets {
+func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, requestedProvider schemas.ModelProvider) EntityWiseBudgets {
 	if vk == nil {
 		return nil
 	}
+	// When a team-VK request is scoped to a specific customer (x-bf-customer-id /
+	// x-bf-customer-name header, resolved and stamped by the enterprise plugin),
+	// the scalar team.CustomerID customer is only charged when it is the scoped one;
+	// otherwise the enterprise layer charges the scoped customer instead. Empty key
+	// (the common case / pure-OSS) leaves behavior unchanged.
+	scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
 	entityWiseBudgets := make(EntityWiseBudgets)
 	// Collect all budgets in hierarchy order using lock-free sync.Map access (Provider Configs → VK → Team → Customer)
 	seen := make(map[string]bool)
@@ -2600,10 +2612,12 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(_ context.Context, v
 					}
 				}
 
-				// Check if team belongs to a customer
+				// Check if team belongs to a customer. Skip charging it when the request
+				// is scoped to a different customer (header-driven, team-VK path).
 				if team.CustomerID != nil {
 					teamCustomerID = *team.CustomerID
-					if customerValue, exists := gs.customers.Load(*team.CustomerID); exists && customerValue != nil {
+					chargeTeamCustomer := scopedCustomerID == "" || scopedCustomerID == teamCustomerID
+					if customerValue, exists := gs.customers.Load(*team.CustomerID); chargeTeamCustomer && exists && customerValue != nil {
 						if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
 							for _, cb := range customer.Budgets {
 								if budgetValue, exists := gs.budgets.Load(cb.ID); exists && budgetValue != nil {
@@ -2798,7 +2812,7 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 		}
 	}
 
-	gs.virtualKeys.Store(clone.Value, &clone)
+	gs.virtualKeys.Store(clone.Value.GetValue(), &clone)
 }
 
 // UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
@@ -2809,8 +2823,8 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 
 	// Do not update the current usage of the rate limit, as it will be updated by the usage tracker.
 	// But update if max limit or reset duration changes.
-	existingVKKey := vk.Value
-	existingVKValue, exists := gs.virtualKeys.Load(vk.Value)
+	existingVKKey := vk.Value.GetValue()
+	existingVKValue, exists := gs.virtualKeys.Load(vk.Value.GetValue())
 	if exists && existingVKValue != nil {
 		if existingVK, ok := existingVKValue.(*configstoreTables.TableVirtualKey); !ok || existingVK == nil || existingVK.ID != vk.ID {
 			exists = false
@@ -2973,10 +2987,10 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				}
 			}
 		}
-		if existingVKKey != "" && existingVKKey != vk.Value {
+		if existingVKKey != "" && existingVKKey != vk.Value.GetValue() {
 			gs.virtualKeys.Delete(existingVKKey)
 		}
-		gs.virtualKeys.Store(vk.Value, &clone)
+		gs.virtualKeys.Store(vk.Value.GetValue(), &clone)
 	} else {
 		gs.CreateVirtualKeyInMemory(ctx, vk)
 	}

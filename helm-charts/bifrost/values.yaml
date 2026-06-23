@@ -539,6 +539,7 @@ bifrost:
         #     tls_ca_cert: ""         # Path to TLS CA certificate file
         #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
         #     disable_content_logging: false
+        #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #
         # Single-profile shape:
         service_name: "bifrost"
@@ -556,6 +557,8 @@ bifrost:
         insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
+        # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
+        group_traces_by_session: false
     datadog:
       enabled: false
       version: 1

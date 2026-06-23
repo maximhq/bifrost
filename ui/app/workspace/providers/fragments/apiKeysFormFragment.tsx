@@ -1,4 +1,4 @@
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
@@ -77,8 +77,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			const tenantId = form.getValues("key.azure_key_config.tenant_id");
 			const apiKey = form.getValues("key.value");
 			const hasEntraField =
-				clientId?.value || clientId?.env_var || clientSecret?.value || clientSecret?.env_var || tenantId?.value || tenantId?.env_var;
-			const hasApiKey = apiKey?.value || apiKey?.env_var;
+				clientId?.value || clientId?.ref || clientSecret?.value || clientSecret?.ref || tenantId?.value || tenantId?.ref;
+			const hasApiKey = apiKey?.value || apiKey?.ref;
 			let detected: "api_key" | "entra_id" | "default_credential" = "api_key";
 			if (hasEntraField) {
 				detected = "entra_id";
@@ -94,9 +94,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 		if (form.formState.isDirty) return;
 		if (isVertex) {
 			const authCredentials = form.getValues("key.vertex_key_config.auth_credentials")?.value;
-			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.env_var;
+			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.ref;
 			const apiKey = form.getValues("key.value")?.value;
-			const apiKeyEnv = form.getValues("key.value")?.env_var;
+			const apiKeyEnv = form.getValues("key.value")?.ref;
 			let detected: "service_account" | "service_account_json" | "api_key" = "service_account";
 			if (authCredentials || authCredentialsEnv) {
 				detected = "service_account_json";
@@ -114,8 +114,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			const accessKey = form.getValues("key.bedrock_key_config.access_key");
 			const secretKey = form.getValues("key.bedrock_key_config.secret_key");
 			const apiKey = form.getValues("key.value");
-			const hasExplicitCreds = accessKey?.value || accessKey?.env_var || secretKey?.value || secretKey?.env_var;
-			const hasApiKey = apiKey?.value || apiKey?.env_var;
+			const hasExplicitCreds = accessKey?.value || accessKey?.ref || secretKey?.value || secretKey?.ref;
+			const hasApiKey = apiKey?.value || apiKey?.ref;
 			let detected: "iam_role" | "explicit" | "api_key" = "iam_role";
 			if (hasExplicitCreds) {
 				detected = "explicit";
@@ -138,12 +138,12 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			const certFile = config?.cert_file;
 			const keyFile = config?.key_file;
 			let detected: "credentials" | "access_token" | "password" | "mtls" = "credentials";
-			if (accessToken?.value || accessToken?.env_var || apiKey?.value || apiKey?.env_var) {
+			if (accessToken?.value || accessToken?.ref || apiKey?.value || apiKey?.ref) {
 				detected = "access_token";
-				if (!accessToken?.value && !accessToken?.env_var && apiKey) {
+				if (!accessToken?.value && !accessToken?.ref && apiKey) {
 					form.setValue("key.gigachat_key_config.access_token", apiKey);
 				}
-			} else if (user?.value || user?.env_var || password?.value || password?.env_var) {
+			} else if (user?.value || user?.ref || password?.value || password?.ref) {
 				detected = "password";
 			} else if (certFile || keyFile) {
 				detected = "mtls";
@@ -235,7 +235,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<FormItem>
 							<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
 							<FormControl>
-								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+								<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 							</FormControl>
 							<FormMessage />
 						</FormItem>
@@ -361,8 +361,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem data-testid="apikey-deployments-field">
 								<FormLabel>Deployments (Optional)</FormLabel>
 								<FormDescription>
-									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint
-									ID, etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides - these power
+									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint ID,
+									etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides - these power
 									cost/pricing logs and family-based routing.
 								</FormDescription>
 								<FormControl>
@@ -430,7 +430,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}
 									</FormLabel>
 									<FormControl>
-										<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+										<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -451,7 +451,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Endpoint (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} />
+									<SecretVarInput placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -466,7 +466,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Client ID (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} />
+											<SecretVarInput placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -479,7 +479,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Client Secret (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} />
+											<SecretVarInput placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -492,7 +492,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Tenant ID (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} />
+											<SecretVarInput placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -584,7 +584,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Project ID (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} />
+									<SecretVarInput placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -597,7 +597,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Project Number (Required only for fine-tuned models)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} />
+									<SecretVarInput placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -610,7 +610,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="us-central1 or env.VERTEX_REGION" {...field} />
+									<SecretVarInput placeholder="us-central1 or env.VERTEX_REGION" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -626,7 +626,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormLabel>Auth Credentials (Required)</FormLabel>
 									<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
 									<FormControl>
-										<EnvVarInput
+										<SecretVarInput
 											data-testid="apikey-vertex-auth-credentials-input"
 											variant="textarea"
 											rows={4}
@@ -655,7 +655,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormItem>
 									<FormLabel>API Key (Supported only for gemini and fine-tuned models)</FormLabel>
 									<FormControl>
-										<EnvVarInput data-testid="apikey-vertex-api-key-input" placeholder="API Key or env.MY_KEY" type="text" {...field} />
+										<SecretVarInput data-testid="apikey-vertex-api-key-input" placeholder="API Key or env.MY_KEY" type="text" {...field} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -670,7 +670,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>
-						<FormDescription>Bifrost manages bearer Authorization when configured. mTLS certificates authenticate API requests during TLS.</FormDescription>
+						<FormDescription>
+							Bifrost manages bearer Authorization when configured. mTLS certificates authenticate API requests during TLS.
+						</FormDescription>
 						<Tabs
 							value={gigaChatAuthType}
 							onValueChange={(v) => {
@@ -716,7 +718,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>OAuth Credentials (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-gigachat-credentials-input"
 												placeholder="env.GIGACHAT_CREDENTIALS"
 												type="text"
@@ -724,7 +726,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												{...field}
 											/>
 										</FormControl>
-										<FormDescription>GigaChat authorization key. Bifrost exchanges it for access tokens and refreshes them automatically.</FormDescription>
+										<FormDescription>
+											GigaChat authorization key. Bifrost exchanges it for access tokens and refreshes them automatically.
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -759,7 +763,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormItem>
 									<FormLabel>Access Token (Required)</FormLabel>
 									<FormControl>
-										<EnvVarInput
+										<SecretVarInput
 											data-testid="apikey-gigachat-access-token-input"
 											placeholder="env.GIGACHAT_ACCESS_TOKEN"
 											type="text"
@@ -783,7 +787,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>User (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput data-testid="apikey-gigachat-user-input" placeholder="env.GIGACHAT_USER" type="text" {...field} />
+											<SecretVarInput data-testid="apikey-gigachat-user-input" placeholder="env.GIGACHAT_USER" type="text" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -796,7 +800,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Password (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-gigachat-password-input"
 												placeholder="env.GIGACHAT_PASSWORD"
 												type="password"
@@ -804,7 +808,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												{...field}
 											/>
 										</FormControl>
-										<FormDescription>Requires a GigaChat deployment that exposes the SDK-compatible password token endpoint.</FormDescription>
+										<FormDescription>
+											Requires a GigaChat deployment that exposes the SDK-compatible password token endpoint.
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -945,7 +951,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormLabel>Server URL (Required)</FormLabel>
 								<FormDescription>Base URL of the vLLM server (e.g. http://vllm-server:8000 or env.VLLM_URL)</FormDescription>
 								<FormControl>
-									<EnvVarInput data-testid="key-input-vllm-url" placeholder="http://vllm-server:8000" {...field} />
+									<SecretVarInput data-testid="key-input-vllm-url" placeholder="http://vllm-server:8000" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -980,7 +986,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									{isOllama ? "http://localhost:11434" : "http://localhost:30000"} or {isOllama ? "env.OLLAMA_URL" : "env.SGL_URL"})
 								</FormDescription>
 								<FormControl>
-									<EnvVarInput
+									<SecretVarInput
 										data-testid={`key-input-${isOllama ? "ollama" : "sgl"}-url`}
 										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
 										{...field}
@@ -1051,7 +1057,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Access Key (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID" {...field} />
+											<SecretVarInput placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -1064,7 +1070,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Secret Key (Required)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY" {...field} />
+											<SecretVarInput placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -1077,7 +1083,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									<FormItem>
 										<FormLabel>Session Token (Optional)</FormLabel>
 										<FormControl>
-											<EnvVarInput placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN" {...field} />
+											<SecretVarInput placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN" {...field} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -1094,7 +1100,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormItem>
 									<FormLabel>API Key</FormLabel>
 									<FormControl>
-										<EnvVarInput
+										<SecretVarInput
 											data-testid="apikey-bedrock-api-key-input"
 											placeholder="API Key or env.BEDROCK_API_KEY"
 											type="text"
@@ -1114,7 +1120,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="us-east-1 or env.AWS_REGION" {...field} />
+									<SecretVarInput placeholder="us-east-1 or env.AWS_REGION" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -1132,7 +1138,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											Assume an IAM role before requests. Works with both explicit credentials and inherited IAM (EC2, ECS, EKS).
 										</FormDescription>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-bedrock-role-arn-input"
 												placeholder="arn:aws:iam::123456789:role/MyRole or env.AWS_ROLE_ARN"
 												{...field}
@@ -1150,7 +1156,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										<FormLabel>External ID (Optional)</FormLabel>
 										<FormDescription>Required by the role's trust policy when using cross-account access</FormDescription>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-bedrock-external-id-input"
 												placeholder="external-id or env.AWS_EXTERNAL_ID"
 												{...field}
@@ -1168,7 +1174,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										<FormLabel>Session Name (Optional)</FormLabel>
 										<FormDescription>AssumeRole session name (defaults to bifrost-session)</FormDescription>
 										<FormControl>
-											<EnvVarInput
+											<SecretVarInput
 												data-testid="apikey-bedrock-session-name-input"
 												placeholder="bifrost-session or env.AWS_SESSION_NAME"
 												{...field}
@@ -1187,7 +1193,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>ARN (Optional)</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN" {...field} />
+									<SecretVarInput placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

@@ -363,7 +363,7 @@ func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
 	aliasProject := "alias-level-project"
 	key := schemas.Key{
 		VertexKeyConfig: &schemas.VertexKeyConfig{
-			ProjectID: *schemas.NewEnvVar(keyProject),
+			ProjectID: *schemas.NewSecretVar(keyProject),
 		},
 	}
 
@@ -381,7 +381,7 @@ func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "claude-sonnet-4-5",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectID: schemas.NewEnvVar(aliasProject),
+				ProjectID: schemas.NewSecretVar(aliasProject),
 			},
 		},
 	})
@@ -396,7 +396,7 @@ func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectID: schemas.NewEnvVar(""),
+				ProjectID: schemas.NewSecretVar(""),
 			},
 		},
 	})
@@ -412,7 +412,7 @@ func TestResolveVertexRegion_AliasOverride(t *testing.T) {
 	aliasRegion := "us-east5"
 	key := schemas.Key{
 		VertexKeyConfig: &schemas.VertexKeyConfig{
-			Region: *schemas.NewEnvVar(keyRegion),
+			Region: *schemas.NewSecretVar(keyRegion),
 		},
 	}
 
@@ -430,7 +430,7 @@ func TestResolveVertexRegion_AliasOverride(t *testing.T) {
 		Key: "best-claude",
 		Config: &schemas.AliasConfig{
 			ModelID: "claude-sonnet-4-5",
-			Region:  schemas.NewEnvVar(aliasRegion),
+			Region:  schemas.NewSecretVar(aliasRegion),
 		},
 	})
 	if got := resolveVertexRegion(ctx, key); got != aliasRegion {
@@ -442,7 +442,7 @@ func TestResolveVertexRegion_AliasOverride(t *testing.T) {
 		Key: "x",
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
-			Region:  schemas.NewEnvVar(""),
+			Region:  schemas.NewSecretVar(""),
 		},
 	})
 	if got := resolveVertexRegion(ctx2, key); got != keyRegion {
@@ -456,7 +456,7 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 	aliasNumber := "222222"
 	key := schemas.Key{
 		VertexKeyConfig: &schemas.VertexKeyConfig{
-			ProjectNumber: *schemas.NewEnvVar(keyNumber),
+			ProjectNumber: *schemas.NewSecretVar(keyNumber),
 		},
 	}
 
@@ -475,7 +475,7 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectNumber: schemas.NewEnvVar(aliasNumber),
+				ProjectNumber: schemas.NewSecretVar(aliasNumber),
 			},
 		},
 	})
@@ -489,7 +489,7 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectNumber: schemas.NewEnvVar(""),
+				ProjectNumber: schemas.NewSecretVar(""),
 			},
 		},
 	})

@@ -543,9 +543,9 @@ func signAWSRequestFromKey(
 			cfg.ExternalID, cfg.RoleSessionName,
 			region, service)
 	}
-	// No config: pass zero EnvVar values so signAWSRequest uses the default chain.
+	// No config: pass zero SecretVar values so signAWSRequest uses the default chain.
 	return signAWSRequest(ctx, req,
-		schemas.EnvVar{}, schemas.EnvVar{},
+		schemas.SecretVar{}, schemas.SecretVar{},
 		nil, nil, nil, nil,
 		region, service)
 }
@@ -554,11 +554,11 @@ func signAWSRequestFromKey(
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
-	accessKey, secretKey schemas.EnvVar,
-	sessionToken *schemas.EnvVar,
-	roleARN *schemas.EnvVar,
-	externalID *schemas.EnvVar,
-	sessionName *schemas.EnvVar,
+	accessKey, secretKey schemas.SecretVar,
+	sessionToken *schemas.SecretVar,
+	roleARN *schemas.SecretVar,
+	externalID *schemas.SecretVar,
+	sessionName *schemas.SecretVar,
 	region, service string,
 ) *schemas.BifrostError {
 	// Set required headers before signing (only if not already set)
@@ -956,7 +956,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer resp.Body.Close()
 
@@ -1203,7 +1203,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer resp.Body.Close()
 
@@ -1604,7 +1604,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer resp.Body.Close()

@@ -265,6 +265,8 @@
               "type": "object",
               "properties": {
                 "value": { "type": "string" },
+                "ref": { "type": "string" },
+                "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
                 "env_var": { "type": "string" },
                 "from_env": { "type": "boolean" }
               },
@@ -706,7 +708,7 @@
               },
               "value": {
                 "type": "string",
-                "description": "The virtual key value"
+                "description": "The virtual key value. A literal, or an \"env.VAR\"/\"vault.path\" reference resolved to plaintext at load time."
               },
               "is_active": {
                 "type": "boolean",
@@ -1123,6 +1125,66 @@
               }
             }
           ]
+        },
+        "vault_store": {
+          "type": "object",
+          "description": "Vault store for external secret management. Fields stored as vault.<path> or vault.<path>#<jsonKey> references are resolved through the configured backend.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable vault integration"
+            },
+            "type": {
+              "type": "string",
+              "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault"],
+              "description": "Vault backend type"
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Path prefix applied to every secret (default: bifrost)"
+            },
+            "access_mode": {
+              "type": "string",
+              "enum": ["read_only", "read_and_write"],
+              "description": "read_only resolves existing refs only; read_and_write also auto-stores plaintext fields and deletes owned secrets. Defaults to read_only."
+            },
+            "aws": {
+              "type": "object",
+              "description": "AWS Secrets Manager configuration",
+              "properties": {
+                "region": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "access_key_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "secret_access_key": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "session_token": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "role_arn": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "kms_key_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] }
+              },
+              "additionalProperties": false
+            },
+            "gcp": {
+              "type": "object",
+              "description": "GCP Secret Manager configuration",
+              "properties": {
+                "project_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "credentials_json": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] }
+              },
+              "additionalProperties": false
+            },
+            "hashicorp": {
+              "type": "object",
+              "description": "HashiCorp Vault (KV v2) configuration",
+              "properties": {
+                "address": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "token": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "namespace": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "mount_path": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "role_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "secret_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -2428,6 +2490,11 @@
         "disable_content_logging": {
           "type": "boolean",
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
+          "default": false
+        },
+        "group_traces_by_session": {
+          "type": "boolean",
+          "description": "When true, requests sharing the same x-bf-session-id header are grouped into a single OTEL trace, each request's root span appearing as a top-level sibling. An inbound W3C traceparent takes precedence, leaving that request on its own distributed trace.",
           "default": false
         },
         "headers": {

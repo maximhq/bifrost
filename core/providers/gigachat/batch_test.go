@@ -508,7 +508,7 @@ func testGigaChatBatchCreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized(t *
 	provider := newTestGigaChatChatProvider(t, networkServer.URL)
 	key := schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			Credentials: schemas.NewEnvVar("test-credentials"),
+			Credentials: schemas.NewSecretVar("test-credentials"),
 			AuthURL:     keyServer.URL + "/oauth",
 			BaseURL:     keyServer.URL + "/custom-api",
 		},

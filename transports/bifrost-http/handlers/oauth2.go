@@ -217,8 +217,8 @@ func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 
 // OAuthInitiationRequest represents the request to initiate an OAuth flow
 type OAuthInitiationRequest struct {
-	ClientID        *schemas.EnvVar `json:"client_id"`
-	ClientSecret    *schemas.EnvVar `json:"client_secret"`
+	ClientID        *schemas.SecretVar `json:"client_id"`
+	ClientSecret    *schemas.SecretVar `json:"client_secret"`
 	AuthorizeURL    string          `json:"authorize_url"`
 	TokenURL        string          `json:"token_url"`
 	RegistrationURL string          `json:"registration_url"`

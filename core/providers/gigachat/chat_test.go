@@ -1419,7 +1419,7 @@ func testGigaChatPostHookRunner(_ *schemas.BifrostContext, response *schemas.Bif
 func testGigaChatAccessTokenKey(accessToken string) schemas.Key {
 	return schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			AccessToken: schemas.NewEnvVar(accessToken),
+			AccessToken: schemas.NewSecretVar(accessToken),
 		},
 	}
 }

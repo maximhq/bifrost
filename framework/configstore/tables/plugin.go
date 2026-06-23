@@ -53,14 +53,7 @@ func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
 	}
 
 	// Encrypt config after serialization
-	if VaultIsEnabled() && p.ConfigJSON != "" && p.ConfigJSON != "{}" {
-		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "ConfigJSON")
-		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), p.TableName(), p.Name, fieldName)
-		if err := vaultString(tx.Statement.Context, path, &p.ConfigJSON); err != nil {
-			return fmt.Errorf("failed to vault plugin config: %w", err)
-		}
-		p.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() && p.ConfigJSON != "" && p.ConfigJSON != "{}" {
+	if encrypt.IsEnabled() && p.ConfigJSON != "" && p.ConfigJSON != "{}" {
 		encrypted, err := encrypt.Encrypt(p.ConfigJSON)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt plugin config: %w", err)
@@ -71,17 +64,10 @@ func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
 
 	return nil
 }
-
 // AfterFind is a GORM hook that decrypts the plugin config JSON (if encrypted) and
 // deserializes it back into the runtime Config field after reading from the database.
 func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
 	switch p.EncryptionStatus {
-	case EncryptionStatusVault:
-		if p.ConfigJSON != "" {
-			if err := resolveVaultString(tx.Statement.Context, &p.ConfigJSON); err != nil {
-				return fmt.Errorf("failed to resolve vault plugin config: %w", err)
-			}
-		}
 	case EncryptionStatusEncrypted:
 		if p.ConfigJSON != "" {
 			decrypted, err := encrypt.Decrypt(p.ConfigJSON)
@@ -99,16 +85,5 @@ func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
 		p.Config = nil
 	}
 
-	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (p *TablePlugin) AfterDelete(tx *gorm.DB) error {
-	if p.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "ConfigJSON")
-	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), p.TableName(), p.Name, fieldName)
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }

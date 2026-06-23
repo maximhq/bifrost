@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -22,16 +22,16 @@ import {
   useUpdateCoreConfigMutation,
 } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
-import { EnvVar } from "@/lib/types/schemas";
+import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-const envVarEquals = (a?: EnvVar, b?: EnvVar) =>
+const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
   (a?.value ?? "") === (b?.value ?? "") &&
-  (a?.env_var ?? "") === (b?.env_var ?? "") &&
-  (a?.from_env ?? false) === (b?.from_env ?? false);
+  (a?.ref ?? "") === (b?.ref ?? "") &&
+  (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
 
 export default function MCPView() {
   const hasSettingsUpdateAccess = useRbac(
@@ -72,7 +72,7 @@ export default function MCPView() {
 
   const hasChanges = useMemo(() => {
     if (!config) return false;
-    const clientURLChanged = !envVarEquals(
+    const clientURLChanged = !secretVarEquals(
       localConfig.mcp_external_client_url,
       config.mcp_external_client_url,
     );
@@ -143,7 +143,7 @@ export default function MCPView() {
     }));
   }, []);
 
-  const handleClientURLChange = useCallback((value: EnvVar) => {
+  const handleClientURLChange = useCallback((value: SecretVar) => {
     setLocalConfig((prev) => ({ ...prev, mcp_external_client_url: value }));
   }, []);
 
@@ -402,7 +402,7 @@ export default function MCPView() {
                 after login). Supports env var syntax (e.g.{" "}
                 <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
               </p>
-              <EnvVarInput
+              <SecretVarInput
                 id="external-client-url"
                 data-testid="mcp-external-client-url-input"
                 placeholder="https://bifrost.example.com or env.BIFROST_OAUTH_REDIRECT_URL"

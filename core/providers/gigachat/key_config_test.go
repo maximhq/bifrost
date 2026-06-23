@@ -12,10 +12,10 @@ func TestGigaChatKeyConfigRedacted(t *testing.T) {
 	t.Parallel()
 
 	config := &schemas.GigaChatKeyConfig{
-		Credentials:  schemas.NewEnvVar("secret-credentials"),
-		User:         schemas.NewEnvVar("secret-user"),
-		Password:     schemas.NewEnvVar("secret-password"),
-		AccessToken:  schemas.NewEnvVar("secret-access-token"),
+		Credentials:  schemas.NewSecretVar("secret-credentials"),
+		User:         schemas.NewSecretVar("secret-user"),
+		Password:     schemas.NewSecretVar("secret-password"),
+		AccessToken:  schemas.NewSecretVar("secret-access-token"),
 		CertFile:     "/secure/client.pem",
 		KeyFile:      "/secure/client.key",
 		CABundleFile: "/secure/ca.pem",
@@ -52,7 +52,7 @@ func TestGigaChatKeyConfigEnvVarAuthMaterial(t *testing.T) {
 	t.Parallel()
 
 	config := &schemas.GigaChatKeyConfig{
-		Credentials: schemas.NewEnvVar("env.MISSING_GIGACHAT_CREDENTIALS"),
+		Credentials: schemas.NewSecretVar("env.MISSING_GIGACHAT_CREDENTIALS"),
 	}
 	config.CheckAndSetDefaults()
 
@@ -84,7 +84,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 		{
 			name: "Credentials",
 			config: &schemas.GigaChatKeyConfig{
-				Credentials: schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS"),
+				Credentials: schemas.NewSecretVar("env.GIGACHAT_CREDENTIALS"),
 			},
 			wantAuth: true,
 			wantTLS:  false,
@@ -93,7 +93,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 		{
 			name: "AccessToken",
 			config: &schemas.GigaChatKeyConfig{
-				AccessToken: schemas.NewEnvVar("env.GIGACHAT_ACCESS_TOKEN"),
+				AccessToken: schemas.NewSecretVar("env.GIGACHAT_ACCESS_TOKEN"),
 			},
 			wantAuth: true,
 			wantTLS:  false,
@@ -102,8 +102,8 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 		{
 			name: "UserPassword",
 			config: &schemas.GigaChatKeyConfig{
-				User:     schemas.NewEnvVar("env.GIGACHAT_USER"),
-				Password: schemas.NewEnvVar("env.GIGACHAT_PASSWORD"),
+				User:     schemas.NewSecretVar("env.GIGACHAT_USER"),
+				Password: schemas.NewSecretVar("env.GIGACHAT_PASSWORD"),
 			},
 			wantAuth: true,
 			wantTLS:  false,
@@ -131,7 +131,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 		{
 			name: "CredentialsWithTLS",
 			config: &schemas.GigaChatKeyConfig{
-				Credentials:  schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS"),
+				Credentials:  schemas.NewSecretVar("env.GIGACHAT_CREDENTIALS"),
 				CertFile:     "/secure/client.pem",
 				KeyFile:      "/secure/client.key",
 				CABundleFile: "/secure/ca.pem",
@@ -167,7 +167,7 @@ func TestGigaChatKeyConfigValidate(t *testing.T) {
 		t.Parallel()
 
 		config := &schemas.GigaChatKeyConfig{
-			Credentials: schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS"),
+			Credentials: schemas.NewSecretVar("env.GIGACHAT_CREDENTIALS"),
 		}
 		if err := config.Validate(); err != nil {
 			t.Fatalf("Validate returned error: %v", err)
@@ -181,7 +181,7 @@ func TestGigaChatKeyConfigValidate(t *testing.T) {
 		t.Parallel()
 
 		config := &schemas.GigaChatKeyConfig{
-			User: schemas.NewEnvVar("env.GIGACHAT_USER"),
+			User: schemas.NewSecretVar("env.GIGACHAT_USER"),
 		}
 		err := config.Validate()
 		if err == nil {

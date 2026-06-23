@@ -179,7 +179,7 @@ func testGigaChatAuthHeadersExplicitAccessToken(t *testing.T) {
 	provider := newTestGigaChatProvider(t, time.Now)
 	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+			AccessToken: schemas.NewSecretVar("explicit-access-token"),
 		},
 	})
 	if bifrostErr != nil {
@@ -194,7 +194,7 @@ func testGigaChatAuthHeadersUserAgentLiteral(t *testing.T) {
 	provider := newTestGigaChatProvider(t, time.Now)
 	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+			AccessToken: schemas.NewSecretVar("explicit-access-token"),
 		},
 	})
 	if bifrostErr != nil {
@@ -210,7 +210,7 @@ func testGigaChatAuthHeadersKeyValueAccessToken(t *testing.T) {
 
 	provider := newTestGigaChatProvider(t, time.Now)
 	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
-		Value: *schemas.NewEnvVar("key-value-access-token"),
+		Value: *schemas.NewSecretVar("key-value-access-token"),
 	})
 	if bifrostErr != nil {
 		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
@@ -280,7 +280,7 @@ func testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader(t *testing.T)
 
 	_, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+			AccessToken: schemas.NewSecretVar("explicit-access-token"),
 		},
 	})
 	if bifrostErr == nil {
@@ -347,7 +347,7 @@ func testGigaChatAuthHeadersPassesContextVars(t *testing.T) {
 
 	headers, bifrostErr := provider.buildAuthHeaders(ctx, schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+			AccessToken: schemas.NewSecretVar("explicit-access-token"),
 		},
 	})
 	if bifrostErr != nil {
@@ -420,8 +420,8 @@ func testGigaChatAuthHeadersForcedRefreshFallsBackFromExplicitTokenToOAuth(t *te
 	provider := newTestGigaChatProvider(t, func() time.Time { return now })
 	key := schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			AccessToken: schemas.NewEnvVar("explicit-access-token"),
-			Credentials: schemas.NewEnvVar("test-credentials"),
+			AccessToken: schemas.NewSecretVar("explicit-access-token"),
+			Credentials: schemas.NewSecretVar("test-credentials"),
 			AuthURL:     server.URL,
 		},
 	}
@@ -924,7 +924,7 @@ func testGigaChatPasswordMissingUserPassword(t *testing.T) {
 			name: "missing password",
 			key: schemas.Key{
 				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-					User: schemas.NewEnvVar("test-user"),
+					User: schemas.NewSecretVar("test-user"),
 				},
 			},
 		},
@@ -932,7 +932,7 @@ func testGigaChatPasswordMissingUserPassword(t *testing.T) {
 			name: "missing user",
 			key: schemas.Key{
 				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-					Password: schemas.NewEnvVar("test-password"),
+					Password: schemas.NewSecretVar("test-password"),
 				},
 			},
 		},
@@ -940,8 +940,8 @@ func testGigaChatPasswordMissingUserPassword(t *testing.T) {
 			name: "empty user env",
 			key: schemas.Key{
 				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-					User:     schemas.NewEnvVar("env.MISSING_GIGACHAT_USER_FOR_TEST"),
-					Password: schemas.NewEnvVar("test-password"),
+					User:     schemas.NewSecretVar("env.MISSING_GIGACHAT_USER_FOR_TEST"),
+					Password: schemas.NewSecretVar("test-password"),
 				},
 			},
 		},
@@ -949,8 +949,8 @@ func testGigaChatPasswordMissingUserPassword(t *testing.T) {
 			name: "empty password env",
 			key: schemas.Key{
 				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-					User:     schemas.NewEnvVar("test-user"),
-					Password: schemas.NewEnvVar("env.MISSING_GIGACHAT_PASSWORD_FOR_TEST"),
+					User:     schemas.NewSecretVar("test-user"),
+					Password: schemas.NewSecretVar("env.MISSING_GIGACHAT_PASSWORD_FOR_TEST"),
 				},
 			},
 		},
@@ -979,10 +979,10 @@ func testGigaChatAuthPriority(t *testing.T) {
 		provider := newTestGigaChatProvider(t, time.Now)
 		token, bifrostErr := provider.getGigaChatAccessToken(testBifrostContext(), schemas.Key{
 			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-				AccessToken: schemas.NewEnvVar("explicit-token"),
-				Credentials: schemas.NewEnvVar("test-credentials"),
-				User:        schemas.NewEnvVar("test-user"),
-				Password:    schemas.NewEnvVar("test-password"),
+				AccessToken: schemas.NewSecretVar("explicit-token"),
+				Credentials: schemas.NewSecretVar("test-credentials"),
+				User:        schemas.NewSecretVar("test-user"),
+				Password:    schemas.NewSecretVar("test-password"),
 			},
 		})
 		if bifrostErr != nil {
@@ -1018,11 +1018,11 @@ func testGigaChatAuthPriority(t *testing.T) {
 		provider := newTestGigaChatProvider(t, func() time.Time { return now })
 		token, bifrostErr := provider.getGigaChatAccessToken(testBifrostContext(), schemas.Key{
 			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-				Credentials: schemas.NewEnvVar("test-credentials"),
+				Credentials: schemas.NewSecretVar("test-credentials"),
 				AuthURL:     server.URL + "/api/v2/oauth",
 				BaseURL:     server.URL + "/api",
-				User:        schemas.NewEnvVar("test-user"),
-				Password:    schemas.NewEnvVar("test-password"),
+				User:        schemas.NewSecretVar("test-user"),
+				Password:    schemas.NewSecretVar("test-password"),
 			},
 		})
 		if bifrostErr != nil {
@@ -1263,7 +1263,7 @@ func testGigaChatOAuthMissingCredentials(t *testing.T) {
 
 	_, bifrostErr = provider.getOAuthAccessToken(testBifrostContext(), schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			Credentials: schemas.NewEnvVar("env.MISSING_GIGACHAT_CREDENTIALS_FOR_TEST"),
+			Credentials: schemas.NewSecretVar("env.MISSING_GIGACHAT_CREDENTIALS_FOR_TEST"),
 		},
 	})
 	if bifrostErr == nil {
@@ -1318,7 +1318,7 @@ func newTestGigaChatProvider(t *testing.T, now func() time.Time) *GigaChatProvid
 func testGigaChatOAuthKey(authURL string, scope string, credentials string) schemas.Key {
 	return schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			Credentials: schemas.NewEnvVar(credentials),
+			Credentials: schemas.NewSecretVar(credentials),
 			Scope:       scope,
 			AuthURL:     authURL,
 		},
@@ -1329,8 +1329,8 @@ func testGigaChatPasswordKey(baseURL string, user string, password string) schem
 	return schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
 			BaseURL:  baseURL,
-			User:     schemas.NewEnvVar(user),
-			Password: schemas.NewEnvVar(password),
+			User:     schemas.NewSecretVar(user),
+			Password: schemas.NewSecretVar(password),
 		},
 	}
 }
