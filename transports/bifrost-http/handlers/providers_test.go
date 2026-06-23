@@ -175,6 +175,87 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 	}
 }
 
+// TestUpdateProvider_RejectsKeysInBody guards against a silent-discard regression
+// where `keys` is decoded into `payload.Keys` but never written to the persisted
+// `ProviderConfig`. The endpoint manages provider-level config only; key edits
+// must go through PUT /api/providers/{provider}/keys/{key_id}. Without this
+// guard, callers (third-party API users, older dashboard bundles, integration
+// tests) get HTTP 200 with their `blacklisted_models`/`weight`/etc. silently
+// dropped — and the in-memory cache is rewritten with the stale `oldConfigRaw`
+// keys, causing list/per-key endpoints to diverge from the DB.
+func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	existingKey := schemas.Key{
+		ID:                "key-existing",
+		Models:            []string{"*"},
+		BlacklistedModels: []string{"gpt-3.5-turbo"},
+		Weight:            0.8,
+	}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{existingKey}},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+
+	body, err := sonic.Marshal(struct {
+		Keys                     []schemas.Key                    `json:"keys"`
+		NetworkConfig            schemas.NetworkConfig            `json:"network_config"`
+		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
+	}{
+		Keys: []schemas.Key{{
+			ID:                "key-existing",
+			Models:            []string{"*"},
+			BlacklistedModels: []string{"gpt-4o", "o1-preview"},
+			Weight:            0.42,
+		}},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+			Concurrency: 1000,
+			BufferSize:  5000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/openai")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+
+	h.updateProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to unmarshal error response: %v", err)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message == "" {
+		t.Fatalf("expected error message in response, got %#v", bifrostErr)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, "/keys") {
+		t.Fatalf("expected error message to mention the /keys endpoint, got %q", bifrostErr.Error.Message)
+	}
+
+	// In-memory cache must NOT have been mutated by the rejected request.
+	stored, ok := h.inMemoryStore.Providers[schemas.OpenAI]
+	if !ok || len(stored.Keys) != 1 {
+		t.Fatalf("expected provider to retain its single existing key, got %#v", stored)
+	}
+	if stored.Keys[0].Weight != 0.8 || len(stored.Keys[0].BlacklistedModels) != 1 || stored.Keys[0].BlacklistedModels[0] != "gpt-3.5-turbo" {
+		t.Fatalf("expected key to be untouched (weight=0.8, blacklisted=[gpt-3.5-turbo]); got weight=%v blacklisted=%v",
+			stored.Keys[0].Weight, stored.Keys[0].BlacklistedModels)
+	}
+}
+
 // boolPtr keeps pointer-valued key fixtures inline without pulling in pointer helpers.
 func boolPtr(v bool) *bool {
 	return &v
