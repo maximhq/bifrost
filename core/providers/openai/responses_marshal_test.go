@@ -331,7 +331,7 @@ func TestToOpenAIResponsesRequest_FireworksPreservesNativeFields(t *testing.T) {
 		},
 	}
 
-	request := ToOpenAIResponsesRequest(bifrostReq)
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if request == nil {
 		t.Fatal("expected non-nil request")
 	}

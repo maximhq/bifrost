@@ -1,14 +1,14 @@
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EnvVar } from "@/lib/types/mcp";
+import { SecretVar } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
 import React, { useRef, useState } from "react";
 
-// Support both plain string values and EnvVar objects
-type HeaderValue = string | EnvVar;
+// Support both plain string values and SecretVar objects
+type HeaderValue = string | SecretVar;
 
 export interface CellRenderParams {
 	value: string;
@@ -25,7 +25,7 @@ interface HeadersTableProps<T extends HeaderValue> {
 	valuePlaceholder?: string;
 	label?: string;
 	disabled?: boolean;
-	useEnvVarInput?: boolean;
+	useSecretVarInput?: boolean;
 	/**
 	 * When provided, the table renders exactly these keys as read-only,
 	 * non-deletable rows (no trailing "add" row). Values stay editable unless
@@ -39,17 +39,17 @@ interface HeadersTableProps<T extends HeaderValue> {
 	renderValueInput?: (params: CellRenderParams) => React.ReactNode;
 }
 
-// Empty EnvVar for new rows
-const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
+// Empty SecretVar for new rows
+const emptySecretVar: SecretVar = { value: "", ref: "" };
 
-// Helper to check if a value is an EnvVar object
-const isEnvVar = (val: HeaderValue): val is EnvVar => {
+// Helper to check if a value is an SecretVar object
+const isSecretVar = (val: HeaderValue): val is SecretVar => {
 	return typeof val === "object" && val !== null && "value" in val;
 };
 
 // Helper to get display value from HeaderValue
 const getDisplayValue = (val: HeaderValue): string => {
-	if (isEnvVar(val)) {
+	if (isSecretVar(val)) {
 		return val.value || "";
 	}
 	return val;
@@ -57,8 +57,8 @@ const getDisplayValue = (val: HeaderValue): string => {
 
 // Helper to check if a HeaderValue is empty
 const isValueEmpty = (val: HeaderValue): boolean => {
-	if (isEnvVar(val)) {
-		return !val.value && !val.env_var;
+	if (isSecretVar(val)) {
+		return !val.value && !val.ref;
 	}
 	return !val;
 };
@@ -70,13 +70,13 @@ export function HeadersTable<T extends HeaderValue>({
 	valuePlaceholder = "Header value",
 	label = "Headers",
 	disabled = false,
-	useEnvVarInput,
+	useSecretVarInput,
 	fixedKeys,
 	renderKeyInput,
 	renderValueInput,
 }: HeadersTableProps<T>) {
 	// Use explicit prop if provided, otherwise detect from existing values
-	const isEnvVarMode = useEnvVarInput ?? Object.values(value || {}).some((v) => isEnvVar(v));
+	const isSecretVarMode = useSecretVarInput ?? Object.values(value || {}).some((v) => isSecretVar(v));
 
 	// Track duplicate key conflicts: maps rowIndex -> attempted duplicate key
 	const [duplicateConflicts, setDuplicateConflicts] = useState<Map<number, string>>(new Map());
@@ -87,8 +87,8 @@ export function HeadersTable<T extends HeaderValue>({
 
 	// Get the empty value based on mode
 	const getEmptyValue = (): T => {
-		if (isEnvVarMode) {
-			return emptyEnvVar as T;
+		if (isSecretVarMode) {
+			return emptySecretVar as T;
 		}
 		return "" as T;
 	};
@@ -143,16 +143,16 @@ export function HeadersTable<T extends HeaderValue>({
 		onChange(newHeaders);
 	};
 
-	const handleValueChange = (currentKey: string, newValue: string | EnvVar, rowIndex: number) => {
+	const handleValueChange = (currentKey: string, newValue: string | SecretVar, rowIndex: number) => {
 		const newHeaders = { ...value };
 
-		if (isEnvVarMode) {
-			// If newValue is already an EnvVar, use it directly
+		if (isSecretVarMode) {
+			// If newValue is already an SecretVar, use it directly
 			if (typeof newValue === "object") {
 				newHeaders[currentKey] = newValue as T;
 			} else {
-				// When user types, create a new EnvVar with the typed value
-				newHeaders[currentKey] = { value: newValue, env_var: "", from_env: false } as T;
+				// When user types, create a new SecretVar with the typed value
+				newHeaders[currentKey] = { value: newValue, ref: ""} as T;
 			}
 		} else {
 			newHeaders[currentKey] = (typeof newValue === "string" ? newValue : newValue.value) as T;
@@ -225,7 +225,7 @@ export function HeadersTable<T extends HeaderValue>({
 					</TableHeader>
 					<TableBody>
 						{rows.map(([key, headerValue], index) => {
-							const isHeaderEnvVar = isEnvVar(headerValue);
+							const isHeaderSecretVar = isSecretVar(headerValue);
 							const hasConflict = duplicateConflicts.has(index);
 							const conflictKey = duplicateConflicts.get(index);
 							const isHighlighted = highlightedRow === index;
@@ -284,13 +284,13 @@ export function HeadersTable<T extends HeaderValue>({
 												disabled,
 												rowKey: key,
 											})
-										) : isHeaderEnvVar ? (
-											<EnvVarInput
+										) : isHeaderSecretVar ? (
+											<SecretVarInput
 												placeholder={valuePlaceholder}
-												value={headerValue as EnvVar}
+												value={headerValue as SecretVar}
 												data-row={index}
 												data-column="value"
-												onChange={(envVar) => handleValueChange(key, envVar, index)}
+												onChange={(secretVar) => handleValueChange(key, secretVar, index)}
 												onKeyDown={(e) => handleKeyDown(e, index, "value")}
 												className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
 												disabled={disabled}

@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -222,6 +223,16 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copy.Content.ContentBlocks[i] = deepCopyResponsesMessageContentBlock(block)
 			}
 		}
+	}
+
+	// Deep copy Author and Recipient (multi-agent collab_tool_call items).
+	// json.RawMessage is a []byte slice; copy the bytes so accumulators don't
+	// share (and mutate) the underlying array.
+	if original.Author != nil {
+		copy.Author = append(json.RawMessage(nil), original.Author...)
+	}
+	if original.Recipient != nil {
+		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
 
 	// Deep copy ResponsesReasoning if present
@@ -446,6 +457,17 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 	if original.Text != nil {
 		copyText := *original.Text
 		copy.Text = &copyText
+	}
+
+	// Reasoning replay fields: Signature and EncryptedContent are echoed back
+	// verbatim to the provider, so they must survive the deep copy.
+	if original.Signature != nil {
+		copy.Signature = new(string)
+		*copy.Signature = *original.Signature
+	}
+	if original.EncryptedContent != nil {
+		copy.EncryptedContent = new(string)
+		*copy.EncryptedContent = *original.EncryptedContent
 	}
 
 	// Copy other specific content type fields as needed

@@ -4,9 +4,25 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.23
+**Latest Version:** 2.1.24
 
 ## Changelog
+
+### Upcoming [2.1.25]
+
+- Added `evaluation_mode` to guardrail rules in `values.yaml`, `values.schema.json`, `config.schema.json`, and `_helpers.tpl`. The field renders into `guardrails_config.guardrail_rules[].evaluation_mode` and supports `bundled` (default) and `per_turn`.
+
+### 2.1.24
+
+- `allow_private_network` (provider `networkConfig`) is now rendered by `_helpers.tpl`; it was in the schema but never wired in, so it had no effect.
+- `bifrost.envLabel` (max 10 chars) → `env_label`; shows an environment label in the management UI sidebar.
+- Datadog plugin: separate `agent_host`/`agent_port` and `dogstatsd_host`/`dogstatsd_port` as an alternative to the combined `*_addr` (defaults `8126`/`8125`).
+- `passwordCommand` for the PostgreSQL store (config + logs): runs a command that prints the password on stdout.
+- Async log `writer` tuning block (`maxBatchSize`, `batchInterval`, `maxBatchBytes`, `writeQueueCapacity`, `deferredUsageConcurrency`) for SQLite and PostgreSQL.
+- Deployment update strategy via top-level `strategy` (Deployment only); empty `{}` keeps the Kubernetes default.
+- `bifrost.client.allowDirectKeys` and `bifrost.client.mcpExternalClientUrl`; previously unmapped in `_helpers.tpl` and silently dropped, now render.
+- `blacklisted_models` alongside `allowed_models` in provider config.
+- `bifrost.skillsRegistry` (`enabled` + `skills[]`) rendered verbatim into `skills_registry`.
 
 ### 2.1.23
 

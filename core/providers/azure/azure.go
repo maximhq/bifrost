@@ -688,7 +688,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody := openai.ToOpenAIResponsesRequest(request)
+				reqBody := openai.ToOpenAIResponsesRequest(ctx, request)
 				return reqBody, nil
 			})
 	}
@@ -1044,7 +1044,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -2751,7 +2751,7 @@ func (provider *AzureProvider) Compaction(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return openai.ToOpenAICompactionRequest(request), nil
+			return openai.ToOpenAICompactionRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr

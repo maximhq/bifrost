@@ -158,3 +158,75 @@ func TestStripCachePoints_EmptyRequest(t *testing.T) {
 		t.Errorf("expected empty request to remain empty, got %+v", req)
 	}
 }
+
+func cachePointTTL(ttl BedrockCacheWriteTTL) *BedrockCachePoint {
+	return &BedrockCachePoint{Type: BedrockCachePointTypeDefault, TTL: schemas.Ptr(string(ttl))}
+}
+
+// TestDowngradeExtendedCacheTTL — 1h cache TTLs across messages, nested tool
+// results, system, and tools are dropped to default; 5m and unset TTLs are
+// untouched and the cache points themselves are preserved.
+func TestDowngradeExtendedCacheTTL(t *testing.T) {
+	req := &BedrockConverseRequest{
+		Messages: []BedrockMessage{
+			{
+				Role: BedrockMessageRoleUser,
+				Content: []BedrockContentBlock{
+					{Text: schemas.Ptr("hello"), CachePoint: cachePointTTL(BedrockCacheWriteTTL1h)},
+					{Text: schemas.Ptr("world"), CachePoint: cachePointTTL(BedrockCacheWriteTTL5m)},
+					{
+						ToolResult: &BedrockToolResult{
+							ToolUseID: "call_1",
+							Content: []BedrockContentBlock{
+								{Text: schemas.Ptr("tr"), CachePoint: cachePointTTL(BedrockCacheWriteTTL1h)},
+							},
+						},
+					},
+				},
+			},
+		},
+		System:     []BedrockSystemMessage{{Text: schemas.Ptr("sys"), CachePoint: cachePointTTL(BedrockCacheWriteTTL1h)}},
+		ToolConfig: &BedrockToolConfig{Tools: []BedrockTool{{ToolSpec: &BedrockToolSpec{Name: "t"}, CachePoint: cachePointTTL(BedrockCacheWriteTTL1h)}}},
+	}
+
+	downgradeExtendedCacheTTLInBedrockRequest(req)
+
+	blocks := req.Messages[0].Content
+	if cp := blocks[0].CachePoint; cp == nil || cp.TTL != nil {
+		t.Errorf("expected 1h message cache point downgraded to nil TTL, got %+v", cp)
+	}
+	if cp := blocks[1].CachePoint; cp == nil || cp.TTL == nil || *cp.TTL != string(BedrockCacheWriteTTL5m) {
+		t.Errorf("expected 5m cache point preserved, got %+v", cp)
+	}
+	if cp := blocks[2].ToolResult.Content[0].CachePoint; cp == nil || cp.TTL != nil {
+		t.Errorf("expected nested 1h tool-result cache point downgraded, got %+v", cp)
+	}
+	if cp := req.System[0].CachePoint; cp == nil || cp.TTL != nil {
+		t.Errorf("expected 1h system cache point downgraded, got %+v", cp)
+	}
+	if cp := req.ToolConfig.Tools[0].CachePoint; cp == nil || cp.TTL != nil {
+		t.Errorf("expected 1h tool cache point downgraded, got %+v", cp)
+	}
+}
+
+// TestDowngradeExtendedCacheTTL_NilSafe — no panic on nil tool config / cache points.
+func TestDowngradeExtendedCacheTTL_NilSafe(t *testing.T) {
+	req := &BedrockConverseRequest{
+		Messages: []BedrockMessage{{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}}}},
+	}
+	downgradeExtendedCacheTTLInBedrockRequest(req)
+}
+
+// TestBedrockModelSupportsExtendedCacheTTL — only Anthropic models support 1h TTL.
+func TestBedrockModelSupportsExtendedCacheTTL(t *testing.T) {
+	cases := map[string]bool{
+		"anthropic.claude-sonnet-4-5": true,
+		"amazon.nova-pro-v1:0":        false,
+		"minimax.minimax-m2.5":        false,
+	}
+	for model, want := range cases {
+		if got := schemas.BedrockModelSupportsExtendedCacheTTL(model); got != want {
+			t.Errorf("BedrockModelSupportsExtendedCacheTTL(%q) = %v, want %v", model, got, want)
+		}
+	}
+}

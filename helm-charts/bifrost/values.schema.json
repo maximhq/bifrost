@@ -270,6 +270,10 @@
     "affinity": {
       "type": "object"
     },
+    "strategy": {
+      "type": "object",
+      "description": "Deployment update strategy. Applies to the Deployment only (not the StatefulSet). Empty uses the Kubernetes default. Rendered verbatim into spec.strategy."
+    },
     "bifrost": {
       "type": "object",
       "description": "Bifrost application configuration",
@@ -529,6 +533,15 @@
               "minimum": 1,
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
+            },
+            "allowDirectKeys": {
+              "type": "boolean",
+              "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",
+              "default": false
+            },
+            "mcpExternalClientUrl": {
+              "type": "string",
+              "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."
             }
           },
           "additionalProperties": false
@@ -1026,6 +1039,10 @@
                     "enable_llm_obs": {
                       "type": "boolean",
                       "description": "Enable Datadog LLM Observability (default: true)"
+                    },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)"
                     },
                     "disable_content_logging": {
                       "type": "boolean",
@@ -2960,6 +2977,12 @@
                     "minimum": 0,
                     "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
                   },
+                  "evaluation_mode": {
+                    "type": "string",
+                    "enum": ["bundled", "per_turn"],
+                    "default": "bundled",
+                    "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
@@ -3005,6 +3028,111 @@
                   }
                 },
                 "required": ["id", "provider_name", "policy_name", "enabled"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "skillsRegistry": {
+          "type": "object",
+          "description": "Declarative Skills Repository definitions reconciled from config.json. Rendered verbatim into skills_registry.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether config-defined skills should be reconciled at startup"
+            },
+            "skills": {
+              "type": "array",
+              "description": "Skills to create or update from config.json",
+              "items": {
+                "type": "object",
+                "required": ["name", "description", "skill_md_body", "version"],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "license": {
+                    "type": "string"
+                  },
+                  "compatibility": {
+                    "type": "string"
+                  },
+                  "allowed_tools": {
+                    "type": "string"
+                  },
+                  "extra_frontmatter": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "skill_md_body": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "source_type"],
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "source_type": {
+                          "type": "string",
+                          "enum": ["text", "url", "dataurl"]
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "type": "string"
+                        },
+                        "dataurl": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "url"
+                            }
+                          },
+                          "required": ["url"]
+                        },
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "text"
+                            }
+                          },
+                          "required": ["content"]
+                        },
+                        {
+                          "properties": {
+                            "source_type": {
+                              "const": "dataurl"
+                            }
+                          },
+                          "required": ["dataurl"]
+                        }
+                      ]
+                    }
+                  }
+                },
                 "additionalProperties": false
               }
             }
@@ -3336,6 +3464,62 @@
             "maxOpenConns": {
               "type": "integer",
               "minimum": 2
+            },
+            "vaultStore": {
+              "type": "object",
+              "description": "Vault store for external secret management",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault"]
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "accessMode": {
+                  "type": "string",
+                  "enum": ["read_only", "read_and_write"]
+                },
+                "aws": {
+                  "type": "object",
+                  "description": "AWS Secrets Manager configuration",
+                  "properties": {
+                    "region": { "type": "string" },
+                    "accessKeyId": { "type": "string" },
+                    "secretAccessKey": { "type": "string" },
+                    "sessionToken": { "type": "string" },
+                    "roleArn": { "type": "string" },
+                    "kmsKeyId": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                },
+                "gcp": {
+                  "type": "object",
+                  "description": "GCP Secret Manager configuration",
+                  "properties": {
+                    "projectId": { "type": "string" },
+                    "credentialsJson": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                },
+                "hashicorp": {
+                  "type": "object",
+                  "description": "HashiCorp Vault (KV v2) configuration",
+                  "properties": {
+                    "address": { "type": "string" },
+                    "token": { "type": "string" },
+                    "namespace": { "type": "string" },
+                    "mountPath": { "type": "string" },
+                    "roleId": { "type": "string" },
+                    "secretId": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
             }
           }
         },
@@ -3361,6 +3545,33 @@
               "type": "string",
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
               "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+            },
+            "writer": {
+              "type": "object",
+              "description": "Async logging writer queue and batch tuning",
+              "properties": {
+                "maxBatchSize": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "batchInterval": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "maxBatchBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "writeQueueCapacity": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "deferredUsageConcurrency": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
             },
             "objectStorageExcludeFields": {
               "type": "array",
@@ -4058,6 +4269,11 @@
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
           "default": false
         },
+        "group_traces_by_session": {
+          "type": "boolean",
+          "description": "When true, requests sharing the same x-bf-session-id header are grouped into a single OTEL trace, each request's root span appearing as a top-level sibling. An inbound W3C traceparent takes precedence, leaving that request on its own distributed trace.",
+          "default": false
+        },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
         }
@@ -4163,6 +4379,10 @@
         "disable_content_logging": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_content_logging per profile instead."
+        },
+        "group_traces_by_session": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure group_traces_by_session per profile instead."
         }
       },
       "required": ["profiles"],
@@ -5085,6 +5305,13 @@
         "allowed_models": {
           "type": "array",
           "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all.",
           "items": {
             "type": "string"
           }

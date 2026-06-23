@@ -2,6 +2,7 @@ import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
 import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
@@ -28,6 +29,8 @@ export default function DashboardPage() {
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
 	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
+
+	const [timezone, setTimezone] = useTimezonePreference();
 
 	const { search } = useLocation();
 	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
@@ -206,8 +209,19 @@ export default function DashboardPage() {
 	const customerRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const virtualKeyRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
-	const allRefs = [overviewRef, providerRef, mcpRef, modelRankingsRef, teamRankingsRef, customerRankingsRef, buRankingsRef, userRankingsRef];
+	const allRefs = [
+		overviewRef,
+		providerRef,
+		mcpRef,
+		modelRankingsRef,
+		teamRankingsRef,
+		customerRankingsRef,
+		buRankingsRef,
+		userRankingsRef,
+		virtualKeyRankingsRef,
+	];
 
 	const getDashboardData = useCallback((): DashboardData => {
 		const merged: Partial<DashboardData> = {};
@@ -228,6 +242,7 @@ export default function DashboardPage() {
 			customerRankingsData: null,
 			buRankingsData: null,
 			userRankingsData: null,
+			virtualKeyRankingsData: null,
 			mcpHistogramData: null,
 			mcpCostData: null,
 			mcpTopToolsData: null,
@@ -389,6 +404,7 @@ export default function DashboardPage() {
 			"dashboard-section-customer-rankings",
 			"dashboard-section-bu-rankings",
 			"dashboard-section-user-rankings",
+			"dashboard-section-virtual-key-rankings",
 		];
 		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
 	}, [handlePreloadData]);
@@ -416,7 +432,7 @@ export default function DashboardPage() {
 			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 			{/* Main Content */}
-			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md">
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
 				{/* Header */}
 				<div className="flex items-center justify-between p-4">
 					<div className="flex items-center gap-2">
@@ -471,6 +487,9 @@ export default function DashboardPage() {
 							onPredefinedPeriodChange={handlePeriodChange}
 							triggerTestId="dashboard-filter-daterange"
 							popupAlignment="end"
+							showTimezone
+							timezone={timezone}
+							onTimezoneChange={setTimezone}
 						/>
 					</div>
 				</div>
@@ -478,32 +497,37 @@ export default function DashboardPage() {
 				<div className="p-4">
 					{/* Tabs */}
 					<Tabs value={activeTab} onValueChange={handleTabChange}>
-						<TabsList className="mb-2">
-							<TabsTrigger value="overview" data-testid="dashboard-tab-overview">
-								Overview
-							</TabsTrigger>
-							<TabsTrigger value="provider-usage" data-testid="dashboard-tab-provider-usage">
-								Provider Usage
-							</TabsTrigger>
-							<TabsTrigger value="rankings" data-testid="dashboard-tab-rankings">
-								Model Rankings
-							</TabsTrigger>
-							<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
-								MCP usage
-							</TabsTrigger>
-							<TabsTrigger value="team-rankings" data-testid="dashboard-tab-team-rankings">
-								Team Rankings
-							</TabsTrigger>
-							<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
-								User Rankings
-							</TabsTrigger>
-							<TabsTrigger value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
-								Customer Rankings
-							</TabsTrigger>
-							<TabsTrigger value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
-								BU Rankings
-							</TabsTrigger>
-						</TabsList>
+						<div className="mb-2 max-w-full overflow-x-auto">
+							<TabsList className="w-max min-w-max">
+								<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
+									Overview
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
+									Provider Usage
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
+									Model Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
+									MCP usage
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
+									Team Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
+									User Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
+									Virtual Key Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
+									Customer Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
+									BU Rankings
+								</TabsTrigger>
+							</TabsList>
+						</div>
 
 						{/* Overview Tab */}
 						<TabsContent value="overview" {...(pdfMode && { forceMount: true })}>
@@ -643,6 +667,21 @@ export default function DashboardPage() {
 									dimensionLabel="User"
 									testIdPrefix="dashboard-user-rankings"
 									dataKey="userRankingsData"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Virtual Key Rankings Tab */}
+						<TabsContent value="virtual-key-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-virtual-key-rankings">
+								<DimensionRankingsTabView
+									ref={virtualKeyRankingsRef}
+									filters={filters}
+									active={activeTab === "virtual-key-rankings" || pdfMode}
+									dimension="virtual_key"
+									dimensionLabel="Virtual Key"
+									testIdPrefix="dashboard-virtual-key-rankings"
+									dataKey="virtualKeyRankingsData"
 								/>
 							</div>
 						</TabsContent>

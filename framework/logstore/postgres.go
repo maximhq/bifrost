@@ -100,7 +100,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return sqlDB.Close()
 	}
 
-	logger.Info("logstore: postgres target host=%s port=%s db=%s sslmode=%s",
+	logger.Debug("logstore: postgres target host=%s port=%s db=%s sslmode=%s",
 		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
 	// Throwaway pool for the version gate and schema migrations. Closing it

@@ -1,21 +1,34 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
-import { EnvVar } from "@/lib/types/schemas";
+import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+
+const PASSWORD_REQUIREMENTS = [
+	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
+	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
+	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
+	{ label: "one number", test: (password: string) => /\d/.test(password) },
+	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
+];
+
+const getPasswordPolicyFailures = (password?: string) => {
+	if (!password) return [];
+	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
+};
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -25,6 +38,7 @@ export default function SecurityView() {
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
+	const passwordInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
@@ -39,10 +53,11 @@ export default function SecurityView() {
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
-		admin_username: { value: "", env_var: "", from_env: false },
-		admin_password: { value: "", env_var: "", from_env: false },
+		admin_username: { value: "", ref: "" },
+		admin_password: { value: "", ref: "" },
 		is_enabled: false,
 	});
+	const [passwordError, setPasswordError] = useState("");
 
 	useEffect(() => {
 		if (bifrostConfig && config) {
@@ -71,12 +86,12 @@ export default function SecurityView() {
 
 		const usernameChanged =
 			authConfig.admin_username?.value !== bifrostConfig?.auth_config?.admin_username?.value ||
-			authConfig.admin_username?.env_var !== bifrostConfig?.auth_config?.admin_username?.env_var ||
-			authConfig.admin_username?.from_env !== bifrostConfig?.auth_config?.admin_username?.from_env;
+			authConfig.admin_username?.ref !== bifrostConfig?.auth_config?.admin_username?.ref ||
+			authConfig.admin_username?.type !== bifrostConfig?.auth_config?.admin_username?.type;
 		const passwordChanged =
 			authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value ||
-			authConfig.admin_password?.env_var !== bifrostConfig?.auth_config?.admin_password?.env_var ||
-			authConfig.admin_password?.from_env !== bifrostConfig?.auth_config?.admin_password?.from_env;
+			authConfig.admin_password?.ref !== bifrostConfig?.auth_config?.admin_password?.ref ||
+			authConfig.admin_password?.type !== bifrostConfig?.auth_config?.admin_password?.type;
 		const authChanged = showPasswordSection
 			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled || usernameChanged || passwordChanged
 			: false;
@@ -92,7 +107,15 @@ export default function SecurityView() {
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
-		return originsChanged || headersChanged || requiredChanged || whitelistedRoutesChanged || authChanged || enforceAuthOnInferenceChanged || allowDirectKeysChanged;
+		return (
+			originsChanged ||
+			headersChanged ||
+			requiredChanged ||
+			whitelistedRoutesChanged ||
+			authChanged ||
+			enforceAuthOnInferenceChanged ||
+			allowDirectKeysChanged
+		);
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
 	const needsRestart = useMemo(() => {
@@ -139,7 +162,11 @@ export default function SecurityView() {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
 
-	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: EnvVar) => {
+	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
+		if (field === "admin_password") {
+			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value) : [];
+			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
+		}
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
@@ -153,8 +180,21 @@ export default function SecurityView() {
 				);
 				return;
 			}
-			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.env_var;
-			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.env_var;
+			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
+			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
+			const passwordPolicyFailures =
+				showPasswordSection && authConfig.is_enabled && !authConfig.admin_password?.ref && authConfig.admin_password?.value
+					? getPasswordPolicyFailures(authConfig.admin_password.value)
+					: [];
+
+			if (passwordPolicyFailures.length > 0) {
+				setPasswordError(`Password must include ${passwordPolicyFailures.join(", ")}.`);
+				passwordInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+				passwordInputRef.current?.focus({ preventScroll: true });
+				return;
+			}
+			setPasswordError("");
+
 			await updateCoreConfig({
 				...bifrostConfig!,
 				client_config: localConfig,
@@ -171,7 +211,7 @@ export default function SecurityView() {
 	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4">
+		<div className="mx-auto h-[calc(100vh-50px)] w-full max-w-4xl space-y-4 overflow-y-auto">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
@@ -180,7 +220,7 @@ export default function SecurityView() {
 			<div className="space-y-4">
 				{/* Password Protect the Dashboard */}
 				{IS_ENTERPRISE && authTypeLoading ? (
-					<div className="flex items-center justify-center rounded-lg border p-8" data-testid="security-auth-type-loading">
+					<div className="flex items-center justify-center rounded-sm border p-8" data-testid="security-auth-type-loading">
 						<Loader2 className="text-muted-foreground h-5 w-5 animate-spin" aria-hidden />
 						<span className="sr-only">Loading authentication settings</span>
 					</div>
@@ -196,7 +236,7 @@ export default function SecurityView() {
 				) : null}
 				{showPasswordSection && (
 					<div>
-						<div className="space-y-4 rounded-lg border p-4">
+						<div className="space-y-4 rounded-sm border p-4">
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
 									<Label htmlFor="auth-enabled" className="text-sm font-medium">
@@ -212,7 +252,7 @@ export default function SecurityView() {
 							<div className="space-y-4">
 								<div className="space-y-2">
 									<Label htmlFor="admin-username">Username</Label>
-									<EnvVarInput
+									<SecretVarInput
 										id="admin-username"
 										type="text"
 										placeholder="Enter admin username or env.VAR_NAME"
@@ -223,21 +263,32 @@ export default function SecurityView() {
 								</div>
 								<div className="space-y-2">
 									<Label htmlFor="admin-password">Password</Label>
-									<EnvVarInput
+									<SecretVarInput
+										ref={passwordInputRef}
 										id="admin-password"
+										aria-invalid={!!passwordError}
+										aria-describedby={passwordError ? "admin-password-error" : undefined}
 										type="password"
 										placeholder="Enter admin password or env.VAR_NAME"
 										value={authConfig.admin_password}
 										disabled={!authConfig.is_enabled}
 										onChange={(value) => handleAuthFieldChange("admin_password", value)}
 									/>
+									<p className="text-muted-foreground text-xs">
+										Use at least 12 characters with uppercase, lowercase, number, and special character. Env var references are accepted.
+									</p>
+									{passwordError ? (
+										<p id="admin-password-error" className="text-destructive text-xs" role="alert">
+											{passwordError}
+										</p>
+									) : null}
 								</div>
 							</div>
 						</div>
 					</div>
 				)}
 				{/* Enable Auth on Inference */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
 							{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
@@ -267,15 +318,15 @@ export default function SecurityView() {
 					/>
 				</div>
 				{/* Allow Direct API Keys */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="allow-direct-keys" className="text-sm font-medium">
 							Allow Direct API Keys
 						</label>
 						<p className="text-muted-foreground text-sm">
-							When enabled, callers can pass a provider API key directly in the{" "}
-							<b>Authorization</b>, <b>x-api-key</b>, or <b>x-goog-api-key</b> header alongside{" "}
-							<b>x-bf-direct-key: true</b>. Bifrost will use that key directly, bypassing the registered key pool.
+							When enabled, callers can pass a provider API key directly in the <b>Authorization</b>, <b>x-api-key</b>, or{" "}
+							<b>x-goog-api-key</b> header alongside <b>x-bf-direct-key: true</b>. Bifrost will use that key directly, bypassing the
+							registered key pool.
 						</p>
 					</div>
 					<Switch
@@ -288,7 +339,7 @@ export default function SecurityView() {
 				{/* Allowed Origins */}
 				{needsRestart && <RestartWarning />}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-origins" className="text-sm font-medium">
 								Allowed Origins
@@ -310,7 +361,7 @@ export default function SecurityView() {
 				</div>
 				{/* Allowed Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-headers" className="text-sm font-medium">
 								Allowed Headers
@@ -328,7 +379,7 @@ export default function SecurityView() {
 				</div>
 				{/* Required Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="required-headers" className="text-sm font-medium">
 								Required Headers
@@ -350,7 +401,7 @@ export default function SecurityView() {
 				</div>
 				{/* Whitelisted Routes */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="whitelisted-routes" className="text-sm font-medium">
 								Whitelisted Routes
@@ -372,7 +423,7 @@ export default function SecurityView() {
 					</div>
 				</div>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

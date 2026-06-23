@@ -100,7 +100,15 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			targetURL = *preReq.ConnectionString
 		}
 
-		perUserOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
+		// finalHeaders (statics + per-user auth) are baked on; allowlisted per-request
+		// extras are injected via headerFunc so they reach tools/call now that the
+		// CallToolRequest.Header path has been centralized onto the transport.
+		perUserOpts := []transport.StreamableHTTPCOption{
+			transport.WithHTTPHeaders(finalHeaders),
+			transport.WithHTTPHeaderFunc(func(reqCtx context.Context) map[string]string {
+				return utils.FlattenHeaders(utils.ExtractFilteredExtras(reqCtx, config))
+			}),
+		}
 		perUserTLSClient, tlsErr := m.buildTLSHTTPClient(config.TLSConfig)
 		if tlsErr != nil {
 			return nil, fmt.Errorf("failed to build TLS HTTP client: %w", tlsErr)
@@ -1650,8 +1658,17 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 		}
 	}
 
-	// Create StreamableHTTP transport
-	opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
+	// Create StreamableHTTP transport. The static headers above are baked onto the
+	// transport once; per-request "extra" headers (BifrostContextKeyMCPExtraHeaders,
+	// allowlisted by AllowedExtraHeaders) are injected per outgoing request via the
+	// headerFunc, which runs for every method — including ping/list_tools, whose
+	// request.Header the mcp-go client otherwise drops.
+	opts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPHeaders(headers),
+		transport.WithHTTPHeaderFunc(func(reqCtx context.Context) map[string]string {
+			return utils.FlattenHeaders(utils.ExtractFilteredExtras(reqCtx, config))
+		}),
+	}
 	httpClient, err := m.buildTLSHTTPClient(config.TLSConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build TLS HTTP client: %w", err)
@@ -1750,7 +1767,13 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MC
 		}
 	}
 
-	sseOpts := []transport.ClientOption{transport.WithHeaders(headers)}
+	// Per-request extra headers are injected via headerFunc; see createHTTPConnection.
+	sseOpts := []transport.ClientOption{
+		transport.WithHeaders(headers),
+		transport.WithHeaderFunc(func(reqCtx context.Context) map[string]string {
+			return utils.FlattenHeaders(utils.ExtractFilteredExtras(reqCtx, config))
+		}),
+	}
 	sseHTTPClient, err := m.buildTLSHTTPClient(config.TLSConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build TLS HTTP client: %w", err)

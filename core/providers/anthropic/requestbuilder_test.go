@@ -512,28 +512,45 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 		}
 	})
 
-	t.Run("typed_path_validates_tools_when_configured", func(t *testing.T) {
+	t.Run("typed_path_strips_unsupported_tools_when_configured", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
-		// web_search is allowed on Bedrock in the Responses path (nova_grounding).
-		// Validate that a genuinely unsupported tool (web_fetch) is still rejected.
+		// A genuinely unsupported tool on Bedrock (web_fetch) must be silently
+		// dropped — not error the whole request (mirrors the Chat path and the
+		// Bedrock Responses path; restores pre-v1.5.0 behavior, see issue #3795).
+		// The supported function tool must survive.
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.Bedrock,
 			Model:    "claude-sonnet-4-5",
 			Input:    makeSimpleInput("Hello!"),
 			Params: &schemas.ResponsesParameters{
 				Tools: []schemas.ResponsesTool{
+					{
+						Type:                  schemas.ResponsesToolTypeFunction,
+						Name:                  schemas.Ptr("keep_me"),
+						ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+					},
 					{Type: schemas.ResponsesToolTypeWebFetch},
 				},
 			},
 		}
 
-		_, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
 			Provider:      schemas.Bedrock,
 			ValidateTools: true,
 		})
-		if err == nil {
-			t.Error("expected error for unsupported tool (web_fetch) on Bedrock")
+		if err != nil {
+			t.Fatalf("unexpected error (web_fetch should be stripped, not rejected): %v", err)
+		}
+		if !strings.Contains(string(result), "keep_me") {
+			t.Error("expected supported function tool to survive stripping")
+		}
+		if strings.Contains(string(result), "web_fetch") {
+			t.Error("expected unsupported web_fetch tool to be stripped from the request body")
+		}
+		// The inbound request must not be mutated by the shallow-copy strip.
+		if len(request.Params.Tools) != 2 {
+			t.Errorf("inbound Params.Tools must be untouched, got %d tools", len(request.Params.Tools))
 		}
 	})
 }

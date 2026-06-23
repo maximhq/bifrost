@@ -745,6 +745,7 @@ append_dynamic_mcp_clients_insert() {
     generate_routing_targets_insert_postgres "$now" "$faker_sql"
     generate_pricing_overrides_insert_postgres "$now" "$faker_sql"
     generate_mcp_library_insert_postgres "$now" "$faker_sql"
+    generate_skills_repo_tables_insert_postgres "$now" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
@@ -761,6 +762,7 @@ append_dynamic_mcp_clients_insert() {
     generate_routing_targets_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_pricing_overrides_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_mcp_library_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_skills_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
 }
@@ -3528,6 +3530,95 @@ generate_prompt_repo_tables_insert_sqlite() {
   echo "" >> "$output_file"
   echo "-- prompt_session_messages (messages in mutable sessions)" >> "$output_file"
   echo "INSERT INTO prompt_session_messages (prompt_id, session_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 0, '{\"role\":\"user\",\"content\":\"Test message in session\"}' FROM prompt_sessions WHERE prompt_id = 'prompt-migration-test-001' LIMIT 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate skills repository tables INSERTs for PostgreSQL
+# Tables (skills, skill_versions, skill_file_blobs, skill_files) were added via
+# migrationAddSkillsRepoTables. Files belong to versions; blobs are reused across versions.
+# FK order: skills -> skill_versions -> skill_file_blobs -> skill_files.
+generate_skills_repo_tables_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Check if skills table exists (indicator that skills repo tables exist)
+  if ! column_exists_postgres "skills" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+  echo "-- Skills Repository Tables (added via migrationAddSkillsRepoTables, dynamically generated)" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+
+  # skills (base table, no FK; name is unique)
+  echo "" >> "$output_file"
+  echo "-- skills (skill entity; every save creates a version snapshot)" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-001', 'migration-test-skill', 'A test skill for migration testing', 'MIT', '>=1.0.0', '{\"category\":\"test\"}', '{\"x-custom\":\"val\"}', 'Read,Write', '# Migration Test Skill\nDoes things.', '1.0.0', 'migration-tester', 'skill-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-002', 'migration-test-skill-2', 'Second test skill', NULL, NULL, NULL, NULL, NULL, '# Migration Test Skill 2', '2.0.0', NULL, 'skill-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_versions (references skills via skill_id; (skill_id, version) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_versions (immutable snapshot of a skill save)" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-001', 'skill-migration-test-001', '1.0.0', '# Migration Test Skill\nDoes things.', '{\"name\":\"migration-test-skill\"}', 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-002', 'skill-migration-test-002', '2.0.0', '# Migration Test Skill 2', NULL, NULL, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_file_blobs (fallback file bytes; no FK; data is bytea)
+  echo "" >> "$output_file"
+  echo "-- skill_file_blobs (fallback file bytes when object storage is unavailable)" >> "$output_file"
+  echo "INSERT INTO skill_file_blobs (id, data, created_at) VALUES ('skill-blob-migration-001', decode('48656c6c6f2c206d6967726174696f6e21', 'hex'), $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_files (references skill_versions via skill_version_id and optionally skill_file_blobs via blob_id; (skill_version_id, path) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_files (a file pointer for a skill version; points to a blob or external storage)" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-001', 'skill-version-migration-001', 'scripts/run.sh', 'blob', NULL, NULL, 'skill-blob-migration-001', 'text/x-shellscript', 18, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-002', 'skill-version-migration-002', 'reference/doc.md', 'url', 'https://example.com/doc.md', 'skills/skill-002/doc.md', NULL, 'text/markdown', 0, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate skills repository tables INSERTs for SQLite
+generate_skills_repo_tables_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  # Check if the table exists in the database
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  local table_exists
+  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skills';" 2>/dev/null || echo "0")
+
+  if [ "$table_exists" != "1" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+  echo "-- Skills Repository Tables (added via migrationAddSkillsRepoTables, dynamically generated)" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+
+  # skills (base table, no FK; name is unique)
+  echo "" >> "$output_file"
+  echo "-- skills (skill entity; every save creates a version snapshot)" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-001', 'migration-test-skill', 'A test skill for migration testing', 'MIT', '>=1.0.0', '{\"category\":\"test\"}', '{\"x-custom\":\"val\"}', 'Read,Write', '# Migration Test Skill\nDoes things.', '1.0.0', 'migration-tester', 'skill-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-002', 'migration-test-skill-2', 'Second test skill', NULL, NULL, NULL, NULL, NULL, '# Migration Test Skill 2', '2.0.0', NULL, 'skill-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_versions (references skills via skill_id; (skill_id, version) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_versions (immutable snapshot of a skill save)" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-001', 'skill-migration-test-001', '1.0.0', '# Migration Test Skill\nDoes things.', '{\"name\":\"migration-test-skill\"}', 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-002', 'skill-migration-test-002', '2.0.0', '# Migration Test Skill 2', NULL, NULL, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_file_blobs (fallback file bytes; no FK; data is a BLOB)
+  echo "" >> "$output_file"
+  echo "-- skill_file_blobs (fallback file bytes when object storage is unavailable)" >> "$output_file"
+  echo "INSERT INTO skill_file_blobs (id, data, created_at) VALUES ('skill-blob-migration-001', X'48656c6c6f2c206d6967726174696f6e21', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_files (references skill_versions via skill_version_id and optionally skill_file_blobs via blob_id; (skill_version_id, path) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_files (a file pointer for a skill version; points to a blob or external storage)" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-001', 'skill-version-migration-001', 'scripts/run.sh', 'blob', NULL, NULL, 'skill-blob-migration-001', 'text/x-shellscript', 18, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-002', 'skill-version-migration-002', 'reference/doc.md', 'url', 'https://example.com/doc.md', 'skills/skill-002/doc.md', NULL, 'text/markdown', 0, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Generate per-user OAuth tables INSERTs for PostgreSQL

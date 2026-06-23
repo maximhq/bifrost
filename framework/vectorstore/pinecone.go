@@ -13,8 +13,8 @@ import (
 
 // PineconeConfig represents the configuration for the Pinecone vector store.
 type PineconeConfig struct {
-	APIKey    schemas.EnvVar `json:"api_key"`    // Pinecone API key - REQUIRED
-	IndexHost schemas.EnvVar `json:"index_host"` // Index host URL from Pinecone console - REQUIRED
+	APIKey    schemas.SecretVar `json:"api_key"`    // Pinecone API key - REQUIRED
+	IndexHost schemas.SecretVar `json:"index_host"` // Index host URL from Pinecone console - REQUIRED
 }
 
 // PineconeStore represents the Pinecone vector store.

@@ -23,7 +23,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		return nil, err
 	}
 	dsn := postgresconn.BuildDSN(config)
-	logger.Info("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
+	logger.Debug("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
 		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
 	// Migration-only DSN. Forces pgx into simple-query protocol on the migration
@@ -62,6 +62,10 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		postgresconn.Close(db, logger)
 		return nil, err
 	}
+	// Install the global vault store/remove callbacks on the runtime pool so
+	// plaintext SecretVar fields are rewritten to vault refs before persistence
+	// and owned vault secrets are cleaned up on delete.
+	RegisterVaultCallbacks(db)
 	logger.Info("configstore: runtime connection pool ready")
 
 	d := &RDBConfigStore{logger: logger}
@@ -91,6 +95,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 			postgresconn.Close(newDB, logger)
 			return fmt.Errorf("failed to tune fresh runtime pool: %w", err)
 		}
+		RegisterVaultCallbacks(newDB)
 		oldDB := d.db.Swap(newDB)
 		if oldDB != nil {
 			postgresconn.Close(oldDB, logger)

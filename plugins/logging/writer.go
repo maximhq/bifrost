@@ -10,18 +10,6 @@ import (
 )
 
 const (
-	// maxBatchSize is the maximum number of entries to collect before flushing
-	maxBatchSize = 1000
-	// batchInterval is the maximum time to wait before flushing a partial batch
-	batchInterval = 5 * time.Second
-	// maxBatchBytes is the approximate byte-size ceiling for a batch (300 MB).
-	// When the cumulative estimated size of queued entries hits this limit the
-	// batch is flushed immediately, even if maxBatchSize hasn't been reached.
-	maxBatchBytes = 300 * 1024 * 1024
-	// writeQueueCapacity is the buffer size for the write queue channel
-	writeQueueCapacity = 10000
-	// maxDeferredUsageConcurrency limits concurrent deferred usage DB updates
-	maxDeferredUsageConcurrency = 5
 	// pendingLogTTL is the maximum idle gap (time since the last chunk/activity)
 	// a pending log entry can sit in memory before cleanup reclaims it. It is an
 	// idle timeout, not a total-lifetime cap: actively-streaming requests refresh
@@ -76,7 +64,13 @@ type writeQueueEntry struct {
 func (p *LoggerPlugin) batchWriter() {
 	defer p.wg.Done()
 
-	batch := make([]*writeQueueEntry, 0, maxBatchSize)
+	writerConfig := p.writerConfig
+	batchInterval, err := time.ParseDuration(writerConfig.BatchInterval)
+	if err != nil {
+		batchInterval = 5 * time.Second
+	}
+
+	batch := make([]*writeQueueEntry, 0, writerConfig.MaxBatchSize)
 	batchBytes := 0
 	timer := time.NewTimer(batchInterval)
 	timer.Stop()
@@ -108,7 +102,7 @@ func (p *LoggerPlugin) batchWriter() {
 			}
 			batch = append(batch, entry)
 			batchBytes += estimateWriteQueueEntrySize(entry)
-			if len(batch) >= maxBatchSize || batchBytes >= maxBatchBytes {
+			if len(batch) >= writerConfig.MaxBatchSize || batchBytes >= writerConfig.MaxBatchBytes {
 				flush()
 			} else if !timerRunning {
 				timer.Reset(batchInterval)

@@ -163,6 +163,30 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 }
 
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
+// applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
+// entry from the usage the provider already processed before the failure
+// (carried on BifrostError.ExtraFields.BilledUsage). Token usage is only filled
+// when stream accumulation didn't already capture it, but cost is (re)computed
+// whenever it is still missing - independent of whether tokens were already
+// parsed, since a streaming error can populate usage without a cost.
+func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostContext, entry *logstore.Log, billed *schemas.BifrostLLMUsage, requestType schemas.RequestType) {
+	if billed == nil {
+		return
+	}
+	if entry.TokenUsageParsed == nil {
+		entry.TokenUsageParsed = billed
+		entry.PromptTokens = billed.PromptTokens
+		entry.CompletionTokens = billed.CompletionTokens
+		entry.TotalTokens = billed.TotalTokens
+	}
+	if entry.Cost == nil && p.pricingManager != nil {
+		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+		if cost := p.pricingManager.CalculateCostForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); cost > 0 {
+			entry.Cost = &cost
+		}
+	}
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -288,8 +312,35 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
 type Config struct {
-	DisableContentLogging *bool     `json:"disable_content_logging"`
-	LoggingHeaders        *[]string `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	DisableContentLogging *bool                  `json:"disable_content_logging"`
+	LoggingHeaders        *[]string              `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	Writer                *logstore.WriterConfig `json:"writer,omitempty"`
+}
+
+func validateWriterConfig(config logstore.WriterConfig) error {
+	if config.MaxBatchSize <= 0 {
+		return fmt.Errorf("writer max_batch_size must be greater than 0")
+	}
+	if config.BatchInterval == "" {
+		return fmt.Errorf("writer batch_interval is required")
+	}
+	batchInterval, err := time.ParseDuration(config.BatchInterval)
+	if err != nil {
+		return fmt.Errorf("writer batch_interval must be a valid Go duration: %w", err)
+	}
+	if batchInterval <= 0 {
+		return fmt.Errorf("writer batch_interval must be greater than 0")
+	}
+	if config.MaxBatchBytes <= 0 {
+		return fmt.Errorf("writer max_batch_bytes must be greater than 0")
+	}
+	if config.WriteQueueCapacity <= 0 {
+		return fmt.Errorf("writer write_queue_capacity must be greater than 0")
+	}
+	if config.DeferredUsageConcurrency <= 0 {
+		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
+	}
+	return nil
 }
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
@@ -314,6 +365,7 @@ type LoggerPlugin struct {
 	pendingLogsEntries     sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	pendingLogsToInject    sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	pendingMCPLogsToInject sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
+	writerConfig           logstore.WriterConfig // Resolved async writer queue and batch settings
 	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
@@ -339,6 +391,18 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		logger.Warn("logging plugin requires MCP catalog to calculate cost, all MCP cost calculations will be skipped.")
 	}
 
+	writerConfig := config.Writer.WithDefaults()
+	if err := validateWriterConfig(writerConfig); err != nil {
+		return nil, err
+	}
+	logger.Info("initializing logging writer settings: max_batch_size=%d batch_interval=%s max_batch_bytes=%d write_queue_capacity=%d deferred_usage_concurrency=%d",
+		writerConfig.MaxBatchSize,
+		writerConfig.BatchInterval,
+		writerConfig.MaxBatchBytes,
+		writerConfig.WriteQueueCapacity,
+		writerConfig.DeferredUsageConcurrency,
+	)
+
 	batchCtx, batchCancel := context.WithCancel(ctx)
 	plugin := &LoggerPlugin{
 		ctx:                   ctx,
@@ -349,8 +413,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		loggingHeaders:        config.LoggingHeaders,
 		done:                  make(chan struct{}),
 		logger:                logger,
-		writeQueue:            make(chan *writeQueueEntry, writeQueueCapacity),
-		deferredUsageSem:      make(chan struct{}, maxDeferredUsageConcurrency),
+		writerConfig:          writerConfig,
+		writeQueue:            make(chan *writeQueueEntry, writerConfig.WriteQueueCapacity),
+		deferredUsageSem:      make(chan struct{}, writerConfig.DeferredUsageConcurrency),
 		batchCtx:              batchCtx,
 		batchCancel:           batchCancel,
 		batchWriterDone:       make(chan struct{}),
@@ -1003,6 +1068,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 			}
 		}
+		// The request failed/was cancelled but the provider still
+		// processed tokens (carried on BilledUsage). Record cost + tokens so the
+		// logs DB reflects what we were actually billed, mirroring the governance
+		// budget.
+		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
@@ -1183,8 +1253,9 @@ func (p *LoggerPlugin) Cleanup() error {
 		}
 		// Signal the cleanup worker to stop.
 		close(p.done)
-		// Block new producers BEFORE killing batchWriter so the channel does
-		// not grow further while we drain it ourselves.
+		// Stop new producers before killing batchWriter so the channel does
+		// not grow further while we drain it ourselves. Any producer that raced
+		// past this check is absorbed by the enqueue recover path.
 		p.closed.Store(true)
 		// Kill batchWriter. Its current in-memory batch is handed back via
 		// p.recoveredBatch; it does not issue any further DB writes.
@@ -1228,7 +1299,7 @@ drainQueue:
 		}
 	}
 
-	// Process in chunks of maxBatchSize, checking the wall-clock deadline
+	// Process in chunks of writerConfig.MaxBatchSize, checking the wall-clock deadline
 	// between chunks so a single slow processBatch cannot consume the whole
 	// budget and starve later chunks.
 	for len(batch) > 0 {
@@ -1237,7 +1308,7 @@ drainQueue:
 			p.logger.Warn("logging plugin cleanup deadline reached; dropping %d entries", len(batch))
 			return
 		}
-		chunkSize := maxBatchSize
+		chunkSize := p.writerConfig.MaxBatchSize
 		if chunkSize > len(batch) {
 			chunkSize = len(batch)
 		}

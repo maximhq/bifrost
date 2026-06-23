@@ -49,9 +49,9 @@ func TestChatCompletion_ExtraParamsForwardedAutomatically(t *testing.T) {
 	provider := newTestVLLMProvider()
 	key := schemas.Key{
 		ID:    "test-key",
-		Value: schemas.EnvVar{Val: "test-api-key"},
+		Value: schemas.SecretVar{Val: "test-api-key"},
 		VLLMKeyConfig: &schemas.VLLMKeyConfig{
-			URL: schemas.EnvVar{Val: server.URL},
+			URL: schemas.SecretVar{Val: server.URL},
 		},
 	}
 

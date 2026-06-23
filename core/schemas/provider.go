@@ -13,12 +13,12 @@ const (
 	DefaultMaxRetries                 = 0
 	DefaultRetryBackoffInitial        = 500 * time.Millisecond
 	DefaultRetryBackoffMax            = 5 * time.Second
-	DefaultRequestTimeoutInSeconds    = 30
+	DefaultRequestTimeoutInSeconds    = 300
 	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
 	DefaultBufferSize                 = 5000
 	DefaultConcurrency                = 1000
 	DefaultStreamBufferSize           = 256
-	DefaultStreamIdleTimeoutInSeconds = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultStreamIdleTimeoutInSeconds = 120 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
 	DefaultMaxIdleConnsPerHost        = 40
@@ -26,7 +26,7 @@ const (
 
 // Pre-defined errors for provider operations
 const (
-	ErrProviderRequestTimedOut      = "request timed out (default is 30 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
+	ErrProviderRequestTimedOut      = "request timed out (default is 300 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
 	ErrRequestCancelled             = "request cancelled by caller"
 	ErrRequestBodyConversion        = "failed to convert bifrost request to the expected provider request body"
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"
@@ -58,7 +58,7 @@ type NetworkConfig struct {
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
-	CACertPEM                      *EnvVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
+	CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
@@ -82,7 +82,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
 		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
-		CACertPEM                      *EnvVar           `json:"ca_cert_pem,omitempty"`
+		CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
@@ -197,7 +197,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		AllowPrivateNetwork:        nc.AllowPrivateNetwork,
 	}
 	if nc.CACertPEM != nil {
-		alias.CACertPEM = EnvVarAsString(nc.CACertPEM)
+		alias.CACertPEM = SecretVarAsString(nc.CACertPEM)
 	}
 
 	return json.Marshal(alias)
@@ -254,14 +254,14 @@ const (
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
 	Type      ProxyType `json:"type"`        // Type of proxy to use
-	URL       *EnvVar   `json:"url"`         // URL of the proxy server (supports env.*)
-	Username  *EnvVar   `json:"username"`    // Username for proxy authentication (supports env.*)
-	Password  *EnvVar   `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	URL       *SecretVar   `json:"url"`         // URL of the proxy server (supports env.*)
+	Username  *SecretVar   `json:"username"`    // Username for proxy authentication (supports env.*)
+	Password  *SecretVar   `json:"password"`    // Password for proxy authentication (supports env.*)
+	CACertPEM *SecretVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
-// EnvVar fields are stored as plain strings (env.* token or literal). For HTTP API responses
+// SecretVar fields are stored as plain strings (env.* token or literal). For HTTP API responses
 // use json.Marshal on *ProxyConfig so clients receive value/env_var/from_env objects.
 func (pc *ProxyConfig) MarshalForStorage() ([]byte, error) {
 	if pc == nil {
@@ -276,16 +276,16 @@ func (pc *ProxyConfig) MarshalForStorage() ([]byte, error) {
 	}
 	alias := proxyConfigStorage{Type: pc.Type}
 	if pc.URL != nil {
-		alias.URL = EnvVarAsString(pc.URL)
+		alias.URL = SecretVarAsString(pc.URL)
 	}
 	if pc.Username != nil {
-		alias.Username = EnvVarAsString(pc.Username)
+		alias.Username = SecretVarAsString(pc.Username)
 	}
 	if pc.Password != nil {
-		alias.Password = EnvVarAsString(pc.Password)
+		alias.Password = SecretVarAsString(pc.Password)
 	}
 	if pc.CACertPEM != nil {
-		alias.CACertPEM = EnvVarAsString(pc.CACertPEM)
+		alias.CACertPEM = SecretVarAsString(pc.CACertPEM)
 	}
 	return json.Marshal(alias)
 }

@@ -265,6 +265,8 @@
               "type": "object",
               "properties": {
                 "value": { "type": "string" },
+                "ref": { "type": "string" },
+                "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
                 "env_var": { "type": "string" },
                 "from_env": { "type": "boolean" }
               },
@@ -362,6 +364,9 @@
           "$ref": "#/$defs/provider"
         },
         "runway": {
+          "$ref": "#/$defs/provider"
+        },
+        "runware": {
           "$ref": "#/$defs/provider"
         }
       },
@@ -703,7 +708,7 @@
               },
               "value": {
                 "type": "string",
-                "description": "The virtual key value"
+                "description": "The virtual key value. A literal, or an \"env.VAR\"/\"vault.path\" reference resolved to plaintext at load time."
               },
               "is_active": {
                 "type": "boolean",
@@ -1120,6 +1125,66 @@
               }
             }
           ]
+        },
+        "vault_store": {
+          "type": "object",
+          "description": "Vault store for external secret management. Fields stored as vault.<path> or vault.<path>#<jsonKey> references are resolved through the configured backend.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable vault integration"
+            },
+            "type": {
+              "type": "string",
+              "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault"],
+              "description": "Vault backend type"
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Path prefix applied to every secret (default: bifrost)"
+            },
+            "access_mode": {
+              "type": "string",
+              "enum": ["read_only", "read_and_write"],
+              "description": "read_only resolves existing refs only; read_and_write also auto-stores plaintext fields and deletes owned secrets. Defaults to read_only."
+            },
+            "aws": {
+              "type": "object",
+              "description": "AWS Secrets Manager configuration",
+              "properties": {
+                "region": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "access_key_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "secret_access_key": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "session_token": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "role_arn": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "kms_key_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] }
+              },
+              "additionalProperties": false
+            },
+            "gcp": {
+              "type": "object",
+              "description": "GCP Secret Manager configuration",
+              "properties": {
+                "project_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "credentials_json": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] }
+              },
+              "additionalProperties": false
+            },
+            "hashicorp": {
+              "type": "object",
+              "description": "HashiCorp Vault (KV v2) configuration",
+              "properties": {
+                "address": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "token": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "namespace": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "mount_path": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "role_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] },
+                "secret_id": { "anyOf": [{ "type": "string" }, { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }] }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -1264,6 +1329,43 @@
               }
             }
           ]
+        },
+        "writer": {
+          "type": "object",
+          "description": "Async logging writer queue and batch tuning. Omitted fields use runtime defaults.",
+          "properties": {
+            "max_batch_size": {
+              "type": "integer",
+              "description": "Maximum number of log entries to batch before flushing (default: 1000)",
+              "minimum": 1,
+              "default": 1000
+            },
+            "batch_interval": {
+              "type": "string",
+              "description": "Maximum time to wait before flushing a partial batch as a Go duration string (default: 5s)",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+              "default": "5s"
+            },
+            "max_batch_bytes": {
+              "type": "integer",
+              "description": "Approximate byte-size ceiling for a batch before flushing (default: 314572800)",
+              "minimum": 1,
+              "default": 314572800
+            },
+            "write_queue_capacity": {
+              "type": "integer",
+              "description": "Buffered queue capacity for pending log writes (default: 10000)",
+              "minimum": 1,
+              "default": 10000
+            },
+            "deferred_usage_concurrency": {
+              "type": "integer",
+              "description": "Maximum concurrent deferred usage database updates (default: 5)",
+              "minimum": 1,
+              "default": 5
+            }
+          },
+          "additionalProperties": false
         },
         "object_storage": {
           "type": "object",
@@ -1915,6 +2017,11 @@
                       "description": "Enable LLM Observability (default: true)",
                       "default": true
                     },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)",
+                      "default": false
+                    },
                     "disable_content_logging": {
                       "type": "boolean",
                       "description": "Disable logging of message content to Datadog (default: false)",
@@ -2382,6 +2489,11 @@
         "disable_content_logging": {
           "type": "boolean",
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
+          "default": false
+        },
+        "group_traces_by_session": {
+          "type": "boolean",
+          "description": "When true, requests sharing the same x-bf-session-id header are grouped into a single OTEL trace, each request's root span appearing as a top-level sibling. An inbound W3C traceparent takes precedence, leaving that request on its own distributed trace.",
           "default": false
         },
         "headers": {
@@ -2898,7 +3010,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -2967,7 +3079,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -5055,6 +5167,12 @@
                 "minimum": 0,
                 "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
               },
+              "evaluation_mode": {
+                "type": "string",
+                "enum": ["bundled", "per_turn"],
+                "default": "bundled",
+                "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
+              },
               "provider_config_ids": {
                 "type": "array",
                 "items": {
@@ -5563,6 +5681,7 @@
             "replicate",
             "vllm",
             "runway",
+            "runware",
             "fireworks"
           ],
           "description": "Base provider type to extend"

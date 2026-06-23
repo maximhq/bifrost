@@ -170,6 +170,17 @@ tolerations: []
 
 affinity: {}
 
+# Deployment rolling update strategy. Applies to the Deployment only (not the
+# StatefulSet used for sqlite-with-persistence). Rendered verbatim into spec.strategy.
+# Empty ({}) uses the Kubernetes default (RollingUpdate, maxSurge 25%, maxUnavailable 25%).
+# For HA gateway deployments, surge-only rollouts avoid dropping capacity:
+# strategy:
+#   type: RollingUpdate
+#   rollingUpdate:
+#     maxSurge: 100%
+#     maxUnavailable: 0%
+strategy: {}
+
 # Graceful shutdown configuration for long-lived connections (SSE streaming)
 # When a pod is terminated (e.g. during HPA scale-down), active streaming connections
 # are severed abruptly. This causes clients to lose their SSE stream mid-response.
@@ -282,6 +293,8 @@ bifrost:
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
+    # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
+    # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
 
   # Server configuration
   server:
@@ -526,6 +539,7 @@ bifrost:
         #     tls_ca_cert: ""         # Path to TLS CA certificate file
         #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
         #     disable_content_logging: false
+        #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #
         # Single-profile shape:
         service_name: "bifrost"
@@ -543,6 +557,8 @@ bifrost:
         insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
+        # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
+        group_traces_by_session: false
     datadog:
       enabled: false
       version: 1
@@ -568,6 +584,7 @@ bifrost:
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
         # enable_metrics: true
         # enable_llm_obs: true
+        # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
         # Agentless mode (direct to Datadog API, no local agent):
@@ -704,6 +721,7 @@ bifrost:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
+      #       blacklisted_models: []   # Models blocked even if matched by allowed_models; ["*"] blocks all
       #       rate_limit_id: ""
       #       keys:
       #         - key_id: "uuid-of-key"
@@ -934,6 +952,7 @@ bifrost:
       #   sampling_rate: 100
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
+      #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
@@ -941,6 +960,27 @@ bifrost:
       #   enabled: true
       #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
       #   config: {}
+
+  # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`
+  # in config.json and reconciled at startup when enabled.
+  # skillsRegistry:
+  #   enabled: true
+  #   skills:
+  #     - name: "my-skill"
+  #       description: "What this skill does"
+  #       version: "1.0.0"
+  #       skill_md_body: "# My Skill\n\nInstructions..."
+  #       # license: "MIT"
+  #       # compatibility: ">=1.0.0"
+  #       # allowed_tools: "Read,Write"
+  #       # metadata: {}
+  #       # extra_frontmatter: {}
+  #       # files:
+  #       #   - path: "reference.md"
+  #       #     source_type: "text"   # text | url | dataurl
+  #       #     content: "..."          # required when source_type=text
+  #       #     # url: "https://..."    # required when source_type=url
+  #       #     # dataurl: "data:..."   # required when source_type=dataurl
 
   # Access profiles (enterprise): seed RBAC access profile templates from Helm.
   # This is rendered directly as top-level `access_profiles` in config.json.
@@ -1026,6 +1066,13 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
+    # writer:
+    #   maxBatchSize: 1000
+    #   batchInterval: "5s"
+    #   maxBatchBytes: 314572800
+    #   writeQueueCapacity: 10000
+    #   deferredUsageConcurrency: 5
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []

@@ -72,6 +72,11 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		if model.OwnedBy != nil {
 			openaiModel.OwnedBy = *model.OwnedBy
 		}
+		if model.ContextLength != nil {
+			openaiModel.ContextWindow = model.ContextLength
+		} else if model.MaxInputTokens != nil {
+			openaiModel.ContextWindow = model.MaxInputTokens // Fallback to MaxInputTokens if ContextLength is not set
+		}
 
 		openaiResponse.Data = append(openaiResponse.Data, openaiModel)
 

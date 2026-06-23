@@ -34,13 +34,14 @@ import (
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
-	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/runway"
+	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -348,7 +349,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 		config, err := bifrost.account.GetConfigForProvider(providerKey)
 		if err != nil {
-			bifrost.logger.Warn("failed to get config for provider, skipping init: %v", err)
+			bifrost.logger.Warn("failed to get config for provider %s, skipping init: %v", providerKey, err)
 			continue
 		}
 		if config == nil {
@@ -459,6 +460,8 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			},
 		}
 	}
+	providerKeys = filterProvidersByContext(ctx, providerKeys)
+
 	startTime := time.Now()
 
 	// Result structure for collecting provider responses
@@ -514,9 +517,20 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 
 				response, bifrostErr := bifrost.ListModelsRequest(providerCtx, providerRequest)
 				if bifrostErr != nil {
-					// Skip logging "no keys found" and "not supported" errors as they are expected when a provider is not configured
-					if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
-						!strings.Contains(bifrostErr.Error.Message, "not supported") {
+					// Some per-provider failures are expected when fanning out across all
+					// configured providers and must not be surfaced as a top-level error
+					errType := ""
+					if bifrostErr.Type != nil {
+						errType = *bifrostErr.Type
+					}
+					errMsg := ""
+					if bifrostErr.Error != nil {
+						errMsg = bifrostErr.Error.Message
+					}
+					isExpected := strings.Contains(errMsg, "no keys found") ||
+						strings.Contains(errMsg, "not supported") ||
+						errType == "provider_blocked"
+					if !isExpected {
 						providerErr = bifrostErr
 						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, bifrostErr.GetErrorString())
 					}
@@ -601,6 +615,35 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
+}
+
+func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {
+	if ctx == nil {
+		return providerKeys
+	}
+
+	rawAvailableProviders := ctx.Value(schemas.BifrostContextKeyAvailableProviders)
+	if rawAvailableProviders == nil {
+		return providerKeys
+	}
+
+	availableProviders, ok := rawAvailableProviders.([]schemas.ModelProvider)
+	if !ok {
+		return []schemas.ModelProvider{}
+	}
+
+	if len(availableProviders) == 0 || len(providerKeys) == 0 {
+		return []schemas.ModelProvider{}
+	}
+
+	filteredProviders := make([]schemas.ModelProvider, 0, len(providerKeys))
+	for _, providerKey := range providerKeys {
+		if slices.Contains(availableProviders, providerKey) {
+			filteredProviders = append(filteredProviders, providerKey)
+		}
+	}
+
+	return filteredProviders
 }
 
 // TextCompletionRequest sends a text completion request to the specified provider.
@@ -3691,6 +3734,17 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 //	    ConnectionType: schemas.MCPConnectionTypeHTTP,
 //	    ConnectionString: &url,
 //	})
+//
+// ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
+// no longer auto-connects, so callers invoke this after all plugins are registered
+// (so every PreMCPConnectionHook participates in the connection). No-op if MCP is
+// not configured.
+func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context) {
+	if bifrost.MCPManager != nil {
+		bifrost.MCPManager.ConnectConfiguredClients(ctx)
+	}
+}
+
 func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
@@ -3996,6 +4050,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
+	case schemas.Runware:
+		return runware.NewRunwareProvider(config, bifrost.logger)
 	case schemas.Fireworks:
 		return fireworks.NewFireworksProvider(config, bifrost.logger)
 	default:
@@ -4082,7 +4138,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get config for provider: %v", err)
+		return nil, fmt.Errorf("failed to get config for provider %s: %v", providerKey, err)
 	}
 	if config == nil {
 		return nil, fmt.Errorf("config is nil for provider %s", providerKey)
@@ -5224,7 +5280,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					pipeline.FinalizeStreamingPostHookSpans(ctx)
 					bifrost.releasePluginPipeline(pipeline)
 				}()
-				defer close(outputStream)
+				defer providerUtils.CloseStream(ctx, outputStream)
 
 				for streamMsg := range shortCircuit.Stream {
 					if streamMsg == nil {
@@ -5262,9 +5318,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// Guarded send: if the consumer abandons outputStream (client
 					// disconnect, ctx cancel), drain the upstream shortCircuit.Stream
 					// so its producer can exit cleanly instead of blocking on its send.
-					select {
-					case outputStream <- streamResponse:
-					case <-ctx.Done():
+					// GateSendChunk routes through the pause/resume gate when a plugin
+					// has engaged it; otherwise it's a bare ctx-guarded channel send.
+					if !providerUtils.GateSendChunk(ctx, streamResponse, outputStream) {
 						for range shortCircuit.Stream {
 						}
 						return
@@ -5707,6 +5763,18 @@ func executeRequestWithRetries[T any](
 			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
 			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerName, customerName)
 		}
+		if businessUnitID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitID).(string); ok && businessUnitID != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitID, businessUnitID)
+		}
+		if businessUnitName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitName).(string); ok && businessUnitName != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitName, businessUnitName)
+		}
+		if userID, ok := ctx.Value(schemas.BifrostContextKeyUserID).(string); ok && userID != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostUserID, userID)
+		}
+		if userName, ok := ctx.Value(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostUserName, userName)
+		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
 			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
 			tracer.SetAttribute(handle, schemas.AttrBifrostFallbackIndex, fallbackIndex)
@@ -5938,6 +6006,24 @@ func executeRequestWithRetries[T any](
 	return result, bifrostError
 }
 
+// clearAnthropicPassthroughForNonNativeProvider disables Anthropic raw-body passthrough when a
+// request from the Anthropic-format integration resolves to a provider that doesn't speak the
+// Anthropic Messages API natively (e.g. Bedrock), forcing that provider to convert the request
+// itself. Gated on the final resolved provider so it fires regardless of how the provider was
+// picked (prefix, catalog, key alias, governance) and re-runs per attempt for fallbacks. No-op
+// for Anthropic/Vertex/Azure providers and for non-Anthropic integrations.
+func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider) {
+	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
+		return
+	}
+	if baseProvider == schemas.Anthropic || baseProvider == schemas.Vertex || baseProvider == schemas.Azure {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+}
+
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
@@ -5988,6 +6074,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			baseProvider = cfg.BaseProviderType
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+
+		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
+		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)
 
 		// Determine whether this provider attempt should capture raw payloads.
 		//
@@ -6360,6 +6449,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			case <-req.Context.Done():
 				// Client no longer listening, log and continue
 				bifrost.logger.Debug("Client context cancelled while sending error response")
+				// The provider already produced this error (possibly after
+				// processing input tokens). tryRequest returned on ctx.Done and will
+				// never receive it, so bill/log it here. Non-streaming only.
+				bifrost.billAbandonedTerminal(req, nil, bifrostError)
 			case <-time.After(5 * time.Second):
 				// Timeout to prevent indefinite blocking
 				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
@@ -6389,6 +6482,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				case <-req.Context.Done():
 					// Client no longer listening, log and continue
 					bifrost.logger.Debug("Client context cancelled while sending response")
+					// The provider already produced this non-streaming result
+					// (consuming tokens). tryRequest returned on ctx.Done and will never
+					// receive it, so bill/log it here.
+					bifrost.billAbandonedTerminal(req, result, nil)
 				case <-time.After(5 * time.Second):
 					// Timeout to prevent indefinite blocking
 					bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
@@ -6398,6 +6495,32 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	}
 
 	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
+}
+
+// billAbandonedTerminal runs terminal post-LLM hooks for a NON-STREAMING request
+// whose client stopped waiting (tryRequest returned on ctx.Done) after the
+// provider had already produced a result or error. Without this, tokens the
+// provider consumed are never billed or logged (non-streaming
+// cancellation). Safety:
+//   - The channel rendezvous guarantees tryRequest did NOT also receive this
+//     value (a value cannot be both delivered and land in the no-receiver
+//     ctx.Done branch), so post-hooks never run twice for one call.
+//   - The governance tracker additionally dedupes on RequestID+attempt.
+//   - Streaming requests are excluded: their provider goroutine already runs
+//     terminal post-hooks via HandleStreamCancellation.
+func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+	if req == nil || req.Context == nil || IsStreamRequestType(req.RequestType) {
+		return
+	}
+	pipeline := bifrost.getPluginPipeline()
+	defer bifrost.releasePluginPipeline(pipeline)
+	pluginCount := len(*bifrost.llmPlugins.Load())
+	if bifrostErr != nil {
+		_, _ = pipeline.RunPostLLMHooks(req.Context, nil, bifrostErr, pluginCount)
+	} else if result != nil {
+		_, _ = pipeline.RunPostLLMHooks(req.Context, result, nil, pluginCount)
+	}
+	drainAndAttachPluginLogs(req.Context)
 }
 
 // handleProviderRequest handles the request to the provider based on the request type

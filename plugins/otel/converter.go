@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -10,6 +11,29 @@ import (
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
+
+// sessionIDHash returns the SHA-256 digest of sessionID. Callers extract
+// non-overlapping slices for the trace ID (bytes 0-15) and synthetic parent
+// span ID (bytes 16-23) so both are derived from a single hash invocation.
+func sessionIDHash(sessionID string) [32]byte {
+	return sha256.Sum256([]byte(sessionID))
+}
+
+// sessionTraceID derives a deterministic 128-bit (32 lowercase hex char) trace ID
+// from an x-bf-session-id value. Used to pin every request sharing a session into one
+// OTEL trace when group_traces_by_session is enabled.
+func sessionTraceID(sessionID string) string {
+	sum := sessionIDHash(sessionID)
+	return hex.EncodeToString(sum[:16])
+}
+
+// sessionParentSpanID derives a deterministic 64-bit (16 lowercase hex char) span ID
+// from an x-bf-session-id value. It serves as the synthetic (never-emitted) parent of
+// each request's root span so requests render as top-level siblings under one trace.
+func sessionParentSpanID(sessionID string) string {
+	sum := sessionIDHash(sessionID)
+	return hex.EncodeToString(sum[16:24])
+}
 
 // kvStr creates a key-value pair with a string value
 func kvStr(k, v string) *KeyValue {
@@ -72,15 +96,34 @@ func hexToBytes(hexStr string, length int) []byte {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool) *ResourceSpan {
 	reparent := p.pluginSpanFilter.BuildReparentMap(trace.Spans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
+
+	// The x-bf-session-id header is a trace-level attribute, so it is not emitted as a span
+	// attribute by default. Surface it on the root span as the OTEL-conventional session.id
+	// whenever present, so traces can always be filtered/correlated by session — independent
+	// of grouping.
+	sessionID := getStringAttr(trace.Attributes, schemas.TraceAttrSessionID)
+
+	// Session grouping: when enabled and this request carries an x-bf-session-id but no
+	// inbound W3C traceparent (root span has no parent), pin every span to a trace ID
+	// derived from the session ID so all requests in the session share one OTEL trace. The
+	// root span is parented to a synthetic, never-emitted session span, making each request
+	// a top-level sibling under one trace. An inbound traceparent sets RootSpan.ParentID, so
+	// it takes precedence and the request stays on its distributed trace.
+	traceID := trace.TraceID
+	groupBySession := groupTracesBySession && sessionID != "" && trace.RootSpan != nil && trace.RootSpan.ParentID == ""
+	if groupBySession {
+		traceID = sessionTraceID(sessionID)
+	}
+
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		if !p.pluginSpanFilter.ShouldExportSpan(span) {
 			continue
 		}
-		otelSpan := convertSpanToOTELSpan(trace.TraceID, span, disableContentLogging)
+		otelSpan := convertSpanToOTELSpan(traceID, span, disableContentLogging)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -91,6 +134,13 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 			}
 		}
 		if span == trace.RootSpan {
+			if sessionID != "" {
+				otelSpan.Attributes = append(otelSpan.Attributes, kvStr("session.id", sessionID))
+			}
+			if groupBySession {
+				// Parent the root to the synthetic session span so requests are siblings.
+				otelSpan.ParentSpanId = hexToBytes(sessionParentSpanID(sessionID), 8)
+			}
 			if requestID := trace.GetRequestID(); requestID != "" {
 				otelSpan.Attributes = append(otelSpan.Attributes,
 					kvStr(schemas.AttrRequestID, requestID), // legacy: gen_ai.* placement of bifrost-internal attr; replaced by bifrost.request.id

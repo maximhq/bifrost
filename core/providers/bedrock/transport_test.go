@@ -89,9 +89,9 @@ func newTestProviderWithServer(t *testing.T, ts *httptest.Server) *BedrockProvid
 // testBedrockKey returns a minimal Key with a bearer value so makeStreamingRequest
 // skips IAM signing and proceeds to the HTTP call.
 func testBedrockKey() schemas.Key {
-	region := schemas.NewEnvVar("us-east-1")
+	region := schemas.NewSecretVar("us-east-1")
 	return schemas.Key{
-		Value: *schemas.NewEnvVar("test-api-key"),
+		Value: *schemas.NewSecretVar("test-api-key"),
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			Region: region,
 		},
@@ -547,7 +547,7 @@ func generateTestCACert(t *testing.T) string {
 func TestBedrockTransportHTTP2Config(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                5000,
 			EnforceHTTP2:                   true,
 		},
@@ -570,7 +570,7 @@ func TestBedrockTransportHTTP2Config(t *testing.T) {
 func TestBedrockTransportCustomMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                50,
 		},
 	}
@@ -590,7 +590,7 @@ func TestBedrockTransportCustomMaxConns(t *testing.T) {
 func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// MaxConnsPerHost left as 0 — should default to 5000
 		},
 	}
@@ -612,7 +612,7 @@ func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			InsecureSkipVerify:             true,
 			EnforceHTTP2:                   true,
 		},
@@ -636,8 +636,8 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
-			CACertPEM:                      schemas.NewEnvVar(testCACert),
+			DefaultRequestTimeoutInSeconds: 300,
+			CACertPEM:                      schemas.NewSecretVar(testCACert),
 			EnforceHTTP2:                   true,
 		},
 	}
@@ -657,7 +657,7 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 func TestBedrockTransportDefaultTLS(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// No TLS settings — should use system defaults
 		},
 	}
@@ -677,7 +677,7 @@ func TestBedrockTransportDefaultTLS(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   true,
 		},
 	}
@@ -696,7 +696,7 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   false,
 		},
 	}

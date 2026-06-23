@@ -355,7 +355,7 @@ func (h *WebRTCRealtimeHandler) resolveRealtimeWebRTCKeys(
 		bifrostCtx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 		bifrostCtx.ClearValue(schemas.BifrostContextKeySelectedKeyID)
 		bifrostCtx.ClearValue(schemas.BifrostContextKeySelectedKeyName)
-		authKey := schemas.Key{Value: *schemas.NewEnvVar(inboundToken)}
+		authKey := schemas.Key{Value: *schemas.NewSecretVar(inboundToken)}
 		return authKey, nil, nil
 	}
 
@@ -370,7 +370,7 @@ func (h *WebRTCRealtimeHandler) resolveRealtimeWebRTCKeys(
 
 	authKey := selectedKey
 	if mapped && inboundToken != "" {
-		authKey.Value = *schemas.NewEnvVar(inboundToken)
+		authKey.Value = *schemas.NewSecretVar(inboundToken)
 	}
 	return authKey, &selectedKey, nil
 }

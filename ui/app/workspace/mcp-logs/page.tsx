@@ -346,6 +346,8 @@ export default function MCPLogsPage() {
 	} = useColumnConfig({
 		columnIds,
 		paramName: "mcp_cols",
+		storageKey: "bifrost.mcp_logs.cols",
+		defaultHidden: ["virtual_key"],
 		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
 	});
 
@@ -356,6 +358,7 @@ export default function MCPLogsPage() {
 			server_label: "Server",
 			latency: "Latency",
 			cost: "Cost",
+			virtual_key: "Virtual Key",
 		}),
 		[],
 	);

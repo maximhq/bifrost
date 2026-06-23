@@ -545,12 +545,14 @@ func (h *SkillsHandler) listSkillVersions(ctx *fasthttp.RequestCtx) {
 	if n, err := strconv.Atoi(string(ctx.QueryArgs().Peek("offset"))); err == nil && n >= 0 {
 		offset = n
 	}
+	search := strings.TrimSpace(string(ctx.QueryArgs().Peek("search")))
 
 	versions, total, err := h.store.ListSkillVersions(ctx, id, configstore.SkillVersionListQueryParams{
 		Limit:  limit,
 		Offset: offset,
 		SortBy: sortBy,
 		Order:  order,
+		Search: search,
 	})
 	if err != nil {
 		logger.Error("failed to list skill versions: %v", err)

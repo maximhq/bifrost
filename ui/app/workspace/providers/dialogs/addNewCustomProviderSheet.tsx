@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
 import { allowedRequestsSchema } from "@/lib/types/schemas";
@@ -102,7 +103,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			network_config: {
 				base_url: data.base_url,
 				allow_private_network: data.allow_private_network ?? false,
-				default_request_timeout_in_seconds: 30,
+				default_request_timeout_in_seconds: DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: 0,
 				retry_backoff_initial: 500,
 				retry_backoff_max: 5000,
