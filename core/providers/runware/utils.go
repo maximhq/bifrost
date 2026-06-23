@@ -5,10 +5,16 @@ import (
 	"strings"
 )
 
-// Runware requires explicit pixel dimensions; default to a square when the caller omits a size.
+// Runware requires explicit pixel dimensions; default when the caller omits a size.
+// Images default to a square; video defaults to 16:9 720p (video models reject square sizes).
 const (
 	defaultRunwareWidth  = 1024
 	defaultRunwareHeight = 1024
+
+	// 1080p 16:9: within Runware's 256-1920 x 256-1080 range, a multiple of 8, and accepted by
+	// the widest set of video models (Kling Pro rejects 720p but accepts 1920x1080).
+	defaultRunwareVideoWidth  = 1920
+	defaultRunwareVideoHeight = 1080
 )
 
 // parseRunwareSize converts a Bifrost size string ("1024x1024") to width/height pixels.
