@@ -361,13 +361,14 @@ const (
 // PluginConfig is the configuration for a plugin.
 // It contains the name of the plugin, whether it is enabled, and the configuration for the plugin.
 type PluginConfig struct {
-	Enabled   bool             `json:"enabled"`
-	Name      string           `json:"name"`
-	Path      *string          `json:"path,omitempty"`
-	Version   *int16           `json:"version,omitempty"`
-	Config    any              `json:"config,omitempty"`
-	Placement *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
-	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
+	Enabled    bool             `json:"enabled"`
+	Name       string           `json:"name"`
+	Path       *string          `json:"path,omitempty"`
+	Version    *int16           `json:"version,omitempty"`
+	Config     any              `json:"config,omitempty"`
+	Placement  *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
+	Order      *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
+	ConfigHash string           `json:"config_hash,omitempty"`
 }
 
 // ConfigMarshallerPlugin is optionally implemented by plugins that need custom

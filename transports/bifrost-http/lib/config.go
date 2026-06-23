@@ -3774,12 +3774,13 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 			config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 			for i, plugin := range plugins {
 				pluginConfig := &schemas.PluginConfig{
-					Name:      plugin.Name,
-					Enabled:   plugin.Enabled,
-					Config:    plugin.Config,
-					Path:      plugin.Path,
-					Placement: plugin.Placement,
-					Order:     plugin.Order,
+					Name:       plugin.Name,
+					Enabled:    plugin.Enabled,
+					Config:     plugin.Config,
+					Path:       plugin.Path,
+					Placement:  plugin.Placement,
+					Order:      plugin.Order,
+					ConfigHash: plugin.ConfigHash,
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.ValidateSemanticCacheConfig(pluginConfig); err != nil {
@@ -3832,58 +3833,73 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 		logger.Debug("no plugins found in store, using plugins from config file")
 		config.PluginConfigs = configData.Plugins
 	} else {
-		// Merge new plugins and update if version is higher
+		existing := make(map[string]int, len(config.PluginConfigs))
+		for i, p := range config.PluginConfigs {
+			existing[p.Name] = i
+		}
+
 		for _, plugin := range configData.Plugins {
-			if plugin.Version == nil {
-				plugin.Version = bifrost.Ptr(int16(1))
+			tablePlugin, err := toTablePlugin(plugin)
+			if err != nil {
+				logger.Warn("failed to build plugin config for %s: %v", plugin.Name, err)
+				continue
 			}
-			existingIdx := slices.IndexFunc(config.PluginConfigs, func(p *schemas.PluginConfig) bool {
-				return p.Name == plugin.Name
-			})
-			if existingIdx == -1 {
-				logger.Debug("adding new plugin %s to config.PluginConfigs", plugin.Name)
+
+			hash, err := configstore.GeneratePluginHash(*tablePlugin)
+			if err != nil {
+				logger.Warn("failed to generate plugin hash for %s: %v", plugin.Name, err)
+				continue
+			}
+			plugin.ConfigHash = hash
+			idx, found := existing[plugin.Name]
+			if !found {
+				logger.Debug("adding new plugin %s", plugin.Name)
 				config.PluginConfigs = append(config.PluginConfigs, plugin)
-			} else {
-				existingPlugin := config.PluginConfigs[existingIdx]
-				existingVersion := int16(1)
-				if existingPlugin.Version != nil {
-					existingVersion = *existingPlugin.Version
-				}
-				placementChanged := !placementEqual(existingPlugin.Placement, plugin.Placement) || !orderEqual(existingPlugin.Order, plugin.Order)
-				if *plugin.Version > existingVersion || placementChanged {
-					logger.Debug("replacing plugin %s (version %d→%d, placementChanged=%v)", plugin.Name, existingVersion, *plugin.Version, placementChanged)
-					config.PluginConfigs[existingIdx] = plugin
-				}
+				continue
+			}
+
+			if config.PluginConfigs[idx].ConfigHash != hash {
+				logger.Debug("updating plugin %s", plugin.Name)
+				config.PluginConfigs[idx] = plugin
 			}
 		}
 	}
 
-	// Update store
-	if config.ConfigStore != nil {
-		logger.Debug("updating plugins in store")
-		for _, plugin := range config.PluginConfigs {
-			pluginConfigCopy, err := DeepCopy(plugin.Config)
-			if err != nil {
-				logger.Warn("failed to deep copy plugin config, skipping database update: %v", err)
-				continue
-			}
-			if plugin.Version == nil {
-				plugin.Version = bifrost.Ptr(int16(1))
-			}
-			pluginConfig := &configstoreTables.TablePlugin{
-				Name:      plugin.Name,
-				Enabled:   plugin.Enabled,
-				Config:    pluginConfigCopy,
-				Path:      plugin.Path,
-				Version:   *plugin.Version,
-				Placement: plugin.Placement,
-				Order:     plugin.Order,
-			}
-			if err := config.ConfigStore.UpsertPlugin(ctx, pluginConfig); err != nil {
-				logger.Warn("failed to update plugin: %v", err)
-			}
+	if config.ConfigStore == nil {
+		return
+	}
+
+	logger.Debug("updating plugins in store")
+
+	for _, plugin := range config.PluginConfigs {
+		tablePlugin, err := toTablePlugin(plugin)
+		if err != nil {
+			logger.Warn("failed to build plugin config for %s: %v", plugin.Name, err)
+			continue
+		}
+
+		if err := config.ConfigStore.UpsertPlugin(ctx, tablePlugin); err != nil {
+			logger.Warn("failed to update plugin %s: %v", plugin.Name, err)
 		}
 	}
+}
+
+// toTablePlugin converts a schemas.PluginConfig to a configstoreTables.TablePlugin for hashing and storage, making a deep copy of the Config to avoid mutating the original.
+func toTablePlugin(plugin *schemas.PluginConfig) (*configstoreTables.TablePlugin, error) {
+	configCopy, err := DeepCopy(plugin.Config)
+	if err != nil {
+		return nil, err
+	}
+
+	return &configstoreTables.TablePlugin{
+		Name:       plugin.Name,
+		Enabled:    plugin.Enabled,
+		Config:     configCopy,
+		Path:       plugin.Path,
+		Placement:  plugin.Placement,
+		Order:      plugin.Order,
+		ConfigHash: plugin.ConfigHash,
+	}, nil
 }
 
 // syncPluginsFromFile replaces stored plugin configs with the plugins declared in config.json.
@@ -3925,13 +3941,14 @@ func syncPluginsFromFile(ctx context.Context, config *Config, configData *Config
 				plugin.Version = bifrost.Ptr(int16(1))
 			}
 			tablePlugin := &configstoreTables.TablePlugin{
-				Name:      plugin.Name,
-				Enabled:   plugin.Enabled,
-				Config:    pluginConfigCopy,
-				Path:      plugin.Path,
-				Version:   *plugin.Version,
-				Placement: plugin.Placement,
-				Order:     plugin.Order,
+				Name:       plugin.Name,
+				Enabled:    plugin.Enabled,
+				Config:     pluginConfigCopy,
+				Path:       plugin.Path,
+				Version:    *plugin.Version,
+				Placement:  plugin.Placement,
+				Order:      plugin.Order,
+				ConfigHash: plugin.ConfigHash,
 			}
 			if err := config.ConfigStore.UpdatePlugin(ctx, tablePlugin, tx); err != nil {
 				return fmt.Errorf("failed to update plugin %s: %w", plugin.Name, err)
