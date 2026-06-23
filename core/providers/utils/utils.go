@@ -2361,6 +2361,22 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 			if ctx != nil {
 				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
+			// closeBodyStream may panic: an orphaned timer can fire after the
+			// stream's connection has already been released to / reused from
+			// the fasthttp pool, so CloseWithError nil-derefs in
+			// (*HostClient).CloseConn. Because this runs in the timer goroutine,
+			// that panic is unrecoverable by callers and crashes the whole
+			// process. Recover here so a stale idle timer can never take the
+			// process down (companion to the Read() recover added in #3677).
+			// Unlike the Read() path we cannot re-panic an unexpected value
+			// (that would crash the process — the very thing we are guarding
+			// against), so log the recovered value to leave a forensic trace
+			// for any future, unrelated panic introduced into this path.
+			defer func() {
+				if rec := recover(); rec != nil {
+					getLogger().Debug("recovered panic in idle-timeout timer closeBodyStream: %v", rec)
+				}
+			}()
 			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
 		})
 	})
