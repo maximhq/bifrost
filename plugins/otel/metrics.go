@@ -28,6 +28,10 @@ type MetricsConfig struct {
 	TLSCACert    string
 	Insecure     bool // Skip TLS when true; ignored if TLSCACert is set
 	PushInterval int  // in seconds
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64
+	FirstTokenLatencyBuckets []float64
+	InterTokenLatencyBuckets []float64
 }
 
 // MetricsExporter handles OTEL metrics export
@@ -244,7 +248,7 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	}
 
 	// Initialize metrics with lazy loading wrappers
-	m.initMetrics()
+	m.initMetrics(config)
 
 	return m, nil
 }
@@ -296,7 +300,38 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 	return otlpmetricgrpc.New(ctx, opts...)
 }
 
-func (m *MetricsExporter) initMetrics() {
+// validateBuckets checks that buckets are strictly increasing and positive.
+// Logs a warning and returns false if invalid so callers can fall back to defaults.
+func validateBuckets(name string, buckets []float64) bool {
+	prev := 0.0
+	for i, v := range buckets {
+		if v <= 0 {
+			logger.Warn("otel: %s[%d] must be > 0, got %v — ignoring custom buckets, using defaults", name, i, v)
+			return false
+		}
+		if i > 0 && v <= prev {
+			logger.Warn("otel: %s must be strictly increasing — ignoring custom buckets, using defaults", name)
+			return false
+		}
+		prev = v
+	}
+	return true
+}
+
+func (m *MetricsExporter) initMetrics(config *MetricsConfig) {
+	upstreamLatencyBuckets := upstreamLatencyBuckets
+	firstTokenLatencyBuckets := firstTokenLatencyBuckets
+	interTokenLatencyBuckets := interTokenLatencyBuckets
+	if len(config.LatencyBuckets) > 0 && validateBuckets("latency_buckets", config.LatencyBuckets) {
+		upstreamLatencyBuckets = append([]float64(nil), config.LatencyBuckets...)
+	}
+	if len(config.FirstTokenLatencyBuckets) > 0 && validateBuckets("first_token_latency_buckets", config.FirstTokenLatencyBuckets) {
+		firstTokenLatencyBuckets = append([]float64(nil), config.FirstTokenLatencyBuckets...)
+	}
+	if len(config.InterTokenLatencyBuckets) > 0 && validateBuckets("inter_token_latency_buckets", config.InterTokenLatencyBuckets) {
+		interTokenLatencyBuckets = append([]float64(nil), config.InterTokenLatencyBuckets...)
+	}
+
 	// Bifrost upstream metrics
 	m.upstreamRequestsTotal = &syncInt64Counter{
 		name:  "bifrost_upstream_requests_total",

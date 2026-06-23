@@ -86,6 +86,11 @@ type Profile struct {
 	// When true, only metadata (model, tokens, latency, etc.) is exported; input/output message
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
+
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64 `json:"latency_buckets,omitempty"`
+	FirstTokenLatencyBuckets []float64 `json:"first_token_latency_buckets,omitempty"`
+	InterTokenLatencyBuckets []float64 `json:"inter_token_latency_buckets,omitempty"`
 }
 
 // UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
@@ -207,6 +212,9 @@ type profileForStorage struct {
 	MetricsPushInterval   int               `json:"metrics_push_interval,omitempty"`
 	RequestHeaders        []string          `json:"request_headers,omitempty"`
 	DisableContentLogging bool              `json:"disable_content_logging,omitempty"`
+	LatencyBuckets           []float64      `json:"latency_buckets,omitempty"`
+	FirstTokenLatencyBuckets []float64      `json:"first_token_latency_buckets,omitempty"`
+	InterTokenLatencyBuckets []float64      `json:"inter_token_latency_buckets,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -242,6 +250,9 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			MetricsPushInterval:   p.MetricsPushInterval,
 			RequestHeaders:        p.RequestHeaders,
 			DisableContentLogging: p.DisableContentLogging,
+			LatencyBuckets:           p.LatencyBuckets,
+			FirstTokenLatencyBuckets: p.FirstTokenLatencyBuckets,
+			InterTokenLatencyBuckets: p.InterTokenLatencyBuckets,
 		})
 	}
 	return sonic.Marshal(out)
@@ -470,6 +481,9 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			TLSCACert:    profile.TLSCACert,
 			Insecure:     profile.Insecure,
 			PushInterval: pushInterval,
+			LatencyBuckets:           profile.LatencyBuckets,
+			FirstTokenLatencyBuckets: profile.FirstTokenLatencyBuckets,
+			InterTokenLatencyBuckets: profile.InterTokenLatencyBuckets,
 		}
 		target.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
 		if err != nil {

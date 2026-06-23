@@ -77,10 +77,16 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		CustomLabels   []string            `json:"custom_labels,omitempty"`
 		MetricsEnabled *bool               `json:"metrics_enabled,omitempty"`
 		PushGateway    *pushGatewayStorage `json:"push_gateway,omitempty"`
+		LatencyBuckets           []float64 `json:"latency_buckets,omitempty"`
+		FirstTokenLatencyBuckets []float64 `json:"first_token_latency_buckets,omitempty"`
+		InterTokenLatencyBuckets []float64 `json:"inter_token_latency_buckets,omitempty"`
 	}
 	storage := configStorage{
-		CustomLabels:   c.CustomLabels,
-		MetricsEnabled: c.MetricsEnabled,
+		CustomLabels:             c.CustomLabels,
+		MetricsEnabled:           c.MetricsEnabled,
+		LatencyBuckets:           c.LatencyBuckets,
+		FirstTokenLatencyBuckets: c.FirstTokenLatencyBuckets,
+		InterTokenLatencyBuckets: c.InterTokenLatencyBuckets,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -197,6 +203,10 @@ type Config struct {
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
 	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
 	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64 `json:"latency_buckets,omitempty"`
+	FirstTokenLatencyBuckets []float64 `json:"first_token_latency_buckets,omitempty"`
+	InterTokenLatencyBuckets []float64 `json:"inter_token_latency_buckets,omitempty"`
 }
 
 // Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
@@ -226,6 +236,22 @@ var (
 	}
 )
 
+// validateBuckets checks that buckets are strictly increasing and positive.
+// Returns an error so Init can fail fast before Prometheus panics on invalid input.
+func validateBuckets(name string, buckets []float64) error {
+	prev := 0.0
+	for i, v := range buckets {
+		if v <= 0 {
+			return fmt.Errorf("%s[%d] must be > 0, got %v", name, i, v)
+		}
+		if i > 0 && v <= prev {
+			return fmt.Errorf("%s must be strictly increasing", name)
+		}
+		prev = v
+	}
+	return nil
+}
+
 // Init creates a new PrometheusPlugin with initialized metrics.
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
@@ -234,6 +260,28 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	if pricingManager == nil {
 		logger.Warn("telemetry plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
+	}
+
+	upstreamLatencyBuckets := upstreamLatencyBuckets
+	firstTokenLatencyBuckets := firstTokenLatencyBuckets
+	interTokenLatencyBuckets := interTokenLatencyBuckets
+	if len(config.LatencyBuckets) > 0 {
+		if err := validateBuckets("latency_buckets", config.LatencyBuckets); err != nil {
+			return nil, err
+		}
+		upstreamLatencyBuckets = append([]float64(nil), config.LatencyBuckets...)
+	}
+	if len(config.FirstTokenLatencyBuckets) > 0 {
+		if err := validateBuckets("first_token_latency_buckets", config.FirstTokenLatencyBuckets); err != nil {
+			return nil, err
+		}
+		firstTokenLatencyBuckets = append([]float64(nil), config.FirstTokenLatencyBuckets...)
+	}
+	if len(config.InterTokenLatencyBuckets) > 0 {
+		if err := validateBuckets("inter_token_latency_buckets", config.InterTokenLatencyBuckets); err != nil {
+			return nil, err
+		}
+		interTokenLatencyBuckets = append([]float64(nil), config.InterTokenLatencyBuckets...)
 	}
 
 	registry := config.Registry
