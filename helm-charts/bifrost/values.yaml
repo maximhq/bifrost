@@ -298,7 +298,7 @@ bifrost:
 
   # Server configuration
   server:
-    readBufferSize: 65536      # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
 
   # Framework configuration
   framework:
@@ -540,16 +540,17 @@ bifrost:
         #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
+        #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
         #
         # Single-profile shape:
         service_name: "bifrost"
-        collector_url: ""             # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        collector_url: "" # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         trace_type: "genai_extension" # genai_extension | vercel | open_inference
-        protocol: "grpc"              # http | grpc
+        protocol: "grpc" # http | grpc
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
-        metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
-        metrics_push_interval: 15     # Push interval in seconds (1-300)
+        metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        metrics_push_interval: 15 # Push interval in seconds (1-300)
         # Custom headers for the collector (supports env.VAR_NAME prefix)
         headers: {}
         # TLS configuration
@@ -559,6 +560,8 @@ bifrost:
         disable_content_logging: false
         # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
         group_traces_by_session: false
+        # Drop input/output content from the root span only (the llm.call generation span keeps it)
+        disable_root_span_content: false
     datadog:
       enabled: false
       version: 1
@@ -599,7 +602,7 @@ bifrost:
       enabled: false
       version: 1
       config:
-        project_id: ""                # GCP project ID (required when enabled)
+        project_id: "" # GCP project ID (required when enabled)
         dataset_id: "bifrost_traces"
         table_id: "traces"
         location: "US"
@@ -618,8 +621,8 @@ bifrost:
       enabled: false
       version: 1
       config:
-        brokers: []                   # Kafka broker addresses (required when enabled)
-        topic: ""                     # Topic to publish traces to (required when enabled)
+        brokers: [] # Kafka broker addresses (required when enabled)
+        topic: "" # Topic to publish traces to (required when enabled)
         sasl_enabled: false
         # sasl:
         #   mechanism: "PLAIN"        # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
@@ -627,7 +630,7 @@ bifrost:
         #   password: "env.KAFKA_PASSWORD"
         tls_enabled: false
         # ca_cert: "env.KAFKA_CA_CERT" # PEM CA certificate to verify the broker. Omit to use the system CA pool.
-        compression: "none"           # none | gzip | snappy | lz4 | zstd
+        compression: "none" # none | gzip | snappy | lz4 | zstd
         batch_size: 100
         flush_interval_ms: 1000
         auto_create_topic: false
@@ -641,8 +644,8 @@ bifrost:
       enabled: false
       version: 1
       config:
-        project_id: ""                # GCP project ID (required when enabled)
-        topic_id: ""                  # Pub/Sub topic ID (required when enabled)
+        project_id: "" # GCP project ID (required when enabled)
+        topic_id: "" # Pub/Sub topic ID (required when enabled)
         # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
         auto_create_topic: false
         disable_content_logging: false
@@ -769,7 +772,8 @@ bifrost:
       #   pattern: "gpt-4o-mini"
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
-    complexityAnalyzerConfig: null
+    complexityAnalyzerConfig:
+      null
       # tier_boundaries:
       #   simple_medium: 0.15
       #   medium_complex: 0.35

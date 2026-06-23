@@ -4274,6 +4274,11 @@
           "description": "When true, requests sharing the same x-bf-session-id header are grouped into a single OTEL trace, each request's root span appearing as a top-level sibling. An inbound W3C traceparent takes precedence, leaving that request on its own distributed trace.",
           "default": false
         },
+        "disable_root_span_content": {
+          "type": "boolean",
+          "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
+          "default": false
+        },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
         }
@@ -4383,6 +4388,10 @@
         "group_traces_by_session": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure group_traces_by_session per profile instead."
+        },
+        "disable_root_span_content": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
         }
       },
       "required": ["profiles"],
