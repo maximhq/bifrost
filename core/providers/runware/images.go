@@ -11,25 +11,26 @@ import (
 // ToRunwareImageGenerationRequest converts a Bifrost image generation request to a Runware
 // imageInference task. A "seedImage" supplied via extra params (a Runware image UUID, a public
 // URL, or a base64/data-URI string) turns the request into an image-to-image generation.
-func ToRunwareImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) (*RunwareImageInferenceRequest, error) {
+func ToRunwareImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) (*RunwareInferenceRequest, error) {
 	if bifrostReq.Input == nil {
 		return nil, fmt.Errorf("input is required")
 	}
 
-	request := &RunwareImageInferenceRequest{
+	width, height := defaultRunwareWidth, defaultRunwareHeight
+	request := &RunwareInferenceRequest{
 		TaskType:       taskTypeImageInference,
 		TaskUUID:       uuid.New().String(),
 		Model:          bifrostReq.Model,
-		PositivePrompt: bifrostReq.Input.Prompt,
-		Width:          defaultRunwareWidth,
-		Height:         defaultRunwareHeight,
+		PositivePrompt: &bifrostReq.Input.Prompt,
+		Width:          &width,
+		Height:         &height,
 	}
 
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
 
 		if params.Size != nil && *params.Size != "" {
-			request.Width, request.Height = parseRunwareSize(*params.Size)
+			*request.Width, *request.Height = parseRunwareSize(*params.Size)
 		}
 		request.NegativePrompt = params.NegativePrompt
 		request.Steps = params.NumInferenceSteps
@@ -54,7 +55,7 @@ func ToRunwareImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationR
 // ToRunwareImageEditRequest converts a Bifrost image edit request to a Runware imageInference task.
 // The first input image is the seed image; an optional mask enables inpainting. Outpainting,
 // strength, maskMargin and other operation-specific fields flow through via extra params.
-func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*RunwareImageInferenceRequest, error) {
+func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*RunwareInferenceRequest, error) {
 	if bifrostReq.Input == nil {
 		return nil, fmt.Errorf("input is required")
 	}
@@ -62,13 +63,14 @@ func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ru
 		return nil, fmt.Errorf("at least one input image is required")
 	}
 
-	request := &RunwareImageInferenceRequest{
+	width, height := defaultRunwareWidth, defaultRunwareHeight
+	request := &RunwareInferenceRequest{
 		TaskType:       taskTypeImageInference,
 		TaskUUID:       uuid.New().String(),
 		Model:          bifrostReq.Model,
-		PositivePrompt: bifrostReq.Input.Prompt,
-		Width:          defaultRunwareWidth,
-		Height:         defaultRunwareHeight,
+		PositivePrompt: &bifrostReq.Input.Prompt,
+		Width:          &width,
+		Height:         &height,
 	}
 
 	// Seed image: the base image being edited (raw bytes -> base64 data URI).
@@ -79,7 +81,7 @@ func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ru
 		params := bifrostReq.Params
 
 		if params.Size != nil && *params.Size != "" {
-			request.Width, request.Height = parseRunwareSize(*params.Size)
+			*request.Width, *request.Height = parseRunwareSize(*params.Size)
 		}
 		request.NegativePrompt = params.NegativePrompt
 		request.Steps = params.NumInferenceSteps
