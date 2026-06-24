@@ -84,7 +84,7 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 	if buildErr != nil {
 		return nil, buildErr
 	}
-	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, deployment)
+	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, schemas.ResolveCanonicalModel(ctx, deployment))
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
 	}

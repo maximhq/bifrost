@@ -62,9 +62,10 @@ type AnthropicRequestBuildConfig struct {
 	BetaHeaderOverrides       map[string]bool
 	ProviderExtraHeaders      map[string]string
 
-	// ValidateTools runs ValidateToolsForProvider before typed conversion,
-	// returning an error for any tool unsupported by the provider (Azure,
-	// Vertex).
+	// ValidateTools runs ValidateResponsesToolsForProvider before typed
+	// conversion, silently dropping any tool unsupported by the provider (Azure,
+	// Vertex) so the request still reaches the provider without it. Mirrors the
+	// Chat path's strip-silently policy.
 	ValidateTools bool
 
 	// ShouldSendBackRawRequest / ShouldSendBackRawResponse control whether raw
@@ -85,6 +86,9 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
 	}
+
+	// capModel is the canonical model used for capability gating in the raw-body
+	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
 		return providerUtils.EnrichError(
@@ -175,7 +179,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			// request.Model is the alias-resolved model id; pass it so
 			// computer-use / text-editor / bash tools get normalized to the
 			// canonical {type, name} pair Anthropic expects for the model's generation.
-			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, request.Model)
+			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, capModel)
 			if err != nil {
 				return nil, newErr(err.Error(), nil, jsonBody)
 			}
@@ -188,7 +192,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
-		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, request.Model)
+		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, capModel)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
@@ -216,8 +220,17 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	} else {
 		if cfg.ValidateTools && request.Params != nil && request.Params.Tools != nil {
-			if toolErr := ValidateToolsForProvider(request.Params.Tools, cfg.Provider); toolErr != nil {
-				return nil, newErr(toolErr.Error(), nil, jsonBody)
+			// Silently drop provider-unsupported tools (e.g. an `mcp` server tool
+			// on Vertex, whose Converse API has no remote-MCP connector) rather
+			// than failing the whole request. Mirrors ValidateChatToolsForProvider
+			// and the Bedrock Responses path. Use a shallow copy so the shared
+			// (possibly pooled) request and its Params are never mutated.
+			if keep, dropped := ValidateResponsesToolsForProvider(request.Params.Tools, cfg.Provider); len(dropped) > 0 {
+				reqCopy := *request
+				paramsCopy := *request.Params
+				paramsCopy.Tools = keep
+				reqCopy.Params = &paramsCopy
+				request = &reqCopy
 			}
 		}
 

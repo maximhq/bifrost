@@ -1,2 +1,1 @@
-- fix: carry tool-call extra_content through the streaming accumulator - deep-copied per chunk and accumulated across deltas (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
-- chore: upgraded core to v1.5.21
+- fix: include allow_all_keys and blacklisted_models in virtual key hash (closes #4640)

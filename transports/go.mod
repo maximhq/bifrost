@@ -14,17 +14,17 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.5.20
-	github.com/maximhq/bifrost/framework v1.3.20
-	github.com/maximhq/bifrost/plugins/compat v0.1.19
-	github.com/maximhq/bifrost/plugins/governance v1.5.20
-	github.com/maximhq/bifrost/plugins/logging v1.5.20
-	github.com/maximhq/bifrost/plugins/maxim v1.6.20
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.1
-	github.com/maximhq/bifrost/plugins/otel v1.2.21
-	github.com/maximhq/bifrost/plugins/prompts v1.0.20
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.20
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.20
+	github.com/maximhq/bifrost/core v1.5.22
+	github.com/maximhq/bifrost/framework v1.3.22
+	github.com/maximhq/bifrost/plugins/compat v0.1.21
+	github.com/maximhq/bifrost/plugins/governance v1.5.22
+	github.com/maximhq/bifrost/plugins/logging v1.5.22
+	github.com/maximhq/bifrost/plugins/maxim v1.6.22
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.3
+	github.com/maximhq/bifrost/plugins/otel v1.2.23
+	github.com/maximhq/bifrost/plugins/prompts v1.0.22
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.22
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.22
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/prometheus/client_golang v1.23.2
@@ -146,7 +146,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.20 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.22 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
@@ -193,7 +193,7 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	go.mongodb.org/mongo-driver v1.17.6 // indirect
+	go.mongodb.org/mongo-driver v1.17.7 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.42.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect

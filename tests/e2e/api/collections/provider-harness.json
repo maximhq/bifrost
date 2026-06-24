@@ -42,7 +42,7 @@
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1;",
-          "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1) {",
+          "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
           "    try { j = pm.response.json(); } catch (e) {",
@@ -344,6 +344,119 @@
               "path": ["bedrock", "model", "{{bedrockModel}}", "converse"]
             }
           }
+        },
+        {
+          "name": "POST /bedrock/model/{modelId}/converse-stream — streaming (incremental events)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock native streaming (converse-stream). Verifies the upstream is delivered",
+                  "// as a live AWS event stream with multiple incremental frames, guarding against the",
+                  "// server-side gzip buffering regression where all events arrive at once (issue #4542).",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Bedrock stream is an AWS event stream', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected vnd.amazon.eventstream, got ' + ct).to.include('vnd.amazon.eventstream');",
+                  "});",
+                  "pm.test('Bedrock stream contains multiple incremental events', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var deltas = (body.match(/contentBlockDelta/g) || []).length;",
+                  "  pm.expect(deltas, 'expected >= 2 contentBlockDelta frames, got ' + deltas).to.be.at.least(2);",
+                  "  pm.expect(body, 'expected a messageStop event terminating the stream').to.include('messageStop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"Write three short sentences about the Unix philosophy.\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 512 }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/chat/completions — bedrock streaming (SSE incremental deltas)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock streaming via the OpenAI-compatible SSE path (/v1/chat/completions).",
+                  "// Confirms chunked SSE delivery with multiple incremental content deltas and a",
+                  "// [DONE] terminator. Note: newman buffers the full response, so this validates",
+                  "// SSE framing/chunking, not wall-clock TTFB (that is covered by the Go unit test",
+                  "// TestChatCompletionStream_StreamsIncrementally_NotBuffered). Issue #4542.",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Bedrock SSE: content-type is text/event-stream', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('text/event-stream');",
+                  "});",
+                  "pm.test('Bedrock SSE: multiple data chunks with incremental content deltas', function () {",
+                  "  var lines = (pm.response.text() || '').split('\\n');",
+                  "  var chunks = 0, sawDelta = false, sawDone = false;",
+                  "  lines.forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    chunks++;",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { sawDone = true; return; }",
+                  "    try { var j = JSON.parse(p); var d = j.choices && j.choices[0] && j.choices[0].delta; if (d && typeof d.content === 'string' && d.content.length) { sawDelta = true; } } catch (e) {}",
+                  "  });",
+                  "  pm.expect(chunks, 'expected > 1 SSE data chunks, got ' + chunks).to.be.above(1);",
+                  "  pm.expect(sawDelta, 'expected at least one chunk with an incremental content delta').to.be.true;",
+                  "  pm.expect(sawDone, 'expected an SSE [DONE] terminator').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"stream\": true,\n  \"max_tokens\": 256,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Write three short sentences about the Unix philosophy.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     },
@@ -461,8 +574,8 @@
             { "name": "anthropic/claude-opus-4-5",                 "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-5\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "anthropic/claude-sonnet-4-5",               "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "anthropic/claude-opus-4-6",                 "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-6\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
-            { "name": "anthropic/claude-opus-4-0",                 "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-0\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
-            { "name": "anthropic/claude-sonnet-4-0",               "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-0\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
+            { "name": "anthropic/claude-opus-4-8",                 "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
+            { "name": "anthropic/claude-sonnet-4-5",               "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "anthropic/claude-opus-4-1",      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-1\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "anthropic/claude-haiku-4-5-20251001",      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } }
           ]
@@ -801,7 +914,7 @@
                 { "name": "[SKIP] anthropic/claude-haiku-4-5 (no image gen)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["v1", "images", "generations"] } } },
                 { "name": "gemini/imagen-4.0-generate-001",                  "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["v1", "images", "generations"] } } },
                 { "name": "vertex/imagen-4.0-generate-001",                  "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["v1", "images", "generations"] } } },
-                { "name": "bedrock/amazon.titan-image-generator-v2:0",      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/amazon.titan-image-generator-v2:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["v1", "images", "generations"] } } },
+                { "name": "bedrock/amazon.nova-canvas-v1:0",      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/amazon.nova-canvas-v1:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["v1", "images", "generations"] } } },
                 { "name": "azure/gpt-image-2",                                "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-image-2\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["v1", "images", "generations"] } } }
               ]
             },
@@ -812,7 +925,7 @@
                 { "name": "[SKIP] anthropic/claude-haiku-4-5 (no image gen)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/openai/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["openai", "v1", "images", "generations"] } } },
                 { "name": "gemini/imagen-4.0-generate-001",                  "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/openai/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["openai", "v1", "images", "generations"] } } },
                 { "name": "vertex/imagen-4.0-generate-001",                  "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/openai/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["openai", "v1", "images", "generations"] } } },
-                { "name": "bedrock/amazon.titan-image-generator-v2:0",      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/amazon.titan-image-generator-v2:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/openai/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["openai", "v1", "images", "generations"] } } },
+                { "name": "bedrock/amazon.nova-canvas-v1:0",      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/amazon.nova-canvas-v1:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/openai/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["openai", "v1", "images", "generations"] } } },
                 { "name": "azure/gpt-image-2",                                "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-image-2\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}" }, "url": { "raw": "{{baseUrl}}/openai/v1/images/generations", "host": ["{{baseUrl}}"], "path": ["openai", "v1", "images", "generations"] } } }
               ]
             }
@@ -1922,6 +2035,1150 @@
                 "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
                 "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ],\n  \"instructions\": \"You are a helpful geography assistant. Be concise.\"\n}"},
                 "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            }
+          ]
+        },
+        {
+          "name": "MCP Tool Handling cross-cut",
+          "description": "Regression #3795: a provider-side `type:\"mcp\"` server tool in a Responses request must be silently dropped for providers without an MCP connector (Bedrock, Vertex), not rejected. Function tools survive the strip. Function-bearing rows force the surviving function tool via tool_choice and verify it is invoked (output function_call / streamed response.function_call_arguments). Lone-mcp rows exercise the all-tools-dropped edge case: zero tools left after the strip must still return a text answer with NO tool call. Server/MCP tool calls are NOT expected for Bedrock/Vertex Claude — that is correct. Covers native + /openai drop-in + streaming.",
+          "item": [
+            {
+              "name": "bedrock/global.anthropic.claude-opus-4-7 · lone server-mcp dropped",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795 'all tools dropped' edge case: the mcp server tool is the ONLY tool, so after",
+                      "// the strip there are zero tools left. The request must still return a normal text",
+                      "// completion, and NO tool call may appear (the mcp tool was removed, not made callable).",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') === -1) {",
+                      "  pm.test('text answer returned, no tool call (mcp dropped, zero tools left)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'no tool call expected (mcp dropped, no function tools), got: ' + JSON.stringify(out).slice(0, 200)).to.equal(0);",
+                      "    var txt = (typeof j.output_text === 'string') ? j.output_text : '';",
+                      "    var hasText = txt.length > 0 ||",
+                      "      out.some(function (o) { return o && o.type === 'message' && o.content && o.content.length; }) ||",
+                      "      (j.output && j.output.message && j.output.message.content && j.output.message.content.length);",
+                      "    pm.expect(hasText, 'expected a text/message answer, got: ' + JSON.stringify(j).slice(0, 200)).to.be.true;",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"What is 2+2? Answer in one word.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-opus-4-7 · server-mcp + function kept (forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-opus-4-7 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'set_serialviewer_pro_query';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"Build a MongoDB find filter for the most common error codes in the orders collection over the last month.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"set_serialviewer_pro_query\",\n      \"description\": \"Writes a MongoDB find filter.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"filter\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"filter\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"time\",\n      \"server_url\": \"https://bifrost.invalid/mcp/time\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"mongodb-explain\",\n      \"description\": \"Returns query-plan statistics.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"set_serialviewer_pro_query\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · lone server-mcp dropped",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795 'all tools dropped' edge case: the mcp server tool is the ONLY tool, so after",
+                      "// the strip there are zero tools left. The request must still return a normal text",
+                      "// completion, and NO tool call may appear (the mcp tool was removed, not made callable).",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') === -1) {",
+                      "  pm.test('text answer returned, no tool call (mcp dropped, zero tools left)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'no tool call expected (mcp dropped, no function tools), got: ' + JSON.stringify(out).slice(0, 200)).to.equal(0);",
+                      "    var txt = (typeof j.output_text === 'string') ? j.output_text : '';",
+                      "    var hasText = txt.length > 0 ||",
+                      "      out.some(function (o) { return o && o.type === 'message' && o.content && o.content.length; }) ||",
+                      "      (j.output && j.output.message && j.output.message.content && j.output.message.content.length);",
+                      "    pm.expect(hasText, 'expected a text/message answer, got: ' + JSON.stringify(j).slice(0, 200)).to.be.true;",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": \"What is 2+2? Answer in one word.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · server-mcp + function kept (forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'set_serialviewer_pro_query';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": \"Build a MongoDB find filter for the most common error codes in the orders collection over the last month.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"set_serialviewer_pro_query\",\n      \"description\": \"Writes a MongoDB find filter.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"filter\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"filter\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"time\",\n      \"server_url\": \"https://bifrost.invalid/mcp/time\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"mongodb-explain\",\n      \"description\": \"Returns query-plan statistics.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"set_serialviewer_pro_query\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-opus-4-7 · lone server-mcp dropped",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795 'all tools dropped' edge case: the mcp server tool is the ONLY tool, so after",
+                      "// the strip there are zero tools left. The request must still return a normal text",
+                      "// completion, and NO tool call may appear (the mcp tool was removed, not made callable).",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') === -1) {",
+                      "  pm.test('text answer returned, no tool call (mcp dropped, zero tools left)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'no tool call expected (mcp dropped, no function tools), got: ' + JSON.stringify(out).slice(0, 200)).to.equal(0);",
+                      "    var txt = (typeof j.output_text === 'string') ? j.output_text : '';",
+                      "    var hasText = txt.length > 0 ||",
+                      "      out.some(function (o) { return o && o.type === 'message' && o.content && o.content.length; }) ||",
+                      "      (j.output && j.output.message && j.output.message.content && j.output.message.content.length);",
+                      "    pm.expect(hasText, 'expected a text/message answer, got: ' + JSON.stringify(j).slice(0, 200)).to.be.true;",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"input\": \"What is 2+2? Answer in one word.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-opus-4-7 · server-mcp + function kept (forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-opus-4-7 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'set_serialviewer_pro_query';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"input\": \"Build a MongoDB find filter for the most common error codes in the orders collection over the last month.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"set_serialviewer_pro_query\",\n      \"description\": \"Writes a MongoDB find filter.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"filter\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"filter\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"time\",\n      \"server_url\": \"https://bifrost.invalid/mcp/time\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"mongodb-explain\",\n      \"description\": \"Returns query-plan statistics.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"set_serialviewer_pro_query\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-sonnet-4-6 · lone server-mcp dropped",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795 'all tools dropped' edge case: the mcp server tool is the ONLY tool, so after",
+                      "// the strip there are zero tools left. The request must still return a normal text",
+                      "// completion, and NO tool call may appear (the mcp tool was removed, not made callable).",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') === -1) {",
+                      "  pm.test('text answer returned, no tool call (mcp dropped, zero tools left)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'no tool call expected (mcp dropped, no function tools), got: ' + JSON.stringify(out).slice(0, 200)).to.equal(0);",
+                      "    var txt = (typeof j.output_text === 'string') ? j.output_text : '';",
+                      "    var hasText = txt.length > 0 ||",
+                      "      out.some(function (o) { return o && o.type === 'message' && o.content && o.content.length; }) ||",
+                      "      (j.output && j.output.message && j.output.message.content && j.output.message.content.length);",
+                      "    pm.expect(hasText, 'expected a text/message answer, got: ' + JSON.stringify(j).slice(0, 200)).to.be.true;",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"input\": \"What is 2+2? Answer in one word.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-sonnet-4-6 · server-mcp + function kept (forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-sonnet-4-6 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'set_serialviewer_pro_query';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"input\": \"Build a MongoDB find filter for the most common error codes in the orders collection over the last month.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"set_serialviewer_pro_query\",\n      \"description\": \"Writes a MongoDB find filter.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"filter\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"filter\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"time\",\n      \"server_url\": \"https://bifrost.invalid/mcp/time\",\n      \"require_approval\": \"never\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"mongodb-explain\",\n      \"description\": \"Returns query-plan statistics.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"set_serialviewer_pro_query\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-opus-4-7 · /openai drop-in · forced function call",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-opus-4-7 · /openai drop-in · forced function call",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-opus-4-7 · streaming · forced function call",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  },\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "vertex/claude-opus-4-7 · streaming · forced function call",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
+                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
+                      "var ct = (pm.response.headers.get('content-type') || '');",
+                      "var raw = pm.response.text() || '';",
+                      "var EXPECT = 'get_weather';",
+                      "pm.test('mcp server tool dropped, not rejected (#3795)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "if (ct.indexOf('event-stream') !== -1) {",
+                      "  pm.test('streaming response invoked function tool ' + EXPECT, function () {",
+                      "    pm.expect(raw, 'no function_call events in SSE stream')",
+                      "      .to.match(/response\\.function_call_arguments|\"type\"\\s*:\\s*\"function_call\"/);",
+                      "    pm.expect(raw, 'expected function ' + EXPECT + ' in stream').to.include(EXPECT);",
+                      "  });",
+                      "} else {",
+                      "  pm.test('response invoked function tool ' + EXPECT + ' (no server/mcp call)', function () {",
+                      "    var j = pm.response.json();",
+                      "    var out = Array.isArray(j.output) ? j.output : [];",
+                      "    var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "    pm.expect(calls.length, 'expected a function tool call, got: ' + JSON.stringify(j.output || j).slice(0, 220)).to.be.above(0);",
+                      "    var names = calls.map(function (o) { return o.name; });",
+                      "    pm.expect(names, 'expected ' + EXPECT + ' to be called, got ' + JSON.stringify(names)).to.include(EXPECT);",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"input\": \"What's the current weather in Paris? Use the available tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  },\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-opus-4-7 · tool_choice pins absent fn + lone mcp dropped → reconciled, no 400 (PR #4573)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Fix (PR #4573, CodeRabbit): tool_choice pins a function, but the ONLY tool sent is an",
+                      "// unsupported mcp server tool. The mcp tool is dropped -> zero tools, so the dangling",
+                      "// pin must be reconciled away (fall back to Bedrock 'auto') instead of emitting a",
+                      "// toolChoice.tool that references an absent tool, which Bedrock rejects with HTTP 400.",
+                      "// The collection-level 'Status code is 2xx' is the real regression guard (pre-fix => 400).",
+                      "var raw = pm.response.text() || '';",
+                      "pm.test('mcp dropped + dangling tool_choice reconciled, no 400 (PR #4573)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "  pm.expect(raw.toLowerCase(), 'pinned tool must not leak to Bedrock as an unknown tool').to.not.include('tool not found');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "pm.test('no tool call (pin reconciled away, zero tools left)', function () {",
+                      "  var j = pm.response.json();",
+                      "  var out = Array.isArray(j.output) ? j.output : [];",
+                      "  var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "  pm.expect(calls.length, 'expected no tool call (no tools survived), got: ' + JSON.stringify(out).slice(0, 200)).to.equal(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"What is 2+2? Answer in one word.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · tool_choice pins absent fn + lone mcp dropped → reconciled, no 400 (PR #4573)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Fix (PR #4573, CodeRabbit): tool_choice pins a function, but the ONLY tool sent is an",
+                      "// unsupported mcp server tool. The mcp tool is dropped -> zero tools, so the dangling",
+                      "// pin must be reconciled away (fall back to Bedrock 'auto') instead of emitting a",
+                      "// toolChoice.tool that references an absent tool, which Bedrock rejects with HTTP 400.",
+                      "// The collection-level 'Status code is 2xx' is the real regression guard (pre-fix => 400).",
+                      "var raw = pm.response.text() || '';",
+                      "pm.test('mcp dropped + dangling tool_choice reconciled, no 400 (PR #4573)', function () {",
+                      "  pm.expect(raw).to.not.include(\"tool type 'mcp'\");",
+                      "  pm.expect(raw.toLowerCase()).to.not.include('is not supported by provider');",
+                      "  pm.expect(raw.toLowerCase(), 'pinned tool must not leak to Bedrock as an unknown tool').to.not.include('tool not found');",
+                      "});",
+                      "pm.test('response body is non-empty', function () {",
+                      "  pm.expect(raw.length, 'expected a non-empty response body').to.be.above(0);",
+                      "});",
+                      "pm.test('no tool call (pin reconciled away, zero tools left)', function () {",
+                      "  var j = pm.response.json();",
+                      "  var out = Array.isArray(j.output) ? j.output : [];",
+                      "  var calls = out.filter(function (o) { return o && (o.type === 'function_call' || o.type === 'tool_call'); });",
+                      "  pm.expect(calls.length, 'expected no tool call (no tools survived), got: ' + JSON.stringify(out).slice(0, 200)).to.equal(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": \"What is 2+2? Answer in one word.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"mongodb\",\n      \"server_url\": \"https://bifrost.invalid/mcp/mongodb\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_weather\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
               }
             }
           ]
@@ -3320,26 +4577,26 @@
           ]
         },
         {
-          "name": "Cross-Cut Round 30: Fable 5 / Mythos Feature Gating",
-          "description": "Verifies the Fable 5 / Mythos (claude-fable-5, claude-mythos-5) request-surface gating added to the Anthropic converters.\nFable/Mythos behave like Opus 4.7+ (adaptive-only thinking; temperature/top_p/top_k removed) AND additionally reject thinking:{type:\"disabled\"} (adaptive is always on).\nGating covered: adaptive thinking, budget_tokens→adaptive, sampling-param strip, disabled→omitted (typed path only), effort high/xhigh/max, structured outputs, task budgets, computer-use new-gen tools, web_search dynamic filtering, mid-conversation system messages, and fast-mode NOT supported (speed stripped).\nScripts are guarded on code<400 so the suite tolerates accounts without Fable access (same convention as the [PREVIEW] items).",
+          "name": "Cross-Cut Round 30: Opus 4.8 Feature Gating",
+          "description": "Exercises the Anthropic request-surface features on Claude Opus 4.8, the live successor after Fable 5 / Mythos were discontinued (https://www.anthropic.com/news/fable-mythos-access).\nSurface covered: adaptive thinking, budget_tokens to adaptive, sampling-param handling (temperature/top_p/top_k), effort high/xhigh/max, structured outputs, task budgets, computer-use new-gen tools, web_search dynamic filtering, mid-conversation system messages, and fast mode.\nScripts are guarded on code<400 so the suite tolerates accounts without access to a given feature (same convention as the [PREVIEW] items).",
           "item": [
-            { "name": "Native Fable 5: adaptive thinking", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: output_config effort high", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"high\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: output_config effort xhigh", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"xhigh\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: output_config effort max", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"max\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: output_config format json_schema (structured outputs)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 800,\n  \"output_config\": {\"format\": {\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Pick a city\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: speed:fast stripped (fast mode unsupported, no beta header)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 800,\n  \"speed\": \"fast\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hi\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: task_budget (beta task-budgets-2026-03-13)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"task-budgets-2026-03-13"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"output_config\": {\"task_budget\": {\"type\":\"tokens\",\"total\":20000}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Plan and solve a multi-step task.\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: computer use new-gen tools (computer-use-2025-11-24)", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: web_search dynamic filtering (web_search_20260209)", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Find recent AI papers.\"}],\n  \"tools\": [{\"type\":\"web_search_20260209\",\"name\":\"web_search\",\"max_uses\":3}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: mid-conv system message (ends array)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 512,\n  \"system\": [{\"type\":\"text\",\"text\":\"You are a helpful assistant.\"}],\n  \"messages\": [\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]},\n    {\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"}]},\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}]},\n    {\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"Respond only in one word.\"}]}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Fable 5: mid-conv system message (before assistant)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 512,\n  \"system\": [{\"type\":\"text\",\"text\":\"You are a helpful assistant.\"}],\n  \"messages\": [\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]},\n    {\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"From now on be very concise.\"}]},\n    {\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"}]},\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}]}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Native Mythos 5: adaptive thinking (family parity)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-mythos-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
-            { "name": "Cross-cut: anthropic/claude-fable-5 adaptive thinking", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": {\"type\":\"adaptive\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
-            { "name": "Cross-cut: anthropic/claude-fable-5 enabled thinking → adaptive (budget_tokens removed)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": {\"type\":\"enabled\",\"budget_tokens\":2000},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
-            { "name": "Cross-cut: anthropic/claude-fable-5 disabled thinking → omitted (no 400)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"thinking\": {\"type\":\"disabled\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
-            { "name": "Cross-cut: anthropic/claude-fable-5 sampling params stripped (temperature/top_p/top_k)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7,\n  \"top_p\": 0.9,\n  \"top_k\": 5,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
-            { "name": "Cross-cut: anthropic/claude-fable-5 mid-conv system", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\"role\":\"system\",\"content\":\"You are a helpful assistant.\"},\n    {\"role\":\"user\",\"content\":\"Hello\"},\n    {\"role\":\"assistant\",\"content\":\"Hi!\"},\n    {\"role\":\"user\",\"content\":\"How are you?\"},\n    {\"role\":\"system\",\"content\":\"Respond only in one word.\"}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}}
+            { "name": "Native Opus 4.8: adaptive thinking", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 4096,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: output_config effort high", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"high\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: output_config effort xhigh", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"xhigh\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: output_config effort max", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"max\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: output_config format json_schema (structured outputs)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 800,\n  \"output_config\": {\"format\": {\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Pick a city\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: speed:fast stripped (fast mode unsupported, no beta header)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 800,\n  \"speed\": \"fast\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hi\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: task_budget (beta task-budgets-2026-03-13)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"task-budgets-2026-03-13"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 4096,\n  \"output_config\": {\"task_budget\": {\"type\":\"tokens\",\"total\":20000}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Plan and solve a multi-step task.\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: computer use new-gen tools (computer-use-2025-11-24)", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: web_search dynamic filtering (web_search_20260209)", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 1024,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Find recent AI papers.\"}],\n  \"tools\": [{\"type\":\"web_search_20260209\",\"name\":\"web_search\",\"max_uses\":3}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: mid-conv system message (ends array)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 512,\n  \"system\": [{\"type\":\"text\",\"text\":\"You are a helpful assistant.\"}],\n  \"messages\": [\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]},\n    {\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"}]},\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}]},\n    {\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"Respond only in one word.\"}]}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: mid-conv system message (before assistant)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 512,\n  \"system\": [{\"type\":\"text\",\"text\":\"You are a helpful assistant.\"}],\n  \"messages\": [\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]},\n    {\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"From now on be very concise.\"}]},\n    {\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"}]},\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}]}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Opus 4.8: adaptive thinking (family parity)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 4096,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Cross-cut: anthropic/claude-opus-4-8 adaptive thinking", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"max_tokens\": 4096,\n  \"thinking\": {\"type\":\"adaptive\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-opus-4-8 enabled thinking → adaptive (budget_tokens removed)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"max_tokens\": 4096,\n  \"thinking\": {\"type\":\"enabled\",\"budget_tokens\":2000},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-opus-4-8 disabled thinking → omitted (no 400)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"max_tokens\": 1024,\n  \"thinking\": {\"type\":\"disabled\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-opus-4-8 sampling params stripped (temperature/top_p/top_k)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7,\n  \"top_p\": 0.9,\n  \"top_k\": 5,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-opus-4-8 mid-conv system", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\"role\":\"system\",\"content\":\"You are a helpful assistant.\"},\n    {\"role\":\"user\",\"content\":\"Hello\"},\n    {\"role\":\"assistant\",\"content\":\"Hi!\"},\n    {\"role\":\"user\",\"content\":\"How are you?\"},\n    {\"role\":\"system\",\"content\":\"Respond only in one word.\"}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}}
           ]
         }
 
@@ -5964,7 +7221,7 @@
                       }
                     },
                     {
-                      "name": "bedrock/amazon.titan-image-generator-v2:0",
+                      "name": "bedrock/amazon.nova-canvas-v1:0",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -5975,7 +7232,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"amazon.titan-image-generator-v2:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                          "raw": "{\n  \"model\": \"amazon.nova-canvas-v1:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -6402,6 +7659,734 @@
                   }
                 }
               ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "15. Costing — Failed/Cancelled Requests",
+      "description": "Asserts that a request which FAILED or was CANCELLED but still consumed provider tokens is billed (logs DB cost>0 && total_tokens>0). Each request pins a unique `x-request-id` and sets `x-bf-expect-cost: true`, which the newman-reporter-dbverify reporter uses to look up the log row and verify cost. Pre-fix these FAIL (cost is 0 on failed requests); post-fix they PASS. Streaming mid-flight cancellation is driven deterministically by runners/run-stream-cancellation.mjs (Postman cannot abort a stream mid-response).",
+      "item": [
+        {
+          "name": "[Costing] Streaming chat cancelled mid-flight records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-request-id", "value": "costing-stream-chat-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Count slowly from 1 to 200, one number per line.\"}],\n  \"stream\": true,\n  \"max_tokens\": 2048\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// Stream returns 200 (headers sent) then is cancelled mid-response by",
+              "// runners/run-stream-cancellation.mjs. The cost assertion is performed by",
+              "// the dbverify reporter against the logs row keyed on x-request-id.",
+              "pm.test('[Costing] stream started (200) before cancellation', function () {",
+              "  pm.expect(pm.response.code).to.equal(200);",
+              "});"
+            ] } }
+          ]
+        },
+        {
+          "name": "[Costing] Non-streaming chat failure records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-request-id", "value": "costing-nonstream-chat-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Write a long essay about distributed systems.\"}],\n  \"max_tokens\": 1024\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// A non-streaming request that fails AFTER the provider processed input",
+              "// tokens (timeout / 5xx after input) must still be billed. The dbverify",
+              "// reporter verifies logs cost>0 && total_tokens>0 for x-request-id.",
+              "pm.test('[Costing] non-stream request reached the provider', function () {",
+              "  pm.expect(pm.response.code).to.not.equal(404);",
+              "});"
+            ] } }
+          ]
+        },
+        {
+          "name": "[Costing] Embeddings failure records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-request-id", "value": "costing-embeddings-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{embedding_model}}\",\n  \"input\": \"costing probe embedding input\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/v1/embeddings", "host": ["{{baseUrl}}"], "path": ["v1", "embeddings"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// 'Other' request type: embeddings. A failure after input processing must",
+              "// still record cost. Verified by the dbverify reporter via x-request-id.",
+              "pm.test('[Costing] embeddings request reached the provider', function () {",
+              "  pm.expect(pm.response.code).to.not.equal(404);",
+              "});"
+            ] } }
+          ]
+        },
+        {
+          "name": "[Costing] Transcription failure records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-request-id", "value": "costing-transcription-{{$guid}}" },
+              { "key": "x-bf-expect-cost", "value": "true" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "model", "value": "{{transcription_model}}", "type": "text" },
+                { "key": "file", "src": "fixtures/sample.mp3", "type": "file" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/v1/audio/transcriptions", "host": ["{{baseUrl}}"], "path": ["v1", "audio", "transcriptions"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "// 'Other' request type: audio transcription. A failure after the audio was",
+              "// processed must still record cost. Verified by the dbverify reporter.",
+              "pm.test('[Costing] transcription request reached the provider', function () {",
+              "  pm.expect(pm.response.code).to.not.equal(404);",
+              "});"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "16. Accounting (cost recording across providers)",
+      "description": "Criss-cross of providers x {non-streaming, streaming} chat requests that each pin a unique x-request-id and set x-bf-expect-cost. The dbverify reporter asserts the logs DB recorded cost>0 && total_tokens>0 per request, guarding against accounting regressions. Failed-streaming, retry-attempt, cumulative-sum and no-double-bill semantics are covered by Go unit tests (plugins/governance/accounting_test.go).",
+      "item": [
+        {
+          "name": "[Accounting] openai non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-openai-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] openai nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] openai streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-openai-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] openai streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] anthropic non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-anthropic-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] anthropic nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] anthropic streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-anthropic-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] anthropic streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] bedrock non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-bedrock-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] bedrock nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] bedrock streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-bedrock-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] bedrock streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] gemini non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-gemini-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] gemini nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] gemini streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-gemini-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] gemini streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] vertex non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-vertex-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] vertex nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] vertex streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-vertex-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] vertex streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] azure non-streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-azure-nonstreaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/{{azureDeployment}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] azure nonstreaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[Accounting] azure streaming records cost",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "acct-azure-streaming"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/{{azureDeployment}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a short sentence about the number seven.\"\n    }\n  ],\n  \"max_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cost recording is verified against the logs DB by the dbverify reporter",
+                  "// (cost>0 && total_tokens>0 for this x-request-id). This request asserts the",
+                  "// gateway accepted and routed it.",
+                  "pm.test(`[Accounting] azure streaming reached the provider`, function () {",
+                  "  pm.expect(pm.response.code).to.not.equal(404);",
+                  "});"
+                ]
+              }
             }
           ]
         }

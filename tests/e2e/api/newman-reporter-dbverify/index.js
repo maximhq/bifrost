@@ -582,6 +582,166 @@ async function runMultiTableVerification(db, method, mapping, body, name) {
   return { name, result: 'PASS', detail: `${tableNames} verified` };
 }
 
+// ─── Costing assertion ────────────────────────────────────────────────
+
+/** Read a request header value (newman SDK HeaderList) defensively. */
+function getHeader(request, key) {
+  try {
+    if (request && request.headers && typeof request.headers.get === 'function') {
+      return request.headers.get(key);
+    }
+  } catch (_) { /* ignore */ }
+  return undefined;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ─── Datasheet pricing (cost-accuracy recompute) ──────────────────────────────
+// Authoritative pricing source — the same datasheet Bifrost itself syncs from
+// (framework/modelcatalog/datasheet/store.go DefaultURL). Override via env.
+const PRICING_URL = process.env.BIFROST_PRICING_URL || 'https://getbifrost.ai/datasheet';
+let _datasheetPromise; // fetched at most once per run
+
+function fetchJSON(url) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https:') ? require('https') : require('http');
+    const req = lib.get(url, { timeout: 15000 }, (res) => {
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
+        return;
+      }
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { buf += c; });
+      res.on('end', () => { try { resolve(JSON.parse(buf)); } catch (e) { reject(e); } });
+    });
+    req.on('timeout', () => req.destroy(new Error('datasheet fetch timeout')));
+    req.on('error', reject);
+  });
+}
+
+// Lazily fetch the datasheet once; on failure resolve null so cost-accuracy is
+// skipped (presence check still runs).
+function loadDatasheet() {
+  if (!_datasheetPromise) {
+    _datasheetPromise = fetchJSON(PRICING_URL).catch((e) => {
+      console.warn(`[dbverify] could not fetch pricing datasheet (${PRICING_URL}): ${e.message}; cost-accuracy checks skipped`);
+      return null;
+    });
+  }
+  return _datasheetPromise;
+}
+
+// Datasheet entry resolver + provider alias normalization live in the shared
+// lib so this reporter and runners/run-stream-cancellation.mjs can't drift.
+const { resolvePricingEntry } = require('../lib/pricing');
+
+// Recompute expected base-tier cost, mirroring datasheet/cost.go computeTextCost:
+// nonCachedPrompt×input + cachedRead×cacheRead + cachedWrite×cacheCreation + completion×output.
+function expectedCostFromDatasheet(entry, row) {
+  const input = entry.input_cost_per_token || 0;
+  const output = entry.output_cost_per_token || 0;
+  const cacheReadRate = entry.cache_read_input_token_cost || 0;
+  const cacheWriteRate = entry.cache_creation_input_token_cost || 0;
+
+  const prompt = Number(row.prompt_tokens || 0);
+  const completion = Number(row.completion_tokens || 0);
+  let cachedRead = Number(row.cached_read_tokens || 0);
+  let cachedWrite = 0;
+  if (row.token_usage) {
+    try {
+      const d = JSON.parse(row.token_usage)?.prompt_tokens_details;
+      if (d) {
+        if (cachedRead === 0 && d.cached_read_tokens) cachedRead = Number(d.cached_read_tokens);
+        if (d.cached_write_tokens) cachedWrite = Number(d.cached_write_tokens);
+      }
+    } catch (_) { /* ignore malformed usage blob */ }
+  }
+  // Clamp exactly like cost.go.
+  cachedRead = Math.min(cachedRead, prompt);
+  cachedWrite = Math.min(cachedWrite, Math.max(0, prompt - cachedRead));
+  const nonCachedPrompt = Math.max(0, prompt - cachedRead - cachedWrite);
+  return nonCachedPrompt * input + cachedRead * cacheReadRate + cachedWrite * cacheWriteRate + completion * output;
+}
+
+/**
+ * Verify that a failed/cancelled request still recorded cost + tokens.
+ * The logs row is written asynchronously by the logging plugin (and usage may
+ * arrive via the deferred-usage channel), so we poll with backoff. The logs
+ * table is keyed by request id (Log.ID == BifrostContextKeyRequestID), which
+ * the Costing requests pin via the `x-request-id` header.
+ */
+async function verifyCostingRequest(db, reqId, name, results, silent) {
+  const delays = [200, 500, 1000, 2000]; // ~3.7s total, covers async write + deferred usage
+  const sql = 'SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status FROM logs WHERE id = $1';
+  let row = null;
+  for (let i = 0; i < delays.length; i++) {
+    await sleep(delays[i]);
+    try {
+      const { rows } = await db.query(sql, [reqId]);
+      if (rows && rows.length > 0) {
+        row = rows[0];
+        const cost = Number(row.cost || 0);
+        const tokens = Number(row.total_tokens || 0);
+        if (cost > 0 && tokens > 0) break; // both landed; stop early (matches the final assertion)
+      }
+    } catch (e) {
+      results.push({ name, result: 'FAIL', detail: `Costing query error: ${e.message}` });
+      return;
+    }
+  }
+  if (!row) {
+    results.push({ name, result: 'FAIL', detail: `No log row found for request_id=${reqId}` });
+    return;
+  }
+
+  // 1) Presence: a failed/cancelled request that consumed tokens must record cost+tokens.
+  const cost = Number(row.cost || 0);
+  const tokens = Number(row.total_tokens || 0);
+  if (!(cost > 0 && tokens > 0)) {
+    results.push({ name, result: 'FAIL', detail: `[Costing] status=${row.status} cost=$${cost} total_tokens=${tokens} — expected cost>0 && tokens>0` });
+    if (!silent) console.log(`[dbverify] costing ${reqId}: FAIL (presence) cost=$${cost} tokens=${tokens}`);
+    return;
+  }
+
+  // 2) Accuracy: recompute the expected cost from the datasheet and compare.
+  let result = 'PASS';
+  let note = '';
+  let expectedStr = 'n/a';
+  const sheet = await loadDatasheet();
+  const entry = resolvePricingEntry(sheet, row.model, row.provider);
+  if (!sheet) {
+    note = 'accuracy SKIPPED: datasheet unavailable';
+  } else if (!entry) {
+    note = `accuracy SKIPPED: no datasheet entry for ${row.provider}/${row.model}`;
+  } else if (tokens > 128000) {
+    note = 'accuracy SKIPPED: tiered pricing not modelled';
+  } else {
+    const expected = expectedCostFromDatasheet(entry, row);
+    expectedStr = `$${expected}`;
+    const tol = Math.max(1e-9, 1e-4 * expected);
+    if (Math.abs(cost - expected) <= tol) {
+      note = 'accurate';
+    } else {
+      result = 'FAIL';
+      note = `INACCURATE (|logged-expected|>${tol})`;
+    }
+  }
+  const detail = `[Costing] status=${row.status} model=${row.provider}/${row.model} prompt=${row.prompt_tokens} completion=${row.completion_tokens} total=${tokens} logged=$${cost} expected=${expectedStr} — ${note}`;
+  results.push({ name, result, detail });
+  // Surface the actual log entry's cost next to the datasheet-computed expected
+  // cost, so the comparison is visible in the run logs.
+  if (!silent) {
+    console.log(`[dbverify] ── cost check (${result}) ─ ${reqId}`);
+    console.log(`[dbverify]     model      : ${row.provider}/${row.model}`);
+    console.log(`[dbverify]     tokens     : prompt=${row.prompt_tokens} completion=${row.completion_tokens} total=${tokens} cachedRead=${row.cached_read_tokens || 0}`);
+    console.log(`[dbverify]     logged $   : ${cost}    (logs DB row)`);
+    console.log(`[dbverify]     expected $ : ${expectedStr}    (recomputed from getbifrost.ai/datasheet)`);
+    console.log(`[dbverify]     verdict    : ${result}${note ? ' — ' + note : ''}`);
+  }
+}
+
 /**
  * Process a single request's DB verification (immediate or from queue).
  * Handles bulk DELETE, tracks promises, pushes results.
@@ -700,7 +860,9 @@ module.exports = function (newman, options) {
     || path.resolve(process.cwd(), 'config.json');
 
   // Main DB (config_store)
-  let dbUrl = (options && options['db-url']) || process.env.BIFROST_DB_URL || null;
+  // newman/commander camelCases multi-word reporter flags, so --reporter-dbverify-db-url
+  // arrives as options.dbUrl, not options['db-url']. Accept both spellings.
+  let dbUrl = (options && (options['db-url'] || options['dbUrl'])) || process.env.BIFROST_DB_URL || null;
   if (!dbUrl) {
     dbUrl = dbUrlFromBifrostConfig(configPath);
     if (dbUrl && !silent) console.log(`[dbverify] Auto-detected main DB from config: ${configPath}`);
@@ -710,7 +872,7 @@ module.exports = function (newman, options) {
   }
 
   // Logs DB (logs_store)
-  let logsDbUrl = (options && options['logs-db-url']) || process.env.BIFROST_LOGS_DB_URL || null;
+  let logsDbUrl = (options && (options['logs-db-url'] || options['logsDbUrl'])) || process.env.BIFROST_LOGS_DB_URL || null;
   if (!logsDbUrl) {
     logsDbUrl = logsDbUrlFromBifrostConfig(configPath);
     if (logsDbUrl && !silent) console.log(`[dbverify] Auto-detected logs DB from config: ${configPath}`);
@@ -721,6 +883,11 @@ module.exports = function (newman, options) {
   const pendingVerifications = [];
   const earlyMainDbQueue  = [];
   const earlyLogsDbQueue  = [];
+  const earlyCostingQueue = [];
+  // DB connection chains; awaited in `done` before pendingVerifications so the
+  // queue-draining .then() callbacks (which push deferred verifications) are
+  // guaranteed to have run before we wait on them.
+  const connectionPromises = [];
   let   db         = null;
   let   logsDb     = null;
   let   dbReady    = false;
@@ -737,12 +904,21 @@ module.exports = function (newman, options) {
     }
   }
 
+  // Costing verifications deferred while the logs DB connection was still
+  // resolving. Run once connected so a fast first request can't silently SKIP.
+  function drainCostingQueue(activeLogsDb) {
+    while (earlyCostingQueue.length > 0) {
+      const item = earlyCostingQueue.shift();
+      pendingVerifications.push(verifyCostingRequest(activeLogsDb, item.reqId, item.name, results, silent));
+    }
+  }
+
   newman.on('start', function (err) {
     if (err) return;
 
     if (dbUrl) {
       const safeUrl = dbUrl.replace(/:([^:@]+)@/, ':***@');
-      createDbClient(dbUrl)
+      connectionPromises.push(createDbClient(dbUrl)
         .then((client) => {
           db      = client;
           dbReady = !!client;
@@ -754,24 +930,29 @@ module.exports = function (newman, options) {
           console.warn(`[dbverify] Main DB not reachable, skipping DB checks: ${e.message}`);
           earlyMainDbQueue.forEach((item) => results.push({ name: item.name, result: 'SKIP', detail: 'Main DB not connected' }));
           earlyMainDbQueue.length = 0;
-        });
+        }));
     }
 
     if (logsDbUrl) {
       const safeLogsUrl = logsDbUrl.replace(/:([^:@]+)@/, ':***@');
-      createDbClient(logsDbUrl)
+      connectionPromises.push(createDbClient(logsDbUrl)
         .then((client) => {
           logsDb      = client;
           logsDbReady = !!client;
           if (logsDbReady && !silent) console.log(`[dbverify] Connected to logs DB (${detectDbType(logsDbUrl)}): ${safeLogsUrl}`);
-          if (logsDbReady && logsDb) drainQueue(earlyLogsDbQueue, logsDb);
+          if (logsDbReady && logsDb) {
+            drainQueue(earlyLogsDbQueue, logsDb);
+            drainCostingQueue(logsDb);
+          }
         })
         .catch((e) => {
           logsDbReady = false;
           console.warn(`[dbverify] Logs DB not reachable, skipping logs DB checks: ${e.message}`);
           earlyLogsDbQueue.forEach((item) => results.push({ name: item.name, result: 'SKIP', detail: 'Logs DB not connected' }));
           earlyLogsDbQueue.length = 0;
-        });
+          earlyCostingQueue.forEach((item) => results.push({ name: item.name, result: 'SKIP', detail: 'Logs DB not connected (costing check)' }));
+          earlyCostingQueue.length = 0;
+        }));
     }
   });
 
@@ -782,6 +963,31 @@ module.exports = function (newman, options) {
     const request    = args.request;
     const name       = (args.item && args.item.name) || 'Unknown Request';
     const statusCode = response && response.code;
+
+    // Costing requests assert that a failed/cancelled request still
+    // recorded cost + tokens. This MUST run before the 2xx-skip below, because
+    // failed requests (4xx/5xx) are exactly the case under test.
+    const expectCost = getHeader(request, 'x-bf-expect-cost');
+    if (expectCost && /^(1|true|yes)$/i.test(String(expectCost))) {
+      const reqId = getHeader(request, 'x-request-id');
+      if (!reqId) {
+        results.push({ name, result: 'FAIL', detail: 'x-bf-expect-cost set but no x-request-id header to locate the log row' });
+        return;
+      }
+      if (!logsDbReady || !logsDb) {
+        if (!logsDbUrl) {
+          // No logs DB configured at all — nothing to verify against.
+          results.push({ name, result: 'SKIP', detail: 'Logs DB not configured (costing check)' });
+          return;
+        }
+        // Configured but the async connection hasn't resolved yet. Defer instead
+        // of SKIP so a fast first request can't silently hide a billing regression.
+        earlyCostingQueue.push({ reqId, name });
+        return;
+      }
+      pendingVerifications.push(verifyCostingRequest(logsDb, reqId, name, results, silent));
+      return;
+    }
 
     if (!statusCode || statusCode < 200 || statusCode > 299) {
       results.push({ name, result: 'SKIP', detail: `HTTP ${statusCode || '?'} (non-2xx)` });
@@ -828,10 +1034,15 @@ module.exports = function (newman, options) {
   });
 
   newman.on('done', function () {
-    Promise.allSettled(pendingVerifications).then(() => {
-      if (db)     db.close();
-      if (logsDb) logsDb.close();
-      if (results.length > 0) printSummary(results, dbType);
-    });
+    // Await the DB connections first so deferred (queued) verifications are
+    // drained into pendingVerifications before we wait on it; otherwise a fast
+    // run could print the summary before late-arriving costing checks settle.
+    Promise.allSettled(connectionPromises)
+      .then(() => Promise.allSettled(pendingVerifications))
+      .then(() => {
+        if (db)     db.close();
+        if (logsDb) logsDb.close();
+        if (results.length > 0) printSummary(results, dbType);
+      });
   });
 };

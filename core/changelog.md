@@ -7,3 +7,7 @@
 - fix: commit routing-pinned key ID to reserved BifrostContextKeyAPIKeyID after PreRequestHook unblock
 - fix: preserve extra_content on ChatAssistantMessageToolCall so provider-specific tool-call metadata (e.g. Gemini thought_signature) round-trips losslessly through the gateway (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
 - fix: surface Anthropic prompt-cache diagnostics (cache-diagnosis-2026-04-07 beta) via new CacheDiagnostics/CacheMissReason schema, reporting the first cache-prefix divergence point on chat and responses APIs
+- fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
+- fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
+- fix: recover from idle-timeout timer-goroutine panic that could crash the process
+- fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)

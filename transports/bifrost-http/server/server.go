@@ -156,6 +156,7 @@ type BifrostHTTPServer struct {
 	IntegrationHandler *handlers.IntegrationHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
+	CORSMiddleware       *handlers.CorsMiddleware
 	TracingMiddleware    *handlers.TracingMiddleware
 	WSTicketStore        *handlers.WSTicketStore
 	TempTokens           *temptoken.Service
@@ -400,8 +401,8 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	}
 	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
 		for _, existingVK := range governanceData.VirtualKeys {
-			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value != "" && existingVK.Value != virtualKey.Value {
-				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value)
+			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value.GetValue() != "" && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
+				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
 				break
 			}
 		}
@@ -445,7 +446,7 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
-	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value)
+	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value.GetValue())
 	return nil
 }
 
@@ -835,6 +836,12 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
 		s.AuthMiddleware.UpdateTempTokenAuthEnabled(config.MCPEnableTempTokenAuth)
+	}
+	// Refresh the CORS middleware's immutable snapshot so its requests pick up the
+	// new AllowedOrigins/AllowedHeaders/DumpErrorsInConsoleLogs without racing the
+	// in-place ClientConfig mutation above.
+	if s.CORSMiddleware != nil {
+		s.CORSMiddleware.UpdateConfig(s.Config)
 	}
 	// Reloading config in bifrost client
 	if s.Client != nil {
@@ -1705,6 +1712,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes
 	s.Router = router.New()
+	// Initialize CORS middleware
+	s.CORSMiddleware = handlers.NewCorsMiddleware(s.Config)
 	commonMiddlewares := s.PrepareCommonMiddlewares()
 	apiMiddlewares := commonMiddlewares
 	inferenceMiddlewares := commonMiddlewares
@@ -1808,6 +1817,13 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
+	// Dial configured MCP clients now that every plugin is registered in the core.
+	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
+	// each client's PreMCPConnectionHook runs against the full plugin set rather than
+	// the point-in-time snapshot captured at Init (which would skip plugins — e.g.
+	// enterprise ones — registered after that snapshot, causing the client to fail
+	// and only recover on a later health-monitor reconnect).
+	s.Client.ConnectConfiguredMCPClients(s.Ctx)
 	// Serve a minimal robots.txt so crawlers/CLI tools (e.g. Claude Code) don't
 	// trigger 404 warnings when probing the host before marketplace fetches.
 	s.Router.GET("/robots.txt", func(ctx *fasthttp.RequestCtx) {
@@ -1820,7 +1836,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.SecurityHeadersMiddleware()(handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
+		Handler:            handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}

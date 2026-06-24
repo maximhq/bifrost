@@ -28,6 +28,16 @@ type UsageUpdate struct {
 	IsStreaming  bool `json:"is_streaming"`   // Whether this is a streaming response
 	IsFinalChunk bool `json:"is_final_chunk"` // Whether this is the final chunk
 	HasUsageData bool `json:"has_usage_data"` // Whether this chunk contains usage data
+
+	// AttemptNumber distinguishes physical provider calls within one logical
+	// request (the retry loop reuses RequestID across attempts). Billing is
+	// deduped on RequestID+AttemptNumber so each token-consuming attempt bills
+	// at most once while distinct attempts each bill.
+	AttemptNumber int `json:"attempt_number,omitempty"`
+	// BilledReason is auditing metadata only ("success" | "partial_usage_on_error"):
+	// it makes it possible to assert we never bill both a success and a failure
+	// for the same physical call. Not used for dedup.
+	BilledReason string `json:"billed_reason,omitempty"`
 }
 
 // UsageTracker manages VK-level usage tracking and budget management
@@ -43,10 +53,22 @@ type UsageTracker struct {
 	resetTicker   *time.Ticker
 	done          chan struct{}
 	wg            sync.WaitGroup
+
+	// billed is the idempotency set: it records the
+	// RequestID+AttemptNumber keys already billed, so a physical provider call
+	// is billed at most once even when both the core ctx.Done() client-return
+	// path and the provider goroutine's terminal post-hook fire for it. Bounded
+	// by a TTL sweep on the existing resetWorker tick (no extra goroutine).
+	billedMu sync.Mutex
+	billed   map[string]time.Time
 }
 
 const (
 	workerInterval = 10 * time.Second
+	// billedEntryTTL bounds the idempotency set. It must comfortably exceed the
+	// lifetime of a single logical request (max retries × backoff + stream idle
+	// timeout); 5 minutes is well beyond any real request.
+	billedEntryTTL = 5 * time.Minute
 )
 
 // NewUsageTracker creates a new usage tracker for the hierarchical budget system
@@ -57,6 +79,7 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 		configStore: configStore,
 		logger:      logger,
 		done:        make(chan struct{}),
+		billed:      make(map[string]time.Time),
 	}
 
 	// Start background workers for business logic
@@ -68,15 +91,35 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 
 // UpdateUsage queues a usage update for async processing (main business entry point)
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
-	// Only process successful requests for usage tracking
-	if !update.Success {
-		t.logger.Debug("Request was not successful, skipping usage update")
+	// Bill for tokens the provider actually processed, even when the
+	// request ultimately failed or was cancelled. A failed request is only
+	// skipped when it consumed nothing (e.g. 401/403/429 before the model ran).
+	hasUsage := update.TokensUsed > 0 || update.Cost > 0
+	if !update.Success && !hasUsage {
+		t.logger.Debug("Request was not successful and consumed no tokens, skipping usage update")
 		return
 	}
 
-	// Streaming optimization: only process certain updates based on streaming status
+	// Idempotency: each physical provider call (RequestID + attempt) settles its
+	// billing at most once. Only TERMINAL settlements are deduped — a streaming
+	// request legitimately calls UpdateUsage multiple times per attempt (token
+	// deltas on intermediate chunks, request count + cost on the final chunk),
+	// and those must all be applied. The dedup specifically guards against the
+	// success-terminal vs cancellation-terminal race for one physical call.
+	// Empty RequestID (e.g. SDK-direct callers) is never deduped, preserving
+	// prior behavior.
+	isTerminal := !update.IsStreaming || update.IsFinalChunk
+	if isTerminal && !t.tryClaimBilling(update) {
+		t.logger.Debug("Usage already billed for request %s attempt %d, skipping", update.RequestID, update.AttemptNumber)
+		return
+	}
+
+	// Streaming optimization: only process certain updates based on streaming status.
+	// Request COUNT only increments for successful requests — a failed-but-billed
+	// request adds cost+tokens but must not inflate success/rate-limit request
+	// counts.
 	shouldUpdateTokens := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
-	shouldUpdateRequests := !update.IsStreaming || (update.IsStreaming && update.IsFinalChunk)
+	shouldUpdateRequests := update.Success && (!update.IsStreaming || (update.IsStreaming && update.IsFinalChunk))
 	shouldUpdateBudget := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
 
 	// 1. Update rate limit usage for both provider-level and model-level
@@ -215,6 +258,42 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	}
 	if err := t.store.DumpBudgets(ctx, nil); err != nil {
 		t.logger.Error("failed to dump budgets to database: %v", err)
+	}
+
+	// ==== PART 4: Sweep expired billing-idempotency keys ====
+	t.sweepBilled()
+}
+
+// tryClaimBilling records that the physical provider call identified by
+// (RequestID, AttemptNumber) is being billed and returns true if this is the
+// first claim. Subsequent calls for the same key return false so the same
+// physical call is never billed twice An empty RequestID is treated as
+// non-dedupable (always returns true) to preserve behavior for SDK-direct
+// callers that carry no request id.
+func (t *UsageTracker) tryClaimBilling(update *UsageUpdate) bool {
+	if update.RequestID == "" {
+		return true
+	}
+	key := fmt.Sprintf("%s:%d", update.RequestID, update.AttemptNumber)
+	t.billedMu.Lock()
+	defer t.billedMu.Unlock()
+	if _, seen := t.billed[key]; seen {
+		return false
+	}
+	t.billed[key] = time.Now()
+	return true
+}
+
+// sweepBilled drops idempotency keys older than billedEntryTTL, bounding the
+// map to roughly the requests seen within the TTL window.
+func (t *UsageTracker) sweepBilled() {
+	cutoff := time.Now().Add(-billedEntryTTL)
+	t.billedMu.Lock()
+	defer t.billedMu.Unlock()
+	for k, at := range t.billed {
+		if at.Before(cutoff) {
+			delete(t.billed, k)
+		}
 	}
 }
 

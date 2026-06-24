@@ -4,8 +4,8 @@ go 1.26.4
 
 require (
 	github.com/bytedance/sonic v1.15.1
-	github.com/maximhq/bifrost/core v1.5.20
-	github.com/maximhq/bifrost/framework v1.3.20
+	github.com/maximhq/bifrost/core v1.5.22
+	github.com/maximhq/bifrost/framework v1.3.22
 	github.com/prometheus/client_golang v1.23.2
 	github.com/valyala/fasthttp v1.71.0
 )
@@ -132,7 +132,7 @@ require (
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	go.mongodb.org/mongo-driver v1.17.6 // indirect
+	go.mongodb.org/mongo-driver v1.17.7 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.42.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect

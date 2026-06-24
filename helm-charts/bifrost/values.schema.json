@@ -383,6 +383,11 @@
               "description": "Disable DB pings in health check",
               "default": false
             },
+            "dumpErrorsInConsoleLogs": {
+              "type": "boolean",
+              "description": "Dump full error details to the server console logs. Useful for debugging; may be noisy in production.",
+              "default": false
+            },
             "logRetentionDays": {
               "type": "integer",
               "minimum": 1,
@@ -1039,6 +1044,10 @@
                     "enable_llm_obs": {
                       "type": "boolean",
                       "description": "Enable Datadog LLM Observability (default: true)"
+                    },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)"
                     },
                     "disable_content_logging": {
                       "type": "boolean",
@@ -2973,6 +2982,12 @@
                     "minimum": 0,
                     "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
                   },
+                  "evaluation_mode": {
+                    "type": "string",
+                    "enum": ["bundled", "per_turn"],
+                    "default": "bundled",
+                    "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
@@ -3454,6 +3469,62 @@
             "maxOpenConns": {
               "type": "integer",
               "minimum": 2
+            },
+            "vaultStore": {
+              "type": "object",
+              "description": "Vault store for external secret management",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault"]
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "accessMode": {
+                  "type": "string",
+                  "enum": ["read_only", "read_and_write"]
+                },
+                "aws": {
+                  "type": "object",
+                  "description": "AWS Secrets Manager configuration",
+                  "properties": {
+                    "region": { "type": "string" },
+                    "accessKeyId": { "type": "string" },
+                    "secretAccessKey": { "type": "string" },
+                    "sessionToken": { "type": "string" },
+                    "roleArn": { "type": "string" },
+                    "kmsKeyId": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                },
+                "gcp": {
+                  "type": "object",
+                  "description": "GCP Secret Manager configuration",
+                  "properties": {
+                    "projectId": { "type": "string" },
+                    "credentialsJson": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                },
+                "hashicorp": {
+                  "type": "object",
+                  "description": "HashiCorp Vault (KV v2) configuration",
+                  "properties": {
+                    "address": { "type": "string" },
+                    "token": { "type": "string" },
+                    "namespace": { "type": "string" },
+                    "mountPath": { "type": "string" },
+                    "roleId": { "type": "string" },
+                    "secretId": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
             }
           }
         },
@@ -4203,6 +4274,16 @@
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
           "default": false
         },
+        "group_traces_by_session": {
+          "type": "boolean",
+          "description": "When true, requests sharing the same x-bf-session-id header are grouped into a single OTEL trace, each request's root span appearing as a top-level sibling. An inbound W3C traceparent takes precedence, leaving that request on its own distributed trace.",
+          "default": false
+        },
+        "disable_root_span_content": {
+          "type": "boolean",
+          "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
+          "default": false
+        },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
         }
@@ -4308,6 +4389,14 @@
         "disable_content_logging": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_content_logging per profile instead."
+        },
+        "group_traces_by_session": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure group_traces_by_session per profile instead."
+        },
+        "disable_root_span_content": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
         }
       },
       "required": ["profiles"],

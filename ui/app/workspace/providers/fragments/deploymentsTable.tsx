@@ -1,13 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { AliasConfig, ModelFamily, ModelFamilyValues } from "@/lib/types/config";
-import { EnvVar } from "@/lib/types/schemas";
+import { SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, Trash } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -55,8 +55,8 @@ function normalize(value: DeploymentsValue): Record<string, AliasConfig> {
 	return out;
 }
 
-const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
-const isEmptyEnvVar = (v: EnvVar | undefined): boolean => !v || (!v.value && !v.env_var);
+const emptySecretVar: SecretVar = { value: "", ref: "" };
+const isEmptySecretVar = (v: SecretVar | undefined): boolean => !v || (!v.value && !v.ref);
 
 function FieldRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
 	return (
@@ -77,21 +77,21 @@ function SectionHeader({ title, description }: { title: string; description?: st
 	);
 }
 
-function EnvVarField({
+function SecretVarField({
 	value,
 	onChange,
 	placeholder,
 	disabled,
 }: {
-	value: EnvVar | undefined;
-	onChange: (next: EnvVar | undefined) => void;
+	value: SecretVar | undefined;
+	onChange: (next: SecretVar | undefined) => void;
 	placeholder?: string;
 	disabled?: boolean;
 }) {
 	return (
-		<EnvVarInput
-			value={value ?? emptyEnvVar}
-			onChange={(next) => onChange(isEmptyEnvVar(next) ? undefined : next)}
+		<SecretVarInput
+			value={value ?? emptySecretVar}
+			onChange={(next) => onChange(isEmptySecretVar(next) ? undefined : next)}
 			placeholder={placeholder}
 			disabled={disabled}
 		/>
@@ -149,7 +149,7 @@ function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 				/>
 			</FieldRow>
 			<FieldRow label="Endpoint" hint="Point this deployment at a different Azure resource than the key default.">
-				<EnvVarField
+				<SecretVarField
 					value={config.endpoint}
 					onChange={(v) => onChange({ endpoint: v })}
 					placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT"
@@ -168,7 +168,7 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 				description="Override key-level Vertex defaults for this deployment. Leave blank to use the key's settings."
 			/>
 			<FieldRow label="Project ID">
-				<EnvVarField
+				<SecretVarField
 					value={config.project_id}
 					onChange={(v) => onChange({ project_id: v })}
 					placeholder="gcp-project-id or env.VERTEX_PROJECT_ID"
@@ -176,7 +176,7 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 				/>
 			</FieldRow>
 			<FieldRow label="Project number" hint="Required for fine-tuned models.">
-				<EnvVarField
+				<SecretVarField
 					value={config.project_number}
 					onChange={(v) => onChange({ project_number: v })}
 					placeholder="123456789 or env.VERTEX_PROJECT_NUMBER"
@@ -184,7 +184,7 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 				/>
 			</FieldRow>
 			<FieldRow label="Region">
-				<EnvVarField
+				<SecretVarField
 					value={config.region}
 					onChange={(v) => onChange({ region: v })}
 					placeholder="us-central1 or env.VERTEX_REGION"
@@ -203,7 +203,7 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 				description="Override key-level Bedrock defaults for this deployment. Leave blank to use the key's settings."
 			/>
 			<FieldRow label="Region">
-				<EnvVarField
+				<SecretVarField
 					value={config.region}
 					onChange={(v) => onChange({ region: v })}
 					placeholder="us-east-1 or env.BEDROCK_REGION"
@@ -211,7 +211,7 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 				/>
 			</FieldRow>
 			<FieldRow label="Inference profile ARN" hint="Cross-region inference profile ARN to invoke instead of the model ID.">
-				<EnvVarField
+				<SecretVarField
 					value={config.inference_profile_arn}
 					onChange={(v) => onChange({ inference_profile_arn: v })}
 					placeholder="arn:aws:bedrock:us-east-1:123:inference-profile/... or env.BEDROCK_PROFILE_ARN"

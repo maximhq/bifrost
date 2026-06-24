@@ -12,9 +12,9 @@ func TestProxyConfig_Redacted_PasswordFullyOpaque(t *testing.T) {
 	literal := "mysecretpassword-should-not-leak-substrings"
 	pc := &ProxyConfig{
 		Type:     HTTPProxy,
-		URL:      NewEnvVar("http://proxy.example.com:8080"),
-		Username: NewEnvVar("proxyuser"),
-		Password: NewEnvVar(literal),
+		URL:      NewSecretVar("http://proxy.example.com:8080"),
+		Username: NewSecretVar("proxyuser"),
+		Password: NewSecretVar(literal),
 	}
 
 	red := pc.Redacted()

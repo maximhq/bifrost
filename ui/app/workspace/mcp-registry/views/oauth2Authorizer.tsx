@@ -11,6 +11,7 @@ interface OAuth2AuthorizerProps {
 	onClose: () => void;
 	onSuccess: () => void;
 	onError: (error: string) => void;
+	onConflict?: (error: string) => void;
 	authorizeUrl: string;
 	oauthConfigId: string;
 	mcpClientId: string;
@@ -111,6 +112,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	onClose,
 	onSuccess,
 	onError,
+	onConflict,
 	authorizeUrl,
 	oauthConfigId,
 	isPerUserOauth,
@@ -152,11 +154,18 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		} catch (error) {
 			if (cancelledRef.current) return;
 			const errMsg = getErrorMessage(error);
+			if ((error as any)?.status === 409 && onConflict) {
+				setStatus(isPerUserOauth ? "confirm" : "polling");
+				setErrorMessage(null);
+				isCompletingRef.current = false;
+				onConflict(errMsg);
+				return;
+			}
 			setStatus("failed");
 			setErrorMessage(errMsg);
 			onError(errMsg);
 		}
-	}, [oauthConfigId, completeOAuth, onSuccess, onError]);
+	}, [oauthConfigId, completeOAuth, onSuccess, onError, onConflict, isPerUserOauth]);
 
 	const handleOAuthFailed = useCallback(
 		(reason: string) => {

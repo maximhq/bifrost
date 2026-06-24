@@ -52,6 +52,7 @@ export class MCPRegistryPage extends BasePage {
   readonly cancelBtn: Locator
   readonly connectionTypeSelect: Locator
   readonly authTypeSelect: Locator
+  readonly authScopeSelect: Locator
   readonly connectionUrlInput: Locator
   readonly codeModeSwitch: Locator
   readonly pingAvailableSwitch: Locator
@@ -89,6 +90,7 @@ export class MCPRegistryPage extends BasePage {
     // Connection type and auth
     this.connectionTypeSelect = page.locator('[data-testid="connection-type-select"]')
     this.authTypeSelect = page.locator('[data-testid="auth-type-select"]')
+    this.authScopeSelect = page.locator('[data-testid="auth-scope-select"]')
     // Use placeholder as primary selector for EnvVarInput (more reliable)
     this.connectionUrlInput = this.sheet.getByPlaceholder(/http:\/\/your-mcp-server/i).or(
       page.locator('[data-testid="connection-url-input"]')
@@ -104,11 +106,11 @@ export class MCPRegistryPage extends BasePage {
     this.envsInput = page.locator('[data-testid="stdio-envs-input"]')
 
     // OAuth inputs
-    this.oauthClientIdInput = this.sheet.getByPlaceholder(/your-client-id/i)
-    this.oauthClientSecretInput = this.sheet.getByPlaceholder(/your-client-secret/i)
-    this.oauthAuthorizeUrlInput = this.sheet.getByPlaceholder(/oauth\/authorize/i)
-    this.oauthTokenUrlInput = this.sheet.getByPlaceholder(/oauth\/token/i)
-    this.oauthScopesInput = this.sheet.getByPlaceholder(/read, write, admin/i)
+    this.oauthClientIdInput = this.sheet.locator('[data-testid="mcp-oauth-client-id"]').or(this.sheet.getByPlaceholder(/your-client-id/i))
+    this.oauthClientSecretInput = this.sheet.locator('[data-testid="mcp-oauth-client-secret"]').or(this.sheet.getByPlaceholder(/your-client-secret/i))
+    this.oauthAuthorizeUrlInput = this.sheet.locator('[data-testid="mcp-oauth-authorize-url"]').or(this.sheet.getByPlaceholder(/oauth\/authorize/i))
+    this.oauthTokenUrlInput = this.sheet.locator('[data-testid="mcp-oauth-token-url"]').or(this.sheet.getByPlaceholder(/oauth\/token/i))
+    this.oauthScopesInput = this.sheet.locator('[data-testid="mcp-oauth-scopes-input"]').or(this.sheet.getByPlaceholder(/read, write, admin/i))
   }
 
   async goto(): Promise<void> {
@@ -188,14 +190,58 @@ export class MCPRegistryPage extends BasePage {
     await expect(selectTrigger).toBeVisible({ timeout: 5000 })
     await selectTrigger.click()
 
-    // Select the option by data-testid (per_user_oauth uses kebab-case in testid)
-    const optionTestId = `auth-type-${type.replace(/_/g, '-')}`
+    // The UI now splits auth configuration into auth type + auth scope.
+    const authKind = type === 'per_user_oauth' ? 'oauth' : type
+    const optionTestId = `auth-type-${authKind.replace(/_/g, '-')}`
     const option = this.page.locator(`[data-testid="${optionTestId}"]`)
     await expect(option).toBeVisible({ timeout: 5000 })
     await option.click()
 
     // Wait for dropdown to close
     await expect(option).not.toBeVisible({ timeout: 3000 }).catch(() => {})
+
+    if (type === 'per_user_oauth') {
+      await this.selectAuthScope('per_user')
+    }
+  }
+
+  async selectAuthScope(scope: 'shared' | 'per_user'): Promise<void> {
+    const selectTrigger = this.page.locator('[data-testid="auth-scope-select"]')
+    await expect(selectTrigger).toBeVisible({ timeout: 5000 })
+    await selectTrigger.click()
+
+    const optionTestId = `auth-scope-${scope.replace(/_/g, '-')}`
+    const option = this.page.locator(`[data-testid="${optionTestId}"]`)
+    await expect(option).toBeVisible({ timeout: 5000 })
+    await option.click()
+
+    await expect(option).not.toBeVisible({ timeout: 3000 }).catch(() => {})
+  }
+
+  async expandOAuthAdvancedIfCollapsed(): Promise<void> {
+    const trigger = this.sheet.locator('[data-testid="oauth-advanced-trigger"]')
+    const visible = await trigger.isVisible().catch(() => false)
+    if (!visible) return
+
+    const clientIdVisible = await this.oauthClientIdInput.isVisible().catch(() => false)
+    if (clientIdVisible) return
+
+    await trigger.click()
+    await expect(this.oauthClientIdInput).toBeVisible({ timeout: 5000 })
+  }
+
+  async waitForOAuthAuthorizerAction(timeout = 10000): Promise<Locator> {
+    const continueBtn = this.page.locator('[data-testid="per-user-oauth-confirm"]')
+    const openWindowBtn = this.page.locator('[data-testid="oauth-open-window-btn"]')
+
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      if (await continueBtn.isVisible().catch(() => false)) return continueBtn
+      if (await openWindowBtn.isVisible().catch(() => false)) return openWindowBtn
+      await this.page.waitForTimeout(200)
+    }
+
+    throw new Error('OAuth authorizer action was not shown')
   }
 
   /**
@@ -281,6 +327,7 @@ export class MCPRegistryPage extends BasePage {
 
       // Handle OAuth config (oauth and per_user_oauth share the same fields)
       if (config.authType === 'oauth' || config.authType === 'per_user_oauth') {
+        await this.expandOAuthAdvancedIfCollapsed()
         if (config.oauthClientId) {
           await this.oauthClientIdInput.fill(config.oauthClientId)
         }
@@ -360,6 +407,13 @@ export class MCPRegistryPage extends BasePage {
       throw new Error(`Create MCP client failed: ${response.status()} ${body}`)
     }
 
+    const responseBody = response ? await response.text().catch(() => '') : ''
+    const pendingOAuth = responseBody.includes('"status":"pending_oauth"')
+    if (pendingOAuth) {
+      await this.waitForOAuthAuthorizerAction()
+      return true
+    }
+
     // Success: backend returned 2xx. Wait for create form to close (short timeout; UI usually updates quickly).
     const createFormHeading = this.page.getByRole('heading', { name: 'New MCP Server' })
     await createFormHeading.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => null)
@@ -423,12 +477,54 @@ export class MCPRegistryPage extends BasePage {
     throw new Error('No toast appeared and sheet did not close - form submission may have failed')
   }
 
+  async createOAuthClient(config: MCPClientConfig): Promise<{
+    status: string
+    authorize_url: string
+    oauth_config_id: string
+    complete_url?: string
+    status_url?: string
+    mcp_client_id: string
+  }> {
+    await this.dismissToasts()
+    await this.createBtn.click()
+    await expect(this.sheet).toBeVisible({ timeout: 5000 })
+
+    await this.fillClientForm(config)
+    await this.page.waitForTimeout(1500)
+    await expect(this.saveBtn).toBeEnabled({ timeout: 10000 })
+
+    const responsePromise = this.page.waitForResponse(
+      (response) => {
+        const url = response.url()
+        const method = response.request().method()
+        return url.includes('/mcp/client') && !url.endsWith('/mcp/clients') && method === 'POST'
+      },
+      { timeout: 60000 }
+    )
+
+    await this.saveBtn.click({ force: true })
+    const response = await responsePromise
+    if (!response.ok()) {
+      const body = await response.text().catch(() => '')
+      throw new Error(`Create OAuth MCP client failed: ${response.status()} ${body}`)
+    }
+
+    const body = await response.json()
+    if (body?.status !== 'pending_oauth' || !body?.authorize_url || !body?.oauth_config_id) {
+      throw new Error(`Expected pending_oauth response, got: ${JSON.stringify(body)}`)
+    }
+
+    return body
+  }
+
   /**
-   * View client details by clicking on the row
+   * View client details from the actions menu
    */
   async viewClientDetails(name: string): Promise<void> {
-    const row = this.getClientRow(name)
-    await row.click()
+    await this.openClientActions(name)
+    const editItem = this.page.getByRole('menuitem', { name: /Edit/i })
+    await expect(editItem).toBeVisible({ timeout: 5000 })
+    await editItem.click()
     await expect(this.detailSheet).toBeVisible({ timeout: 5000 })
   }
 

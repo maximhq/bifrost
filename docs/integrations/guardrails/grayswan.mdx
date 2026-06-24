@@ -49,6 +49,18 @@ This is metadata only: these values are added to the JSON body sent to GraySwan,
 }
 ```
 
+## Streaming Output and Tool Calls
+
+For text-only streaming responses, Bifrost forwards output to the client normally and does not call Cygnal.
+
+If Bifrost detects a supported tool call, it stops forwarding further chunks to the client, accumulates the remaining chunks until the model response is complete, and sends the full accumulated response and earlier conversation to Cygnal in one request. If Cygnal allows the response, Bifrost sends the held chunks to the client. If Cygnal blocks it, the tool call and later content are not sent.
+
+Any text sent before Bifrost detects the tool call remains visible to the client. Bifrost recognizes Chat Completions tool calls and Responses API function-call and custom tool-call events.
+
+<Note>
+  If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. GraySwan's text-only behavior only skips the GraySwan call; it does not bypass the other profile. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for the shared behavior.
+</Note>
+
 ## Custom Rules Example
 
 ![GraySwan custom rules](/media/guardrails/gray-swan-custom-rule.png)

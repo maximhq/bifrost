@@ -105,6 +105,7 @@ jobs:
           cd helm-charts
           gh release create "helm-chart-v${{ steps.chart-version.outputs.version }}" \
             bifrost-${{ steps.chart-version.outputs.version }}.tgz \
+            --target ${{ github.sha }} \
             --title "Helm Chart v${{ steps.chart-version.outputs.version }}" \
             --notes "Helm chart release for Bifrost v${{ steps.chart-version.outputs.version }}"
         env:

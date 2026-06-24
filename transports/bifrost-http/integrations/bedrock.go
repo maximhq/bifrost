@@ -94,6 +94,7 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 			return bedrock.ToBedrockError(err)
 		},
 		StreamConfig: &StreamConfig{
+			ErrorConverter: bedrockStreamErrorConverter,
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				bedrockEvent, err := bedrock.ToBedrockConverseStreamResponse(resp)
 				if err != nil {
@@ -154,6 +155,7 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 			return bedrock.ToBedrockError(err)
 		},
 		StreamConfig: &StreamConfig{
+			ErrorConverter: bedrockStreamErrorConverter,
 			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
 				if resp == nil {
 					return "", nil, nil
@@ -176,6 +178,11 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 		},
 		PreCallback: bedrockPreCallback(handlerStore),
 	}
+}
+
+func bedrockStreamErrorConverter(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+	errorPayload := bedrock.ToBedrockError(err)
+	return newBedrockEventStreamException(errorPayload.Type, errorPayload.Message)
 }
 
 // createBedrockInvokeRouteConfig creates a route configuration for the Bedrock Invoke API endpoint

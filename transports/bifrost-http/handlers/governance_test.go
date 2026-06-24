@@ -1040,7 +1040,7 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 			"vk-1": {
 				ID:          "vk-1",
 				Name:        "Production",
-				Value:       "sk-bf-old",
+				Value:       *schemas.NewSecretVar("sk-bf-old"),
 				Description: "existing description",
 				TeamID:      &teamID,
 				RateLimitID: &rateLimitID,
@@ -1076,11 +1076,11 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	}
 
 	updated := store.virtualKeys["vk-1"]
-	if updated.Value == "sk-bf-old" {
+	if updated.Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected virtual key value to rotate")
 	}
-	if !strings.HasPrefix(updated.Value, governance.VirtualKeyPrefix) {
-		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value)
+	if !strings.HasPrefix(updated.Value.GetValue(), governance.VirtualKeyPrefix) {
+		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value.GetValue())
 	}
 	if updated.ID != "vk-1" || updated.Name != "Production" || updated.Description != "existing description" {
 		t.Fatalf("rotation changed non-value fields: %#v", updated)
@@ -1105,8 +1105,8 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
-	if resp.VirtualKey.Value != updated.Value {
-		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value, updated.Value)
+	if resp.VirtualKey.Value.GetValue() != updated.Value.GetValue() {
+		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value.GetValue(), updated.Value.GetValue())
 	}
 }
 
@@ -1138,7 +1138,7 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 		updateErr: errors.New("database unavailable"),
 	}
@@ -1153,8 +1153,8 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 	if ctx.Response.StatusCode() != 500 {
 		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if store.virtualKeys["vk-1"].Value != "sk-bf-old" {
-		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value)
+	if store.virtualKeys["vk-1"].Value.GetValue() != "sk-bf-old" {
+		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value.GetValue())
 	}
 	if len(manager.reloadIDs) != 0 {
 		t.Fatalf("expected no reloads, got %#v", manager.reloadIDs)
@@ -1166,7 +1166,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store, reloadErr: errors.New("reload failed")}
@@ -1183,7 +1183,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 	if store.updates != 1 {
 		t.Fatalf("expected one update, got %d", store.updates)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected value to rotate before reload failure")
 	}
 	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
@@ -1199,8 +1199,8 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1220,7 +1220,7 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 	if len(manager.reloadIDs) != 2 || manager.reloadIDs[0] != "vk-1" || manager.reloadIDs[1] != "vk-2" {
 		t.Fatalf("expected reloads for vk-1 and vk-2, got %#v", manager.reloadIDs)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value == "sk-bf-old-2" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value.GetValue() == "sk-bf-old-2" {
 		t.Fatalf("expected successful IDs to rotate: %#v", store.virtualKeys)
 	}
 
@@ -1256,7 +1256,7 @@ func TestRotateVirtualKeys_RejectsInvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &mockRotateConfigStore{
 				virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-					"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
+					"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
 				},
 			}
 			manager := &mockRotateGovernanceManager{store: store}
@@ -1288,8 +1288,8 @@ func TestRotateVirtualKeys_TrimsAndDeduplicatesIDs(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1742,7 +1742,7 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	vk := &configstoreTables.TableVirtualKey{
 		ID:       vkID,
 		Name:     "Prod",
-		Value:    "sk-bf-e2e-secret",
+		Value:    *schemas.NewSecretVar("sk-bf-e2e-secret"),
 		IsActive: &active,
 		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 			{VirtualKeyID: vkID, Provider: "openai", AllowAllKeys: true, AllowedModels: schemas.WhiteList{"*"}},
@@ -2724,5 +2724,83 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 	}
 	if len(store.updatedBudgets) != 0 {
 		t.Errorf("expected no UpdateBudget call when calendar_aligned was already true, got %d", len(store.updatedBudgets))
+	}
+}
+
+// TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget is a
+// regression test for BF-1497: VKs provisioned via an access profile / config.json
+// carry their global budget directly (TableBudget.VirtualKeyID set, preloaded into
+// vk.Budgets) and have no VK-scoped model config. Hydration must not wipe that
+// budget when no model config matches.
+func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *testing.T) {
+	directBudget := configstoreTables.TableBudget{
+		ID:            "bud-direct",
+		MaxLimit:      2500.0,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr("vk-ap"),
+		CurrentUsage:  120.0,
+	}
+	directRL := &configstoreTables.TableRateLimit{ID: "rl-direct"}
+	// A config.json-provisioned VK can also carry directly-attached per-provider
+	// budgets (TableBudget.ProviderConfigID set), which must survive hydration too.
+	pcBudget := configstoreTables.TableBudget{
+		ID:               "bud-direct-pc",
+		MaxLimit:         500.0,
+		ResetDuration:    "1M",
+		ProviderConfigID: schemas.Ptr(uint(7)),
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID:          "vk-ap",
+		Budgets:     []configstoreTables.TableBudget{directBudget},
+		RateLimit:   directRL,
+		RateLimitID: schemas.Ptr("rl-direct"),
+		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "anthropic", Budgets: []configstoreTables.TableBudget{pcBudget}},
+		},
+	}
+
+	// No VK-scoped model config exists for this VK.
+	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{})
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-direct" {
+		t.Fatalf("directly attached budget was wiped: got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != directRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-direct" {
+		t.Errorf("directly attached rate limit was wiped: rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
+	}
+	if len(vk.ProviderConfigs[0].Budgets) != 1 || vk.ProviderConfigs[0].Budgets[0].ID != "bud-direct-pc" {
+		t.Errorf("directly attached per-provider budget was wiped: got %+v", vk.ProviderConfigs[0].Budgets)
+	}
+}
+
+// TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the
+// existing overlay path: when a VK-scoped model config owns the governance
+// (TableBudget.ModelConfigID set, not preloaded onto the VK), hydration overlays it.
+func TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance(t *testing.T) {
+	mcBudget := configstoreTables.TableBudget{
+		ID:            "bud-mc",
+		MaxLimit:      999.0,
+		ResetDuration: "1M",
+		ModelConfigID: schemas.Ptr("mc-top"),
+	}
+	mcRL := &configstoreTables.TableRateLimit{ID: "rl-mc"}
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-sheet"}
+
+	byKey := map[string]*configstoreTables.TableModelConfig{
+		vkModelConfigIndexKey("vk-sheet", nil): {
+			ID:          "mc-top",
+			Budgets:     []configstoreTables.TableBudget{mcBudget},
+			RateLimit:   mcRL,
+			RateLimitID: schemas.Ptr("rl-mc"),
+		},
+	}
+
+	applyVKGovernanceFromModelConfigs(vk, byKey)
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-mc" {
+		t.Fatalf("expected model-config budget overlaid, got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != mcRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-mc" {
+		t.Errorf("expected model-config rate limit overlaid, got rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
 	}
 }

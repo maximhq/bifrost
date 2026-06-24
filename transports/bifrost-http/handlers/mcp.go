@@ -381,7 +381,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 		if dbClient.OauthConfigID != nil {
 			if oauthCfg, ok := oauthConfigsByID[*dbClient.OauthConfigID]; ok {
 				clientConfig.OauthClientID = oauthCfg.ClientID
-				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsEnvVar()
+				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsSecretVar()
 			}
 		}
 		// Enrich VK assignments using the pre-fetched batch result.
@@ -467,8 +467,8 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 
 // OAuthConfigRequest represents OAuth configuration in the request
 type OAuthConfigRequest struct {
-	ClientID        *schemas.EnvVar `json:"client_id"`
-	ClientSecret    *schemas.EnvVar `json:"client_secret"`
+	ClientID        *schemas.SecretVar `json:"client_id"`
+	ClientSecret    *schemas.SecretVar `json:"client_secret"`
 	AuthorizeURL    string          `json:"authorize_url"`
 	TokenURL        string          `json:"token_url"`
 	RegistrationURL string          `json:"registration_url"`
@@ -505,7 +505,7 @@ type MCPClientUpdateRequest struct {
 	IsCodeModeClient      *bool                     `json:"is_code_mode_client,omitempty"`
 	IsPingAvailable       *bool                     `json:"is_ping_available,omitempty"`
 	ToolSyncInterval      *int                      `json:"tool_sync_interval,omitempty"`
-	Headers               map[string]schemas.EnvVar `json:"headers,omitempty"`
+	Headers               map[string]schemas.SecretVar `json:"headers,omitempty"`
 	AllowedExtraHeaders   *schemas.WhiteList        `json:"allowed_extra_headers,omitempty"`
 	ToolPricing           map[string]float64        `json:"tool_pricing,omitempty"`
 	ToolsToExecute        *schemas.WhiteList        `json:"tools_to_execute,omitempty"`
@@ -649,6 +649,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -893,6 +897,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// Creating MCP client config in config store
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -1083,8 +1091,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// shouldRotateOAuthConfig := req.OauthConfig != nil && (existingConfig.AuthType == schemas.MCPAuthTypeOauth || existingConfig.AuthType == schemas.MCPAuthTypePerUserOauth)
-	// var oauthClientID *schemas.EnvVar
-	// var oauthClientSecret *schemas.EnvVar
+	// var oauthClientID *schemas.SecretVar
+	// var oauthClientSecret *schemas.SecretVar
 	// oauthAuthorizeURL := ""
 	// oauthTokenURL := ""
 	// oauthRegistrationURL := ""
@@ -1552,8 +1560,8 @@ func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExe
 // preserving stored raw values when an incoming header value is redacted and unchanged.
 // Only called when the caller explicitly provided a headers map (req.Headers != nil);
 // when headers are omitted entirely the caller retains the existing value directly.
-func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.EnvVar) map[string]schemas.EnvVar {
-	merged := make(map[string]schemas.EnvVar, len(incoming))
+func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.SecretVar) map[string]schemas.SecretVar {
+	merged := make(map[string]schemas.SecretVar, len(incoming))
 	for key, incomingValue := range incoming {
 		if redactedExisting != nil && rawExisting != nil {
 			if redactedValue, ok := redactedExisting[key]; ok {
@@ -1733,6 +1741,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			// Persist MCP client config in config store (BeforeSave hook serializes DiscoveredTools)
 			if h.store.ConfigStore != nil {
 				if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+					if errors.Is(err, configstore.ErrAlreadyExists) {
+						SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+						return
+					}
 					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 					return
 				}
@@ -1804,6 +1816,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	} else {
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+				if errors.Is(err, configstore.ErrAlreadyExists) {
+					SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+					return
+				}
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 				return
 			}

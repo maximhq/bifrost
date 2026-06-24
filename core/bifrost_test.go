@@ -711,7 +711,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	ma.configs[provider] = &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        baseURL,
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxRetries:                     3,
 			RetryBackoffInitial:            500 * time.Millisecond,
 			RetryBackoffMax:                5 * time.Second,
@@ -725,7 +725,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	ma.keys[provider] = []schemas.Key{
 		{
 			ID:     fmt.Sprintf("test-key-%s", provider),
-			Value:  *schemas.NewEnvVar(fmt.Sprintf("sk-test-%s", provider)),
+			Value:  *schemas.NewSecretVar(fmt.Sprintf("sk-test-%s", provider)),
 			Weight: 100,
 		},
 	}
@@ -787,6 +787,51 @@ func (t *countingTracer) CreateTrace(_ string, _ ...string) string {
 
 func (t *countingTracer) CompleteAndFlushTrace(_ string) {
 	t.flushed.Add(1)
+}
+
+func TestFilterProvidersByContext(t *testing.T) {
+	providers := []schemas.ModelProvider{
+		schemas.OpenAI,
+		schemas.Anthropic,
+		schemas.Mistral,
+	}
+
+	t.Run("no context filter keeps all providers", func(t *testing.T) {
+		filtered := filterProvidersByContext(nil, providers)
+		if len(filtered) != len(providers) {
+			t.Fatalf("expected all providers, got %v", filtered)
+		}
+	})
+
+	t.Run("available providers restrict list models fanout", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Anthropic})
+
+		filtered := filterProvidersByContext(ctx, providers)
+		if len(filtered) != 1 || filtered[0] != schemas.Anthropic {
+			t.Fatalf("expected only anthropic, got %v", filtered)
+		}
+	})
+
+	t.Run("empty available providers denies all providers", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
+
+		filtered := filterProvidersByContext(ctx, providers)
+		if len(filtered) != 0 {
+			t.Fatalf("expected no providers, got %v", filtered)
+		}
+	})
+
+	t.Run("malformed available providers fails closed", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, "openai")
+
+		filtered := filterProvidersByContext(ctx, providers)
+		if len(filtered) != 0 {
+			t.Fatalf("expected no providers for malformed context value, got %v", filtered)
+		}
+	})
 }
 
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
@@ -898,8 +943,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	// Use 2 keys so we hit the keySelector path (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -965,8 +1010,8 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -1017,8 +1062,8 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	deterministicSelector := func(ctx *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
@@ -1102,7 +1147,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("all keys blacklist model", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
 		})
 		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
@@ -1116,7 +1161,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	t.Run("blacklist wins over models allow list", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 			{
-				ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1,
+				ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1,
 				Models:            []string{"gpt-4"},
 				BlacklistedModels: []string{"gpt-4"},
 			},
@@ -1129,8 +1174,8 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("second key used when first blacklists", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
-			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1, Models: []string{"*"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
 		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err != nil {

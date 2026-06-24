@@ -68,10 +68,62 @@ func clientForwardedIP(ctx *fasthttp.RequestCtx) string {
 	return ""
 }
 
+// corsMiddlewareConfig is an immutable snapshot of the CORS-relevant client config.
+// The slices are cloned at construction so a hot reload mutating the source
+// ClientConfig in place cannot race with in-flight requests reading these fields.
+type corsMiddlewareConfig struct {
+	dumpErrorsInConsoleLogs bool
+	allowedOrigins          []string
+	allowedHeaders          []string
+}
+
+// newCorsMiddlewareConfig builds an immutable snapshot from the live config,
+// cloning the slices so the snapshot never aliases the shared ClientConfig.
+func newCorsMiddlewareConfig(config *lib.Config) *corsMiddlewareConfig {
+	if config == nil || config.ClientConfig == nil {
+		return nil
+	}
+	return &corsMiddlewareConfig{
+		dumpErrorsInConsoleLogs: config.ClientConfig.DumpErrorsInConsoleLogs,
+		allowedOrigins:          slices.Clone(config.ClientConfig.AllowedOrigins),
+		allowedHeaders:          slices.Clone(config.ClientConfig.AllowedHeaders),
+	}
+}
+
+// CorsMiddleware handles CORS headers for localhost and configured allowed origins.
+// The snapshot is held in an atomic.Pointer so UpdateConfig can swap it at runtime
+// without racing in-flight requests, which read the pointer concurrently. Because the
+// snapshot is immutable (slices cloned), readers never observe a torn or half-updated
+// config even while a reload swaps in a new one.
+type CorsMiddleware struct {
+	config atomic.Pointer[corsMiddlewareConfig]
+}
+
+func NewCorsMiddleware(config *lib.Config) *CorsMiddleware {
+	c := &CorsMiddleware{}
+	c.config.Store(newCorsMiddlewareConfig(config))
+	return c
+}
+
+// UpdateConfig atomically swaps in a fresh immutable snapshot of the configuration.
+// In-flight requests reading the pointer observe either the old or the new snapshot,
+// never a torn value. ReloadClientConfigFromConfigStore must call this whenever the
+// client config is refreshed, mirroring how AuthMiddleware is updated.
+func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
+	c.config.Store(newCorsMiddlewareConfig(config))
+}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
-func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// Snapshot the config once per request so a concurrent UpdateConfig swap
+			// cannot apply two different configs within a single response.
+			cfg := c.config.Load()
+			if cfg == nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, "CORS middleware configuration not loaded")
+				return
+			}
 			shouldLog := slices.IndexFunc(loggingSkipPaths, func(path string) bool {
 				return strings.HasPrefix(string(ctx.RequestURI()), path)
 			}) == -1
@@ -98,24 +150,26 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 						logBuilder = logBuilder.Str("trace_id", traceID)
 					}
-					if statusCode >= 400 && !ctx.Response.IsBodyStream() {
-						if body := ctx.Response.Body(); len(body) > 0 {
-							logBuilder = logBuilder.Str("http.error", string(body))
+					if cfg.dumpErrorsInConsoleLogs {
+						if statusCode >= 400 && !ctx.Response.IsBodyStream() {
+							if body := ctx.Response.Body(); len(body) > 0 {
+								logBuilder = logBuilder.Str("http.error", string(body))
+							}
 						}
 					}
 					logBuilder.Send()
 				}()
 			}
 			origin := string(ctx.Request.Header.Peek("Origin"))
-			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
+			allowed := IsOriginAllowed(origin, cfg.allowedOrigins)
 			// Credentialed responses are sent when the origin is not matched solely by a
 			// wildcard AllowedOrigins — i.e. the origin is localhost or explicitly listed.
-			credentialed := !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+			credentialed := !slices.Contains(cfg.allowedOrigins, "*") ||
 				isLocalhostOrigin(origin) ||
-				slices.Contains(config.ClientConfig.AllowedOrigins, origin)
+				slices.Contains(cfg.allowedOrigins, origin)
 
 			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID"}
-			if slices.Contains(config.ClientConfig.AllowedHeaders, "*") {
+			if slices.Contains(cfg.allowedHeaders, "*") {
 				if credentialed {
 					// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
 					// wildcard when Access-Control-Allow-Credentials: true is set — browsers
@@ -128,9 +182,9 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				} else {
 					allowedHeaders = []string{"*"}
 				}
-			} else if len(config.ClientConfig.AllowedHeaders) > 0 {
+			} else if len(cfg.allowedHeaders) > 0 {
 				// append allowed headers from config to the default headers
-				for _, header := range config.ClientConfig.AllowedHeaders {
+				for _, header := range cfg.allowedHeaders {
 					if !slices.Contains(allowedHeaders, header) {
 						allowedHeaders = append(allowedHeaders, header)
 					}

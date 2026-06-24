@@ -7,6 +7,7 @@ import (
 
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -812,6 +813,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	if provider == "" && !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
+		return
+	}
 
 	var resp *schemas.BifrostListModelsResponse
 	var bifrostErr *schemas.BifrostError
@@ -875,6 +879,21 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 				if len(pricingEntry.AdditionalAttributes) > 0 && resp.Data[i].AdditionalAttributes == nil {
 					resp.Data[i].AdditionalAttributes = pricingEntry.AdditionalAttributes
 				}
+				if pricingEntry.ContextLength != nil && resp.Data[i].ContextLength == nil {
+					resp.Data[i].ContextLength = pricingEntry.ContextLength
+				} else if pricingEntry.MaxInputTokens != nil && resp.Data[i].ContextLength == nil {
+					resp.Data[i].ContextLength = pricingEntry.MaxInputTokens // fallback to MaxInputTokens if ContextLength is not set
+				}
+
+				if pricingEntry.MaxInputTokens != nil && resp.Data[i].MaxInputTokens == nil {
+					resp.Data[i].MaxInputTokens = pricingEntry.MaxInputTokens
+				}
+				if pricingEntry.MaxOutputTokens != nil && resp.Data[i].MaxOutputTokens == nil {
+					resp.Data[i].MaxOutputTokens = pricingEntry.MaxOutputTokens
+				}
+				if pricingEntry.Architecture != nil && resp.Data[i].Architecture == nil {
+					resp.Data[i].Architecture = pricingEntry.Architecture
+				}
 				if modelEntry.Pricing == nil {
 					pricing := &schemas.Pricing{}
 					if pricingEntry.InputCostPerToken != nil {
@@ -891,6 +910,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 					}
 					if pricingEntry.CacheCreationInputTokenCost != nil {
 						pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
+					}
+					if pricingEntry.SearchContextCostPerQuery != nil {
+						pricing.WebSearch = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.SearchContextCostPerQuery))
 					}
 					resp.Data[i].Pricing = pricing
 				}
@@ -1789,7 +1811,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				chunk, err = interceptor.InterceptChunk(bifrostCtx, httpReq, chunk)
 				if err != nil {
 					if chunk == nil {
-						errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
+						var errorPayload interface{} = map[string]string{"error": err.Error()}
+						var structuredErr *schemas.StreamInterceptionError
+						if errors.As(err, &structuredErr) && structuredErr != nil {
+							if sanitized := lib.SanitizeBifrostErrorForClient(structuredErr.BifrostError); sanitized != nil {
+								errorPayload = sanitized
+							}
+						}
+						errorJSON, marshalErr := sonic.Marshal(errorPayload)
 						if marshalErr != nil {
 							cancel() // Payload invalid
 							for range stream {
@@ -2876,6 +2905,11 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
 		return
 	}
+	// Decode percent-encoding so ARN ids (e.g. Bedrock job ARNs containing a
+	// slash sent as %2F) reach the provider raw, not double-encoded.
+	if decoded, err := url.PathUnescape(batchID); err == nil {
+		batchID = decoded
+	}
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -2922,6 +2956,11 @@ func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
 		return
 	}
+	// Decode percent-encoding so ARN ids (e.g. Bedrock job ARNs containing a
+	// slash sent as %2F) reach the provider raw, not double-encoded.
+	if decoded, err := url.PathUnescape(batchID); err == nil {
+		batchID = decoded
+	}
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -2967,6 +3006,11 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 	if batchID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
 		return
+	}
+	// Decode percent-encoding so ARN ids (e.g. Bedrock job ARNs containing a
+	// slash sent as %2F) reach the provider raw, not double-encoded.
+	if decoded, err := url.PathUnescape(batchID); err == nil {
+		batchID = decoded
 	}
 
 	// Get provider from query parameters

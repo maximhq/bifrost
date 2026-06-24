@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming [2.1.25]
+
+- Added `evaluation_mode` to guardrail rules in `values.yaml`, `values.schema.json`, `config.schema.json`, and `_helpers.tpl`. The field renders into `guardrails_config.guardrail_rules[].evaluation_mode` and supports `bundled` (default) and `per_turn`.
+
 ### 2.1.24
 
 - `allow_private_network` (provider `networkConfig`) is now rendered by `_helpers.tpl`; it was in the schema but never wired in, so it had no effect.
@@ -683,6 +687,7 @@ bifrost:
 | Parameter                                     | Description                                 | Default |
 | --------------------------------------------- | ------------------------------------------- | ------- |
 | `bifrost.client.disableDbPingsInHealth`       | Disable DB pings in health check            | `false` |
+| `bifrost.client.dumpErrorsInConsoleLogs`      | Dump full error details to server console   | `false` |
 | `bifrost.client.headerFilterConfig.allowlist` | Headers allowed to forward to LLM providers | `[]`    |
 | `bifrost.client.headerFilterConfig.denylist`  | Headers blocked from forwarding             | `[]`    |
 

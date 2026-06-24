@@ -343,8 +343,8 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	case schemas.NoProxy:
 		return client
 	case schemas.HTTPProxy:
-		if proxyConfig.URL != nil && proxyConfig.URL.IsFromEnv() && proxyConfig.URL.GetValue() == "" {
-			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.EnvVar)
+		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
+			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
 			getLogger().Error(errMsg)
 			client.Dial = dialErrorFunc(errMsg)
 			return client
@@ -369,8 +369,8 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		}
 		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
 	case schemas.Socks5Proxy:
-		if proxyConfig.URL != nil && proxyConfig.URL.IsFromEnv() && proxyConfig.URL.GetValue() == "" {
-			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.EnvVar)
+		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
+			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
 			getLogger().Error(errMsg)
 			client.Dial = dialErrorFunc(errMsg)
 			return client
@@ -408,8 +408,8 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	// Configure custom CA certificate if provided
-	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromEnv() && proxyConfig.CACertPEM.GetValue() == "" {
-		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.EnvVar)
+	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
+		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
 		getLogger().Error(errMsg)
 		client.Dial = dialErrorFunc(errMsg)
 		return client
@@ -451,8 +451,8 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
-	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromEnv() && networkConfig.CACertPEM.GetValue() == "" {
-		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.EnvVar)
+	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromSecret() && networkConfig.CACertPEM.GetValue() == "" {
+		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.GetRawRef())
 		logger.Error(errMsg)
 		client.Dial = dialErrorFunc(errMsg)
 		return client
@@ -2037,6 +2037,64 @@ func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.Bifr
 	return streamResponse
 }
 
+// GateSendChunk routes a stream chunk through the tracer's pause/resume/end
+// gate ONLY when a plugin has engaged the gate for this stream (via
+// ctx.PauseStream/ResumeStream/EndStream, which sets BifrostContextKeyStreamGated).
+// Streams that never engage the gate (the overwhelmingly common case) take the
+// fast path: a direct channel send with ctx.Done() guard — same code as before
+// the gate was introduced, no extra lookups or locks.
+func GateSendChunk(ctx *schemas.BifrostContext, chunk *schemas.BifrostStreamChunk, responseChan chan *schemas.BifrostStreamChunk) (ok bool) {
+	if gated, _ := ctx.Value(schemas.BifrostContextKeyStreamGated).(bool); gated {
+		isFinal := false
+		if v := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); v != nil {
+			if b, ok := v.(bool); ok {
+				isFinal = b
+			}
+		}
+		isHardErr := chunk != nil && chunk.BifrostError != nil && chunk.BifrostError.IsBifrostError
+		if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				return tracer.GateSend(traceID, chunk, isFinal, isHardErr, responseChan, ctx)
+			}
+		}
+	}
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	select {
+	case responseChan <- chunk:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// CloseStream closes a provider's response channel, coordinating with the
+// pause/resume gate when one has been engaged for this stream. If gating is
+// active, the close blocks on the tracer's WaitForFlusher so any chunks
+// buffered while paused (including a terminal chunk that arrived during
+// pause) reach the consumer before EOS. For non-gated streams (the common
+// case), this is a single map read on the context — identical cost to a
+// bare close.
+//
+// Provider streaming goroutines should `defer providerUtils.CloseStream(ctx,
+// responseChan)` instead of `defer close(responseChan)`.
+func CloseStream(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk) {
+	if gated, _ := ctx.Value(schemas.BifrostContextKeyStreamGated).(bool); gated {
+		if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				// Force-end so a still-paused gate transitions and the flusher exits.
+				// End is idempotent; flusher (if any) drains buffered chunks before returning.
+				tracer.EndStream(traceID, nil)
+				tracer.WaitForFlusher(traceID)
+			}
+		}
+	}
+	close(ch)
+}
+
 // ProcessAndSendResponse handles post-hook processing and sends the response to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
@@ -2071,9 +2129,7 @@ func ProcessAndSendResponse(
 
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-	select {
-	case responseChan <- streamResponse:
-	case <-ctx.Done():
+	if !GateSendChunk(ctx, streamResponse, responseChan) {
 		return
 	}
 
@@ -2113,10 +2169,7 @@ func ProcessAndSendBifrostError(
 
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-	select {
-	case responseChan <- streamResponse:
-	case <-ctx.Done():
-	}
+	GateSendChunk(ctx, streamResponse, responseChan)
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -2217,7 +2270,7 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 // before bifrost considers the connection stalled and closes it. This protects
 // against providers that stop sending data but keep the TCP connection open
 // (e.g., Azure TPM throttling).
-const DefaultStreamIdleTimeout = 60 * time.Second
+const DefaultStreamIdleTimeout = 120 * time.Second
 
 // SetStreamIdleTimeoutIfEmpty sets the stream idle timeout on the context from
 // the provider's network config, but only if no valid timeout is already present.
@@ -2308,6 +2361,22 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 			if ctx != nil {
 				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
+			// closeBodyStream may panic: an orphaned timer can fire after the
+			// stream's connection has already been released to / reused from
+			// the fasthttp pool, so CloseWithError nil-derefs in
+			// (*HostClient).CloseConn. Because this runs in the timer goroutine,
+			// that panic is unrecoverable by callers and crashes the whole
+			// process. Recover here so a stale idle timer can never take the
+			// process down (companion to the Read() recover added in #3677).
+			// Unlike the Read() path we cannot re-panic an unexpected value
+			// (that would crash the process — the very thing we are guarding
+			// against), so log the recovered value to leave a forensic trace
+			// for any future, unrelated panic introduced into this path.
+			defer func() {
+				if rec := recover(); rec != nil {
+					getLogger().Debug("recovered panic in idle-timeout timer closeBodyStream: %v", rec)
+				}
+			}()
 			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
 		})
 	})
@@ -2408,8 +2477,57 @@ func HandleStreamCancellation(
 		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
+	// Bill for tokens the provider already processed before the client
+	// disconnected.
+	attachBilledUsageFromContext(ctx, cancelErr)
+
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
+}
+
+// attachBilledUsageFromContext copies a streaming provider's in-place
+// accumulated usage handle (BifrostContextKeyStreamAccumulatedUsage), if any,
+// onto the error's BilledUsage so downstream post-hooks (governance billing,
+// logging cost) can charge for tokens the provider already processed before the
+// stream was cancelled or timed out. No-op when nothing measurable was
+// accumulated, so failures that consumed no tokens bill nothing.
+func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+	if ctx == nil || bifrostErr == nil {
+		return
+	}
+	usage, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
+	if !ok || usage == nil {
+		return
+	}
+	if usage.PromptTokens == 0 &&
+		usage.CompletionTokens == 0 &&
+		usage.TotalTokens == 0 &&
+		usage.PromptTokensDetails == nil &&
+		usage.CompletionTokensDetails == nil &&
+		usage.Cost == nil {
+		return
+	}
+	// Snapshot the handle so the billed usage is fully decoupled from the
+	// in-context accumulator, which may still be mutated by the provider
+	// goroutine. A shallow copy leaves nested pointers aliased, so clone them too.
+	usageCopy := *usage
+	if usage.PromptTokensDetails != nil {
+		promptDetailsCopy := *usage.PromptTokensDetails
+		if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			cachedWriteDetailsCopy := *usage.PromptTokensDetails.CachedWriteTokenDetails
+			promptDetailsCopy.CachedWriteTokenDetails = &cachedWriteDetailsCopy
+		}
+		usageCopy.PromptTokensDetails = &promptDetailsCopy
+	}
+	if usage.CompletionTokensDetails != nil {
+		completionDetailsCopy := *usage.CompletionTokensDetails
+		usageCopy.CompletionTokensDetails = &completionDetailsCopy
+	}
+	if usage.Cost != nil {
+		costCopy := *usage.Cost
+		usageCopy.Cost = &costCopy
+	}
+	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 
 // HandleStreamTimeout should be called when a streaming goroutine exits
@@ -2446,6 +2564,9 @@ func HandleStreamTimeout(
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
 		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
+
+	// Bill for tokens the provider already processed before the deadline.
+	attachBilledUsageFromContext(ctx, timeoutErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
@@ -2489,10 +2610,7 @@ func ProcessAndSendError(
 		streamResponse.BifrostError = processedError
 	}
 
-	select {
-	case responseChan <- streamResponse:
-	case <-ctx.Done():
-	}
+	GateSendChunk(ctx, streamResponse, responseChan)
 }
 
 // CreateBifrostTextCompletionChunkResponse creates a bifrost text completion chunk response.

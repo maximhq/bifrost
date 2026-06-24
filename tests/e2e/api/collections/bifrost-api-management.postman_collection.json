@@ -2332,6 +2332,57 @@
           }
         },
         {
+          "name": "Search Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Content search across logs should return a well-formed paginated response",
+                  "pm.test('Search Logs returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Search Logs response has logs array and pagination', function () {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData).to.have.property('logs');",
+                  "  pm.expect(jsonData.logs).to.be.an('array');",
+                  "  pm.expect(jsonData).to.have.property('pagination');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs?content_search=hello&limit=10&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "content_search",
+                  "value": "hello"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "Get Logs Stats",
           "request": {
             "method": "GET",
@@ -3202,6 +3253,171 @@
                 "virtual-keys",
                 "{{vk_id}}"
               ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - VK List Models Restriction",
+      "description": "Regression #2887 / PR #3187 (/v1/models) and #3094 (/api/models): a virtual key scoped to a subset of providers must restrict list-models output to ONLY those providers. The server has many providers configured; this VK allows only openai+anthropic, and both list-models endpoints must return only those providers and exclude the rest (mistral, gemini, groq).",
+      "item": [
+        {
+          "name": "Create VK (allow openai + anthropic only)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "var body = {",
+                  "  name: 'VK ListModels Restriction ' + ts,",
+                  "  is_active: true,",
+                  "  provider_configs: [",
+                  "    { provider: 'openai', weight: 1, allowed_models: ['*'], key_ids: ['*'] },",
+                  "    { provider: 'anthropic', weight: 1, allowed_models: ['*'], key_ids: ['*'] }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  if (vk && vk.id) pm.collectionVariables.set('vkrestrict_id', vk.id);",
+                  "  if (vk && vk.value) pm.collectionVariables.set('vkrestrict_value', vk.value);",
+                  "  pm.test('Created VK value looks like a bifrost VK', function () { pm.expect(String(vk.value)).to.match(/^sk-bf-/); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "governance", "virtual-keys" ]
+            }
+          }
+        },
+        {
+          "name": "List Models via VK - /api/models (provider field)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ALLOWED = ['openai', 'anthropic'];",
+                  "var DISALLOWED = ['mistral', 'gemini', 'groq'];",
+                  "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "var models = (body && body.models) || [];",
+                  "var seen = {};",
+                  "models.forEach(function (m) { if (m && m.provider) seen[m.provider] = true; });",
+                  "var present = Object.keys(seen);",
+                  "ALLOWED.forEach(function (p) {",
+                  "  pm.test('/api/models includes allowed provider: ' + p, function () { pm.expect(present).to.include(p); });",
+                  "});",
+                  "DISALLOWED.forEach(function (p) {",
+                  "  pm.test('/api/models excludes disallowed provider: ' + p, function () { pm.expect(present).to.not.include(p); });",
+                  "});",
+                  "pm.test('/api/models contains only VK-allowed providers', function () {",
+                  "  var leaked = present.filter(function (p) { return ALLOWED.indexOf(p) === -1; });",
+                  "  pm.expect(leaked, 'leaked providers: ' + JSON.stringify(leaked)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "url": {
+              "raw": "{{base_url}}/api/models?limit=5000",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "models" ],
+              "query": [ { "key": "limit", "value": "5000" } ]
+            }
+          }
+        },
+        {
+          "name": "List Models via VK - /v1/models (the #3187 flow)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ALLOWED = ['openai', 'anthropic'];",
+                  "var DISALLOWED = ['mistral', 'gemini', 'groq'];",
+                  "pm.test('GET /v1/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "var data = (body && body.data) || [];",
+                  "var seen = {};",
+                  "data.forEach(function (m) {",
+                  "  var id = (m && m.id) ? String(m.id) : '';",
+                  "  var pfx = id.indexOf('/') >= 0 ? id.split('/')[0] : id;",
+                  "  if (pfx) seen[pfx] = true;",
+                  "});",
+                  "var present = Object.keys(seen);",
+                  "DISALLOWED.forEach(function (p) {",
+                  "  pm.test('/v1/models excludes disallowed provider: ' + p, function () { pm.expect(present).to.not.include(p); });",
+                  "});",
+                  "pm.test('/v1/models returns at least one allowed-provider model', function () {",
+                  "  var hasAllowed = present.some(function (p) { return ALLOWED.indexOf(p) >= 0; });",
+                  "  pm.expect(hasAllowed).to.be.true;",
+                  "});",
+                  "pm.test('/v1/models contains only VK-allowed providers', function () {",
+                  "  var leaked = present.filter(function (p) { return ALLOWED.indexOf(p) === -1; });",
+                  "  pm.expect(leaked, 'leaked providers: ' + JSON.stringify(leaked)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [ "{{base_url}}" ],
+              "path": [ "v1", "models" ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkrestrict_id}}",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "governance", "virtual-keys", "{{vkrestrict_id}}" ]
             }
           }
         }

@@ -143,8 +143,12 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 
 // CreateVirtualKeyRequest represents the request body for creating a virtual key
 type CreateVirtualKeyRequest struct {
-	Name            string `json:"name" validate:"required"`
-	Description     string `json:"description,omitempty"`
+	Name        string `json:"name" validate:"required"`
+	Description string `json:"description,omitempty"`
+	// Value optionally sets the virtual key value. Accepts a literal, an "env.X"/"vault.X" string,
+	// or a SecretVar object. When unset, a value is generated server-side. References resolve to
+	// plaintext while the source is preserved for API responses.
+	Value           *schemas.SecretVar `json:"value,omitempty"`
 	ProviderConfigs []struct {
 		Provider          string                  `json:"provider" validate:"required"`
 		Weight            *float64                `json:"weight,omitempty"`
@@ -809,10 +813,6 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 		vk.Budgets = mc.Budgets
 		vk.RateLimit = mc.RateLimit
 		vk.RateLimitID = mc.RateLimitID
-	} else {
-		vk.Budgets = nil
-		vk.RateLimit = nil
-		vk.RateLimitID = nil
 	}
 	for i := range vk.ProviderConfigs {
 		pc := &vk.ProviderConfigs[i]
@@ -820,10 +820,6 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 			pc.Budgets = mc.Budgets
 			pc.RateLimit = mc.RateLimit
 			pc.RateLimitID = mc.RateLimitID
-		} else {
-			pc.Budgets = nil
-			pc.RateLimit = nil
-			pc.RateLimitID = nil
 		}
 	}
 }
@@ -1298,12 +1294,20 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
-			Value:           governance.GenerateVirtualKey(),
+			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
+		}
+		// If the caller supplied a value (literal or env/vault reference), use it; the SecretVar
+		// resolves the reference and the source round-trips through persistence and API responses.
+		// Only override the generated key when the value resolves to a non-empty plaintext: an
+		// unresolved env/vault reference (e.g. the env var is unset) would otherwise replace the
+		// generated credential with an empty, unusable value.
+		if req.Value.IsSet() && req.Value.GetValue() != "" {
+			vk.Value = *req.Value
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1421,6 +1425,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A virtual key with this name already exists")
 			return
 		}
 		SendError(ctx, 500, err.Error())
@@ -1856,10 +1864,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return nil
 	}); err != nil {
 		var badReqErr *badRequestError
-		if errors.As(err, &badReqErr) ||
-			strings.Contains(err.Error(), "already exists") ||
-			strings.Contains(err.Error(), "duplicate key") {
+		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, fmt.Sprintf("Failed to update virtual key: %v", err))
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A virtual key with this name already exists")
 			return
 		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update virtual key: %v", err))
@@ -1905,9 +1915,9 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, err
 	}
-	oldValue := vk.Value
-	vk.Value = governance.GenerateVirtualKey()
-	if vk.Value == oldValue {
+	oldValue := vk.Value.GetValue()
+	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
@@ -2171,6 +2181,10 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A team with this name already exists")
 			return
 		}
 		logger.Error("failed to create team: %v", err)
@@ -2597,6 +2611,10 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, 409, "A customer with this name already exists")
 			return
 		}
 		SendError(ctx, 500, "failed to create customer")

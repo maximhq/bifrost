@@ -264,6 +264,19 @@ type HTTPTransportPlugin interface {
 	HTTPTransportStreamChunkHook(ctx *BifrostContext, req *HTTPRequest, chunk *BifrostStreamChunk) (*BifrostStreamChunk, error)
 }
 
+// StreamInterceptionError carries a structured client error when an HTTP stream plugin terminates a stream.
+type StreamInterceptionError struct {
+	BifrostError *BifrostError
+}
+
+// Error returns the best available client message for callers that only understand Go errors.
+func (e *StreamInterceptionError) Error() string {
+	if e != nil && e.BifrostError != nil && e.BifrostError.Error != nil && e.BifrostError.Error.Message != "" {
+		return e.BifrostError.Error.Message
+	}
+	return "stream interception failed"
+}
+
 type LLMPlugin interface {
 	BasePlugin
 
@@ -366,7 +379,7 @@ type ConfigMarshallerPlugin interface {
 	BasePlugin
 
 	// MarshalConfigForStorage converts the raw config map (as received from the API)
-	// into the canonical DB-storage format (e.g. *EnvVar fields as plain strings).
+	// into the canonical DB-storage format (e.g. *SecretVar fields as plain strings).
 	MarshalConfigForStorage(config map[string]any) (map[string]any, error)
 	// RedactConfig converts a stored config map into the API-response format,
 	// masking sensitive literal values.
