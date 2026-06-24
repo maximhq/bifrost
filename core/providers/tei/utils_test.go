@@ -257,7 +257,7 @@ func TestTEIProviderEmbedding(t *testing.T) {
 	assert.Equal(t, 1, upstreamCalls)
 }
 
-func TestTEIProviderEmbeddingDisabled(t *testing.T) {
+func TestTEIProviderEmbeddingDisabledByAllowedRequests(t *testing.T) {
 	var upstreamCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls++
@@ -286,6 +286,11 @@ func TestTEIProviderEmbeddingDisabled(t *testing.T) {
 
 	require.Nil(t, resp)
 	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
 	assert.Contains(t, bifrostErr.Error.Message, "not supported")
+	assert.NotNil(t, bifrostErr.Error.Code)
+	assert.Equal(t, "unsupported_operation", *bifrostErr.Error.Code)
+	assert.Equal(t, schemas.TEI, bifrostErr.ExtraFields.Provider)
+	assert.Equal(t, schemas.EmbeddingRequest, bifrostErr.ExtraFields.RequestType)
 	assert.Equal(t, 0, upstreamCalls)
 }
