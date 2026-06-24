@@ -4525,7 +4525,7 @@
               "items": {
                 "type": "string"
               },
-              "description": "DNS names to resolve for node discovery"
+              "description": "DNS names to resolve for node discovery. Supports env.VAR_NAME for environment variable substitution."
             },
             "udp_broadcast_port": {
               "type": "integer",
