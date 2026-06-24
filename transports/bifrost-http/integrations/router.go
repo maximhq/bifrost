@@ -2809,9 +2809,12 @@ func newBedrockEventStreamException(exceptionType, message string) *bedrockEvent
 		exceptionType = "InternalServerException"
 	}
 
-	payloadJSON, err := sonic.Marshal(map[string]string{"message": message})
+	payloadJSON, err := sonic.Marshal(map[string]string{
+		"__type":  exceptionType,
+		"message": message,
+	})
 	if err != nil {
-		payloadJSON = []byte(`{"message":"An error occurred while processing your request"}`)
+		payloadJSON = []byte(fmt.Sprintf(`{"__type":%q,"message":"An error occurred while processing your request"}`, exceptionType))
 	}
 
 	return &bedrockEventStreamException{
