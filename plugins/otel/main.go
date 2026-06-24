@@ -64,19 +64,19 @@ type Profile struct {
 	// Enabled gates whether this profile exports anything. The plugin itself is always on;
 	// a disabled profile builds no trace client or metrics exporter, so no traces/metrics
 	// are sent for it. Defaults to true when omitted.
-	Enabled      bool              `json:"enabled"`
-	ServiceName  string            `json:"service_name"`
-	CollectorURL *schemas.SecretVar   `json:"collector_url"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	TraceType    TraceType         `json:"trace_type"`
-	Protocol     Protocol          `json:"protocol"`
-	TLSCACert    string            `json:"tls_ca_cert,omitempty"`
-	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+	Enabled      bool               `json:"enabled"`
+	ServiceName  string             `json:"service_name"`
+	CollectorURL *schemas.SecretVar `json:"collector_url"`
+	Headers      map[string]string  `json:"headers,omitempty"`
+	TraceType    TraceType          `json:"trace_type"`
+	Protocol     Protocol           `json:"protocol"`
+	TLSCACert    string             `json:"tls_ca_cert,omitempty"`
+	Insecure     bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
 	// Metrics push configuration
-	MetricsEnabled      bool            `json:"metrics_enabled"`
+	MetricsEnabled      bool               `json:"metrics_enabled"`
 	MetricsEndpoint     *schemas.SecretVar `json:"metrics_endpoint,omitempty"`
-	MetricsPushInterval int             `json:"metrics_push_interval,omitempty"` // in seconds, default 15
+	MetricsPushInterval int                `json:"metrics_push_interval,omitempty"` // in seconds, default 15
 
 	// RequestHeaders lists request-header name patterns (exact or wildcard like "x-custom-*"
 	// or "*") whose captured values are attached to the root span as attributes.
@@ -93,6 +93,14 @@ type Profile struct {
 	// (default: false). An inbound W3C traceparent always takes precedence, leaving that
 	// request on its own distributed trace.
 	GroupTracesBySession bool `json:"group_traces_by_session,omitempty"`
+
+	// DisableRootSpanContent controls whether input/output message content is duplicated onto
+	// the root span. The framework propagates a copy of the input/output onto the root span so
+	// backends like Langfuse can show it at the trace level, but this duplicates the payload
+	// already stored on the llm.call span and inflates downstream storage. When true, content
+	// attributes are dropped from the root span only (child spans keep full content), so the
+	// trace-level Input/Output goes empty while the generation observation retains everything.
+	DisableRootSpanContent bool `json:"disable_root_span_content,omitempty"`
 }
 
 // UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
@@ -201,20 +209,21 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 // flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
 // persistence.
 type profileForStorage struct {
-	Enabled               bool              `json:"enabled"`
-	ServiceName           string            `json:"service_name"`
-	CollectorURL          string            `json:"collector_url"`
-	Headers               map[string]string `json:"headers,omitempty"`
-	TraceType             TraceType         `json:"trace_type"`
-	Protocol              Protocol          `json:"protocol"`
-	TLSCACert             string            `json:"tls_ca_cert,omitempty"`
-	Insecure              bool              `json:"insecure"`
-	MetricsEnabled        bool              `json:"metrics_enabled"`
-	MetricsEndpoint       string            `json:"metrics_endpoint,omitempty"`
-	MetricsPushInterval   int               `json:"metrics_push_interval,omitempty"`
-	RequestHeaders        []string          `json:"request_headers,omitempty"`
-	DisableContentLogging bool              `json:"disable_content_logging,omitempty"`
-	GroupTracesBySession  bool              `json:"group_traces_by_session,omitempty"`
+	Enabled                bool              `json:"enabled"`
+	ServiceName            string            `json:"service_name"`
+	CollectorURL           string            `json:"collector_url"`
+	Headers                map[string]string `json:"headers,omitempty"`
+	TraceType              TraceType         `json:"trace_type"`
+	Protocol               Protocol          `json:"protocol"`
+	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
+	Insecure               bool              `json:"insecure"`
+	MetricsEnabled         bool              `json:"metrics_enabled"`
+	MetricsEndpoint        string            `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval    int               `json:"metrics_push_interval,omitempty"`
+	RequestHeaders         []string          `json:"request_headers,omitempty"`
+	DisableContentLogging  bool              `json:"disable_content_logging,omitempty"`
+	GroupTracesBySession   bool              `json:"group_traces_by_session,omitempty"`
+	DisableRootSpanContent bool              `json:"disable_root_span_content,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -237,20 +246,21 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			continue
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
-			Enabled:               p.Enabled,
-			ServiceName:           p.ServiceName,
-			CollectorURL:          schemas.SecretVarAsString(p.CollectorURL),
-			Headers:               p.Headers,
-			TraceType:             p.TraceType,
-			Protocol:              p.Protocol,
-			TLSCACert:             p.TLSCACert,
-			Insecure:              p.Insecure,
-			MetricsEnabled:        p.MetricsEnabled,
-			MetricsEndpoint:       schemas.SecretVarAsString(p.MetricsEndpoint),
-			MetricsPushInterval:   p.MetricsPushInterval,
-			RequestHeaders:        p.RequestHeaders,
-			DisableContentLogging: p.DisableContentLogging,
-			GroupTracesBySession:  p.GroupTracesBySession,
+			Enabled:                p.Enabled,
+			ServiceName:            p.ServiceName,
+			CollectorURL:           schemas.SecretVarAsString(p.CollectorURL),
+			Headers:                p.Headers,
+			TraceType:              p.TraceType,
+			Protocol:               p.Protocol,
+			TLSCACert:              p.TLSCACert,
+			Insecure:               p.Insecure,
+			MetricsEnabled:         p.MetricsEnabled,
+			MetricsEndpoint:        schemas.SecretVarAsString(p.MetricsEndpoint),
+			MetricsPushInterval:    p.MetricsPushInterval,
+			RequestHeaders:         p.RequestHeaders,
+			DisableContentLogging:  p.DisableContentLogging,
+			GroupTracesBySession:   p.GroupTracesBySession,
+			DisableRootSpanContent: p.DisableRootSpanContent,
 		})
 	}
 	return sonic.Marshal(out)
@@ -314,14 +324,15 @@ func hideResolvedEnvValue(v *schemas.SecretVar) *schemas.SecretVar {
 // plus an optional metrics exporter, along with the per-profile identity (service name)
 // used when converting traces for this destination.
 type otelTarget struct {
-	serviceName           string
-	url                   string
-	traceType             TraceType
-	client                OtelClient
-	metricsExporter       *MetricsExporter
-	requestHeaders        []string
-	disableContentLogging bool
-	groupTracesBySession  bool
+	serviceName            string
+	url                    string
+	traceType              TraceType
+	client                 OtelClient
+	metricsExporter        *MetricsExporter
+	requestHeaders         []string
+	disableContentLogging  bool
+	groupTracesBySession   bool
+	disableRootSpanContent bool
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -439,12 +450,13 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 
 	url := profile.CollectorURL.GetValue()
 	target := &otelTarget{
-		serviceName:           serviceName,
-		url:                   url,
-		traceType:             profile.TraceType,
-		requestHeaders:        slices.Clone(profile.RequestHeaders),
-		disableContentLogging: profile.DisableContentLogging,
-		groupTracesBySession:  profile.GroupTracesBySession,
+		serviceName:            serviceName,
+		url:                    url,
+		traceType:              profile.TraceType,
+		requestHeaders:         slices.Clone(profile.RequestHeaders),
+		disableContentLogging:  profile.DisableContentLogging,
+		groupTracesBySession:   profile.GroupTracesBySession,
+		disableRootSpanContent: profile.DisableRootSpanContent,
 	}
 
 	var err error
@@ -656,7 +668,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		go func(t *otelTarget) {
 			defer wg.Done()
 			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession)
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
 				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
 					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
 				}

@@ -1,4 +1,4 @@
-package runway_test
+package runware_test
 
 import (
 	"os"
@@ -9,10 +9,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestRunway(t *testing.T) {
+func TestRunware(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("RUNWAY_API_KEY")) == "" {
-		t.Skip("Skipping Runway tests because RUNWAY_API_KEY is not set")
+	if strings.TrimSpace(os.Getenv("RUNWARE_API_KEY")) == "" {
+		t.Skip("Skipping Runware tests because RUNWARE_API_KEY is not set")
 	}
 
 	client, ctx, cancel, err := llmtests.SetupTest()
@@ -23,23 +23,20 @@ func TestRunway(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:             schemas.Runway,
-		VideoGenerationModel: "gen4.5",
-		ImageGenerationModel: "gen4_image",
-		ImageEditModel:       "gen4_image",
+		Provider:             schemas.Runware,
+		ImageGenerationModel: "runware:101@1",
+		ImageEditModel:       "runware:102@1",             // FLUX Fill: supports seedImage + maskImage (inpainting)
+		VideoGenerationModel: "klingai:kling-video@3-pro", // set a video model; flip the scenarios below on to exercise it
 		Scenarios: llmtests.TestScenarios{
 			ImageGeneration: true,
 			ImageEdit:       true,
-			VideoGeneration: false, // disabled for now because of long running operations
+			VideoGeneration: false,
 			VideoRetrieve:   false,
-			VideoRemix:      false,
 			VideoDownload:   false,
-			VideoList:       false,
-			VideoDelete:     false,
 		},
 	}
 
-	t.Run("RunwayTests", func(t *testing.T) {
+	t.Run("RunwareTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 }

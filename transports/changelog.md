@@ -1,0 +1,1 @@
+- fix: sync provider config allow_all_keys and blacklisted_models from config.json (closes #4640)

@@ -264,6 +264,19 @@ type HTTPTransportPlugin interface {
 	HTTPTransportStreamChunkHook(ctx *BifrostContext, req *HTTPRequest, chunk *BifrostStreamChunk) (*BifrostStreamChunk, error)
 }
 
+// StreamInterceptionError carries a structured client error when an HTTP stream plugin terminates a stream.
+type StreamInterceptionError struct {
+	BifrostError *BifrostError
+}
+
+// Error returns the best available client message for callers that only understand Go errors.
+func (e *StreamInterceptionError) Error() string {
+	if e != nil && e.BifrostError != nil && e.BifrostError.Error != nil && e.BifrostError.Error.Message != "" {
+		return e.BifrostError.Error.Message
+	}
+	return "stream interception failed"
+}
+
 type LLMPlugin interface {
 	BasePlugin
 
