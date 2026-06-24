@@ -13,18 +13,18 @@ import (
 
 // TableKey represents an API key configuration in the database
 type TableKey struct {
-	ID                    uint              `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name                  string            `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
-	ProviderID            uint              `gorm:"index;not null" json:"provider_id"`
-	Provider              string            `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
-	KeyID                 string            `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
+	ID                    uint           `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name                  string         `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
+	ProviderID            uint           `gorm:"index;not null" json:"provider_id"`
+	Provider              string         `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
+	KeyID                 string         `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
 	Value                 schemas.SecretVar `gorm:"type:text;not null" json:"value"`
-	ModelsJSON            string            `gorm:"type:text" json:"-"` // JSON serialized []string
-	BlacklistedModelsJSON string            `gorm:"type:text" json:"-"` // JSON serialized []string
-	Weight                *float64          `json:"weight"`
-	Enabled               *bool             `gorm:"default:true" json:"enabled,omitempty"`
-	CreatedAt             time.Time         `gorm:"index;not null" json:"created_at"`
-	UpdatedAt             time.Time         `gorm:"index;not null" json:"updated_at"`
+	ModelsJSON            string         `gorm:"type:text" json:"-"` // JSON serialized []string
+	BlacklistedModelsJSON string         `gorm:"type:text" json:"-"` // JSON serialized []string
+	Weight                *float64       `json:"weight"`
+	Enabled               *bool          `gorm:"default:true" json:"enabled,omitempty"`
+	CreatedAt             time.Time      `gorm:"index;not null" json:"created_at"`
+	UpdatedAt             time.Time      `gorm:"index;not null" json:"updated_at"`
 
 	// Config hash is used to detect changes synced from config.json file
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -37,7 +37,7 @@ type TableKey struct {
 	AzureClientID     *schemas.SecretVar `gorm:"type:text" json:"azure_client_id,omitempty"`
 	AzureClientSecret *schemas.SecretVar `gorm:"type:text" json:"azure_client_secret,omitempty"`
 	AzureTenantID     *schemas.SecretVar `gorm:"type:text" json:"azure_tenant_id,omitempty"`
-	AzureScopesJSON   *string            `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
+	AzureScopesJSON   *string         `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
 
 	// Vertex config fields (embedded)
 	VertexProjectID       *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
@@ -54,11 +54,11 @@ type TableKey struct {
 	BedrockRoleARN           *schemas.SecretVar `gorm:"type:text" json:"bedrock_role_arn,omitempty"`
 	BedrockExternalID        *schemas.SecretVar `gorm:"type:text" json:"bedrock_external_id,omitempty"`
 	BedrockRoleSessionName   *schemas.SecretVar `gorm:"type:text" json:"bedrock_role_session_name,omitempty"`
-	BedrockBatchS3ConfigJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
+	BedrockBatchS3ConfigJSON *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
 	// VLLM config fields (embedded)
 	VLLMUrl       *schemas.SecretVar `gorm:"type:text" json:"vllm_url,omitempty"`
-	VLLMModelName *string            `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
+	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
 
 	// Replicate config fields (embedded)
 	ReplicateUseDeploymentsEndpoint *bool `gorm:"column:replicate_use_deployments_endpoint" json:"replicate_use_deployments_endpoint,omitempty"`

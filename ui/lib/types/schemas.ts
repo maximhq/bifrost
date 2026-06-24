@@ -65,7 +65,8 @@ export const _secretVarBase = z.object({
 
 // Extending the base schema
 export const secretVarSchema = Object.assign(_secretVarBase, {
-	required: (message: string) => _secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
+	required: (message: string) =>
+		_secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
 });
 
 // Helper to check if a secretVar field has a value or secret reference
@@ -367,59 +368,45 @@ export const modelProviderKeySchema = z
 		use_for_batch_api: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
-	.superRefine((data, ctx) => {
-		// Providers with dedicated config that never need a top-level API key.
-		if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
-			return;
-		}
-		if (data.gigachat_key_config) {
-			if (
-				isGigaChatAuthConfigured(data.gigachat_key_config) ||
-				isGigaChatMTLSConfigured(data.gigachat_key_config) ||
-				isSecretVarSet(data.value)
-			) {
-				return;
+	.refine(
+		(data) => {
+			// Providers with dedicated config that never need a top-level API key
+			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
 			}
-			const authIssuePath =
-				data.gigachat_key_config._auth_type === "access_token"
-					? ["gigachat_key_config", "access_token"]
-					: data.gigachat_key_config._auth_type === "password"
-						? ["gigachat_key_config", "user"]
-						: data.gigachat_key_config._auth_type === "mtls"
-							? ["gigachat_key_config", "cert_file"]
-							: ["gigachat_key_config", "credentials"];
-			ctx.addIssue({
-				code: "custom",
-				message: "GigaChat credentials, access token, user/password, mTLS certificate pair, or key value access token is required",
-				path: authIssuePath,
-			});
-			return;
-		}
-		// Azure requires API key only when using api_key auth.
-		if (data.azure_key_config) {
-			if (data.azure_key_config._auth_type === "api_key" && !isSecretVarSet(data.value)) {
-				ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
+			// GigaChat can use OAuth credentials, access token, user/password, mTLS, or a top-level token.
+			if (data.gigachat_key_config) {
+				return isGigaChatAuthConfigured(data.gigachat_key_config) || isGigaChatMTLSConfigured(data.gigachat_key_config) || isSecretVarSet(data.value);
 			}
-			return;
-		}
-		// Bedrock only requires API key when using api_key auth.
-		if (data.bedrock_key_config) {
-			if (data.bedrock_key_config._auth_type === "api_key" && !isSecretVarSet(data.value)) {
-				ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
+			// Azure requires API key only when using api_key auth
+			if (data.azure_key_config) {
+				if (data.azure_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
 			}
-			return;
-		}
-		// Vertex requires API key only when using api_key auth.
-		if (data.vertex_key_config) {
-			if (data.vertex_key_config._auth_type === "api_key" && !isSecretVarSet(data.value)) {
-				ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
+			// Bedrock only requires API key when using api_key auth
+			if (data.bedrock_key_config) {
+				if (data.bedrock_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
 			}
-			return;
-		}
-		if (!isSecretVarSet(data.value)) {
-			ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
-		}
-	});
+			// Vertex requires API key only when using api_key auth
+			if (data.vertex_key_config) {
+				if (data.vertex_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
+			}
+			// Otherwise, value is required
+			return isSecretVarSet(data.value);
+		},
+		{
+			message: "API Key is required",
+			path: ["value"],
+		},
+	);
 
 // Network config schema
 export const networkConfigSchema = z
@@ -529,8 +516,7 @@ export const proxyConfigSchema = z
 	.refine(
 		(data) =>
 			!(data.type === "http" || data.type === "socks5") ||
-			data.url?.type === "env" ||
-			data.url?.type === "vault" ||
+			data.url?.type === "env" || data.url?.type === "vault" ||
 			(data.url?.value && data.url.value.trim().length > 0),
 		{
 			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",

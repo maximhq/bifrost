@@ -80,7 +80,7 @@ func (ml *MockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas
 func buildVirtualKey(id, value, name string, isActive bool) *configstoreTables.TableVirtualKey {
 	return &configstoreTables.TableVirtualKey{
 		ID:       id,
-		Value:    *schemas.NewSecretVar(value),
+		Value:    value,
 		Name:     name,
 		IsActive: &isActive,
 	}

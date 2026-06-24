@@ -8,7 +8,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { Input } from "@/components/ui/input";
 import { useGetVirtualKeysQuery } from "@/lib/store";
-import { resolveVirtualKeyValue } from "@/lib/types/governance";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { ModelProviderName } from "@/lib/types/config";
 import { ModelParams } from "@/lib/types/prompts";
@@ -110,7 +109,7 @@ export function SettingsPanel() {
 	}, [apiKeyId, providerKeys, providerVirtualKeys]);
 
 	const filterVks = useMemo(() => {
-		const virtualKey = providerVirtualKeys.find((vk) => resolveVirtualKeyValue(vk.value) === apiKeyId);
+		const virtualKey = providerVirtualKeys.find((vk) => vk.value === apiKeyId);
 		if (virtualKey) return [virtualKey.id];
 		return undefined;
 	}, [apiKeyId, providerVirtualKeys]);

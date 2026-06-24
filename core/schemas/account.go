@@ -126,7 +126,7 @@ func (bl BlackList) Validate() error {
 type Key struct {
 	ID                 string              `json:"id"`                             // The unique identifier for the key (used by bifrost to identify the key)
 	Name               string              `json:"name"`                           // The name of the key (used by users to identify the key, not used by bifrost)
-	Value              SecretVar           `json:"value"`                          // The actual API key value
+	Value              SecretVar              `json:"value"`                          // The actual API key value
 	Models             WhiteList           `json:"models"`                         // List of models this key can access
 	BlacklistedModels  BlackList           `json:"blacklisted_models"`             // List of models this key cannot access
 	Weight             float64             `json:"weight"`                         // Weight for load balancing between multiple keys
@@ -183,8 +183,8 @@ func (mf *ModelFamily) IsValid() bool {
 // AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
 // Each field, when non-nil, overrides the corresponding key-level default.
 type AzureAliasCfg struct {
-	APIVersion       *string    `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
-	AnthropicVersion *string    `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
+	APIVersion       *string `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
+	AnthropicVersion *string `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
 	Endpoint         *SecretVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
 }
 
@@ -214,7 +214,7 @@ type AliasConfig struct {
 	ModelName   *string      `json:"model_name,omitempty"`   // canonical model name used for pricing, logging, and 2nd-tier family routing
 	ModelFamily *ModelFamily `json:"model_family,omitempty"` // 1st-tier family routing enum
 	Description string       `json:"description,omitempty"`  // description of the alias for users to understand its purpose (not used by bifrost)
-	Region      *SecretVar   `json:"region,omitempty"`
+	Region      *SecretVar      `json:"region,omitempty"`
 
 	*AzureAliasCfg
 	*VertexAliasCfg
@@ -609,10 +609,10 @@ const (
 type AzureKeyConfig struct {
 	Endpoint SecretVar `json:"endpoint"` // Azure service endpoint URL
 
-	ClientID     *SecretVar `json:"client_id,omitempty"`     // Azure client ID for authentication
-	ClientSecret *SecretVar `json:"client_secret,omitempty"` // Azure client secret for authentication
-	TenantID     *SecretVar `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
-	Scopes       []string   `json:"scopes,omitempty"`
+	ClientID     *SecretVar  `json:"client_id,omitempty"`     // Azure client ID for authentication
+	ClientSecret *SecretVar  `json:"client_secret,omitempty"` // Azure client secret for authentication
+	TenantID     *SecretVar  `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
+	Scopes       []string `json:"scopes,omitempty"`
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
@@ -663,7 +663,7 @@ type BedrockKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple vLLM instances.
 type VLLMKeyConfig struct {
 	URL       SecretVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
-	ModelName string    `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
 }
 
 // ReplicateKeyConfig represents the Replicate-specific key configuration.

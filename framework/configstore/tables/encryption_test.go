@@ -408,7 +408,7 @@ func TestTableVirtualKey_EncryptDecrypt(t *testing.T) {
 	vk := &TableVirtualKey{
 		ID:       "vk-1",
 		Name:     "test-vk",
-		Value:    *schemas.NewSecretVar("vk-secret-value-xyz"),
+		Value:    "vk-secret-value-xyz",
 		IsActive: bifrost.Ptr(true),
 	}
 
@@ -424,7 +424,7 @@ func TestTableVirtualKey_EncryptDecrypt(t *testing.T) {
 
 	var found TableVirtualKey
 	require.NoError(t, db.First(&found, "id = ?", "vk-1").Error)
-	assert.Equal(t, "vk-secret-value-xyz", found.Value.GetValue())
+	assert.Equal(t, "vk-secret-value-xyz", found.Value)
 	assert.Equal(t, expectedHash, found.ValueHash)
 }
 
@@ -434,7 +434,7 @@ func TestTableVirtualKey_HashComputedBeforeEncryption(t *testing.T) {
 	vk := &TableVirtualKey{
 		ID:       "vk-hash",
 		Name:     "hash-test",
-		Value:    *schemas.NewSecretVar("plaintext-value"),
+		Value:    "plaintext-value",
 		IsActive: bifrost.Ptr(true),
 	}
 
@@ -892,21 +892,21 @@ func TestTableVirtualKey_UpdatePreservesDecryption(t *testing.T) {
 	vk := &TableVirtualKey{
 		ID:       "vk-update",
 		Name:     "update-vk",
-		Value:    *schemas.NewSecretVar("original-vk-value"),
+		Value:    "original-vk-value",
 		IsActive: bifrost.Ptr(true),
 	}
 	require.NoError(t, db.Create(vk).Error)
 
 	var found TableVirtualKey
 	require.NoError(t, db.First(&found, "id = ?", "vk-update").Error)
-	assert.Equal(t, "original-vk-value", found.Value.GetValue())
+	assert.Equal(t, "original-vk-value", found.Value)
 
-	found.Value = *schemas.NewSecretVar("updated-vk-value")
+	found.Value = "updated-vk-value"
 	require.NoError(t, db.Save(&found).Error)
 
 	var found2 TableVirtualKey
 	require.NoError(t, db.First(&found2, "id = ?", "vk-update").Error)
-	assert.Equal(t, "updated-vk-value", found2.Value.GetValue())
+	assert.Equal(t, "updated-vk-value", found2.Value)
 
 	raw := rawRow(t, db, "governance_virtual_keys", "vk-update")
 	assert.Equal(t, "encrypted", raw["encryption_status"])
@@ -1336,7 +1336,7 @@ func TestTableVirtualKey_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	vk := &TableVirtualKey{
 		ID:       "vk-dis-1",
 		Name:     "disabled-vk",
-		Value:    *schemas.NewSecretVar("vk-plaintext-value"),
+		Value:    "vk-plaintext-value",
 		IsActive: bifrost.Ptr(true),
 	}
 
@@ -1352,7 +1352,7 @@ func TestTableVirtualKey_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	// GORM read should return same plaintext
 	var found TableVirtualKey
 	require.NoError(t, db.Where("id = ?", "vk-dis-1").First(&found).Error)
-	assert.Equal(t, "vk-plaintext-value", found.Value.GetValue())
+	assert.Equal(t, "vk-plaintext-value", found.Value)
 }
 
 func TestSessionsTable_EncryptionDisabled_StoresPlaintext(t *testing.T) {
