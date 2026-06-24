@@ -781,11 +781,13 @@ type VirtualKeyHashInput struct {
 
 // VirtualKeyProviderConfigHashInput represents provider config fields for hashing
 type VirtualKeyProviderConfigHashInput struct {
-	Provider      string
-	Weight        *float64
-	AllowedModels []string
-	RateLimitID   *string
-	KeyIDs        []string // Only key IDs, not full key objects
+	Provider          string
+	Weight            *float64
+	AllowedModels     []string
+	BlacklistedModels []string
+	AllowAllKeys      bool
+	RateLimitID       *string
+	KeyIDs            []string // Only key IDs, not full key objects
 }
 
 // VirtualKeyMCPConfigHashInput represents MCP config fields for hashing
@@ -865,12 +867,19 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sortedAllowedModels := make([]string, len(pc.AllowedModels))
 			copy(sortedAllowedModels, pc.AllowedModels)
 			sort.Strings(sortedAllowedModels)
+
+			// Sort blacklisted models for deterministic hashing
+			sortedBlacklistedModels := make([]string, len(pc.BlacklistedModels))
+			copy(sortedBlacklistedModels, pc.BlacklistedModels)
+			sort.Strings(sortedBlacklistedModels)
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
-				Provider:      pc.Provider,
-				Weight:        pc.Weight,
-				AllowedModels: sortedAllowedModels,
-				RateLimitID:   pc.RateLimitID,
-				KeyIDs:        keyIDs,
+				Provider:          pc.Provider,
+				Weight:            pc.Weight,
+				AllowedModels:     sortedAllowedModels,
+				BlacklistedModels: sortedBlacklistedModels,
+				AllowAllKeys:      pc.AllowAllKeys,
+				RateLimitID:       pc.RateLimitID,
+				KeyIDs:            keyIDs,
 			}
 		}
 		data, err := sonic.Marshal(providerConfigsForHash)
