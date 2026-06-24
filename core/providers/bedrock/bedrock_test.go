@@ -4963,7 +4963,7 @@ func TestDocumentFormatResponsesPathRoundTrip(t *testing.T) {
 			require.NotEmpty(t, bifrostMessages, "expected at least one Bifrost message")
 
 			// Outbound: Bifrost responses messages -> Bedrock
-			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages)
+			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages, false)
 			require.NoError(t, err)
 			require.NotEmpty(t, roundTripped, "expected at least one Bedrock message after round-trip")
 
