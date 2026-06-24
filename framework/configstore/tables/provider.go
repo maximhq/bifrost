@@ -129,6 +129,7 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 
 	return nil
 }
+
 // AfterFind is a GORM hook that decrypts the proxy configuration (if encrypted) and
 // deserializes JSON columns back into runtime config structs after reading from the database.
 func (p *TableProvider) AfterFind(tx *gorm.DB) error {

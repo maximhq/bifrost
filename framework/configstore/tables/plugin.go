@@ -64,6 +64,7 @@ func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
 
 	return nil
 }
+
 // AfterFind is a GORM hook that decrypts the plugin config JSON (if encrypted) and
 // deserializes it back into the runtime Config field after reading from the database.
 func (p *TablePlugin) AfterFind(tx *gorm.DB) error {

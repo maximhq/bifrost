@@ -105,6 +105,11 @@
           "description": "Disable DB pings in health check",
           "default": false
         },
+        "dump_errors_in_console_logs": {
+          "type": "boolean",
+          "description": "Dump full error details to the server console logs. Useful for debugging; may be noisy in production.",
+          "default": false
+        },
         "log_retention_days": {
           "type": "integer",
           "minimum": 1,
@@ -2403,6 +2408,9 @@
     },
     "feature_flags": {
       "$ref": "#/$defs/feature_flags_config"
+    },
+    "circuit_breaker_config": {
+      "$ref": "#/$defs/circuit_breaker_config"
     }
   },
   "additionalProperties": false,
@@ -6008,6 +6016,111 @@
         }
       },
       "required": ["base_provider_type"],
+      "additionalProperties": false
+    },
+    "circuit_breaker_config": {
+      "type": "object",
+      "description": "Circuit breaker configuration for automatic failover when a provider endpoint degrades",
+      "properties": {
+        "policies": {
+          "type": "array",
+          "description": "List of circuit breaker policies",
+          "items": {
+            "type": "object",
+            "description": "A single circuit breaker policy that monitors a primary provider+model and redirects to a fallback when the circuit opens",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Unique name for this policy"
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether this policy is active. Disabled policies are ignored by all hooks."
+              },
+              "primary_provider": {
+                "type": "string",
+                "description": "Provider to monitor (e.g. 'azure', 'openai')"
+              },
+              "primary_model": {
+                "type": "string",
+                "description": "Model to monitor as it appears in requests (e.g. 'gpt-4-ptu')"
+              },
+              "primary_key_ids": {
+                "type": "array",
+                "description": "Optional list of key UUIDs to monitor individually. Each key gets its own sub-circuit; the main circuit opens only when all listed keys are exhausted. Leave empty to use a single shared circuit for all keys serving this provider+model.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "fallback_provider": {
+                "type": "string",
+                "description": "Provider to route to when the circuit is open"
+              },
+              "fallback_model": {
+                "type": "string",
+                "description": "Model to request from the fallback provider when the circuit is open"
+              },
+              "condition": {
+                "type": "object",
+                "description": "Response signals that trigger the circuit to open",
+                "properties": {
+                  "operator": {
+                    "type": "string",
+                    "enum": ["OR", "AND"],
+                    "default": "OR",
+                    "description": "OR (default): circuit opens when any signal matches. AND: circuit opens only when all signals match simultaneously."
+                  },
+                  "signals": {
+                    "type": "array",
+                    "description": "List of response signals to evaluate",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "enum": ["response_header"],
+                          "description": "What part of the HTTP response to inspect"
+                        },
+                        "header_name": {
+                          "type": "string",
+                          "description": "HTTP response header name to inspect"
+                        },
+                        "header_value": {
+                          "type": "string",
+                          "description": "Trips when the header equals this value (case-insensitive). Mutually exclusive with header_contains."
+                        },
+                        "header_contains": {
+                          "type": "string",
+                          "description": "Trips when the header value contains this substring (case-insensitive). Mutually exclusive with header_value. If neither is set, trips when the header is present."
+                        }
+                      },
+                      "required": ["source", "header_name"],
+                      "not": {
+                        "required": ["header_value", "header_contains"]
+                      },
+                      "additionalProperties": false
+                    },
+                    "minItems": 1
+                  }
+                },
+                "required": ["signals"],
+                "additionalProperties": false
+              },
+              "default_cooldown": {
+                "type": "string",
+                "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                "description": "How long to keep the circuit open when no header-based cooldown is available. Accepts a Go duration string (e.g. '30s', '5m'). Defaults to 30s."
+              },
+              "cooldown_header": {
+                "type": "string",
+                "description": "Response header whose value (in milliseconds) overrides default_cooldown (e.g. 'retry-after-ms'). Falls back to default_cooldown when absent or unparsable."
+              }
+            },
+            "required": ["name", "primary_provider", "primary_model", "fallback_provider", "fallback_model", "condition"],
+            "additionalProperties": false
+          }
+        }
+      },
       "additionalProperties": false
     }
   }

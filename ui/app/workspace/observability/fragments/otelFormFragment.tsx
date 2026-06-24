@@ -1,15 +1,15 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
+import { RequestHeadersTextarea } from "@/components/ui/requestHeadersTextarea";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { RequestHeadersTextarea } from "@/components/ui/requestHeadersTextarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { otelFormSchema, type SecretVar, type OtelFormSchema } from "@/lib/types/schemas";
+import { otelFormSchema, type OtelFormSchema, type SecretVar } from "@/lib/types/schemas";
 import { emptySecretVar, toSecretVarFormValue, toSecretVarMapFormValue } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -317,7 +317,12 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 	// without expanding every collapsed section.
 	const hasError = Boolean(form.formState.errors?.profiles?.[index]);
 
-	const collectorPreview = typeof collectorUrl === "string" ? collectorUrl : (collectorUrl?.type === "env" || collectorUrl?.type === "vault") ? collectorUrl.ref : collectorUrl?.value;
+	const collectorPreview =
+		typeof collectorUrl === "string"
+			? collectorUrl
+			: collectorUrl?.type === "env" || collectorUrl?.type === "vault"
+				? collectorUrl.ref
+				: collectorUrl?.value;
 
 	return (
 		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-sm border" data-testid={`otel-profile-${index}`}>
@@ -427,11 +432,14 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						name={`${base}.request_headers`}
 						render={({ field }) => (
 							<FormItem className="w-full">
-								<FormLabel>Request Headers <span className="text-muted-foreground font-normal">(Optional)</span></FormLabel>
+								<FormLabel>
+									Request Headers <span className="text-muted-foreground font-normal">(Optional)</span>
+								</FormLabel>
 								<FormDescription>
-									Comma-separated list of request headers to capture and emit as span attributes. Supports exact names and wildcard
-									patterns (e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> captures
-									all headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization).
+									Comma-separated list of request headers to capture and emit as span attributes. Supports exact names and wildcard patterns
+									(e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix,{" "}
+									<code className="text-xs">*</code> captures all headers — note that <code className="text-xs">*</code> will capture
+									sensitive headers like Authorization).
 								</FormDescription>
 								<FormControl>
 									<RequestHeadersTextarea
@@ -455,12 +463,17 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								<div className="space-y-0.5">
 									<FormLabel className="text-base">Disable Content Logging</FormLabel>
 									<FormDescription>
-										When enabled, message content (input/output messages, tool definitions, and tool call arguments/results) is dropped
-										from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.
+										When enabled, message content (input/output messages, tool definitions, and tool call arguments/results) is dropped from
+										exported spans. Only metadata such as model, tokens, and latency is sent to the collector.
 									</FormDescription>
 								</div>
 								<FormControl>
-									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-disable-content-logging-toggle`} />
+									<Switch
+										checked={field.value}
+										onCheckedChange={field.onChange}
+										disabled={!hasOtelAccess}
+										data-testid={`otel-profile-${index}-disable-content-logging-toggle`}
+									/>
 								</FormControl>
 							</FormItem>
 						)}
@@ -473,13 +486,18 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								<div className="space-y-0.5">
 									<FormLabel className="text-base">Group Traces by Session</FormLabel>
 									<FormDescription>
-										When enabled, requests sharing the same x-bf-session-id header are grouped into a single trace, each request
-										appearing as a top-level sibling span. A request carrying an inbound W3C traceparent stays on its own
-										distributed trace and is unaffected.
+										When enabled, requests sharing the same x-bf-session-id header are grouped into a single trace, each request appearing
+										as a top-level sibling span. A request carrying an inbound W3C traceparent stays on its own distributed trace and is
+										unaffected.
 									</FormDescription>
 								</div>
 								<FormControl>
-									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-group-traces-by-session-toggle`} />
+									<Switch
+										checked={field.value}
+										onCheckedChange={field.onChange}
+										disabled={!hasOtelAccess}
+										data-testid={`otel-profile-${index}-group-traces-by-session-toggle`}
+									/>
 								</FormControl>
 							</FormItem>
 						)}
@@ -492,13 +510,18 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								<div className="space-y-0.5">
 									<FormLabel className="text-base">Disable Root Span Content</FormLabel>
 									<FormDescription>
-										When enabled, input/output message content is dropped from the root span only; the underlying generation
-										(llm.call) span keeps the full content. This removes the duplicate input/output stored at the trace level
-										(e.g. Langfuse trace Input/Output goes empty) to reduce downstream storage.
+										When enabled, input/output message content is dropped from the root span only; the underlying generation (llm.call) span
+										keeps the full content. This removes the duplicate input/output stored at the trace level (e.g. Langfuse trace
+										Input/Output goes empty) to reduce downstream storage.
 									</FormDescription>
 								</div>
 								<FormControl>
-									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-disable-root-span-content-toggle`} />
+									<Switch
+										checked={field.value}
+										onCheckedChange={field.onChange}
+										disabled={!hasOtelAccess}
+										data-testid={`otel-profile-${index}-disable-root-span-content-toggle`}
+									/>
 								</FormControl>
 							</FormItem>
 						)}

@@ -505,7 +505,14 @@ func HandleOpenAITextCompletionStreaming(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -1050,7 +1057,14 @@ func HandleOpenAIChatCompletionStreaming(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -1695,7 +1709,14 @@ func HandleOpenAIResponsesStreaming(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -2317,7 +2338,14 @@ func HandleOpenAISpeechStreamRequest(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them

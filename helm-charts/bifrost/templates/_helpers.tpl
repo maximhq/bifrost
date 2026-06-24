@@ -268,6 +268,9 @@ false
 {{- if hasKey .Values.bifrost.client "disableDbPingsInHealth" }}
 {{- $_ := set $client "disable_db_pings_in_health" .Values.bifrost.client.disableDbPingsInHealth }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "dumpErrorsInConsoleLogs" }}
+{{- $_ := set $client "dump_errors_in_console_logs" .Values.bifrost.client.dumpErrorsInConsoleLogs }}
+{{- end }}
 {{- if .Values.bifrost.client.headerFilterConfig }}
 {{- $headerFilter := dict }}
 {{- if .Values.bifrost.client.headerFilterConfig.allowlist }}

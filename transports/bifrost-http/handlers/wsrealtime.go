@@ -830,7 +830,11 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyAPIKeyName,
 	schemas.BifrostContextKeySelectedKeyID,
 	schemas.BifrostContextKeySelectedKeyName,
-	schemas.BifrostContextKeyTraceID,
+	// NOTE: BifrostContextKeyTraceID is intentionally NOT inherited here. The
+	// upgrade request's trace is already ended by the time realtime turns run, so
+	// inheriting it would route each turn's log entry into pendingLogsToInject
+	// under a dead trace ID whose Inject() never fires, dropping the row. Each
+	// realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
 	schemas.BifrostContextKeyTransportPluginLogs,
 }
 

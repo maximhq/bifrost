@@ -63,7 +63,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 				nextCalled = true
 			}
 
-			middleware := CorsMiddleware(config)
+			middleware := NewCorsMiddleware(config).Middleware()
 			handler := middleware(next)
 			handler(ctx)
 
@@ -109,7 +109,7 @@ func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -140,7 +140,7 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -172,7 +172,7 @@ func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -209,7 +209,7 @@ func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -246,7 +246,7 @@ func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -282,7 +282,7 @@ func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1083,7 +1083,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1119,7 +1119,7 @@ func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1156,7 +1156,7 @@ func TestCorsMiddleware_WildcardHeaders_CredentialedPreflight(t *testing.T) {
 		t.Error("Next handler should not be called for preflight")
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1193,7 +1193,7 @@ func TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1233,7 +1233,7 @@ func TestCorsMiddleware_CustomHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1279,7 +1279,7 @@ func TestCorsMiddleware_DuplicateHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1321,7 +1321,7 @@ func TestCorsMiddleware_CustomHeadersWithLocalhost(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1355,7 +1355,7 @@ func TestCorsMiddleware_CustomHeadersNotSetForNonAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 

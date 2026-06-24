@@ -77,6 +77,7 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
+
 // BeforeSave validates WhiteList and BlackList fields before GORM persists the record.
 func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.AllowedModels.Validate(); err != nil {

@@ -185,9 +185,16 @@ function ModelsUsedCell({ models: rawModels }: { models: string[] }) {
 		<TooltipProvider>
 			<div className="flex flex-wrap items-center gap-1">
 				{visible.map((m) => (
-					<Badge key={m} variant="outline" className="max-w-[220px] truncate text-xs font-normal">
-						{m}
-					</Badge>
+					<Tooltip key={m}>
+						<TooltipTrigger asChild>
+							<Badge variant="outline" className="block max-w-[220px] truncate text-xs font-normal">
+								{m}
+							</Badge>
+						</TooltipTrigger>
+						<TooltipContent side="bottom" className="max-w-xs break-all">
+							{m}
+						</TooltipContent>
+					</Tooltip>
 				))}
 				{remaining > 0 && (
 					<Tooltip>

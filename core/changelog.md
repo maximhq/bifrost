@@ -1,4 +1,13 @@
 - fix: finalize GigaChat response streams through stream gate [@krakenalt](https://github.com/krakenalt)
+- fix: add GLM-5.2 to models supporting max reasoning effort [@is911](https://github.com/is911)
+- feat: add OpenCode gateway providers (Go, Zen) (thanks [@neta79](https://github.com/neta79)!)
+- feat: add advisor tool compatibility for Claude
+- fix(bedrock): preserve tool_result order to match parallel tool_use blocks (thanks [@alexef](https://github.com/alexef)!)
+- fix: preserve request conversion for Gemini/Vertex batch requests
+- fix(bedrock): set TTL in cache points
+- fix: commit routing-pinned key ID to reserved BifrostContextKeyAPIKeyID after PreRequestHook unblock
+- fix: preserve extra_content on ChatAssistantMessageToolCall so provider-specific tool-call metadata (e.g. Gemini thought_signature) round-trips losslessly through the gateway (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
+- fix: surface Anthropic prompt-cache diagnostics (cache-diagnosis-2026-04-07 beta) via new CacheDiagnostics/CacheMissReason schema, reporting the first cache-prefix divergence point on chat and responses APIs
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
 - fix: recover from idle-timeout timer-goroutine panic that could crash the process

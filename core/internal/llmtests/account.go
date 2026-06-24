@@ -274,7 +274,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Bedrock:
 		return []schemas.Key{
 			{
-				Models: []string{"*"},
+				Models: []string{"claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.7-sonnet": {ModelID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"},
@@ -282,6 +282,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"claude-4.5-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
 					"claude-4.6-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-6"},
 					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
+					"claude-opus-4-5":   {ModelID: "global.anthropic.claude-opus-4-5-20251101-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
@@ -292,7 +293,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{"*"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
@@ -529,7 +530,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Runware:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.RUNWARE_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.RUNWARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
