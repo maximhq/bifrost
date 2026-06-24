@@ -1828,6 +1828,14 @@ func HandleOpenAIResponsesStreaming(
 					if response.Code != nil {
 						bifrostErr.Error.Code = response.Code
 					}
+					if response.Error != nil {
+						if response.Error.Message != "" && bifrostErr.Error.Message == "" {
+							bifrostErr.Error.Message = response.Error.Message
+						}
+						if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+							bifrostErr.Error.Code = &response.Error.Code
+						}
+					}
 					if response.Response != nil && response.Response.Error != nil {
 						if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
 							bifrostErr.Error.Message = response.Response.Error.Message
