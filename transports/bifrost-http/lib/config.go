@@ -3883,6 +3883,7 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 					Path:       plugin.Path,
 					Placement:  plugin.Placement,
 					Order:      plugin.Order,
+					Version:    bifrost.Ptr(plugin.Version),
 					ConfigHash: plugin.ConfigHash,
 				}
 				if plugin.Name == semanticcache.PluginName {
@@ -3996,6 +3997,11 @@ func toTablePlugin(plugin *schemas.PluginConfig) (*configstoreTables.TablePlugin
 		return nil, err
 	}
 
+	version := int16(1)
+	if plugin.Version != nil {
+		version = *plugin.Version
+	}
+
 	return &configstoreTables.TablePlugin{
 		Name:       plugin.Name,
 		Enabled:    plugin.Enabled,
@@ -4003,6 +4009,7 @@ func toTablePlugin(plugin *schemas.PluginConfig) (*configstoreTables.TablePlugin
 		Path:       plugin.Path,
 		Placement:  plugin.Placement,
 		Order:      plugin.Order,
+		Version:    version,
 		ConfigHash: plugin.ConfigHash,
 	}, nil
 }
@@ -4046,14 +4053,13 @@ func syncPluginsFromFile(ctx context.Context, config *Config, configData *Config
 				plugin.Version = bifrost.Ptr(int16(1))
 			}
 			tablePlugin := &configstoreTables.TablePlugin{
-				Name:       plugin.Name,
-				Enabled:    plugin.Enabled,
-				Config:     pluginConfigCopy,
-				Path:       plugin.Path,
-				Version:    *plugin.Version,
-				Placement:  plugin.Placement,
-				Order:      plugin.Order,
-				ConfigHash: plugin.ConfigHash,
+				Name:      plugin.Name,
+				Enabled:   plugin.Enabled,
+				Config:    pluginConfigCopy,
+				Path:      plugin.Path,
+				Version:   *plugin.Version,
+				Placement: plugin.Placement,
+				Order:     plugin.Order,
 			}
 			if err := config.ConfigStore.UpdatePlugin(ctx, tablePlugin, tx); err != nil {
 				return fmt.Errorf("failed to update plugin %s: %w", plugin.Name, err)
