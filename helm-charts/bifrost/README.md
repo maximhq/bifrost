@@ -11,6 +11,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming [2.1.25]
 
 - Added `evaluation_mode` to guardrail rules in `values.yaml`, `values.schema.json`, `config.schema.json`, and `_helpers.tpl`. The field renders into `guardrails_config.guardrail_rules[].evaluation_mode` and supports `bundled` (default) and `per_turn`.
+- Added `group_traces_by_session` boolean to the OTEL plugin (both single-profile and per-profile shapes) and the Datadog plugin. When `true`, all requests sharing the same `x-bf-session-id` header are grouped into a single trace using a deterministic trace ID derived from the session ID. An inbound W3C `traceparent` always takes precedence. When `false` (default), each request produces its own trace but `session.id` is still tagged on the root span.
+- Added `storage.configStore.vaultStore` to `values.yaml` (commented-out reference block). The schema (`values.schema.json`) and template (`_helpers.tpl`) already supported this field; the values file now documents all available options. Supports three backends — `aws-secrets-manager` (region, access key, role ARN, KMS key), `gcp-secret-manager` (project ID, credentials JSON), and `hashicorp-vault` (address, token, namespace, mount path, AppRole). Set `accessMode: read_and_write` to auto-store plaintext fields as vault secrets on save; `read_only` (default) only resolves existing `vault.<path>` references at load time.
 
 ### 2.1.24
 
