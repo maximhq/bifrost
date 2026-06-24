@@ -3,11 +3,9 @@
  * Smart input component that adapts based on operator and field type
  */
 
-import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
+import { ComboboxSelect, ComboboxSelectOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { Option } from "@/components/ui/multiselectUtils";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
@@ -163,6 +161,21 @@ export function ValueEditor({
 
 	// Handle select type (for provider dropdown)
 	if (isSelectType && fieldData?.values) {
+		const isProviderField = fieldData?.name === "provider";
+		const options: ComboboxSelectOption[] = (fieldData.values as any[])
+			.filter((option) => !("options" in option) && (option as any).name)
+			.map((option) => {
+				const optName = (option as any).name || "";
+				const optLabel = (option as any).label || optName;
+
+				return {
+					value: optName,
+					label: isProviderField ? getProviderLabel(optName) : optLabel,
+					disabled: (option as any).disabled || false,
+					icon: isProviderField ? <RenderProviderIcon provider={optName as ProviderIconType} size="sm" className="h-4 w-4" /> : undefined,
+				};
+			});
+
 		// For array operators with provider, use multi-select dropdown
 		if (isArrayOperator) {
 			// Parse comma-separated or JSON array value
@@ -183,77 +196,32 @@ export function ValueEditor({
 				}
 			}
 
-			const selectedOptions: Option<string>[] = selectedValues.map((val) => ({
-				value: val,
-				label: (fieldData.values as any[]).find((opt) => (opt as any).name === val)?.label || val,
-			}));
-
-			const allOptions: Option<string>[] = (fieldData.values as any[])
-				.filter((opt) => !("options" in opt) && (opt as any).name)
-				.map((opt) => ({
-					value: (opt as any).name,
-					label: (opt as any).label,
-				}));
-
-			const handleMultiselectChange = (selected: Option<string>[]) => {
-				const values = selected.map((opt) => opt.value);
+			const handleMultiselectChange = (values: string[]) => {
 				handleOnChange(values.length > 0 ? JSON.stringify(values) : "");
 			};
 
 			return (
-				<AsyncMultiSelect
-					value={selectedOptions}
-					onChange={handleMultiselectChange}
-					defaultOptions={allOptions}
-					isNonAsync={true}
-					isClearable={false}
+				<ComboboxSelect
+					multiple
+					value={selectedValues}
+					onValueChange={handleMultiselectChange}
+					options={options}
 					placeholder="Select providers..."
-					className="w-[360px]"
-					triggerClassName="!shadow-none !border-border h-10"
-					menuClassName="!z-[100] w-full cursor-pointer"
+					className="h-10 w-[360px]"
+					noPortal
 				/>
 			);
 		}
 
-		// Check if this is a provider field to render icons in trigger
-		const isProviderField = fieldData?.name === "provider";
-
 		return (
-			<Select value={value || ""} onValueChange={handleOnChange}>
-				<SelectTrigger className="w-[360px]">
-					{isProviderField && value ? (
-						<div className="flex items-center gap-2">
-							<RenderProviderIcon provider={value as ProviderIconType} size="sm" className="h-4 w-4" />
-							<span>{getProviderLabel(value)}</span>
-						</div>
-					) : (
-						<SelectValue placeholder={fieldData.placeholder || "Select..."} />
-					)}
-				</SelectTrigger>
-				<SelectContent>
-					{fieldData.values.map((option) => {
-						if ("options" in option) return null; // Skip option groups
-						const optName = (option as any).name || "";
-						if (!optName) return null; // Skip empty values — SelectItem requires non-empty value
-						const optLabel = (option as any).label || optName;
-						const optDisabled = (option as any).disabled || false;
-
-						let iconElement: React.ReactNode | undefined;
-						let displayLabel = optLabel;
-
-						if (isProviderField) {
-							iconElement = <RenderProviderIcon provider={optName as ProviderIconType} size="sm" className="h-4 w-4" />;
-							displayLabel = getProviderLabel(optName);
-						}
-
-						return (
-							<SelectItem key={optName} value={optName} disabled={optDisabled} icon={iconElement}>
-								{displayLabel}
-							</SelectItem>
-						);
-					})}
-				</SelectContent>
-			</Select>
+			<ComboboxSelect
+				value={value || null}
+				onValueChange={(newValue) => handleOnChange(newValue ?? "")}
+				options={options}
+				placeholder={fieldData.placeholder || "Select..."}
+				className="h-10 w-[360px]"
+				noPortal
+			/>
 		);
 	}
 
