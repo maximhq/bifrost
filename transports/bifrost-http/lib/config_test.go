@@ -7419,6 +7419,76 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 	}
 }
 
+// TestGenerateVirtualKeyHash_AllowAllKeysAndBlacklistedModels verifies the VK hash
+// covers a provider config's AllowAllKeys and BlacklistedModels. Without them in the
+// hash, adding key_ids:["*"] (AllowAllKeys=true) to an existing VK would not register
+// as a change in split mode and would never sync to the DB.
+func TestGenerateVirtualKeyHash_AllowAllKeysAndBlacklistedModels(t *testing.T) {
+	base := func() tables.TableVirtualKey {
+		return tables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "test-vk",
+			Value:    *schemas.NewSecretVar("vk_abc123"),
+			IsActive: schemas.Ptr(true),
+			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+				{
+					VirtualKeyID:  "vk-1",
+					Provider:      "openai",
+					Weight:        ptrFloat64(1.0),
+					AllowedModels: []string{"*"},
+					AllowAllKeys:  false,
+				},
+			},
+		}
+	}
+
+	hashKeysDenied, err := configstore.GenerateVirtualKeyHash(base())
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	// Flip AllowAllKeys true (the key_ids:["*"] case) -> hash must change.
+	vkAllowAll := base()
+	vkAllowAll.ProviderConfigs[0].AllowAllKeys = true
+	hashAllowAll, err := configstore.GenerateVirtualKeyHash(vkAllowAll)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+	if hashKeysDenied == hashAllowAll {
+		t.Error("Expected different hash when AllowAllKeys toggles")
+	}
+
+	// Changing BlacklistedModels must change the hash too.
+	vkBlacklist := base()
+	vkBlacklist.ProviderConfigs[0].BlacklistedModels = []string{"gpt-4"}
+	hashBlacklist, err := configstore.GenerateVirtualKeyHash(vkBlacklist)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+	if hashKeysDenied == hashBlacklist {
+		t.Error("Expected different hash when BlacklistedModels changes")
+	}
+}
+
+// TestProviderConfigUnmarshalJSON_KeyIDsWildcard verifies key_ids:["*"] parses to
+// AllowAllKeys=true (no literal "*" key), while explicit key_ids map to Keys.
+func TestProviderConfigUnmarshalJSON_KeyIDsWildcard(t *testing.T) {
+	var wildcard tables.TableVirtualKeyProviderConfig
+	if err := json.Unmarshal([]byte(`{"provider":"openai","key_ids":["*"]}`), &wildcard); err != nil {
+		t.Fatalf("unmarshal wildcard: %v", err)
+	}
+	require.True(t, wildcard.AllowAllKeys, `key_ids:["*"] should set AllowAllKeys=true`)
+	require.Empty(t, wildcard.Keys, "wildcard must not create a literal key")
+
+	var explicit tables.TableVirtualKeyProviderConfig
+	if err := json.Unmarshal([]byte(`{"provider":"openai","key_ids":["k1","k2"]}`), &explicit); err != nil {
+		t.Fatalf("unmarshal explicit: %v", err)
+	}
+	require.False(t, explicit.AllowAllKeys)
+	require.Len(t, explicit.Keys, 2)
+	require.Equal(t, "k1", explicit.Keys[0].KeyID)
+}
+
 // TestGenerateVirtualKeyHash_WithMCPConfigs tests hash generation with MCP configs
 func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 	// Virtual key with MCP configs
@@ -9116,6 +9186,93 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 		if providerConfigs[0].Weight == nil || *providerConfigs[0].Weight != 2.0 {
 			t.Errorf("Expected weight 2.0, got %v", providerConfigs[0].Weight)
 		}
+	}
+}
+
+// TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys reproduces the
+// source_of_truth=config.json bug: adding key_ids:["*"] (AllowAllKeys=true) to an
+// existing VK provider config must flip allow_all_keys in the DB on reload.
+// reconcileVirtualKeyAssociations previously copied Weight/AllowedModels/Keys but not
+// AllowAllKeys, so the row stayed false even though the file declared all keys allowed.
+func TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}
+
+	// Phase 1: existing VK provider config with AllowAllKeys=false.
+	vks1 := []tables.TableVirtualKey{
+		{
+			ID:       "vk-1",
+			Name:     "wildcard-vk",
+			Value:    *schemas.NewSecretVar("vk_test123"),
+			IsActive: schemas.Ptr(true),
+			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+				{
+					Provider:      "openai",
+					Weight:        ptrFloat64(1.0),
+					AllowedModels: []string{"*"},
+					AllowAllKeys:  false,
+				},
+			},
+		},
+	}
+	configData1 := makeConfigDataWithVirtualKeysAndDir(providers, vks1, tempDir)
+	configData1.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData1)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+	pcs1, err := config1.ConfigStore.GetVirtualKeyProviderConfigs(ctx, "vk-1")
+	if err != nil {
+		t.Fatalf("Failed to get provider configs: %v", err)
+	}
+	if len(pcs1) != 1 || pcs1[0].AllowAllKeys {
+		t.Fatalf("Phase 1: expected 1 provider config with AllowAllKeys=false, got %+v", pcs1)
+	}
+	config1.Close(ctx)
+
+	// Phase 2: same VK, provider config now declares key_ids:["*"] (AllowAllKeys=true).
+	vks2 := []tables.TableVirtualKey{
+		{
+			ID:       "vk-1",
+			Name:     "wildcard-vk",
+			Value:    *schemas.NewSecretVar("vk_test123"),
+			IsActive: schemas.Ptr(true),
+			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+				{
+					Provider:      "openai",
+					Weight:        ptrFloat64(1.0),
+					AllowedModels: []string{"*"},
+					AllowAllKeys:  true,
+				},
+			},
+		},
+	}
+	configData2 := makeConfigDataWithVirtualKeysAndDir(providers, vks2, tempDir)
+	configData2.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData2)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("Second LoadConfig failed: %v", err)
+	}
+	defer config2.Close(ctx)
+
+	pcs2, err := config2.ConfigStore.GetVirtualKeyProviderConfigs(ctx, "vk-1")
+	if err != nil {
+		t.Fatalf("Failed to get provider configs after reload: %v", err)
+	}
+	if len(pcs2) != 1 {
+		t.Fatalf("Phase 2: expected 1 provider config, got %d", len(pcs2))
+	}
+	if !pcs2[0].AllowAllKeys {
+		t.Error(`Phase 2: expected allow_all_keys=true after key_ids:["*"] sync, got false`)
 	}
 }
 

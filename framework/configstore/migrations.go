@@ -29,6 +29,12 @@ import (
 // calling addColumnIfNotExists(tx, ...) directly.
 var addColumnIfNotExists = migrator.AddColumnIfNotExists
 
+// dropColumnIfExists is the drop counterpart to addColumnIfNotExists: a
+// package-local alias for migrator.DropColumnIfExists, the idempotent
+// column-drop helper shared with logstore. Declared at package scope for the
+// same reason as above so call sites can use dropColumnIfExists(tx, ...).
+var dropColumnIfExists = migrator.DropColumnIfExists
+
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes
@@ -576,7 +582,7 @@ func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 		if err != nil {
 			return err
 		}
-		if err := mg.DropColumn(model, "budget_id"); err != nil {
+		if err := dropColumnIfExists(tx, nil, model, "budget_id"); err != nil {
 			return fmt.Errorf("failed to drop legacy %s.budget_id column: %w", tableName, err)
 		}
 	}
@@ -660,9 +666,7 @@ func migrationAddClientConfigMetadataColumn(ctx context.Context, db *gorm.DB, lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column metadata_json from TableClientConfig", migrationName)
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "metadata_json"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "metadata_json"); err != nil {
 				return err
 			}
 			return nil
@@ -761,9 +765,7 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column store_raw_request_response from TableProvider", migrationName)
-			if err := migrator.DropColumn(&tables.TableProvider{}, "store_raw_request_response"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "store_raw_request_response"); err != nil {
 				return err
 			}
 			return nil
@@ -1250,12 +1252,8 @@ func migrationDropAllowDirectKeysColumnDDL(ctx context.Context, db *gorm.DB, log
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				logger.Info("[configstore] %s: dropping column allow_direct_keys from TableClientConfig", migrationName)
-				if err := mig.DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1393,11 +1391,8 @@ func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB, logger sch
 					return fmt.Errorf("drop unique index on governance_teams.source_id: %w", err)
 				}
 			}
-			if mg.HasColumn(&tables.TableTeam{}, "source_id") {
-				logger.Info("[configstore] %s: dropping column source_id from TableTeam", migrationName)
-				if err := mg.DropColumn(&tables.TableTeam{}, "source_id"); err != nil {
-					return fmt.Errorf("drop source_id column from governance_teams: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableTeam{}, "source_id"); err != nil {
+				return fmt.Errorf("drop source_id column from governance_teams: %w", err)
 			}
 			return nil
 		},
@@ -1452,13 +1447,11 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB, logger schemas.
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 			// Drop the unique index first to avoid orphaned index artifacts
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_key_name").Error; err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column name from TableKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableKey{}, "name"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "name"); err != nil {
 				return err
 			}
 			return nil
@@ -1480,22 +1473,15 @@ func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB, logg
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			// Step 1: Remove ToolsToSkipJSON column if it exists (cleanup from old versions)
-			if migrator.HasColumn(&tables.TableMCPClient{}, "tools_to_skip_json") {
-				logger.Info("[configstore] %s: dropping column tools_to_skip_json from TableMCPClient", migrationName)
-				if err := migrator.DropColumn(&tables.TableMCPClient{}, "tools_to_skip_json"); err != nil {
-					return fmt.Errorf("failed to drop tools_to_skip_json column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tools_to_skip_json"); err != nil {
+				return fmt.Errorf("failed to drop tools_to_skip_json column: %w", err)
 			}
 
 			// Alternative column name variations that might exist
-			if migrator.HasColumn(&tables.TableMCPClient{}, "ToolsToSkipJSON") {
-				logger.Info("[configstore] %s: dropping column ToolsToSkipJSON from TableMCPClient", migrationName)
-				if err := migrator.DropColumn(&tables.TableMCPClient{}, "ToolsToSkipJSON"); err != nil {
-					return fmt.Errorf("failed to drop ToolsToSkipJSON column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "ToolsToSkipJSON"); err != nil {
+				return fmt.Errorf("failed to drop ToolsToSkipJSON column: %w", err)
 			}
 
 			// Step 2: Update empty ToolsToExecuteJSON arrays to wildcard ["*"]
@@ -1633,11 +1619,8 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB,
 
 			// Drop columns via raw SQL (budget_id no longer on struct)
 			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
-			if migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id") {
-				logger.Info("[configstore] %s: dropping column rate_limit_id from TableVirtualKeyProviderConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id"); err != nil {
-					return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKeyProviderConfig{}, "rate_limit_id"); err != nil {
+				return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
 			}
 
 			return nil
@@ -1669,13 +1652,10 @@ func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB, logger schem
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column path from TablePlugin", migrationName)
-			if err := migrator.DropColumn(&tables.TablePlugin{}, "path"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TablePlugin{}, "path"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column is_custom from TablePlugin", migrationName)
-			if err := migrator.DropColumn(&tables.TablePlugin{}, "is_custom"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TablePlugin{}, "is_custom"); err != nil {
 				return err
 			}
 			return nil
@@ -1739,9 +1719,7 @@ func migrationAddHeadersJSONColumnIntoMCPClient(ctx context.Context, db *gorm.DB
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column headers_json from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "headers_json"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "headers_json"); err != nil {
 				return err
 			}
 			return nil
@@ -1770,9 +1748,7 @@ func migrationAddDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column disable_content_logging from TableClientConfig", migrationName)
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "disable_content_logging"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_content_logging"); err != nil {
 				return err
 			}
 			return nil
@@ -1835,15 +1811,13 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			// Drop the unique index first to avoid orphaned index artifacts
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_mcp_client_id").Error; err != nil {
 				return fmt.Errorf("failed to drop client_id index: %w", err)
 			}
 
-			logger.Info("[configstore] %s: dropping column client_id from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "client_id"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "client_id"); err != nil {
 				return fmt.Errorf("failed to drop client_id column: %w", err)
 			}
 
@@ -1874,9 +1848,7 @@ func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column vertex_project_number from TableKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableKey{}, "vertex_project_number"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_project_number"); err != nil {
 				return err
 			}
 			return nil
@@ -1975,9 +1947,7 @@ func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column provider from TableKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableKey{}, "provider"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "provider"); err != nil {
 				return err
 			}
 			return nil
@@ -2013,9 +1983,7 @@ func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column tools_to_auto_execute_json from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tools_to_auto_execute_json"); err != nil {
 				return err
 			}
 			return nil
@@ -2051,9 +2019,7 @@ func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column is_code_mode_client from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
 				return err
 			}
 			return nil
@@ -2082,9 +2048,7 @@ func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column log_retention_days from TableClientConfig", migrationName)
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "log_retention_days"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "log_retention_days"); err != nil {
 				return err
 			}
 			return nil
@@ -2119,13 +2083,9 @@ func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 
-			if mg.HasColumn(&tables.TableKey{}, "enabled") {
-				logger.Info("[configstore] %s: dropping column enabled from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "enabled"); err != nil {
-					return fmt.Errorf("failed to drop enabled column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "enabled"); err != nil {
+				return fmt.Errorf("failed to drop enabled column: %w", err)
 			}
 
 			return nil
@@ -2163,21 +2123,16 @@ func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column cache_read_input_token_cost from TableModelPricing", migrationName)
-			if err := migrator.DropColumn(&tables.TableModelPricing{}, "cache_read_input_token_cost"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "cache_read_input_token_cost"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column cache_creation_input_token_cost from TableModelPricing", migrationName)
-			if err := migrator.DropColumn(&tables.TableModelPricing{}, "cache_creation_input_token_cost"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "cache_creation_input_token_cost"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column input_cost_per_token_batches from TableModelPricing", migrationName)
-			if err := migrator.DropColumn(&tables.TableModelPricing{}, "input_cost_per_token_batches"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "input_cost_per_token_batches"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column output_cost_per_token_batches from TableModelPricing", migrationName)
-			if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_token_batches"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "output_cost_per_token_batches"); err != nil {
 				return err
 			}
 			return nil
@@ -2204,13 +2159,10 @@ func migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx context.Cont
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column mcp_agent_depth from TableClientConfig", migrationName)
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_agent_depth"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_agent_depth"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column mcp_tool_execution_timeout from TableClientConfig", migrationName)
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_tool_execution_timeout"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_tool_execution_timeout"); err != nil {
 				return err
 			}
 			return nil
@@ -2240,9 +2192,7 @@ func migrationAddMCPCodeModeBindingLevelColumn(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migratorInstance := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column mcp_code_mode_binding_level from TableClientConfig", migrationName)
-			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_code_mode_binding_level"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_code_mode_binding_level"); err != nil {
 				return err
 			}
 			return nil
@@ -2545,9 +2495,7 @@ func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB, logger sc
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column version from TablePlugin", migrationName)
-			if err := migrator.DropColumn(&tables.TablePlugin{}, "version"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TablePlugin{}, "version"); err != nil {
 				return err
 			}
 			return nil
@@ -2575,9 +2523,7 @@ func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column send_back_raw_request from TableProvider", migrationName)
-			if err := migrator.DropColumn(&tables.TableProvider{}, "send_back_raw_request"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "send_back_raw_request"); err != nil {
 				return err
 			}
 			return nil
@@ -2670,13 +2616,10 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB, logger schem
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column config_hash from TableProvider", migrationName)
-			if err := migrator.DropColumn(&tables.TableProvider{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "config_hash"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column config_hash from TableKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableKey{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "config_hash"); err != nil {
 				return err
 			}
 			return nil
@@ -2726,9 +2669,7 @@ func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB, lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column config_hash from TableVirtualKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableVirtualKey{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "config_hash"); err != nil {
 				return err
 			}
 			return nil
@@ -2936,33 +2877,25 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column config_hash from TableClientConfig", migrationName)
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "config_hash"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column config_hash from TableBudget", migrationName)
-			if err := migrator.DropColumn(&tables.TableBudget{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "config_hash"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column config_hash from TableRateLimit", migrationName)
-			if err := migrator.DropColumn(&tables.TableRateLimit{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableRateLimit{}, "config_hash"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column config_hash from TableCustomer", migrationName)
-			if err := migrator.DropColumn(&tables.TableCustomer{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableCustomer{}, "config_hash"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column config_hash from TableTeam", migrationName)
-			if err := migrator.DropColumn(&tables.TableTeam{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableTeam{}, "config_hash"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column config_hash from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "config_hash"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column config_hash from TablePlugin", migrationName)
-			if err := migrator.DropColumn(&tables.TablePlugin{}, "config_hash"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TablePlugin{}, "config_hash"); err != nil {
 				return err
 			}
 			return nil
@@ -3001,7 +2934,6 @@ func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			columns := []string{
 				"input_cost_per_token_above_200k_tokens",
@@ -3011,11 +2943,8 @@ func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB, logge
 			}
 
 			for _, field := range columns {
-				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -3051,7 +2980,6 @@ func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB, logger sc
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			columns := []string{
 				"input_cost_per_image_token",
@@ -3062,11 +2990,8 @@ func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB, logger sc
 			}
 
 			for _, field := range columns {
-				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -3099,20 +3024,13 @@ func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 
-			if mg.HasColumn(&tables.TableKey{}, "use_for_batch_api") {
-				logger.Info("[configstore] %s: dropping column use_for_batch_api from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "use_for_batch_api"); err != nil {
-					return fmt.Errorf("failed to drop use_for_batch_api column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "use_for_batch_api"); err != nil {
+				return fmt.Errorf("failed to drop use_for_batch_api column: %w", err)
 			}
 
-			if mg.HasColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json") {
-				logger.Info("[configstore] %s: dropping column bedrock_batch_s3_config_json from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json"); err != nil {
-					return fmt.Errorf("failed to drop bedrock_batch_s3_config_json column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "bedrock_batch_s3_config_json"); err != nil {
+				return fmt.Errorf("failed to drop bedrock_batch_s3_config_json column: %w", err)
 			}
 
 			return nil
@@ -3142,13 +3060,9 @@ func migrationAddHeaderFilterConfigJSONColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 
-			if mg.HasColumn(&tables.TableClientConfig{}, "header_filter_config_json") {
-				logger.Info("[configstore] %s: dropping column header_filter_config_json from TableClientConfig", migrationName)
-				if err := mg.DropColumn(&tables.TableClientConfig{}, "header_filter_config_json"); err != nil {
-					return fmt.Errorf("failed to drop header_filter_config_json column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "header_filter_config_json"); err != nil {
+				return fmt.Errorf("failed to drop header_filter_config_json column: %w", err)
 			}
 			return nil
 		},
@@ -3182,17 +3096,13 @@ func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Cont
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column azure_client_id from TableKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableKey{}, "azure_client_id"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_client_id"); err != nil {
 				return fmt.Errorf("failed to drop azure_client_id column: %w", err)
 			}
-			logger.Info("[configstore] %s: dropping column azure_client_secret from TableKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableKey{}, "azure_client_secret"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_client_secret"); err != nil {
 				return fmt.Errorf("failed to drop azure_client_secret column: %w", err)
 			}
-			logger.Info("[configstore] %s: dropping column azure_tenant_id from TableKey", migrationName)
-			if err := migrator.DropColumn(&tables.TableKey{}, "azure_tenant_id"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_tenant_id"); err != nil {
 				return fmt.Errorf("failed to drop azure_tenant_id column: %w", err)
 			}
 			return nil
@@ -3219,9 +3129,7 @@ func migrationAddToolPricingJSONColumn(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column tool_pricing_json from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_pricing_json"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tool_pricing_json"); err != nil {
 				return fmt.Errorf("failed to drop tool_pricing_json column: %w", err)
 			}
 			return nil
@@ -3800,19 +3708,13 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB, log
 			}
 
 			// Drop rate_limit_id column if it exists
-			if migrator.HasColumn(provider, "rate_limit_id") {
-				logger.Info("[configstore] %s: dropping column rate_limit_id from TableProvider", migrationName)
-				if err := migrator.DropColumn(provider, "rate_limit_id"); err != nil {
-					return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, provider, "rate_limit_id"); err != nil {
+				return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
 			}
 
 			// Drop budget_id column if it exists
-			if migrator.HasColumn(provider, "budget_id") {
-				logger.Info("[configstore] %s: dropping column budget_id from TableProvider", migrationName)
-				if err := migrator.DropColumn(provider, "budget_id"); err != nil {
-					return fmt.Errorf("failed to drop budget_id column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, provider, "budget_id"); err != nil {
+				return fmt.Errorf("failed to drop budget_id column: %w", err)
 			}
 
 			return nil
@@ -4306,12 +4208,8 @@ func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableModelConfig{}, "calendar_aligned") {
-				logger.Info("[configstore] %s: dropping column calendar_aligned from TableModelConfig", migrationName)
-				if err := mig.DropColumn(&tables.TableModelConfig{}, "calendar_aligned"); err != nil {
-					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelConfig{}, "calendar_aligned"); err != nil {
+				return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
 			}
 			return nil
 		},
@@ -4338,12 +4236,8 @@ func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableClientConfig{}, "allowed_headers_json") {
-				logger.Info("[configstore] %s: dropping column allowed_headers_json from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allowed_headers_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "allowed_headers_json"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -4371,12 +4265,8 @@ func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health") {
-				logger.Info("[configstore] %s: dropping column disable_db_pings_in_health from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_db_pings_in_health"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -4411,12 +4301,8 @@ func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableMCPClient{}, "is_ping_available") {
-				logger.Info("[configstore] %s: dropping column is_ping_available from TableMCPClient", migrationName)
-				if err := migrator.DropColumn(&tables.TableMCPClient{}, "is_ping_available"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "is_ping_available"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -4562,14 +4448,11 @@ func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			logger.Info("[configstore] %s: dropping column mcp_tool_sync_interval from TableClientConfig", migrationName)
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
 				return err
 			}
-			logger.Info("[configstore] %s: dropping column tool_sync_interval from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
 				return err
 			}
 
@@ -4637,12 +4520,8 @@ func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableOauthConfig{}, "mcp_client_config_json") {
-				logger.Info("[configstore] %s: dropping column mcp_client_config_json from TableOauthConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -4670,12 +4549,8 @@ func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableModelPricing{}, "base_model") {
-				logger.Info("[configstore] %s: dropping column base_model from TableModelPricing", migrationName)
-				if err := migrator.DropColumn(&tables.TableModelPricing{}, "base_model"); err != nil {
-					return fmt.Errorf("failed to drop column base_model: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "base_model"); err != nil {
+				return fmt.Errorf("failed to drop column base_model: %w", err)
 			}
 			return nil
 		},
@@ -4699,12 +4574,8 @@ func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableKey{}, "azure_scopes") {
-				logger.Info("[configstore] %s: dropping column azure_scopes from TableKey", migrationName)
-				if err := migrator.DropColumn(&tables.TableKey{}, "azure_scopes"); err != nil {
-					return fmt.Errorf("failed to drop azure_scopes column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_scopes"); err != nil {
+				return fmt.Errorf("failed to drop azure_scopes column: %w", err)
 			}
 			return nil
 		},
@@ -4898,12 +4769,8 @@ func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.D
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			m := tx.Migrator()
-			if m.HasColumn(&tables.TableKey{}, "aliases_json") {
-				logger.Info("[configstore] %s: dropping column aliases_json from TableKey", migrationName)
-				if err := m.DropColumn(&tables.TableKey{}, "aliases_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "aliases_json"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -4939,22 +4806,15 @@ func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB, logger schem
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			// Drop description column
-			if migrator.HasColumn(&tables.TableKey{}, "description") {
-				logger.Info("[configstore] %s: dropping column description from TableKey", migrationName)
-				if err := migrator.DropColumn(&tables.TableKey{}, "description"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "description"); err != nil {
+				return err
 			}
 
 			// Drop status column
-			if migrator.HasColumn(&tables.TableKey{}, "status") {
-				logger.Info("[configstore] %s: dropping column status from TableKey", migrationName)
-				if err := migrator.DropColumn(&tables.TableKey{}, "status"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "status"); err != nil {
+				return err
 			}
 
 			return nil
@@ -4992,22 +4852,15 @@ func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			// Drop description column
-			if migrator.HasColumn(&tables.TableProvider{}, "description") {
-				logger.Info("[configstore] %s: dropping column description from TableProvider", migrationName)
-				if err := migrator.DropColumn(&tables.TableProvider{}, "description"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "description"); err != nil {
+				return err
 			}
 
 			// Drop status column
-			if migrator.HasColumn(&tables.TableProvider{}, "status") {
-				logger.Info("[configstore] %s: dropping column status from TableProvider", migrationName)
-				if err := migrator.DropColumn(&tables.TableProvider{}, "status"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "status"); err != nil {
+				return err
 			}
 
 			return nil
@@ -5038,13 +4891,9 @@ func migrationAddAsyncJobResultTTLColumn(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableClientConfig{}, "async_job_result_ttl") {
-				logger.Info("[configstore] %s: dropping column async_job_result_ttl from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "async_job_result_ttl"); err != nil {
-					return fmt.Errorf("failed to drop async_job_result_ttl column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "async_job_result_ttl"); err != nil {
+				return fmt.Errorf("failed to drop async_job_result_ttl column: %w", err)
 			}
 
 			return nil
@@ -5080,20 +4929,13 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableTeam{}, "rate_limit_id") {
-				logger.Info("[configstore] %s: dropping column rate_limit_id from TableTeam", migrationName)
-				if err := migrator.DropColumn(&tables.TableTeam{}, "rate_limit_id"); err != nil {
-					return fmt.Errorf("failed to drop rate_limit_id column from teams: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableTeam{}, "rate_limit_id"); err != nil {
+				return fmt.Errorf("failed to drop rate_limit_id column from teams: %w", err)
 			}
 
-			if migrator.HasColumn(&tables.TableCustomer{}, "rate_limit_id") {
-				logger.Info("[configstore] %s: dropping column rate_limit_id from TableCustomer", migrationName)
-				if err := migrator.DropColumn(&tables.TableCustomer{}, "rate_limit_id"); err != nil {
-					return fmt.Errorf("failed to drop rate_limit_id column from customers: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableCustomer{}, "rate_limit_id"); err != nil {
+				return fmt.Errorf("failed to drop rate_limit_id column from customers: %w", err)
 			}
 
 			return nil
@@ -5251,13 +5093,9 @@ func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableClientConfig{}, "required_headers_json") {
-				logger.Info("[configstore] %s: dropping column required_headers_json from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "required_headers_json"); err != nil {
-					return fmt.Errorf("failed to drop required_headers_json column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "required_headers_json"); err != nil {
+				return fmt.Errorf("failed to drop required_headers_json column: %w", err)
 			}
 
 			return nil
@@ -5290,20 +5128,13 @@ func migrationAddOutputCostPerVideoPerSecond(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second") {
-				logger.Info("[configstore] %s: dropping column output_cost_per_video_per_second from TableModelPricing", migrationName)
-				if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second"); err != nil {
-					return fmt.Errorf("failed to drop output_cost_per_video_per_second column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "output_cost_per_video_per_second"); err != nil {
+				return fmt.Errorf("failed to drop output_cost_per_video_per_second column: %w", err)
 			}
 
-			if migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_second") {
-				logger.Info("[configstore] %s: dropping column output_cost_per_second from TableModelPricing", migrationName)
-				if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_second"); err != nil {
-					return fmt.Errorf("failed to drop output_cost_per_second column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "output_cost_per_second"); err != nil {
+				return fmt.Errorf("failed to drop output_cost_per_second column: %w", err)
 			}
 
 			return nil
@@ -5333,13 +5164,9 @@ func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableClientConfig{}, "logging_headers_json") {
-				logger.Info("[configstore] %s: dropping column logging_headers_json from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "logging_headers_json"); err != nil {
-					return fmt.Errorf("failed to drop logging_headers_json column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "logging_headers_json"); err != nil {
+				return fmt.Errorf("failed to drop logging_headers_json column: %w", err)
 			}
 
 			return nil
@@ -5369,13 +5196,9 @@ func migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx context.Context, db *
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters") {
-				logger.Info("[configstore] %s: dropping column hide_deleted_virtual_keys_in_filters from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters"); err != nil {
-					return fmt.Errorf("failed to drop hide_deleted_virtual_keys_in_filters column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters"); err != nil {
+				return fmt.Errorf("failed to drop hide_deleted_virtual_keys_in_filters column: %w", err)
 			}
 
 			return nil
@@ -5403,12 +5226,8 @@ func migrationAddEnforceSCIMAuthColumn(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableClientConfig{}, "enforce_scim_auth") {
-				logger.Info("[configstore] %s: dropping column enforce_scim_auth from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enforce_scim_auth"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enforce_scim_auth"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -5439,12 +5258,8 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference") {
-				logger.Info("[configstore] %s: dropping column enforce_auth_on_inference from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enforce_auth_on_inference"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -5587,7 +5402,6 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mgr := tx.Migrator()
 
 			type dropInfo struct {
 				table   interface{}
@@ -5608,11 +5422,8 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB, logger sche
 
 			for _, d := range drops {
 				for _, col := range d.columns {
-					if mgr.HasColumn(d.table, col) {
-						logger.Info("[configstore] %s: dropping column %s from %T", migrationName, col, d.table)
-						if err := mgr.DropColumn(d.table, col); err != nil {
-							return err
-						}
+					if err := dropColumnIfExists(tx, logger, d.table, col); err != nil {
+						return err
 					}
 				}
 			}
@@ -5634,12 +5445,8 @@ func migrationDropEnableGovernanceColumn(ctx context.Context, db *gorm.DB, logge
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableClientConfig{}, "enable_governance") {
-				logger.Info("[configstore] %s: dropping column enable_governance from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enable_governance"); err != nil {
-					return fmt.Errorf("failed to drop enable_governance column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enable_governance"); err != nil {
+				return fmt.Errorf("failed to drop enable_governance column: %w", err)
 			}
 			return nil
 		},
@@ -5669,18 +5476,11 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB, logger s
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableKey{}, "vllm_url") {
-				logger.Info("[configstore] %s: dropping column vllm_url from TableKey", migrationName)
-				if err := migrator.DropColumn(&tables.TableKey{}, "vllm_url"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "vllm_url"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&tables.TableKey{}, "vllm_model_name") {
-				logger.Info("[configstore] %s: dropping column vllm_model_name from TableKey", migrationName)
-				if err := migrator.DropColumn(&tables.TableKey{}, "vllm_model_name"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "vllm_model_name"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -5768,24 +5568,14 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableKey{}, "bedrock_role_arn") {
-				logger.Info("[configstore] %s: dropping column bedrock_role_arn from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_role_arn"); err != nil {
-					return fmt.Errorf("failed to drop bedrock_role_arn column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "bedrock_role_arn"); err != nil {
+				return fmt.Errorf("failed to drop bedrock_role_arn column: %w", err)
 			}
-			if mg.HasColumn(&tables.TableKey{}, "bedrock_external_id") {
-				logger.Info("[configstore] %s: dropping column bedrock_external_id from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_external_id"); err != nil {
-					return fmt.Errorf("failed to drop bedrock_external_id column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "bedrock_external_id"); err != nil {
+				return fmt.Errorf("failed to drop bedrock_external_id column: %w", err)
 			}
-			if mg.HasColumn(&tables.TableKey{}, "bedrock_role_session_name") {
-				logger.Info("[configstore] %s: dropping column bedrock_role_session_name from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_role_session_name"); err != nil {
-					return fmt.Errorf("failed to drop bedrock_role_session_name column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "bedrock_role_session_name"); err != nil {
+				return fmt.Errorf("failed to drop bedrock_role_session_name column: %w", err)
 			}
 			return nil
 		},
@@ -5875,12 +5665,8 @@ func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migratorInstance := tx.Migrator()
-			if migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
-				logger.Info("[configstore] %s: dropping column allow_all_keys from TableVirtualKeyProviderConfig", migrationName)
-				if err := migratorInstance.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
-					return fmt.Errorf("failed to drop allow_all_keys column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
+				return fmt.Errorf("failed to drop allow_all_keys column: %w", err)
 			}
 			return nil
 		},
@@ -5908,9 +5694,7 @@ func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migratorInstance := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column mcp_disable_auto_tool_inject from TableClientConfig", migrationName)
-			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
 				return err
 			}
 			return nil
@@ -5938,9 +5722,7 @@ func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migratorInstance := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column mcp_enable_temp_token_auth from TableClientConfig", migrationName)
-			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
 				return err
 			}
 			return nil
@@ -6000,7 +5782,6 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 
 			columns := []string{
 				"input_cost_per_token_priority",
@@ -6032,11 +5813,8 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB, logger
 			}
 
 			for _, field := range columns {
-				if mg.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -6119,7 +5897,6 @@ func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB, lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 			columns := []string{
 				"output_cost_per_image_above_2048_and_2048_pixels",
 				"output_cost_per_image_above_4096_and_4096_pixels",
@@ -6129,11 +5906,8 @@ func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB, lo
 				"output_cost_per_image_auto_quality",
 			}
 			for _, field := range columns {
-				if mg.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -6204,11 +5978,8 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB, logger sc
 			// routing_targets table (nothing to delete yet).
 			legacyModel := &legacyRoutingRuleColumns{}
 			for _, col := range []string{"provider", "model"} {
-				if mg.HasColumn("routing_rules", col) {
-					logger.Info("[configstore] %s: dropping column %s from %T", migrationName, col, legacyModel)
-					if err := mg.DropColumn(legacyModel, col); err != nil {
-						return fmt.Errorf("failed to drop column %s from routing_rules: %w", col, err)
-					}
+				if err := dropColumnIfExists(tx, logger, legacyModel, col); err != nil {
+					return fmt.Errorf("failed to drop column %s from routing_rules: %w", col, err)
 				}
 			}
 
@@ -6433,19 +6204,12 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB, logger schem
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TablePromptVersionMessage{}, "prompt_id") {
-				logger.Info("[configstore] %s: dropping column prompt_id from TablePromptVersionMessage", migrationName)
-				if err := migrator.DropColumn(&tables.TablePromptVersionMessage{}, "prompt_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TablePromptVersionMessage{}, "prompt_id"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&tables.TablePromptSessionMessage{}, "prompt_id") {
-				logger.Info("[configstore] %s: dropping column prompt_id from TablePromptSessionMessage", migrationName)
-				if err := migrator.DropColumn(&tables.TablePromptSessionMessage{}, "prompt_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TablePromptSessionMessage{}, "prompt_id"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -6612,12 +6376,8 @@ func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
-				logger.Info("[configstore] %s: dropping column allowed_extra_headers_json from TableMCPClient", migrationName)
-				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -6713,19 +6473,12 @@ func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB, logger sch
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TablePlugin{}, "placement") {
-				logger.Info("[configstore] %s: dropping column placement from TablePlugin", migrationName)
-				if err := migrator.DropColumn(&tables.TablePlugin{}, "placement"); err != nil {
-					return fmt.Errorf("failed to drop placement column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TablePlugin{}, "placement"); err != nil {
+				return fmt.Errorf("failed to drop placement column: %w", err)
 			}
-			if migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
-				logger.Info("[configstore] %s: dropping column exec_order from TablePlugin", migrationName)
-				if err := migrator.DropColumn(&tables.TablePlugin{}, "exec_order"); err != nil {
-					return fmt.Errorf("failed to drop exec_order column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TablePlugin{}, "exec_order"); err != nil {
+				return fmt.Errorf("failed to drop exec_order column: %w", err)
 			}
 			return nil
 		},
@@ -6783,12 +6536,8 @@ func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
-				logger.Info("[configstore] %s: dropping column allow_on_all_virtual_keys from TableMCPClient", migrationName)
-				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
-					return fmt.Errorf("failed to drop allow_on_all_virtual_keys column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
+				return fmt.Errorf("failed to drop allow_on_all_virtual_keys column: %w", err)
 			}
 			return nil
 		},
@@ -6815,12 +6564,8 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableProvider{}, "open_ai_config_json") {
-				logger.Info("[configstore] %s: dropping column open_ai_config_json from TableProvider", migrationName)
-				if err := migrator.DropColumn(&tables.TableProvider{}, "open_ai_config_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "open_ai_config_json"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -6853,18 +6598,11 @@ func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
-				logger.Info("[configstore] %s: dropping column variables_json from TablePromptSession", migrationName)
-				if err := migrator.DropColumn(&tables.TablePromptSession{}, "variables_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TablePromptSession{}, "variables_json"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
-				logger.Info("[configstore] %s: dropping column variables_json from TablePromptVersion", migrationName)
-				if err := migrator.DropColumn(&tables.TablePromptVersion{}, "variables_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TablePromptVersion{}, "variables_json"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -6895,12 +6633,8 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableKey{}, "blacklisted_models_json") {
-				logger.Info("[configstore] %s: dropping column blacklisted_models_json from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "blacklisted_models_json"); err != nil {
-					return fmt.Errorf("failed to drop blacklisted_models_json column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "blacklisted_models_json"); err != nil {
+				return fmt.Errorf("failed to drop blacklisted_models_json column: %w", err)
 			}
 			return nil
 		},
@@ -6948,12 +6682,8 @@ func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableRoutingRule{}, "chain_rule") {
-				logger.Info("[configstore] %s: dropping column chain_rule from TableRoutingRule", migrationName)
-				if err := mg.DropColumn(&tables.TableRoutingRule{}, "chain_rule"); err != nil {
-					return fmt.Errorf("failed to drop chain_rule column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableRoutingRule{}, "chain_rule"); err != nil {
+				return fmt.Errorf("failed to drop chain_rule column: %w", err)
 			}
 			return nil
 		},
@@ -7029,12 +6759,8 @@ func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint") {
-				logger.Info("[configstore] %s: dropping column replicate_use_deployments_endpoint from TableKey", migrationName)
-				if err := mg.DropColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -7133,12 +6859,8 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB, lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableClientConfig{}, "routing_chain_max_depth") {
-				logger.Info("[configstore] %s: dropping column routing_chain_max_depth from TableClientConfig", migrationName)
-				if err := mg.DropColumn(&tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
-					return fmt.Errorf("failed to drop routing_chain_max_depth column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
+				return fmt.Errorf("failed to drop routing_chain_max_depth column: %w", err)
 			}
 			return nil
 		},
@@ -7173,7 +6895,6 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 			columns := []string{
 				"context_length",
 				"max_input_tokens",
@@ -7181,11 +6902,8 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB, logger
 				"architecture",
 			}
 			for _, column := range columns {
-				if mg.HasColumn(&tables.TableModelPricing{}, column) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, column)
-					if err := mg.DropColumn(&tables.TableModelPricing{}, column); err != nil {
-						return fmt.Errorf("failed to drop %s column: %w", column, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+					return fmt.Errorf("failed to drop %s column: %w", column, err)
 				}
 			}
 			return nil
@@ -7270,18 +6988,11 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
-				logger.Info("[configstore] %s: dropping column ollama_url from TableKey", migrationName)
-				if err := migrator.DropColumn(&tables.TableKey{}, "ollama_url"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "ollama_url"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
-				logger.Info("[configstore] %s: dropping column sgl_url from TableKey", migrationName)
-				if err := migrator.DropColumn(&tables.TableKey{}, "sgl_url"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "sgl_url"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -7444,18 +7155,11 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableBudget{}, "virtual_key_id") {
-				logger.Info("[configstore] %s: dropping column virtual_key_id from TableBudget", migrationName)
-				if err := mg.DropColumn(&tables.TableBudget{}, "virtual_key_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "VirtualKeyID"); err != nil {
+				return fmt.Errorf("failed to drop virtual_key_id column from governance_budgets: %w", err)
 			}
-			if mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
-				logger.Info("[configstore] %s: dropping column provider_config_id from TableBudget", migrationName)
-				if err := mg.DropColumn(&tables.TableBudget{}, "provider_config_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "ProviderConfigID"); err != nil {
+				return fmt.Errorf("failed to drop provider_config_id column from governance_budgets: %w", err)
 			}
 			return nil
 		},
@@ -7595,12 +7299,8 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableBudget{}, "team_id") {
-				logger.Info("[configstore] %s: dropping column team_id from TableBudget", migrationName)
-				if err := mg.DropColumn(&tables.TableBudget{}, "team_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "TeamID"); err != nil {
+				return fmt.Errorf("failed to drop team_id column from governance_budgets: %w", err)
 			}
 			return nil
 		},
@@ -7826,13 +7526,9 @@ func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override") {
-				logger.Info("[configstore] %s: dropping column allow_per_request_content_storage_override from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override"); err != nil {
-					return fmt.Errorf("failed to drop allow_per_request_content_storage_override column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "allow_per_request_content_storage_override"); err != nil {
+				return fmt.Errorf("failed to drop allow_per_request_content_storage_override column: %w", err)
 			}
 
 			return nil
@@ -7862,13 +7558,9 @@ func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override") {
-				logger.Info("[configstore] %s: dropping column allow_per_request_raw_override from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override"); err != nil {
-					return fmt.Errorf("failed to drop allow_per_request_raw_override column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "allow_per_request_raw_override"); err != nil {
+				return fmt.Errorf("failed to drop allow_per_request_raw_override column: %w", err)
 			}
 
 			return nil
@@ -7899,18 +7591,11 @@ func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.D
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableMCPClient{}, "discovered_tools_json") {
-				logger.Info("[configstore] %s: dropping column discovered_tools_json from TableMCPClient", migrationName)
-				if err := migrator.DropColumn(&tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&tables.TableMCPClient{}, "tool_name_mapping_json") {
-				logger.Info("[configstore] %s: dropping column tool_name_mapping_json from TableMCPClient", migrationName)
-				if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -7953,7 +7638,6 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB, lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 			columns := []string{
 				"input_cost_per_token_above_272k_tokens",
 				"input_cost_per_token_above_272k_tokens_priority",
@@ -7967,11 +7651,8 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB, lo
 			}
 
 			for _, field := range columns {
-				if mg.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -8008,7 +7689,6 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 
 			columns := []string{
 				"input_cost_per_token_flex",
@@ -8017,11 +7697,8 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB, logger
 			}
 
 			for _, field := range columns {
-				if mg.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -8059,7 +7736,6 @@ func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 
 			columns := []string{
 				"input_cost_per_token_fast",
@@ -8067,11 +7743,8 @@ func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB, logger
 			}
 
 			for _, field := range columns {
-				if mg.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -8101,13 +7774,9 @@ func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
-			if migrator.HasColumn(&tables.TableClientConfig{}, "whitelisted_routes_json") {
-				logger.Info("[configstore] %s: dropping column whitelisted_routes_json from TableClientConfig", migrationName)
-				if err := migrator.DropColumn(&tables.TableClientConfig{}, "whitelisted_routes_json"); err != nil {
-					return fmt.Errorf("failed to drop whitelisted_routes_json column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "whitelisted_routes_json"); err != nil {
+				return fmt.Errorf("failed to drop whitelisted_routes_json column: %w", err)
 			}
 
 			return nil
@@ -8155,8 +7824,7 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 				if err := tx.Exec("UPDATE config_client SET compat_convert_text_to_chat = enable_litellm_fallbacks").Error; err != nil {
 					return err
 				}
-				logger.Info("[configstore] %s: dropping column enable_litellm_fallbacks from TableClientConfig", migrationName)
-				if err := mig.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
 					return err
 				}
 			}
@@ -8182,11 +7850,8 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 				"compat_should_drop_params",
 				"compat_should_convert_params",
 			} {
-				if mig.HasColumn(&tables.TableClientConfig{}, col) {
-					logger.Info("[configstore] %s: dropping column %s from TableClientConfig", migrationName, col)
-					if err := mig.DropColumn(&tables.TableClientConfig{}, col); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -8440,17 +8105,13 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 			columns := []string{
 				"ocr_cost_per_page",
 				"annotation_cost_per_page",
 			}
 			for _, field := range columns {
-				if mg.HasColumn(&tables.TableModelPricing{}, field) {
-					logger.Info("[configstore] %s: dropping column %s from TableModelPricing", migrationName, field)
-					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
-						return fmt.Errorf("failed to drop column %s: %w", field, err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}
 			}
 			return nil
@@ -8549,16 +8210,12 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB, logger s
 				).Error; err != nil {
 					return fmt.Errorf("failed to backfill mcp_external_base_url from mcp_external_server_url: %w", err)
 				}
-				logger.Info("[configstore] %s: dropping column mcp_external_server_url from TableClientConfig", migrationName)
-				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_server_url"); err != nil {
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_external_server_url"); err != nil {
 					return fmt.Errorf("failed to drop mcp_external_server_url column: %w", err)
 				}
 			}
-			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_client_url") {
-				logger.Info("[configstore] %s: dropping column mcp_external_client_url from TableClientConfig", migrationName)
-				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_client_url"); err != nil {
-					return fmt.Errorf("failed to drop mcp_external_client_url column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_external_client_url"); err != nil {
+				return fmt.Errorf("failed to drop mcp_external_client_url column: %w", err)
 			}
 			return nil
 		},
@@ -8592,12 +8249,8 @@ func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableMCPClient{}, "disabled") {
-				logger.Info("[configstore] %s: dropping column disabled from TableMCPClient", migrationName)
-				if err := mg.DropColumn(&tables.TableMCPClient{}, "disabled"); err != nil {
-					return fmt.Errorf("failed to drop disabled column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "disabled"); err != nil {
+				return fmt.Errorf("failed to drop disabled column: %w", err)
 			}
 			return nil
 		},
@@ -8925,18 +8578,17 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 				if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_user_mcp ON oauth_user_tokens (user_id, mcp_client_id)`).Error; err != nil {
 					return fmt.Errorf("restore idx_user_mcp: %w", err)
 				}
-				if mg.HasColumn(&tables.TableOauthUserToken{}, "status") {
-					logger.Info("[configstore] %s: dropping column Status from TableOauthUserToken", migrationName)
-					_ = mg.DropColumn(&tables.TableOauthUserToken{}, "Status")
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthUserToken{}, "Status"); err != nil {
+					return fmt.Errorf("drop status from oauth_user_tokens: %w", err)
 				}
-				if mg.HasColumn(&tables.TableOauthUserToken{}, "auth_mode") {
-					logger.Info("[configstore] %s: dropping column AuthMode from TableOauthUserToken", migrationName)
-					_ = mg.DropColumn(&tables.TableOauthUserToken{}, "AuthMode")
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthUserToken{}, "AuthMode"); err != nil {
+					return fmt.Errorf("drop auth_mode from oauth_user_tokens: %w", err)
 				}
 			}
 			if mg.HasTable(&tables.TableOauthUserSession{}) && mg.HasColumn(&tables.TableOauthUserSession{}, "flow_mode") {
-				logger.Info("[configstore] %s: dropping column FlowMode from TableOauthUserSession", migrationName)
-				_ = mg.DropColumn(&tables.TableOauthUserSession{}, "FlowMode")
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthUserSession{}, "FlowMode"); err != nil {
+					return fmt.Errorf("drop flow_mode from oauth_user_sessions: %w", err)
+				}
 			}
 
 			return nil
@@ -8983,17 +8635,11 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_oauth_user_sessions_session_token_hash").Error; err != nil {
 					return fmt.Errorf("drop legacy session_token_hash index on oauth_user_sessions: %w", err)
 				}
-				if mg.HasColumn(&tables.TableOauthUserSession{}, "session_token_hash") {
-					logger.Info("[configstore] %s: dropping column session_token_hash from TableOauthUserSession", migrationName)
-					if err := mg.DropColumn(&tables.TableOauthUserSession{}, "session_token_hash"); err != nil {
-						return fmt.Errorf("drop session_token_hash from oauth_user_sessions: %w", err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthUserSession{}, "session_token_hash"); err != nil {
+					return fmt.Errorf("drop session_token_hash from oauth_user_sessions: %w", err)
 				}
-				if mg.HasColumn(&tables.TableOauthUserSession{}, "session_token") {
-					logger.Info("[configstore] %s: dropping column session_token from TableOauthUserSession", migrationName)
-					if err := mg.DropColumn(&tables.TableOauthUserSession{}, "session_token"); err != nil {
-						return fmt.Errorf("drop session_token from oauth_user_sessions: %w", err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthUserSession{}, "session_token"); err != nil {
+					return fmt.Errorf("drop session_token from oauth_user_sessions: %w", err)
 				}
 			}
 
@@ -9010,17 +8656,11 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 				if err := tx.Exec("DROP INDEX IF EXISTS idx_oauth_user_tokens_session_token_hash").Error; err != nil {
 					return fmt.Errorf("drop legacy session_token_hash index on oauth_user_tokens: %w", err)
 				}
-				if mg.HasColumn(&tables.TableOauthUserToken{}, "session_token_hash") {
-					logger.Info("[configstore] %s: dropping column session_token_hash from TableOauthUserToken", migrationName)
-					if err := mg.DropColumn(&tables.TableOauthUserToken{}, "session_token_hash"); err != nil {
-						return fmt.Errorf("drop session_token_hash from oauth_user_tokens: %w", err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthUserToken{}, "session_token_hash"); err != nil {
+					return fmt.Errorf("drop session_token_hash from oauth_user_tokens: %w", err)
 				}
-				if mg.HasColumn(&tables.TableOauthUserToken{}, "session_token") {
-					logger.Info("[configstore] %s: dropping column session_token from TableOauthUserToken", migrationName)
-					if err := mg.DropColumn(&tables.TableOauthUserToken{}, "session_token"); err != nil {
-						return fmt.Errorf("drop session_token from oauth_user_tokens: %w", err)
-					}
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthUserToken{}, "session_token"); err != nil {
+					return fmt.Errorf("drop session_token from oauth_user_tokens: %w", err)
 				}
 
 				// Replace the partial unique index with one keyed on the new
@@ -9064,8 +8704,9 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 			}
 			for _, model := range []interface{}{&tables.TableOauthUserSession{}, &tables.TableOauthUserToken{}} {
 				if mg.HasTable(model) && mg.HasColumn(model, "session_id") {
-					logger.Info("[configstore] %s: dropping column SessionID from %T", migrationName, model)
-					_ = mg.DropColumn(model, "SessionID")
+					if err := dropColumnIfExists(tx, logger, model, "SessionID"); err != nil {
+						return fmt.Errorf("drop session_id from %T: %w", model, err)
+					}
 				}
 			}
 
@@ -9408,12 +9049,7 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableTeam{}, "calendar_aligned") {
-				logger.Info("[configstore] %s: dropping column calendar_aligned from TableTeam", migrationName)
-				return mig.DropColumn(&tables.TableTeam{}, "calendar_aligned")
-			}
-			return nil
+			return dropColumnIfExists(tx, logger, &tables.TableTeam{}, "calendar_aligned")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -9438,12 +9074,7 @@ func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableFrameworkConfig{}, "model_parameters_url") {
-				logger.Info("[configstore] %s: dropping column model_parameters_url from TableFrameworkConfig", migrationName)
-				return mig.DropColumn(&tables.TableFrameworkConfig{}, "model_parameters_url")
-			}
-			return nil
+			return dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "model_parameters_url")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -9469,12 +9100,7 @@ func migrationAddFrameworkConfigHashColumn(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableFrameworkConfig{}, "config_hash") {
-				logger.Info("[configstore] %s: dropping column config_hash from TableFrameworkConfig", migrationName)
-				return mig.DropColumn(&tables.TableFrameworkConfig{}, "config_hash")
-			}
-			return nil
+			return dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "config_hash")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -9649,12 +9275,8 @@ func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
-				logger.Info("[configstore] %s: dropping column blacklisted_models from TableVirtualKeyProviderConfig", migrationName)
-				if err := mg.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
-					return fmt.Errorf("failed to drop blacklisted_models column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
+				return fmt.Errorf("failed to drop blacklisted_models column: %w", err)
 			}
 			return nil
 		},
@@ -9755,11 +9377,8 @@ func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB, logger s
 					return fmt.Errorf("drop mcp_per_user_header_credentials: %w", err)
 				}
 			}
-			if mg.HasColumn(&tables.TableMCPClient{}, "per_user_header_keys_json") {
-				logger.Info("[configstore] %s: dropping column PerUserHeaderKeysJSON from TableMCPClient", migrationName)
-				if err := mg.DropColumn(&tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
-					return fmt.Errorf("drop per_user_header_keys_json column from config_mcp_clients: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
+				return fmt.Errorf("drop per_user_header_keys_json column from config_mcp_clients: %w", err)
 			}
 			return nil
 		},
@@ -9897,11 +9516,8 @@ func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				logger.Info("[configstore] %s: dropping column allow_direct_keys from TableClientConfig", migrationName)
-				if err := tx.Migrator().DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
-					return fmt.Errorf("failed to drop allow_direct_keys column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+				return fmt.Errorf("failed to drop allow_direct_keys column: %w", err)
 			}
 			return nil
 		},
@@ -9964,11 +9580,8 @@ func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if tx.Migrator().HasColumn(&tables.TableModelPricing{}, "additional_attributes") {
-				logger.Info("[configstore] %s: dropping column AdditionalAttributesJSON from TableModelPricing", migrationName)
-				if err := tx.Migrator().DropColumn(&tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
-					return fmt.Errorf("failed to drop additional_attributes column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
+				return fmt.Errorf("failed to drop additional_attributes column: %w", err)
 			}
 			return nil
 		},
@@ -9999,12 +9612,7 @@ func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableCustomer{}, "calendar_aligned") {
-				logger.Info("[configstore] %s: dropping column calendar_aligned from TableCustomer", migrationName)
-				return mig.DropColumn(&tables.TableCustomer{}, "calendar_aligned")
-			}
-			return nil
+			return dropColumnIfExists(tx, logger, &tables.TableCustomer{}, "calendar_aligned")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -10107,12 +9715,8 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableBudget{}, "customer_id") {
-				logger.Info("[configstore] %s: dropping column customer_id from TableBudget", migrationName)
-				if err := mg.DropColumn(&tables.TableBudget{}, "customer_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "CustomerID"); err != nil {
+				return fmt.Errorf("failed to drop customer_id column from governance_budgets: %w", err)
 			}
 			return nil
 		},
@@ -10318,18 +9922,11 @@ func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_url") {
-				logger.Info("[configstore] %s: dropping column MCPLibraryURL from TableFrameworkConfig", migrationName)
-				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
-					return fmt.Errorf("drop mcp_library_url column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
+				return fmt.Errorf("drop mcp_library_url column: %w", err)
 			}
-			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_sync_interval") {
-				logger.Info("[configstore] %s: dropping column MCPLibrarySyncInterval from TableFrameworkConfig", migrationName)
-				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
-					return fmt.Errorf("drop mcp_library_sync_interval column: %w", err)
-				}
+			if err := dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
+				return fmt.Errorf("drop mcp_library_sync_interval column: %w", err)
 			}
 			return nil
 		},

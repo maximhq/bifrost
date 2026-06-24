@@ -14,6 +14,10 @@ const (
 
 type KeySelector func(ctx *BifrostContext, keys []Key, providerKey ModelProvider, model string) (Key, error)
 
+// KeyPoolFilter is an optional hook called before key selection to veto keys
+// from the available pool.
+type KeyPoolFilter func(ctx *BifrostContext, provider ModelProvider, model string, keys []Key) ([]Key, error)
+
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
@@ -24,12 +28,13 @@ type BifrostConfig struct {
 	OAuth2Provider     OAuth2Provider
 	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
-	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
-	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig  // MCP (Model Context Protocol) configuration for tool integration
-	KeySelector        KeySelector // Custom key selector function
-	KVStore            KVStore     // shared KV store for clustering/session stickiness; nil = disabled
+	Tracer             Tracer        // Tracer for distributed tracing (nil = NoOpTracer)
+	InitialPoolSize    int           // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests bool          // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig          *MCPConfig    // MCP (Model Context Protocol) configuration for tool integration
+	KeySelector        KeySelector   // Custom key selector function
+	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
+	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -366,10 +371,11 @@ const (
 
 // RoutingEngine constants
 const (
-	RoutingEngineGovernance    = "governance"
-	RoutingEngineRoutingRule   = "routing-rule"
-	RoutingEngineLoadbalancing = "loadbalancing"
-	RoutingEngineModelCatalog  = "model-catalog"
+	RoutingEngineGovernance      = "governance"
+	RoutingEngineRoutingRule     = "routing-rule"
+	RoutingEngineLoadbalancing   = "loadbalancing"
+	RoutingEngineModelCatalog    = "model-catalog"
+	RoutingEngineCircuitBreaker  = "circuit-breaker"
 	// RoutingEngineCore represents the Bifrost core orchestrator's own
 	// routing decisions — primarily fallback transitions. Emitted when the
 	// primary attempt fails and core advances through the fallback chain so

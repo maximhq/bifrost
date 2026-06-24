@@ -889,6 +889,7 @@ export const otelConfigSchema = z
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
 		group_traces_by_session: z.boolean().default(false),
+		disable_root_span_content: z.boolean().default(false),
 	})
 	.superRefine((data, ctx) => {
 		// A disabled profile is not sent anywhere, so skip all validation for it.
