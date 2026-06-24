@@ -736,7 +736,13 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if comma := strings.IndexByte(xfProto, ','); comma >= 0 {
 		xfProto = strings.TrimSpace(xfProto[:comma])
 	}
-	if ctx.IsTLS() || xfProto == "https" {
+	// x-bf-forwarded-proto is honored for setups where a managed LB overwrites the
+	// standard X-Forwarded-Proto (e.g. AWS L4 NLB -> ALB hops); the edge injects it.
+	xbfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-forwarded-proto"))))
+	if comma := strings.IndexByte(xbfProto, ','); comma >= 0 {
+		xbfProto = strings.TrimSpace(xbfProto[:comma])
+	}
+	if ctx.IsTLS() || xfProto == "https" || xbfProto == "https" {
 		scheme = "https"
 	}
 	host := string(ctx.Host())
