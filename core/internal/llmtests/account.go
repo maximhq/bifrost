@@ -115,34 +115,34 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisModel     string
 	ChatAudioModel           string
 	Scenarios                TestScenarios
-	Fallbacks                []schemas.Fallback     // for chat, responses, image and reasoning tests
-	TextCompletionFallbacks  []schemas.Fallback     // for text completion tests
-	TranscriptionFallbacks   []schemas.Fallback     // for transcription tests
-	SpeechSynthesisFallbacks []schemas.Fallback     // for speech synthesis tests
-	EmbeddingFallbacks       []schemas.Fallback     // for embedding tests
-	RerankFallbacks          []schemas.Fallback     // for rerank tests
-	SkipReason               string                 // Reason to skip certain tests
-	ImageGenerationModel     string                 // Model for image generation
-	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation
-	ImageEditModel           string                 // Model for image editing
-	ImageEditFallbacks       []schemas.Fallback     // Fallbacks for image editing
-	ImageVariationModel      string                 // Model for image variation
-	ImageVariationFallbacks  []schemas.Fallback     // Fallbacks for image variation
-	VideoGenerationModel     string                 // Model for video generation
-	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
-	ExternalTTSModel         string                 // External TTS model to use for testing
+	Fallbacks                []schemas.Fallback         // for chat, responses, image and reasoning tests
+	TextCompletionFallbacks  []schemas.Fallback         // for text completion tests
+	TranscriptionFallbacks   []schemas.Fallback         // for transcription tests
+	SpeechSynthesisFallbacks []schemas.Fallback         // for speech synthesis tests
+	EmbeddingFallbacks       []schemas.Fallback         // for embedding tests
+	RerankFallbacks          []schemas.Fallback         // for rerank tests
+	SkipReason               string                     // Reason to skip certain tests
+	ImageGenerationModel     string                     // Model for image generation
+	ImageGenerationFallbacks []schemas.Fallback         // Fallbacks for image generation
+	ImageEditModel           string                     // Model for image editing
+	ImageEditFallbacks       []schemas.Fallback         // Fallbacks for image editing
+	ImageVariationModel      string                     // Model for image variation
+	ImageVariationFallbacks  []schemas.Fallback         // Fallbacks for image variation
+	VideoGenerationModel     string                     // Model for video generation
+	ExternalTTSProvider      schemas.ModelProvider      // External TTS provider to use for testing
+	ExternalTTSModel         string                     // External TTS model to use for testing
 	BatchExtraParams         map[string]interface{}     // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
 	BatchOutputFolder        *schemas.BatchOutputFolder // Typed batch output location (e.g., GCS gs:// prefix for Vertex)
 	FileExtraParams          map[string]interface{}     // Extra params for file operations (e.g., s3_bucket for Bedrock)
 	FileStorageConfig        *schemas.FileStorageConfig // Typed storage config for file operations (e.g., GCS bucket for Vertex)
-	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
-	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
-	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
-	CompactionModel          string                 // Model for compaction tests; defaults to claude-sonnet-4-6
-	ExternalCompactionModel  string                 // Model for external compaction tests; defaults to gpt-4o
-	InterleavedThinkingModel string                 // Model for interleaved thinking tests; defaults to claude-opus-4-5
-	FastModeModel            string                 // Model for fast mode tests; defaults to claude-opus-4-6
-	RealtimeModel            string                 // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
+	DisableParallelFor       []string                   // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
+	ExpectRawRequestResponse bool                       // When true, validate rawRequest/rawResponse in ExtraFields
+	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
+	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
+	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
+	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
+	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
+	RealtimeModel            string                     // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -242,7 +242,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Bedrock:
 		return []schemas.Key{
 			{
-				Models: []string{"*"},
+				Models: []string{"claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.7-sonnet": {ModelID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"},
@@ -250,6 +250,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"claude-4.5-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
 					"claude-4.6-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-6"},
 					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
+					"claude-opus-4-5":   {ModelID: "global.anthropic.claude-opus-4-5-20251101-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
@@ -260,7 +261,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{"*"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
@@ -275,7 +276,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
 					SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
 					Region:       schemas.NewSecretVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
-					ARN:          schemas.NewSecretVar("env.AWS_BEDROCK_ARN"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -493,7 +493,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Runware:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.RUNWARE_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.RUNWARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),

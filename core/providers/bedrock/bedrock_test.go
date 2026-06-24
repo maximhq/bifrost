@@ -188,7 +188,7 @@ func TestBedrock(t *testing.T) {
 		PromptCachingModel:       "claude-4.5-sonnet",
 		ImageEditModel:           "amazon.nova-canvas-v1:0",
 		ImageVariationModel:      "amazon.nova-canvas-v1:0",
-		InterleavedThinkingModel: "global.anthropic.claude-opus-4-5-20251101-v1:0",
+		InterleavedThinkingModel: "claude-opus-4-5",
 		BatchExtraParams:         batchExtraParams,
 		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
