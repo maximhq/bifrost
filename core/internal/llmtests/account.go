@@ -503,7 +503,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{"*"},
+				Models:         []string{"accounts/fireworks/models/deepseek-v4-pro", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
