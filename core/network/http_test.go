@@ -101,9 +101,16 @@ func TestStaleConnectionRetryIfErr(t *testing.T) {
 			wantRetry: true,
 		},
 		{
-			name:      "does not retry on second attempt",
+			name:      "retries on second stale-connection attempt",
 			err:       io.EOF,
 			attempts:  2,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
+			name:      "does not retry after max stale-connection attempts",
+			err:       io.EOF,
+			attempts:  4,
 			wantReset: false,
 			wantRetry: false,
 		},
