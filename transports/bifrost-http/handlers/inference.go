@@ -7,6 +7,7 @@ import (
 
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -1810,7 +1811,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				chunk, err = interceptor.InterceptChunk(bifrostCtx, httpReq, chunk)
 				if err != nil {
 					if chunk == nil {
-						errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
+						var errorPayload interface{} = map[string]string{"error": err.Error()}
+						var structuredErr *schemas.StreamInterceptionError
+						if errors.As(err, &structuredErr) && structuredErr != nil {
+							if sanitized := lib.SanitizeBifrostErrorForClient(structuredErr.BifrostError); sanitized != nil {
+								errorPayload = sanitized
+							}
+						}
+						errorJSON, marshalErr := sonic.Marshal(errorPayload)
 						if marshalErr != nil {
 							cancel() // Payload invalid
 							for range stream {

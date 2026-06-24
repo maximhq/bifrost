@@ -250,7 +250,7 @@ func Test_bedrockStreamErrorConverterEncodesEventStreamException(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
 	assert.Equal(t, "PluginDenied", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
-	assert.JSONEq(t, `{"message":"blocked by policy"}`, string(msg.Payload))
+	assert.JSONEq(t, `{"__type":"PluginDenied","message":"blocked by policy"}`, string(msg.Payload))
 	assert.False(t, strings.Contains(string(body), "data:"), "AWS EventStream bytes must not contain SSE framing")
 }
 
@@ -273,7 +273,7 @@ func Test_toBedrockEventStreamExceptionAcceptsBedrockError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
 	assert.Equal(t, "ValidationException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
-	assert.JSONEq(t, `{"message":"invalid request"}`, string(msg.Payload))
+	assert.JSONEq(t, `{"__type":"ValidationException","message":"invalid request"}`, string(msg.Payload))
 }
 
 func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamException(t *testing.T) {
@@ -314,7 +314,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 	require.NoError(t, err)
 	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
 	assert.Equal(t, "InternalServerException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
-	assert.JSONEq(t, `{"message":"An error occurred while processing your request"}`, string(msg.Payload))
+	assert.JSONEq(t, `{"__type":"InternalServerException","message":"An error occurred while processing your request"}`, string(msg.Payload))
 	assert.False(t, cancelCalled, "fallback write should not cancel unless the client disconnects")
 }
 

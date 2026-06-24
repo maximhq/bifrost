@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/runway"
+	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -88,6 +89,7 @@ type Bifrost struct {
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
 	dropExcessRequests  atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector         schemas.KeySelector                 // Custom key selector function
+	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
 }
 
@@ -235,6 +237,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		requestQueues: sync.Map{},
 		waitGroups:    sync.Map{},
 		keySelector:   config.KeySelector,
+		keyPoolFilter: config.KeyPoolFilter,
 		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
@@ -4049,6 +4052,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
+	case schemas.Runware:
+		return runware.NewRunwareProvider(config, bifrost.logger)
 	case schemas.Fireworks:
 		return fireworks.NewFireworksProvider(config, bifrost.logger)
 	default:
@@ -5472,6 +5477,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 // keyProvider (custom selector failure, etc.) is propagated unchanged.
 var errAllKeysDead = errors.New("all configured keys returned permanent per-key errors (401/402/403)")
 
+// errAllKeysFiltered is returned by a keyProvider closure when healthy (non-dead) keys exist but
+// the KeyPoolFilter hook suppressed all of them. Unlike errAllKeysDead this is a transient
+// condition (the filter/circuit breaker self-heals), so it surfaces as a 503 rather than a 502.
+var errAllKeysFiltered = errors.New("all eligible keys are temporarily suppressed by the key pool filter")
+
 // executeRequestWithRetries is a generic function that handles common request processing logic.
 // It consolidates retry logic, backoff calculation, error handling, and key rotation.
 // It is not a bifrost method because interface methods in go cannot be generic.
@@ -5600,6 +5610,19 @@ func executeRequestWithRetries[T any](
 				// Any other error (custom selector failure, etc.) propagates unchanged so
 				// that a stray selector error doesn't get misreported as exhausted just
 				// because *some* keys happened to be dead.
+				if errors.Is(err, errAllKeysFiltered) {
+					statusCode := 503
+					errType := "no_eligible_keys"
+					return zero, &schemas.BifrostError{
+						IsBifrostError: false,
+						StatusCode:     &statusCode,
+						Type:           &errType,
+						Error: &schemas.ErrorField{
+							Type:    &errType,
+							Message: err.Error(),
+						},
+					}
+				}
 				if errors.Is(err, errAllKeysDead) {
 					statusCode := 502
 					errType := "upstream_credentials_exhausted"
@@ -6271,6 +6294,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 								}
 								available = append(available, k)
 							}
+							if bifrost.keyPoolFilter != nil {
+								if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
+									bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
+								} else {
+									available = filtered
+								}
+							}
 							if len(available) == 0 {
 								// No non-dead keys remain in this cycle. If every key has been
 								// marked permanently dead, give up — retrying won't help.
@@ -6282,7 +6312,18 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 										available = append(available, k)
 									}
 								}
+								liveCount := len(available) // non-dead keys before the filter runs
+								if bifrost.keyPoolFilter != nil {
+									if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
+										bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
+									} else {
+										available = filtered
+									}
+								}
 								if len(available) == 0 {
+									if liveCount > 0 {
+										return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provKey)
+									}
 									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
 								}
 								for id := range usedKeyIDs {

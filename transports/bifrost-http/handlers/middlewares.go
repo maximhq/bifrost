@@ -98,11 +98,6 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 						logBuilder = logBuilder.Str("trace_id", traceID)
 					}
-					if statusCode >= 400 && !ctx.Response.IsBodyStream() {
-						if body := ctx.Response.Body(); len(body) > 0 {
-							logBuilder = logBuilder.Str("http.error", string(body))
-						}
-					}
 					logBuilder.Send()
 				}()
 			}
