@@ -26,6 +26,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -687,6 +688,52 @@ func signAWSRequest(
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.
 // It retrieves all foundation models available in Amazon Bedrock for a specific key.
+// listMantleModels lists models from the Bedrock Mantle (OpenAI-compatible) /v1/models
+// endpoint, converted to a Bifrost response with the same allow/blacklist/alias gating as
+// the foundation-model path. The bare /v1/models path returns the full mantle catalog
+// (including the mantle-only gpt-5.x / gemma-4 models that ListFoundationModels omits).
+// The request is signed as it is sent (mantleSigV4Headers signs POST and can't be reused
+// for this GET). Best-effort: returns nil on any failure so the foundation-model list is
+// still returned.
+func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
+	mURL := mantleURL(region, "", "models")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
+	if err != nil {
+		provider.logger.Warn("failed to build mantle list-models request: %v", err)
+		return nil
+	}
+	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
+	} else if bifrostErr := signAWSRequestFromKey(ctx, req, key.BedrockKeyConfig, region, bedrockMantleSigningService); bifrostErr != nil {
+		provider.logger.Warn("failed to sign mantle list-models request: %v", bifrostErr.Error.Message)
+		return nil
+	}
+
+	resp, err := provider.client.Do(req)
+	if err != nil {
+		provider.logger.Warn("mantle list-models request failed: %v", err)
+		return nil
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		provider.logger.Warn("failed to read mantle list-models response: %v", err)
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		provider.logger.Warn("mantle list-models returned status %d: %s", resp.StatusCode, string(responseBody))
+		return nil
+	}
+
+	mantleResponse := &openai.OpenAIListModelsResponse{}
+	if err := sonic.Unmarshal(responseBody, mantleResponse); err != nil {
+		provider.logger.Warn("failed to parse mantle list-models response: %v", err)
+		return nil
+	}
+	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
+}
+
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	config := key.BedrockKeyConfig
@@ -813,6 +860,22 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil)
+	}
+
+	// Merge in the mantle catalog: ListFoundationModels omits the mantle-only models
+	// (gpt-5.x, gemma-4, ...) served on the OpenAI-compatible endpoint. Same gating, dedup by id.
+	if mantleResponse := provider.listMantleModels(ctx, key, region, request.Unfiltered); mantleResponse != nil {
+		seen := make(map[string]struct{}, len(response.Data))
+		for _, m := range response.Data {
+			seen[m.ID] = struct{}{}
+		}
+		for _, m := range mantleResponse.Data {
+			if _, ok := seen[m.ID]; ok {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			response.Data = append(response.Data, m)
+		}
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
