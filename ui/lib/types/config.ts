@@ -538,6 +538,7 @@ export interface CoreConfig {
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
 	disable_db_pings_in_health: boolean;
+	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
 	allowed_origins: string[];
@@ -570,6 +571,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
 	disable_db_pings_in_health: false,
+	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
 	allowed_origins: [],

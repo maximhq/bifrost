@@ -99,6 +99,7 @@ type ClientConfig struct {
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar               `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
+	DumpErrorsInConsoleLogs               bool                             `json:"dump_errors_in_console_logs"`          // Dump error details in console logs
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -234,6 +235,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("asyncJobResultTTL:" + strconv.Itoa(c.AsyncJobResultTTL)))
 	} else {
 		hash.Write([]byte("asyncJobResultTTL:0"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.DumpErrorsInConsoleLogs {
+		hash.Write([]byte("dumpErrorsInConsoleLogs:true"))
 	}
 
 	// Hash integer fields

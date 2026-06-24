@@ -443,6 +443,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// and ReloadClientConfigFromConfigStore mutates the struct in place so the next request picks up the new value.
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
+	// No restart needed - ReloadClientConfigFromConfigStore calls CorsMiddleware.UpdateConfig,
+	// which atomically swaps in a fresh immutable snapshot carrying the new value.
+	updatedConfig.DumpErrorsInConsoleLogs = payload.ClientConfig.DumpErrorsInConsoleLogs
 
 	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB

@@ -383,6 +383,11 @@
               "description": "Disable DB pings in health check",
               "default": false
             },
+            "dumpErrorsInConsoleLogs": {
+              "type": "boolean",
+              "description": "Dump full error details to the server console logs. Useful for debugging; may be noisy in production.",
+              "default": false
+            },
             "logRetentionDays": {
               "type": "integer",
               "minimum": 1,

@@ -429,6 +429,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_customer_name_unique_constraint_dedup", "add_customer_name_unique_constraint_index"}, run: migrationAddCustomerNameUniqueConstraint},
 	{IDs: []string{"null_legacy_customer_budget_id_refs"}, run: migrationNullLegacyCustomerBudgetID},
 	{IDs: []string{"add_skills_repo_tables"}, run: migrationAddSkillsRepoTables},
+	{IDs: []string{"add_dump_errors_in_console_logs_column"}, run: migrationAddDumpErrorsInConsoleLogsColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -4265,6 +4266,35 @@ func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB, 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_db_pings_in_health"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddDumpErrorsInConsoleLogsColumn adds the dump_errors_in_console_logs column to the client config table
+func migrationAddDumpErrorsInConsoleLogsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_dump_errors_in_console_logs_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "dump_errors_in_console_logs"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "dump_errors_in_console_logs"); err != nil {
 				return err
 			}
 			return nil

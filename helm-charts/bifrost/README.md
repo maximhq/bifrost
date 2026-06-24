@@ -687,6 +687,7 @@ bifrost:
 | Parameter                                     | Description                                 | Default |
 | --------------------------------------------- | ------------------------------------------- | ------- |
 | `bifrost.client.disableDbPingsInHealth`       | Disable DB pings in health check            | `false` |
+| `bifrost.client.dumpErrorsInConsoleLogs`      | Dump full error details to server console   | `false` |
 | `bifrost.client.headerFilterConfig.allowlist` | Headers allowed to forward to LLM providers | `[]`    |
 | `bifrost.client.headerFilterConfig.denylist`  | Headers blocked from forwarding             | `[]`    |
 
