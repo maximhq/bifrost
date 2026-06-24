@@ -105,6 +105,11 @@
           "description": "Disable DB pings in health check",
           "default": false
         },
+        "dump_errors_in_console_logs": {
+          "type": "boolean",
+          "description": "Dump full error details to the server console logs. Useful for debugging; may be noisy in production.",
+          "default": false
+        },
         "log_retention_days": {
           "type": "integer",
           "minimum": 1,
