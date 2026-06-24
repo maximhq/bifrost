@@ -493,7 +493,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Runware:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.RUNWARE_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.RUNWARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),

@@ -4113,8 +4113,22 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				switch block.Document.Format {
 				case "pdf":
 					fileType = "application/pdf"
-				case "txt", "md", "html", "csv":
+				case "txt":
 					fileType = "text/plain"
+				case "md":
+					fileType = "text/markdown"
+				case "html":
+					fileType = "text/html"
+				case "csv":
+					fileType = "text/csv"
+				case "doc":
+					fileType = "application/msword"
+				case "docx":
+					fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+				case "xls":
+					fileType = "application/vnd.ms-excel"
+				case "xlsx":
+					fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 				default:
 					fileType = "application/pdf" // Default to PDF
 				}
@@ -4359,13 +4373,28 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
 						fileType := *block.ResponsesInputMessageContentBlockFile.FileType
 						// Check if it's a text type
-						if strings.HasPrefix(fileType, "text/") ||
-							fileType == "txt" || fileType == "md" ||
-							fileType == "html" {
+						if fileType == "text/markdown" || fileType == "md" {
+							doc.Format = "md"
+							isTextFile = true
+						} else if fileType == "text/html" || fileType == "html" {
+							doc.Format = "html"
+							isTextFile = true
+						} else if fileType == "text/csv" || fileType == "csv" {
+							doc.Format = "csv"
+							isTextFile = true
+						} else if strings.HasPrefix(fileType, "text/") || fileType == "txt" {
 							doc.Format = "txt"
 							isTextFile = true
 						} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
 							doc.Format = "pdf"
+						} else if strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx" {
+							doc.Format = "xlsx"
+						} else if fileType == "application/vnd.ms-excel" || fileType == "xls" {
+							doc.Format = "xls"
+						} else if strings.Contains(fileType, "wordprocessingml") || fileType == "docx" {
+							doc.Format = "docx"
+						} else if fileType == "application/msword" || fileType == "doc" {
+							doc.Format = "doc"
 						}
 					}
 

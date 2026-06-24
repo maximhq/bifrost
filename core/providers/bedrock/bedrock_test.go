@@ -4926,6 +4926,63 @@ func TestDocumentFormatResponseMapping(t *testing.T) {
 	}
 }
 
+// TestDocumentFormatResponsesPathRoundTrip verifies that the Bedrock Converse
+// responses path (Bedrock -> Bifrost -> Bedrock) preserves the document format
+// for every Bedrock-supported format. This guards against the regression where
+// xlsx/xls/doc/docx (and md/html/csv) collapsed to "pdf"/"txt" because the
+// responses-path converters lagged behind the chat path. See issue #4622.
+func TestDocumentFormatResponsesPathRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	formats := []string{"pdf", "txt", "md", "html", "csv", "doc", "docx", "xls", "xlsx"}
+
+	for _, format := range formats {
+		t.Run(format, func(t *testing.T) {
+			docBytes := "UEsDBA==" // arbitrary base64; only the format mapping is under test
+			bedrockMessages := []bedrock.BedrockMessage{
+				{
+					Role: bedrock.BedrockMessageRoleUser,
+					Content: []bedrock.BedrockContentBlock{
+						{
+							Document: &bedrock.BedrockDocumentSource{
+								Format: format,
+								Name:   "testdoc",
+								Source: &bedrock.BedrockDocumentSourceData{
+									Bytes: &docBytes,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			// Inbound: Bedrock -> Bifrost responses messages
+			bifrostMessages := bedrock.ConvertBedrockMessagesToBifrostMessages(ctx, bedrockMessages, nil, false)
+			require.NotEmpty(t, bifrostMessages, "expected at least one Bifrost message")
+
+			// Outbound: Bifrost responses messages -> Bedrock
+			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages)
+			require.NoError(t, err)
+			require.NotEmpty(t, roundTripped, "expected at least one Bedrock message after round-trip")
+
+			// Locate the document block in the round-tripped output.
+			var doc *bedrock.BedrockDocumentSource
+			for _, msg := range roundTripped {
+				for _, block := range msg.Content {
+					if block.Document != nil {
+						doc = block.Document
+					}
+				}
+			}
+			require.NotNil(t, doc, "document block should survive the round-trip")
+			assert.Equal(t, format, doc.Format,
+				"format %q should be preserved through the responses path, got %q", format, doc.Format)
+		})
+	}
+}
+
 // TestBedrockToolInputKeyOrderPreservation verifies that multiple parallel tool calls
 // preserve the client's original key ordering after conversion to Bedrock format.
 func TestBedrockToolInputKeyOrderPreservation(t *testing.T) {
