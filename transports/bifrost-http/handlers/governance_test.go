@@ -1891,7 +1891,7 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 func TestGetVirtualKeyQuota_WindowClampedToBudgetCreation(t *testing.T) {
 	SetLogger(&mockLogger{})
 	ctx := context.Background()
-	periodStart := time.Date(2026, time.June, 24, 0, 0, 0, 0, time.UTC) // backdated "1d" boundary (midnight)
+	periodStart := time.Date(2026, time.June, 24, 0, 0, 0, 0, time.UTC)  // backdated "1d" boundary (midnight)
 	createdAt := time.Date(2026, time.June, 24, 11, 56, 42, 0, time.UTC) // budget created mid-day
 
 	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
@@ -1908,7 +1908,7 @@ func TestGetVirtualKeyQuota_WindowClampedToBudgetCreation(t *testing.T) {
 	vk := &configstoreTables.TableVirtualKey{
 		ID:       vkID,
 		Name:     "Clamp",
-		Value:    *schemas.NewSecretVar("sk-bf-clamp-secret"),
+		Value:    "sk-bf-clamp-secret",
 		IsActive: &active,
 	}
 	if err := store.CreateVirtualKey(ctx, vk); err != nil {
