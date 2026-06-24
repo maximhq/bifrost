@@ -428,7 +428,7 @@ func TestEncryptPlaintextVirtualKeys_EncryptsAndDecryptsCorrectly(t *testing.T) 
 	// GORM hooks should decrypt on read
 	var found tables.TableVirtualKey
 	require.NoError(t, db.Where("id = ?", "vk-batch-1").First(&found).Error)
-	assert.Equal(t, "vk-batch-secret", found.Value.GetValue())
+	assert.Equal(t, "vk-batch-secret", found.Value)
 }
 
 func TestEncryptPlaintextOAuthConfigs_EncryptsAndDecryptsCorrectly(t *testing.T) {
@@ -1342,7 +1342,7 @@ func TestEncryptPlaintextRows_SkipsAlreadyEncryptedVirtualKeys(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-already-enc",
 		Name:     "already-encrypted-vk",
-		Value:    *schemas.NewSecretVar("vk-secret-already"),
+		Value:    "vk-secret-already",
 		IsActive: bifrost.Ptr(true),
 	}
 	require.NoError(t, db.Create(vk).Error)

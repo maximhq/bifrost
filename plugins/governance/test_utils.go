@@ -80,7 +80,7 @@ func (ml *MockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas
 func buildVirtualKey(id, value, name string, isActive bool) *configstoreTables.TableVirtualKey {
 	return &configstoreTables.TableVirtualKey{
 		ID:       id,
-		Value:    *schemas.NewSecretVar(value),
+		Value:    value,
 		Name:     name,
 		IsActive: &isActive,
 	}
@@ -242,7 +242,6 @@ func assertRateLimitInfo(t *testing.T, result *EvaluationResult) {
 	t.Helper()
 	assert.NotNil(t, result.RateLimitInfo, "RateLimitInfo should be present in result")
 }
-
 
 func buildModelConfig(id, modelName string, provider *string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
 	mc := &configstoreTables.TableModelConfig{

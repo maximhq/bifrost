@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +39,7 @@ func seedMCPSessionsFixture(t *testing.T, store *RDBConfigStore) {
 	vk := &tables.TableVirtualKey{
 		ID:    "vk-alpha",
 		Name:  "Alpha VK",
-		Value: *schemas.NewSecretVar("sk-bf-alpha"),
+		Value: "sk-bf-alpha",
 	}
 	require.NoError(t, store.DB().WithContext(ctx).Create(vk).Error)
 
