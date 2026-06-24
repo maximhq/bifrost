@@ -37,6 +37,7 @@ interface StoredOtelProfile {
 	request_headers?: string[];
 	disable_content_logging?: boolean;
 	group_traces_by_session?: boolean;
+	disable_root_span_content?: boolean;
 }
 
 // StoredOtelConfig is either the canonical { profiles: [...] } wrapper or a legacy single
@@ -100,6 +101,7 @@ const emptyProfile = (): ProfileForm => ({
 	request_headers: [],
 	disable_content_logging: false,
 	group_traces_by_session: false,
+	disable_root_span_content: false,
 });
 
 // toProfileForm normalizes a stored profile into the SecretVar-based form representation.
@@ -118,6 +120,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
 	group_traces_by_session: p?.group_traces_by_session ?? false,
+	disable_root_span_content: p?.disable_root_span_content ?? false,
 });
 
 // buildDefaults handles both stored shapes: the { profiles: [...] } wrapper and the legacy
@@ -477,6 +480,25 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								</div>
 								<FormControl>
 									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-group-traces-by-session-toggle`} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`${base}.disable_root_span_content`}
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between">
+								<div className="space-y-0.5">
+									<FormLabel className="text-base">Disable Root Span Content</FormLabel>
+									<FormDescription>
+										When enabled, input/output message content is dropped from the root span only; the underlying generation
+										(llm.call) span keeps the full content. This removes the duplicate input/output stored at the trace level
+										(e.g. Langfuse trace Input/Output goes empty) to reduce downstream storage.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-disable-root-span-content-toggle`} />
 								</FormControl>
 							</FormItem>
 						)}

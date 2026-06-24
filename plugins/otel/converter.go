@@ -96,7 +96,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
 	reparent := p.pluginSpanFilter.BuildReparentMap(trace.Spans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 
@@ -123,7 +123,10 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		if !p.pluginSpanFilter.ShouldExportSpan(span) {
 			continue
 		}
-		otelSpan := convertSpanToOTELSpan(traceID, span, disableContentLogging)
+		// disableRootSpanContent drops content from the root span only (the framework duplicates
+		// input/output onto it for trace-level display); child spans keep their full content.
+		spanDisableContent := disableContentLogging || (disableRootSpanContent && span == trace.RootSpan)
+		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
