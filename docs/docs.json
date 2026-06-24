@@ -451,7 +451,15 @@
             "group": "Identity Providers (SSO)",
             "icon": "id-card",
             "pages": [
-              "enterprise/setting-up-okta",
+              {
+                "group": "Okta",
+                "icon": "/media/okta-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-okta/oidc",
+                  "enterprise/setting-up-okta/scim"
+                ]
+              },
               "enterprise/setting-up-entra",
               "enterprise/setting-up-keycloak",
               "enterprise/setting-up-zitadel",
@@ -1059,8 +1067,12 @@
       "destination": "/enterprise/adaptive-load-balancing"
     },
     {
+      "source": "/enterprise/setting-up-okta",
+      "destination": "/enterprise/setting-up-okta/oidc"
+    },
+    {
       "source": "/enterprise/users",
-      "destination": "/enterprise/setting-up-okta"
+      "destination": "/enterprise/setting-up-okta/oidc"
     },
     {
       "source": "/enterprise/data-connectors/datadog",
