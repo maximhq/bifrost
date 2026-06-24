@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { ArrowUpRight, Server } from "lucide-react";
 
@@ -25,6 +23,7 @@ export function ProvidersEmptyState({ addProviderDropdown }: ProvidersEmptyState
 					<Button
 						variant="outline"
 						aria-label="Read more about providers (opens in new tab)"
+						data-testid="providers-button-read-more"
 						onClick={() => {
 							window.open(`${PROVIDERS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}

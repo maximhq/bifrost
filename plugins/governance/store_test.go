@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -52,7 +53,7 @@ func TestGovernanceStore_GetVirtualKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			vk, exists := store.GetVirtualKey(tt.vkValue)
+			vk, exists := store.GetVirtualKey(context.Background(), tt.vkValue)
 			if tt.wantNil {
 				assert.False(t, exists)
 				assert.Nil(t, vk)
@@ -84,7 +85,7 @@ func TestGovernanceStore_ConcurrentReads(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				vk, exists := store.GetVirtualKey("sk-bf-test")
+				vk, exists := store.GetVirtualKey(context.Background(), "sk-bf-test")
 				if !exists || vk == nil {
 					errorCount.Add(1)
 					return
@@ -113,7 +114,7 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve VK with budget
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	tests := []struct {
 		name      string
@@ -151,8 +152,8 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 				Budgets:     []configstoreTables.TableBudget{*testBudget},
 			}, nil)
 
-			testVK, _ = testStore.GetVirtualKey("sk-bf-test")
-			err := testStore.CheckBudget(context.Background(), testVK, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+			testVK, _ = testStore.GetVirtualKey(context.Background(), "sk-bf-test")
+			_, err := testStore.CheckVirtualKeyBudget(context.Background(), testVK, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 			if tt.shouldErr {
 				assert.Error(t, err, "Expected error for usage check")
 			} else {
@@ -189,24 +190,485 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Test: All budgets under limit should pass
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err, "Should pass when all budgets are under limit")
 
 	// Test: If VK budget exceeds limit, should fail
 	// Update the budget directly in the budgets map (since UpdateVirtualKeyInMemory preserves usage)
-	if vk.BudgetID != nil {
-		if budgetValue, exists := store.budgets.Load(*vk.BudgetID); exists && budgetValue != nil {
+	if len(vk.Budgets) > 0 {
+		budgetID := vk.Budgets[0].ID
+		if budgetValue, exists := store.budgets.Load(budgetID); exists && budgetValue != nil {
 			if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
 				budget.CurrentUsage = 100.0
-				store.budgets.Store(*vk.BudgetID, budget)
+				store.budgets.Store(budgetID, budget)
 			}
 		}
 	}
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
-	assert.Error(t, err, "Should fail when VK budget exceeds limit")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	require.Error(t, err, "Should fail when VK budget exceeds limit")
+}
+
+// TestGovernanceStore_MultiBudget_AllUnderLimit tests that requests pass when all budgets are under their limits
+func TestGovernanceStore_MultiBudget_AllUnderLimit(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Create VK with hourly ($10) and daily ($100) budgets
+	hourlyBudget := buildBudgetWithUsage("hourly", 10.0, 5.0, "1h")
+	dailyBudget := buildBudgetWithUsage("daily", 100.0, 40.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*hourlyBudget, *dailyBudget})
+	// Add provider config so the resolver allows the provider
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err, "Should pass when all budgets are under limit")
+}
+
+// TestGovernanceStore_MultiBudget_SmallBudgetExceeded tests that request is blocked when the smaller budget exceeds its limit
+func TestGovernanceStore_MultiBudget_SmallBudgetExceeded(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Hourly at limit, daily still has room
+	hourlyBudget := buildBudgetWithUsage("hourly", 10.0, 10.0, "1h")
+	dailyBudget := buildBudgetWithUsage("daily", 100.0, 40.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*hourlyBudget, *dailyBudget})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	require.Error(t, err, "Should fail when hourly budget is exceeded even though daily is fine")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestGovernanceStore_MultiBudget_LargeBudgetExceeded tests that request is blocked when only the larger budget exceeds
+func TestGovernanceStore_MultiBudget_LargeBudgetExceeded(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Hourly has room, but daily is at limit
+	hourlyBudget := buildBudgetWithUsage("hourly", 10.0, 3.0, "1h")
+	dailyBudget := buildBudgetWithUsage("daily", 100.0, 100.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*hourlyBudget, *dailyBudget})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	require.Error(t, err, "Should fail when daily budget is exceeded even though hourly is fine")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets tests that usage updates are applied to every budget in the hierarchy
+func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
+	logger := NewMockLogger()
+
+	hourlyBudget := buildBudget("hourly", 10.0, "1h")
+	dailyBudget := buildBudget("daily", 100.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*hourlyBudget, *dailyBudget})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+
+	// Simulate a $3.50 request
+	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 3.50)
+	require.NoError(t, err)
+
+	// Both budgets should reflect the cost
+	hourlyVal, exists := store.budgets.Load("hourly")
+	require.True(t, exists)
+	assert.InDelta(t, 3.50, hourlyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Hourly budget should reflect usage")
+
+	dailyVal, exists := store.budgets.Load("daily")
+	require.True(t, exists)
+	assert.InDelta(t, 3.50, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Daily budget should reflect usage")
+
+	// Second request: $7.00 — should push hourly over limit
+	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 7.00)
+	require.NoError(t, err)
+
+	hourlyVal, _ = store.budgets.Load("hourly")
+	assert.InDelta(t, 10.50, hourlyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Hourly budget should accumulate")
+
+	dailyVal, _ = store.budgets.Load("daily")
+	assert.InDelta(t, 10.50, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Daily budget should accumulate")
+
+	// Now CheckBudget should fail (hourly exceeded)
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	require.Error(t, err, "Should fail after usage exceeds hourly budget")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestGovernanceStore_MultiBudget_ProviderConfigBudgets tests that provider-config-level multi-budgets are enforced
+func TestGovernanceStore_MultiBudget_ProviderConfigBudgets(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Provider-level budgets: hourly $5 (exceeded), daily $50 (ok)
+	pcHourly := buildBudgetWithUsage("pc-hourly", 5.0, 5.0, "1h")
+	pcDaily := buildBudgetWithUsage("pc-daily", 50.0, 10.0, "1d")
+
+	pc := buildProviderConfigWithBudgets("openai", []string{"*"},
+		[]configstoreTables.TableBudget{*pcHourly, *pcDaily})
+
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableVirtualKeyProviderConfig{pc})
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*pcHourly, *pcDaily},
+	}, nil)
+	require.NoError(t, err)
+
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	require.Error(t, err, "Should fail when provider config hourly budget is exceeded")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestGovernanceStore_MultiBudget_VKAndProviderConfigCombined tests budgets at both VK and provider config levels
+func TestGovernanceStore_MultiBudget_VKAndProviderConfigCombined(t *testing.T) {
+	logger := NewMockLogger()
+
+	// VK-level budgets: all under limit
+	vkMonthly := buildBudgetWithUsage("vk-monthly", 1000.0, 200.0, "1M")
+
+	// Provider-config-level budgets: hourly at limit
+	pcHourly := buildBudgetWithUsage("pc-hourly", 5.0, 5.0, "1h")
+
+	pc := buildProviderConfigWithBudgets("openai", []string{"*"},
+		[]configstoreTables.TableBudget{*pcHourly})
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*vkMonthly})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{pc}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*vkMonthly, *pcHourly},
+	}, nil)
+	require.NoError(t, err)
+
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+
+	// Provider config budget exceeded → should block even though VK budget is fine
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	require.Error(t, err, "Should fail: provider config budget exceeded even though VK budget is fine")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestGovernanceStore_MultiBudget_ResolverBlocksOnBudgetExceeded tests that the full resolver flow blocks when any budget is exceeded
+func TestGovernanceStore_MultiBudget_ResolverBlocksOnBudgetExceeded(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Two VK-level budgets: hourly at limit, daily has room
+	hourlyBudget := buildBudgetWithUsage("hourly", 10.0, 10.0, "1h")
+	dailyBudget := buildBudgetWithUsage("daily", 100.0, 30.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*hourlyBudget, *dailyBudget})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionBudgetExceeded, result)
+	assert.Contains(t, result.Reason, "budget exceeded")
+}
+
+// TestGovernanceStore_MultiBudget_ResolverAllowsUnderLimit tests that the full resolver flow allows requests when all budgets are under limit
+func TestGovernanceStore_MultiBudget_ResolverAllowsUnderLimit(t *testing.T) {
+	logger := NewMockLogger()
+
+	hourlyBudget := buildBudgetWithUsage("hourly", 10.0, 5.0, "1h")
+	dailyBudget := buildBudgetWithUsage("daily", 100.0, 30.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*hourlyBudget, *dailyBudget})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionAllow, result)
+}
+
+// TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests tests the full lifecycle:
+// start under limit → accumulate usage → eventually hit a budget → get blocked
+func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Tight hourly ($2), generous daily ($100)
+	hourlyBudget := buildBudget("hourly", 2.0, "1h")
+	dailyBudget := buildBudget("daily", 100.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*hourlyBudget, *dailyBudget})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	// Request 1: $0.80 — both budgets fine
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
+	require.NoError(t, err)
+
+	ctx := &schemas.BifrostContext{}
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionAllow, result)
+
+	// Request 2: $0.80 — still fine ($1.60 total)
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
+	require.NoError(t, err)
+
+	ctx = &schemas.BifrostContext{}
+	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionAllow, result)
+
+	// Request 3: $0.80 — pushes hourly to $2.40 > $2.00 limit → blocked
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
+	require.NoError(t, err)
+
+	ctx = &schemas.BifrostContext{}
+	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionBudgetExceeded, result)
+	assert.Contains(t, result.Reason, "budget exceeded")
+
+	// Verify daily budget is still under limit
+	dailyVal, exists := store.budgets.Load("daily")
+	require.True(t, exists)
+	assert.InDelta(t, 2.40, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01,
+		"Daily budget should be at $2.40, well under $100 limit")
+}
+
+// TestGovernanceStore_MultiBudget_CalendarAligned tests that calendar-aligned budgets are stored and retrievable
+func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
+	logger := NewMockLogger()
+
+	// Calendar alignment is a VK-level setting — budgets don't have it
+	dailyBudget := &configstoreTables.TableBudget{
+		ID:            "daily-cal",
+		MaxLimit:      50.0,
+		CurrentUsage:  10.0,
+		ResetDuration: "1d",
+		LastReset:     time.Now(),
+	}
+	monthlyBudget := &configstoreTables.TableBudget{
+		ID:            "monthly-cal",
+		MaxLimit:      1000.0,
+		CurrentUsage:  200.0,
+		ResetDuration: "1M",
+		LastReset:     time.Now(),
+	}
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*dailyBudget, *monthlyBudget})
+	vk.CalendarAligned = true // VK-level setting applies to all budgets
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*dailyBudget, *monthlyBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	// Verify VK-level calendar_aligned is set
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	assert.True(t, vk.CalendarAligned, "VK should have calendar_aligned=true")
+
+	// Both under limit — should pass
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err)
+}
+
+// TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete tests CreateVirtualKeyInMemory and DeleteVirtualKeyInMemory
+// properly store and clean up multi-budget entries
+func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
+	logger := NewMockLogger()
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	b1 := buildBudget("b1", 10.0, "1h")
+	b2 := buildBudget("b2", 100.0, "1d")
+
+	vk := buildVirtualKeyWithMultiBudgets("vk1", "sk-bf-test", "Test VK",
+		[]configstoreTables.TableBudget{*b1, *b2})
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	// Create
+	store.CreateVirtualKeyInMemory(context.Background(), vk)
+
+	_, exists := store.budgets.Load("b1")
+	assert.True(t, exists, "Budget b1 should be in memory after create")
+	_, exists = store.budgets.Load("b2")
+	assert.True(t, exists, "Budget b2 should be in memory after create")
+
+	retrieved, found := store.GetVirtualKey(context.Background(), "sk-bf-test")
+	require.True(t, found)
+	assert.Len(t, retrieved.Budgets, 2, "VK should have 2 budgets")
+
+	// Delete
+	store.DeleteVirtualKeyInMemory(context.Background(), "vk1")
+
+	_, exists = store.budgets.Load("b1")
+	assert.False(t, exists, "Budget b1 should be removed after delete")
+	_, exists = store.budgets.Load("b2")
+	assert.False(t, exists, "Budget b2 should be removed after delete")
+
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	assert.False(t, found, "VK should not be found after delete")
+}
+
+// TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer is a regression test
+// for a double-counting bug on new VKs: the create handler keeps mutating the caller's
+// TableVirtualKey after the store call (hydrateVKGovernance reassigns Budgets/RateLimit/RateLimitID
+// from VK-scoped model configs for serialization), so if the store kept that pointer the
+// model-config-owned IDs would leak onto the tracked VK's hierarchy fields and the usage tracker
+// would count each request twice (VK-scoped-model + VK-hierarchy). The stored VK must be a
+// decoupled clone.
+func TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	// A freshly-created VK loaded from DB carries no legacy rate-limit/budget — its
+	// governance lives in a VK-scoped model config, so RateLimitID is nil and Budgets empty.
+	// It does carry a provider config (with no per-provider governance of its own yet).
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	store.CreateVirtualKeyInMemory(context.Background(), vk)
+
+	// Simulate hydrateVKGovernance mutating the caller's pointer after the store call: it
+	// reassigns the top-level fields AND mutates the provider-config element IN PLACE
+	// (pc := &vk.ProviderConfigs[i]; pc.Budgets = ...), injecting the model-config-owned
+	// rate-limit/budget identity. The in-place element write is the case greptile flagged:
+	// a shallow clone shares the ProviderConfigs backing array and would leak it.
+	hydratedRL := buildRateLimit("mc-rl", 6, 6)
+	vk.RateLimit = hydratedRL
+	vk.RateLimitID = &hydratedRL.ID
+	vk.Budgets = []configstoreTables.TableBudget{*buildBudget("mc-b", 200.0, "1h")}
+
+	pcRL := buildRateLimit("mc-pc-rl", 10, 10)
+	vk.ProviderConfigs[0].RateLimit = pcRL
+	vk.ProviderConfigs[0].RateLimitID = &pcRL.ID
+	vk.ProviderConfigs[0].Budgets = []configstoreTables.TableBudget{*buildBudget("mc-pc-b", 50.0, "1h")}
+
+	// The tracked VK must NOT reflect those post-create mutations, otherwise the
+	// VK-hierarchy usage path would double-count alongside the VK-scoped-model path.
+	tracked, found := store.GetVirtualKey(context.Background(), "sk-bf-test")
+	require.True(t, found)
+	require.NotNil(t, tracked)
+	assert.Nil(t, tracked.RateLimit, "tracked VK rate limit must stay decoupled from caller mutation")
+	assert.Nil(t, tracked.RateLimitID, "tracked VK rate limit ID must stay decoupled from caller mutation")
+	assert.Empty(t, tracked.Budgets, "tracked VK budgets must stay decoupled from caller mutation")
+
+	// Per-provider entries must stay decoupled too — this is the ProviderConfigs slice
+	// aliasing greptile flagged (in-place element mutation through the shared backing array).
+	require.Len(t, tracked.ProviderConfigs, 1)
+	assert.Nil(t, tracked.ProviderConfigs[0].RateLimit, "tracked provider-config rate limit must stay decoupled")
+	assert.Nil(t, tracked.ProviderConfigs[0].RateLimitID, "tracked provider-config rate limit ID must stay decoupled")
+	assert.Empty(t, tracked.ProviderConfigs[0].Budgets, "tracked provider-config budgets must stay decoupled")
+}
+
+func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 25.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-old", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	updated := *vk
+	updated.Value = "sk-bf-new"
+	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil, nil)
+
+	oldVK, oldFound := store.GetVirtualKey(context.Background(), "sk-bf-old")
+	assert.False(t, oldFound)
+	assert.Nil(t, oldVK)
+
+	newVK, newFound := store.GetVirtualKey(context.Background(), "sk-bf-new")
+	require.True(t, newFound)
+	require.NotNil(t, newVK)
+	assert.Equal(t, "vk1", newVK.ID)
+	require.Len(t, newVK.Budgets, 1)
+	assert.Equal(t, 25.0, newVK.Budgets[0].CurrentUsage)
 }
 
 // TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests tests atomic rate limit usage updates
@@ -227,7 +689,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	assert.NoError(t, err, "Rate limit update should succeed")
 
 	// Retrieve the updated rate limit from the main RateLimits map
-	governanceData := store.GetGovernanceData()
+	governanceData := store.GetGovernanceData(context.Background())
 	updatedRateLimit, exists := governanceData.RateLimits["rl1"]
 	require.True(t, exists, "Rate limit should exist")
 	require.NotNil(t, updatedRateLimit)
@@ -240,7 +702,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	assert.NoError(t, err, "Rate limit update should succeed")
 
 	// Retrieve the updated rate limit again
-	governanceData = store.GetGovernanceData()
+	governanceData = store.GetGovernanceData(context.Background())
 	updatedRateLimit, exists = governanceData.RateLimits["rl1"]
 	require.True(t, exists, "Rate limit should exist")
 	require.NotNil(t, updatedRateLimit)
@@ -281,7 +743,7 @@ func TestGovernanceStore_ResetExpiredRateLimits(t *testing.T) {
 	assert.NoError(t, err, "Reset should succeed")
 
 	// Retrieve the updated VK to check rate limit changes
-	updatedVK, _ := store.GetVirtualKey("sk-bf-test")
+	updatedVK, _ := store.GetVirtualKey(context.Background(), "sk-bf-test")
 	require.NotNil(t, updatedVK)
 	require.NotNil(t, updatedVK.RateLimit)
 
@@ -316,11 +778,11 @@ func TestGovernanceStore_ResetExpiredBudgets(t *testing.T) {
 	assert.NoError(t, err, "Reset should succeed")
 
 	// Retrieve the updated VK to check budget changes
-	updatedVK, _ := store.GetVirtualKey("sk-bf-test")
+	updatedVK, _ := store.GetVirtualKey(context.Background(), "sk-bf-test")
 	require.NotNil(t, updatedVK)
-	require.NotNil(t, updatedVK.Budget)
+	require.True(t, len(updatedVK.Budgets) > 0, "VK should have budgets")
 
-	assert.Equal(t, 0.0, updatedVK.Budget.CurrentUsage, "Budget usage should be reset")
+	assert.Equal(t, 0.0, updatedVK.Budgets[0].CurrentUsage, "Budget usage should be reset")
 }
 
 // TestGovernanceStore_GetAllBudgets tests retrieving all budgets
@@ -338,7 +800,7 @@ func TestGovernanceStore_GetAllBudgets(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	allBudgets := store.GetGovernanceData().Budgets
+	allBudgets := store.GetGovernanceData(context.Background()).Budgets
 	assert.Equal(t, 3, len(allBudgets), "Should have 3 budgets")
 	assert.NotNil(t, allBudgets["budget1"])
 	assert.NotNil(t, allBudgets["budget2"])
@@ -353,13 +815,14 @@ func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 
 	// Create a global routing rule
 	rule1 := &configstoreTables.TableRoutingRule{
-		ID:              "1",
-		Name:            "Global Rule",
-		Description:     "Test global routing rule",
-		Enabled:         true,
-		CelExpression:   "model == 'gpt-4o'",
-		Provider:        "openai",
-		Model:           "gpt-4",
+		ID:            "1",
+		Name:          "Global Rule",
+		Description:   "Test global routing rule",
+		Enabled:       bifrost.Ptr(true),
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4"), Weight: 1.0},
+		},
 		Fallbacks:       nil,
 		ParsedFallbacks: []string{"azure/gpt-4-turbo"},
 		Scope:           "global",
@@ -372,13 +835,14 @@ func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 	// Create a team-scoped routing rule
 	teamID := "team-123"
 	rule2 := &configstoreTables.TableRoutingRule{
-		ID:              "2",
-		Name:            "Team Rule",
-		Description:     "Test team routing rule",
-		Enabled:         true,
-		CelExpression:   "model in ['gpt-4o', 'gpt-4-turbo']",
-		Provider:        "azure",
-		Model:           "",
+		ID:            "2",
+		Name:          "Team Rule",
+		Description:   "Test team routing rule",
+		Enabled:       bifrost.Ptr(true),
+		CelExpression: "model in ['gpt-4o', 'gpt-4-turbo']",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Weight: 1.0},
+		},
 		Fallbacks:       nil,
 		ParsedFallbacks: []string{"groq/mixtral-8x7b"},
 		Scope:           "team",
@@ -389,22 +853,22 @@ func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 	}
 
 	// Store rules in memory
-	err = store.UpdateRoutingRuleInMemory(rule1)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule1)
 	require.NoError(t, err)
-	err = store.UpdateRoutingRuleInMemory(rule2)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule2)
 	require.NoError(t, err)
 
 	// Test retrieval by scope
-	globalRules := store.GetScopedRoutingRules("global", "")
+	globalRules := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(globalRules))
 	assert.Equal(t, "Global Rule", globalRules[0].Name)
 
-	teamRules := store.GetScopedRoutingRules("team", teamID)
+	teamRules := store.GetScopedRoutingRules(context.Background(), "team", teamID)
 	assert.Equal(t, 1, len(teamRules))
 	assert.Equal(t, "Team Rule", teamRules[0].Name)
 
 	// Test ListRoutingRules
-	allRules := store.GetAllRoutingRules()
+	allRules := store.GetAllRoutingRules(context.Background())
 	assert.Equal(t, 2, len(allRules))
 }
 
@@ -422,7 +886,7 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 			Priority: 5,
 			Scope:    "global",
 			ScopeID:  nil,
-			Enabled:  true,
+			Enabled:  bifrost.Ptr(true),
 		},
 		{
 			ID:       "2",
@@ -430,7 +894,7 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 			Priority: 20,
 			Scope:    "global",
 			ScopeID:  nil,
-			Enabled:  true,
+			Enabled:  bifrost.Ptr(true),
 		},
 		{
 			ID:       "3",
@@ -438,17 +902,17 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 			Priority: 10,
 			Scope:    "global",
 			ScopeID:  nil,
-			Enabled:  true,
+			Enabled:  bifrost.Ptr(true),
 		},
 	}
 
 	for _, rule := range rules {
-		err := store.UpdateRoutingRuleInMemory(rule)
+		err := store.UpdateRoutingRuleInMemory(context.Background(), rule)
 		require.NoError(t, err)
 	}
 
 	// Retrieve and verify ordering (sorted by priority ASC, so lower numbers first)
-	retrieved := store.GetScopedRoutingRules("global", "")
+	retrieved := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 3, len(retrieved))
 	assert.Equal(t, 5, retrieved[0].Priority)
 	assert.Equal(t, 10, retrieved[1].Priority)
@@ -464,7 +928,7 @@ func TestGovernanceStore_RoutingRules_DisabledRulesFiltered(t *testing.T) {
 	enabledRule := &configstoreTables.TableRoutingRule{
 		ID:      "1",
 		Name:    "Enabled Rule",
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 		Scope:   "global",
 		ScopeID: nil,
 	}
@@ -472,18 +936,18 @@ func TestGovernanceStore_RoutingRules_DisabledRulesFiltered(t *testing.T) {
 	disabledRule := &configstoreTables.TableRoutingRule{
 		ID:      "2",
 		Name:    "Disabled Rule",
-		Enabled: false,
+		Enabled: bifrost.Ptr(false),
 		Scope:   "global",
 		ScopeID: nil,
 	}
 
-	err = store.UpdateRoutingRuleInMemory(enabledRule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), enabledRule)
 	require.NoError(t, err)
-	err = store.UpdateRoutingRuleInMemory(disabledRule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), disabledRule)
 	require.NoError(t, err)
 
 	// Only enabled rules should be returned
-	retrieved := store.GetScopedRoutingRules("global", "")
+	retrieved := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(retrieved))
 	assert.Equal(t, "Enabled Rule", retrieved[0].Name)
 }
@@ -497,24 +961,24 @@ func TestGovernanceStore_RoutingRules_DeleteRule(t *testing.T) {
 	rule := &configstoreTables.TableRoutingRule{
 		ID:      "1",
 		Name:    "Test Rule",
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 		Scope:   "global",
 		ScopeID: nil,
 	}
 
 	// Add rule
-	err = store.UpdateRoutingRuleInMemory(rule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule)
 	require.NoError(t, err)
 
-	retrieved := store.GetScopedRoutingRules("global", "")
+	retrieved := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(retrieved))
 
 	// Delete rule
-	err = store.DeleteRoutingRuleInMemory(rule.ID)
+	err = store.DeleteRoutingRuleInMemory(context.Background(), rule.ID)
 	require.NoError(t, err)
 
 	// Verify deletion
-	retrieved = store.GetScopedRoutingRules("global", "")
+	retrieved = store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 0, len(retrieved))
 }
 
@@ -590,6 +1054,88 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	assert.Equal(t, 100.0, status.BudgetPercentUsed)
 }
 
+// TestGetBudgetAndRateLimitStatus_VKScopedModelConfig tests that a VK-scoped model config
+// budget (scope=virtual_key, model="*", provider="openai") is visible to GetBudgetAndRateLimitStatus.
+// This is the regression introduced when the provider-governance migration relocated per-VK
+// provider budgets from vk.ProviderConfigs into governance_model_configs; the status reader
+// was not updated to look in the new location and always returned 0.0%.
+func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-test-id"
+	vkValue := "vk-test-value"
+	providerName := "openai"
+
+	// Budget at 120% (exceeded) — mirrors the real bug scenario.
+	budget := buildBudgetWithUsage("vk-model-budget", 0.001, 0.0012, "1h")
+
+	// VK-scoped wildcard model config: scope=virtual_key, model="*", provider="openai".
+	// This is exactly the shape the provider-governance migration writes.
+	mc := buildVKScopedModelConfig("mc-vk-openai", configstoreTables.ModelConfigAllModels, &providerName, vkID, budget, nil)
+
+	vk := buildVirtualKey(vkID, vkValue, "test-vk", true)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	store.virtualKeys.Store(vkValue, vk)
+
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), vk, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Greater(t, status.BudgetPercentUsed, 100.0, "VK-scoped model budget at 120%% must be visible to routing status")
+}
+
+// TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider tests that a
+// VK-scoped model config for one provider does not bleed into status for another provider.
+func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-test-id"
+	vkValue := "vk-test-value"
+	providerName := "openai"
+
+	budget := buildBudgetWithUsage("vk-model-budget", 0.001, 0.0012, "1h") // exceeded for openai
+	mc := buildVKScopedModelConfig("mc-vk-openai", configstoreTables.ModelConfigAllModels, &providerName, vkID, budget, nil)
+	vk := buildVirtualKey(vkID, vkValue, "test-vk", true)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	store.virtualKeys.Store(vkValue, vk)
+
+	// Query for anthropic — should not see the openai-scoped budget.
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "claude-3-5-sonnet", schemas.ModelProvider("anthropic"), vk, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Equal(t, 0.0, status.BudgetPercentUsed, "openai VK-scoped budget must not appear for anthropic requests")
+}
+
+// TestGetBudgetAndRateLimitStatus_GlobalModelConfig tests that a global model+provider
+// config budget is visible to GetBudgetAndRateLimitStatus.
+func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
+	logger := NewMockLogger()
+	providerName := "openai"
+
+	budget := buildBudgetWithUsage("global-model-budget", 100.0, 75.0, "1h") // 75%
+	mc := buildModelConfig("mc-global-openai", "gpt-5", &providerName, budget, nil)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), nil, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Equal(t, 75.0, status.BudgetPercentUsed, "global model+provider budget must be visible to routing status")
+}
+
 // TestGovernanceStore_RoutingRules_MultipleScopes tests rules with multiple scopes
 func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 	logger := NewMockLogger()
@@ -601,36 +1147,36 @@ func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 
 	// Create rules for different scopes
 	globalRule := &configstoreTables.TableRoutingRule{
-		ID: "1", Name: "Global", Scope: "global", ScopeID: nil, Priority: 10, Enabled: true,
+		ID: "1", Name: "Global", Scope: "global", ScopeID: nil, Priority: 10, Enabled: bifrost.Ptr(true),
 	}
 	customerRule := &configstoreTables.TableRoutingRule{
-		ID: "2", Name: "Customer", Scope: "customer", ScopeID: &customerID, Priority: 20, Enabled: true,
+		ID: "2", Name: "Customer", Scope: "customer", ScopeID: &customerID, Priority: 20, Enabled: bifrost.Ptr(true),
 	}
 	teamRule := &configstoreTables.TableRoutingRule{
-		ID: "3", Name: "Team", Scope: "team", ScopeID: &teamID, Priority: 30, Enabled: true,
+		ID: "3", Name: "Team", Scope: "team", ScopeID: &teamID, Priority: 30, Enabled: bifrost.Ptr(true),
 	}
 
-	require.NoError(t, store.UpdateRoutingRuleInMemory(globalRule))
-	require.NoError(t, store.UpdateRoutingRuleInMemory(customerRule))
-	require.NoError(t, store.UpdateRoutingRuleInMemory(teamRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), globalRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), customerRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), teamRule))
 
 	// Test global scope
-	globalRules := store.GetScopedRoutingRules("global", "")
+	globalRules := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(globalRules))
 	assert.Equal(t, "Global", globalRules[0].Name)
 
 	// Test customer scope
-	custRules := store.GetScopedRoutingRules("customer", customerID)
+	custRules := store.GetScopedRoutingRules(context.Background(), "customer", customerID)
 	assert.Equal(t, 1, len(custRules))
 	assert.Equal(t, "Customer", custRules[0].Name)
 
 	// Test team scope
-	teamRules := store.GetScopedRoutingRules("team", teamID)
+	teamRules := store.GetScopedRoutingRules(context.Background(), "team", teamID)
 	assert.Equal(t, 1, len(teamRules))
 	assert.Equal(t, "Team", teamRules[0].Name)
 
 	// ListAll should return all rules sorted by priority ASC (lower numbers = higher priority)
-	allRules := store.GetAllRoutingRules()
+	allRules := store.GetAllRoutingRules(context.Background())
 	assert.Equal(t, 3, len(allRules))
 	assert.Equal(t, 10, allRules[0].Priority) // Global (highest)
 	assert.Equal(t, 20, allRules[1].Priority) // Customer
@@ -647,17 +1193,19 @@ func TestCompileAndCacheProgram(t *testing.T) {
 		ID:            "rule-1",
 		Name:          "Test Rule",
 		CelExpression: "model == 'gpt-4o' && tokens_used < 80.0",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai")},
+		},
+		Enabled: bifrost.Ptr(true),
 	}
 
 	// First compilation
-	program1, err := store.GetRoutingProgram(rule)
+	program1, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program1)
 
 	// Verify it's cached - second call should return cached program
-	program2, err := store.GetRoutingProgram(rule)
+	program2, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 
@@ -675,15 +1223,17 @@ func TestCompileAndCacheProgram_InvalidExpression(t *testing.T) {
 		ID:            "rule-invalid",
 		Name:          "Invalid Rule",
 		CelExpression: "model == gpt-4o'", // Syntax error
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai")},
+		},
+		Enabled: bifrost.Ptr(true),
 	}
 
-	_, err = store.GetRoutingProgram(rule)
+	_, err = store.GetRoutingProgram(context.Background(), rule)
 	assert.Error(t, err)
 
 	// Invalid rule should not be cached - attempting to get it again should fail
-	_, err = store.GetRoutingProgram(rule)
+	_, err = store.GetRoutingProgram(context.Background(), rule)
 	assert.Error(t, err)
 }
 
@@ -697,23 +1247,25 @@ func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 		ID:            "rule-update",
 		Name:          "Update Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "openai",
-		Enabled:       true,
-		Scope:         "global",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai")},
+		},
+		Enabled: bifrost.Ptr(true),
+		Scope:   "global",
 	}
 
 	// Compile and cache
-	program1, err := store.GetRoutingProgram(rule)
+	program1, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program1)
 
 	// Update rule in memory (should invalidate cache)
 	rule.CelExpression = "model == 'gpt-4-turbo'"
-	err = store.UpdateRoutingRuleInMemory(rule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule)
 	require.NoError(t, err)
 
 	// Recompile should work
-	program2, err := store.GetRoutingProgram(rule)
+	program2, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 }
@@ -728,17 +1280,19 @@ func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 		ID:            "rule-delete",
 		Name:          "Delete Rule",
 		CelExpression: "provider == 'openai'",
-		Provider:      "openai",
-		Enabled:       true,
-		Scope:         "global",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai")},
+		},
+		Enabled: bifrost.Ptr(true),
+		Scope:   "global",
 	}
 
 	// Compile and cache
-	_, err = store.GetRoutingProgram(rule)
+	_, err = store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 
 	// Delete rule (should invalidate cache)
-	err = store.DeleteRoutingRuleInMemory(rule.ID)
+	err = store.DeleteRoutingRuleInMemory(context.Background(), rule.ID)
 	require.NoError(t, err)
 
 	// After deletion, we can't verify cache directly, but the rule is gone from storage
@@ -754,19 +1308,157 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 		ID:            "rule-empty",
 		Name:          "Empty Rule",
 		CelExpression: "",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai")},
+		},
+		Enabled: bifrost.Ptr(true),
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 
 	// Verify caching works - second call should return same program
-	program2, err := store.GetRoutingProgram(rule)
+	program2, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 	assert.Equal(t, program, program2)
+}
+
+// TestGetTeamNameAndGetCustomerName verifies the display-name accessors the
+// enterprise layer uses as the log-stamping fallback when its edge-driven name
+// caches miss: known entities return their name, unknown/empty ids return "".
+func TestGetTeamNameAndGetCustomerName(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	store.CreateTeamInMemory(context.Background(), buildTeam("team-1", "Platform", nil))
+	store.CreateCustomerInMemory(context.Background(), buildCustomer("cust-1", "ACME", nil))
+
+	assert.Equal(t, "Platform", store.GetTeamName(context.Background(), "team-1"))
+	assert.Equal(t, "ACME", store.GetCustomerName(context.Background(), "cust-1"))
+
+	assert.Empty(t, store.GetTeamName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetCustomerName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetTeamName(context.Background(), ""))
+	assert.Empty(t, store.GetCustomerName(context.Background(), ""))
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_CreateInMemory verifies that
+// CreateCustomerInMemory stamps IsCalendarAligned on the in-memory budget and
+// rate limit so ResetExpiredBudgetsInMemory uses the calendar-aligned reset path.
+func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	budgetID := "cust-bud-1"
+	rlID := "cust-rl-1"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      100.0,
+		ResetDuration: "1M",
+		LastReset:     time.Now(),
+	}
+	rl := &configstoreTables.TableRateLimit{
+		ID:               rlID,
+		TokenMaxLimit:    ptrInt64(1000),
+		TokenLastReset:   time.Now(),
+		RequestLastReset: time.Now(),
+	}
+	customer := buildCustomer("cust-1", "ACME", budget)
+	customer.CalendarAligned = true
+	customer.RateLimit = rl
+	customer.RateLimitID = &rlID
+
+	store.CreateCustomerInMemory(context.Background(), customer)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok, "budget should be in memory after create")
+	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
+	require.True(t, ok)
+	assert.True(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be true when customer.CalendarAligned=true")
+
+	rawRL, ok := store.rateLimits.Load(rlID)
+	require.True(t, ok, "rate limit should be in memory after create")
+	storedRL, ok := rawRL.(*configstoreTables.TableRateLimit)
+	require.True(t, ok)
+	assert.True(t, storedRL.IsCalendarAligned, "rate_limit.IsCalendarAligned should be true when customer.CalendarAligned=true")
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False verifies that
+// IsCalendarAligned is false when the customer does not have calendar alignment enabled.
+func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	budgetID := "cust-bud-2"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      50.0,
+		ResetDuration: "1d",
+		LastReset:     time.Now(),
+	}
+	customer := buildCustomer("cust-2", "Globex", budget)
+	customer.CalendarAligned = false
+
+	store.CreateCustomerInMemory(context.Background(), customer)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok)
+	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
+	require.True(t, ok)
+	assert.False(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be false when customer.CalendarAligned=false")
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory verifies that
+// UpdateCustomerInMemory re-stamps IsCalendarAligned on the budget and rate limit
+// so an in-flight toggle (false→true) takes effect immediately in memory.
+func TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory(t *testing.T) {
+	logger := NewMockLogger()
+
+	budgetID := "cust-bud-3"
+	rlID := "cust-rl-3"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      200.0,
+		ResetDuration: "1M",
+		LastReset:     time.Now(),
+	}
+	rl := &configstoreTables.TableRateLimit{
+		ID:               rlID,
+		TokenMaxLimit:    ptrInt64(500),
+		TokenLastReset:   time.Now(),
+		RequestLastReset: time.Now(),
+	}
+	customer := buildCustomer("cust-3", "Initech", budget)
+	customer.CalendarAligned = false
+	customer.RateLimit = rl
+	customer.RateLimitID = &rlID
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Customers: []configstoreTables.TableCustomer{*customer},
+		Budgets:   []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// Budget and rate limit should start as non-calendar-aligned
+	rawBudget, _ := store.budgets.Load(budgetID)
+	assert.False(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned)
+
+	// Toggle calendar_aligned to true and update in memory
+	customer.CalendarAligned = true
+	store.UpdateCustomerInMemory(context.Background(), customer, nil)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok)
+	assert.True(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned, "budget.IsCalendarAligned should be true after update with CalendarAligned=true")
+
+	rawRL, ok := store.rateLimits.Load(rlID)
+	require.True(t, ok)
+	assert.True(t, rawRL.(*configstoreTables.TableRateLimit).IsCalendarAligned, "rate_limit.IsCalendarAligned should be true after update with CalendarAligned=true")
 }
 
 // Utility functions for tests

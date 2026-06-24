@@ -1,34 +1,9 @@
 import { configureStore } from "@reduxjs/toolkit";
 import { baseApi } from "./apis/baseApi";
 import { appReducer, pluginReducer, providerReducer } from "./slices";
-
-// Import enterprise types for TypeScript
-type EnterpriseState = {} & import("@enterprise/lib/store/slices").EnterpriseState;
-
-// Get enterprise reducers if they are available
-let enterpriseReducers = {};
-try {
-	const enterprise = require("@enterprise/lib/store/slices");
-	// Use the explicit reducers map from enterprise slices
-	if (enterprise.reducers) {
-		enterpriseReducers = enterprise.reducers;
-	}
-} catch (e) {
-	// Enterprise reducers not available, continue without them
-}
-
-// Inject enterprise APIs if they are available
-try {
-	const enterpriseApis = require("@enterprise/lib/store/apis");
-	// Access the apis array to ensure all API modules are loaded
-	// APIs are already injected into baseApi via injectEndpoints
-	if (enterpriseApis.apis) {
-		// Just accessing the array ensures all APIs are loaded
-		baseApi.injectEndpoints(enterpriseApis.apis);
-	}
-} catch (e) {
-	// Enterprise APIs not available, continue without them
-}
+import { reducers as enterpriseReducers, type EnterpriseState } from "@enterprise/lib/store/slices";
+// Importing enterprise APIs triggers their self-injection into baseApi
+import "@enterprise/lib/store/apis";
 
 export const store = configureStore({
 	reducer: {
@@ -67,4 +42,5 @@ export const store = configureStore({
 });
 
 export type RootState = ReturnType<typeof store.getState> & EnterpriseState;
+
 export type AppDispatch = typeof store.dispatch;

@@ -14,6 +14,9 @@ concurrency:
   group: npx-publish-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
@@ -23,15 +26,20 @@ jobs:
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Check if pipeline should be skipped
         id: check        
         run: |
           COMMIT_MESSAGE=$(git log -1 --pretty=%B)
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
-          if [[ "$FIRST_LINE" == *"--skip-pipeline"* ]]; then
+          if [[ "$FIRST_LINE" == *"--skip-ci"* ]]; then
             echo "should-skip=true" >> $GITHUB_OUTPUT
           else
             echo "should-skip=false" >> $GITHUB_OUTPUT
@@ -45,16 +53,21 @@ jobs:
       contents: write
       id-token: write # Required for npm provenance
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "25"
           registry-url: "https://registry.npmjs.org"
           cache: "npm"
           cache-dependency-path: |
@@ -163,16 +176,21 @@ jobs:
       contents: write
       id-token: write # Required for npm provenance
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "25"
           registry-url: "https://registry.npmjs.org"
 
       - name: Check if bifrost-cli package.json changed

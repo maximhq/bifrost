@@ -1,13 +1,12 @@
 package openai
 
 import (
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ToBifrostEmbeddingRequest converts an OpenAI embedding request to Bifrost format
 func (request *OpenAIEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) *schemas.BifrostEmbeddingRequest {
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	return &schemas.BifrostEmbeddingRequest{
 		Provider:  provider,
@@ -34,10 +33,7 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Open
 	// Map parameters
 	if params != nil {
 		openaiReq.EmbeddingParameters = *params
-	}
-
-	if bifrostReq.Params != nil {
-		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		openaiReq.ExtraParams = params.ExtraParams
 	}
 	return openaiReq
 }

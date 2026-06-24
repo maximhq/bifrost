@@ -21,6 +21,7 @@ func TestVLLM(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	chatModel := getEnvWithDefault("VLLM_CHAT_MODEL", "Qwen/Qwen3-0.6B")
 	textModel := getEnvWithDefault("VLLM_TEXT_MODEL", "Qwen/Qwen3-0.6B")
@@ -36,41 +37,42 @@ func TestVLLM(t *testing.T) {
 		EmbeddingModel: embeddingModel,
 		RerankModel:    rerankModel,
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        true,
-			TextCompletionStream:  true,
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false,
-			ImageBase64:           false,
-			MultipleImages:        false,
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			Rerank:                rerankModel != "",
-			ListModels:            true,
-			Reasoning:             true,
-			SpeechSynthesis:       false,
-			SpeechSynthesisStream: false,
-			Transcription:         true,
-			TranscriptionStream:   false,
-			ImageGeneration:       false,
-			ImageGenerationStream: false,
-			ImageEdit:             false,
-			ImageEditStream:       false,
-			ImageVariation:        false,
-			ImageVariationStream:  false,
+			TextCompletion:             true,
+			TextCompletionStream:       true,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false,
+			ImageBase64:                false,
+			MultipleImages:             false,
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			Rerank:                     rerankModel != "",
+			ListModels:                 true,
+			Reasoning:                  true,
+			PassThroughExtraParams:     true,
+			SpeechSynthesis:            false,
+			SpeechSynthesisStream:      false,
+			Transcription:              true,
+			TranscriptionStream:        false,
+			ImageGeneration:            false,
+			ImageGenerationStream:      false,
+			ImageEdit:                  false,
+			ImageEditStream:            false,
+			ImageVariation:             false,
+			ImageVariationStream:       false,
 		},
 	}
 
 	t.Run("VLLMTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 func getEnvWithDefault(key, def string) string {

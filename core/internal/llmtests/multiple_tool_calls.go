@@ -2,8 +2,11 @@ package llmtests
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -78,7 +81,8 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
 				Params: &schemas.ChatParameters{
-					Tools: []schemas.ChatTool{*chatWeatherTool, *chatCalculatorTool},
+					Tools:             []schemas.ChatTool{*chatWeatherTool, *chatCalculatorTool},
+					ParallelToolCalls: schemas.Ptr(true),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -92,7 +96,8 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
 				Params: &schemas.ResponsesParameters{
-					Tools: []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
+					Tools:             []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
+					ParallelToolCalls: schemas.Ptr(true),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -187,5 +192,375 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed MultipleToolCalls test!")
+	})
+
+	// Streaming Chat Completions with multiple tool calls (validates sequential indices 0, 1, 2, ...)
+	t.Run("MultipleToolCallsStreamingChatCompletions", func(t *testing.T) {
+		if !testConfig.Scenarios.MultipleToolCallsStreaming {
+			t.Skip("Multiple tool calls streaming not supported for this provider")
+		}
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		chatMessages := []schemas.ChatMessage{
+			CreateBasicChatMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both in a single request?"),
+		}
+		chatWeatherTool := GetSampleChatTool(SampleToolTypeWeather)
+		chatCalculatorTool := GetSampleChatTool(SampleToolTypeCalculate)
+
+		request := &schemas.BifrostChatRequest{
+			Provider: testConfig.Provider,
+			Model:    testConfig.ChatModel,
+			Input:    chatMessages,
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(200),
+				Tools:               []schemas.ChatTool{*chatWeatherTool, *chatCalculatorTool},
+				ParallelToolCalls:   schemas.Ptr(true),
+			},
+			Fallbacks: testConfig.Fallbacks,
+		}
+
+		retryConfig := MultiToolRetryConfig(2, []string{"weather", "calculate"})
+		retryContext := TestRetryContext{
+			ScenarioName: "MultipleToolCallsStreamingChatCompletions",
+			ExpectedBehavior: map[string]interface{}{
+				"expected_tool_count": 2,
+				"should_handle_both":  true,
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ChatModel,
+			},
+		}
+
+		validationResult := WithChatStreamValidationRetry(
+			t,
+			retryConfig,
+			retryContext,
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ChatCompletionStreamRequest(bfCtx, request)
+			},
+			func(responseChannel chan *schemas.BifrostStreamChunk) ChatStreamValidationResult {
+				accumulator := NewStreamingToolCallAccumulator()
+				var responseCount int
+				var streamErrors []string
+
+				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+
+				for {
+					select {
+					case response, ok := <-responseChannel:
+						if !ok {
+							goto streamComplete
+						}
+
+						if response == nil || response.BifrostChatResponse == nil {
+							errMsg := "❌ Streaming response should not be nil"
+							if response != nil && response.BifrostError != nil {
+								errMsg += fmt.Sprintf(" - error: %s", GetErrorMessage(response.BifrostError))
+							}
+							streamErrors = append(streamErrors, errMsg)
+							continue
+						}
+						responseCount++
+
+						if response.BifrostChatResponse.Choices != nil {
+							for _, choice := range response.BifrostChatResponse.Choices {
+								if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+									delta := choice.ChatStreamResponseChoice.Delta
+									if len(delta.ToolCalls) > 0 {
+										for _, toolCall := range delta.ToolCalls {
+											accumulator.AccumulateChatToolCall(choice.Index, toolCall)
+										}
+									}
+								}
+							}
+						}
+
+						if responseCount > 500 {
+							goto streamComplete
+						}
+
+					case <-streamCtx.Done():
+						streamErrors = append(streamErrors, "❌ Timeout waiting for streaming response")
+						goto streamComplete
+					}
+				}
+
+			streamComplete:
+				var errors []string
+				if responseCount == 0 {
+					errors = append(errors, "❌ Should receive at least one streaming response")
+				}
+
+				finalToolCalls := accumulator.GetFinalChatToolCalls()
+
+				if len(finalToolCalls) == 0 {
+					errors = append(errors, "❌ No tool calls found in streaming response")
+				} else if len(finalToolCalls) < 2 {
+					errors = append(errors, fmt.Sprintf("❌ Expected at least 2 tool calls, got %d", len(finalToolCalls)))
+				} else {
+					toolsFound := make(map[string]bool)
+					for i, tc := range finalToolCalls {
+						if tc.Index != i {
+							errors = append(errors, fmt.Sprintf("❌ Tool call %d has index %d, expected %d", i, tc.Index, i))
+						}
+						toolsFound[tc.Name] = true
+					}
+
+					for _, expected := range []string{"weather", "calculate"} {
+						if !toolsFound[expected] {
+							errors = append(errors, fmt.Sprintf("❌ Expected tool '%s' not found. Found: %v", expected, getKeysFromMap(toolsFound)))
+						}
+					}
+
+					if err := validateStreamingToolCalls(finalToolCalls, "Chat Completions"); err != nil {
+						errors = append(errors, fmt.Sprintf("❌ %v", err))
+					}
+				}
+
+				if len(streamErrors) > 0 {
+					errors = append(errors, streamErrors...)
+				}
+
+				return ChatStreamValidationResult{
+					Passed:           len(errors) == 0,
+					Errors:           errors,
+					ReceivedData:     responseCount > 0,
+					StreamErrors:     streamErrors,
+					ToolCallDetected: len(finalToolCalls) >= 2,
+					ResponseCount:    responseCount,
+				}
+			},
+		)
+
+		if !validationResult.Passed {
+			allErrors := append(validationResult.Errors, validationResult.StreamErrors...)
+			t.Fatalf("❌ MultipleToolCallsStreamingChatCompletions validation failed after retries: %s", strings.Join(allErrors, "; "))
+		}
+		t.Logf("✅ MultipleToolCallsStreamingChatCompletions passed with %d chunks", validationResult.ResponseCount)
+	})
+
+	// Streaming Responses API with multiple tool calls
+	t.Run("MultipleToolCallsStreamingResponses", func(t *testing.T) {
+		if !testConfig.Scenarios.MultipleToolCallsStreaming {
+			t.Skip("Multiple tool calls streaming not supported for this provider")
+		}
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		responsesMessages := []schemas.ResponsesMessage{
+			CreateBasicResponsesMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both in a single request?"),
+		}
+		responsesWeatherTool := GetSampleResponsesTool(SampleToolTypeWeather)
+		responsesCalculatorTool := GetSampleResponsesTool(SampleToolTypeCalculate)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: testConfig.Provider,
+			Model:    testConfig.ChatModel,
+			Input:    responsesMessages,
+			Params: &schemas.ResponsesParameters{
+				Tools:             []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
+				ParallelToolCalls: schemas.Ptr(true),
+			},
+			Fallbacks: testConfig.Fallbacks,
+		}
+
+		retryConfig := MultiToolRetryConfig(2, []string{"weather", "calculate"})
+		retryContext := TestRetryContext{
+			ScenarioName: "MultipleToolCallsStreamingResponses",
+			ExpectedBehavior: map[string]interface{}{
+				"expected_tool_count": 2,
+				"should_handle_both":  true,
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ChatModel,
+			},
+		}
+
+		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ResponsesStreamRequest(bfCtx, request)
+			},
+			func(responseChannel chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult {
+				accumulator := NewStreamingToolCallAccumulator()
+				var responseCount int
+				streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
+				defer cancel()
+
+				for {
+					select {
+					case response, ok := <-responseChannel:
+						if !ok {
+							goto streamComplete
+						}
+						if response == nil {
+							return ResponsesStreamValidationResult{
+								Passed: false,
+								Errors: []string{"❌ Streaming response should not be nil"},
+							}
+						}
+						responseCount++
+
+						if response.BifrostResponsesStreamResponse == nil {
+							errMsg := fmt.Sprintf("❌ Unexpected non-response chunk at chunk %d", responseCount)
+							if response.BifrostError != nil {
+								errMsg += fmt.Sprintf(" - error: %s", GetErrorMessage(response.BifrostError))
+							}
+							return ResponsesStreamValidationResult{
+								Passed: false,
+								Errors: []string{errMsg},
+							}
+						}
+
+						streamResp := response.BifrostResponsesStreamResponse
+						switch streamResp.Type {
+						case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+							var arguments *string
+							if streamResp.Delta != nil {
+								arguments = streamResp.Delta
+							} else if streamResp.Arguments != nil {
+								arguments = streamResp.Arguments
+							}
+							if arguments != nil {
+								var callID, name, itemID *string
+								if streamResp.ItemID != nil {
+									itemID = streamResp.ItemID
+								}
+								if streamResp.Item != nil && streamResp.Item.ResponsesToolMessage != nil {
+									callID = streamResp.Item.ResponsesToolMessage.CallID
+									name = streamResp.Item.ResponsesToolMessage.Name
+								}
+								if streamResp.Item != nil && streamResp.Item.ID != nil {
+									itemID = streamResp.Item.ID
+								}
+								accumulator.AccumulateResponsesToolCall(callID, name, arguments, itemID)
+							}
+						case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+							if streamResp.Item != nil && streamResp.Item.Type != nil &&
+								*streamResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall {
+								var callID, name, itemID *string
+								if streamResp.Item.ID != nil {
+									itemID = streamResp.Item.ID
+								}
+								if streamResp.Item.ResponsesToolMessage != nil {
+									callID = streamResp.Item.ResponsesToolMessage.CallID
+									name = streamResp.Item.ResponsesToolMessage.Name
+									if streamResp.Item.ResponsesToolMessage.Arguments != nil {
+										accumulator.AccumulateResponsesToolCall(callID, name, streamResp.Item.ResponsesToolMessage.Arguments, itemID)
+									}
+								}
+								if streamResp.Item.ResponsesToolMessage == nil || streamResp.Item.ResponsesToolMessage.Arguments == nil {
+									accumulator.AccumulateResponsesToolCall(callID, name, nil, itemID)
+								}
+							}
+						case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+							if streamResp.Arguments != nil {
+								var callID, name, itemID *string
+								if streamResp.ItemID != nil {
+									itemID = streamResp.ItemID
+								}
+								if streamResp.Item != nil && streamResp.Item.ResponsesToolMessage != nil {
+									callID = streamResp.Item.ResponsesToolMessage.CallID
+									name = streamResp.Item.ResponsesToolMessage.Name
+								}
+								if streamResp.Item != nil && streamResp.Item.ID != nil {
+									itemID = streamResp.Item.ID
+								}
+								accumulator.AccumulateResponsesToolCall(callID, name, streamResp.Arguments, itemID)
+							}
+						}
+
+						if responseCount > 500 {
+							return ResponsesStreamValidationResult{
+								Passed: false,
+								Errors: []string{"❌ Received too many streaming chunks"},
+							}
+						}
+
+					case <-streamCtx.Done():
+						return ResponsesStreamValidationResult{
+							Passed:       false,
+							Errors:       []string{"❌ Timeout waiting for responses streaming response"},
+							ReceivedData: responseCount > 0,
+						}
+					}
+				}
+
+			streamComplete:
+				if responseCount == 0 {
+					return ResponsesStreamValidationResult{
+						Passed:       false,
+						Errors:       []string{"❌ Stream closed without receiving any data"},
+						ReceivedData: false,
+					}
+				}
+
+				finalToolCalls := accumulator.GetFinalResponsesToolCalls()
+
+				if len(finalToolCalls) == 0 {
+					return ResponsesStreamValidationResult{
+						Passed:       false,
+						Errors:       []string{"❌ No tool calls found in streaming response"},
+						ReceivedData: responseCount > 0,
+					}
+				}
+
+				if len(finalToolCalls) < 2 {
+					return ResponsesStreamValidationResult{
+						Passed:       false,
+						Errors:       []string{fmt.Sprintf("❌ Expected at least 2 tool calls, got %d", len(finalToolCalls))},
+						ReceivedData: responseCount > 0,
+					}
+				}
+
+				toolsFound := make(map[string]bool)
+				var validationErrors []string
+				for i, tc := range finalToolCalls {
+					if tc.Name == "" || tc.Arguments == "" {
+						validationErrors = append(validationErrors, fmt.Sprintf("Tool call %d missing required fields", i))
+					}
+					toolsFound[tc.Name] = true
+				}
+
+				for _, expected := range []string{"weather", "calculate"} {
+					if !toolsFound[expected] {
+						validationErrors = append(validationErrors, fmt.Sprintf("Expected tool '%s' not found. Found: %v", expected, getKeysFromMap(toolsFound)))
+					}
+				}
+
+				if len(validationErrors) > 0 {
+					return ResponsesStreamValidationResult{
+						Passed:       false,
+						Errors:       validationErrors,
+						ReceivedData: responseCount > 0,
+					}
+				}
+
+				if err := validateStreamingToolCalls(finalToolCalls, "Responses API"); err != nil {
+					return ResponsesStreamValidationResult{
+						Passed:       false,
+						Errors:       []string{fmt.Sprintf("❌ %v", err)},
+						ReceivedData: responseCount > 0,
+					}
+				}
+				return ResponsesStreamValidationResult{
+					Passed:       true,
+					ReceivedData: responseCount > 0,
+				}
+			})
+
+		if !validationResult.Passed {
+			allErrors := append(validationResult.Errors, validationResult.StreamErrors...)
+			t.Fatalf("❌ MultipleToolCallsStreamingResponses failed: %s", strings.Join(allErrors, "; "))
+		}
+
+		t.Logf("✅ MultipleToolCallsStreamingResponses passed")
 	})
 }

@@ -5,7 +5,7 @@ embeddings:
     description: |
       Creates an embedding vector representing the input text.
     tags:
-      - Embeddings
+    - Embeddings
     requestBody:
       required: true
       content:
@@ -23,3 +23,8 @@ embeddings:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

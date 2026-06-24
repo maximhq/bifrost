@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -73,6 +74,77 @@ type Migration struct {
 	Migrate MigrateFunc
 	// Rollback will be executed on rollback. Can be nil.
 	Rollback RollbackFunc
+}
+
+// PendingIDs returns the expected migration IDs that are not recorded in the
+// migration table yet. It is intentionally a read-only preflight helper for
+// callers that want to avoid taking a migration lock when the database is
+// already current.
+//
+// If the migration table does not exist, every expected ID is considered
+// pending. Applied state matches Gormigrate's existing semantics: an ID row in
+// the migration table means the migration ran.
+func PendingIDs(ctx context.Context, db *gorm.DB, options *Options, expectedIDs []string) ([]string, error) {
+	if db == nil {
+		return nil, errors.New("gormigrate: db cannot be nil")
+	}
+	if len(expectedIDs) == 0 {
+		return nil, nil
+	}
+
+	// Normalize options the same way New(...) does so that a partially filled
+	// Options (e.g. empty column names) cannot make the schema checks below fail
+	// and incorrectly report every ID as pending. Work on a local copy so we
+	// never mutate the caller's Options from this read-only preflight helper.
+	opts := *DefaultOptions
+	if options != nil {
+		opts = *options
+	}
+	if opts.TableName == "" {
+		opts.TableName = DefaultOptions.TableName
+	}
+	if opts.IDColumnName == "" {
+		opts.IDColumnName = DefaultOptions.IDColumnName
+	}
+	if opts.SequenceColumnName == "" {
+		opts.SequenceColumnName = DefaultOptions.SequenceColumnName
+	}
+	if opts.AppliedAtColumnName == "" {
+		opts.AppliedAtColumnName = DefaultOptions.AppliedAtColumnName
+	}
+	if opts.StatusColumnName == "" {
+		opts.StatusColumnName = DefaultOptions.StatusColumnName
+	}
+
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(opts.TableName) {
+		return append([]string(nil), expectedIDs...), nil
+	}
+	if !tx.Migrator().HasColumn(opts.TableName, opts.SequenceColumnName) ||
+		!tx.Migrator().HasColumn(opts.TableName, opts.AppliedAtColumnName) ||
+		!tx.Migrator().HasColumn(opts.TableName, opts.StatusColumnName) {
+		return append([]string(nil), expectedIDs...), nil
+	}
+
+	var appliedIDs []string
+	if err := tx.Table(opts.TableName).
+		Where(fmt.Sprintf("%s IN ?", opts.IDColumnName), expectedIDs).
+		Pluck(opts.IDColumnName, &appliedIDs).Error; err != nil {
+		return nil, err
+	}
+
+	applied := make(map[string]struct{}, len(appliedIDs))
+	for _, id := range appliedIDs {
+		applied[id] = struct{}{}
+	}
+
+	pending := make([]string, 0, len(expectedIDs)-len(applied))
+	for _, id := range expectedIDs {
+		if _, ok := applied[id]; !ok {
+			pending = append(pending, id)
+		}
+	}
+	return pending, nil
 }
 
 // Gormigrate represents a collection of all migrations of a database schema.
@@ -196,6 +268,7 @@ func (g *Gormigrate) MigrateTo(migrationID string) error {
 }
 
 func (g *Gormigrate) migrate(migrationID string) error {
+
 	if !g.hasMigrations() {
 		return ErrNoMigrationDefined
 	}
@@ -338,6 +411,7 @@ func (g *Gormigrate) RollbackTo(migrationID string) error {
 	return g.commit()
 }
 
+// getLastRunMigration returns the last run migration.
 func (g *Gormigrate) getLastRunMigration() (*Migration, error) {
 	for i := len(g.migrations) - 1; i >= 0; i-- {
 		migration := g.migrations[i]
@@ -365,6 +439,7 @@ func (g *Gormigrate) RollbackMigration(m *Migration) error {
 	return g.commit()
 }
 
+// rollbackMigration rolls back a migration.
 func (g *Gormigrate) rollbackMigration(m *Migration) error {
 	if m.Rollback == nil {
 		return ErrRollbackImpossible
@@ -378,6 +453,7 @@ func (g *Gormigrate) rollbackMigration(m *Migration) error {
 	return g.tx.Table(g.options.TableName).Where(cond, m.ID).Delete(g.model()).Error
 }
 
+// runInitSchema runs the initial schema migration.
 func (g *Gormigrate) runInitSchema() error {
 	if err := g.initSchema(g.tx); err != nil {
 		return err
@@ -395,6 +471,7 @@ func (g *Gormigrate) runInitSchema() error {
 	return nil
 }
 
+// runMigration runs a migration.
 func (g *Gormigrate) runMigration(migration *Migration) error {
 	if len(migration.ID) == 0 {
 		return ErrMissingID
@@ -449,6 +526,7 @@ func (g *Gormigrate) model() any {
 	return structValue.Addr().Interface()
 }
 
+// createMigrationTableIfNotExists creates the migration table if it does not exist.
 func (g *Gormigrate) createMigrationTableIfNotExists() error {
 	if err := g.tx.Table(g.options.TableName).AutoMigrate(g.model()); err != nil {
 		return err
@@ -510,6 +588,7 @@ func (g *Gormigrate) backfillMigrationMetadata() error {
 	return nil
 }
 
+// migrationRan checks if a migration has been applied.
 func (g *Gormigrate) migrationRan(m *Migration) (bool, error) {
 	var count int64
 	err := g.tx.
@@ -540,6 +619,7 @@ func (g *Gormigrate) canInitializeSchema() (bool, error) {
 	return count == 0, err
 }
 
+// unknownMigrationsHaveHappened checks if there are unknown migrations in the database.
 func (g *Gormigrate) unknownMigrationsHaveHappened() (bool, error) {
 	rows, err := g.tx.Table(g.options.TableName).Select(g.options.IDColumnName).Rows()
 	if err != nil {
@@ -570,6 +650,7 @@ func (g *Gormigrate) unknownMigrationsHaveHappened() (bool, error) {
 	return false, nil
 }
 
+// nextSequence returns the next sequence number for a migration.
 func (g *Gormigrate) nextSequence() (int64, error) {
 	var maxSeq int64
 	err := g.tx.Table(g.options.TableName).
@@ -581,6 +662,7 @@ func (g *Gormigrate) nextSequence() (int64, error) {
 	return maxSeq + 1, nil
 }
 
+// insertMigration inserts a migration into the database.
 func (g *Gormigrate) insertMigration(id string) error {
 	seq, err := g.nextSequence()
 	if err != nil {
@@ -593,9 +675,10 @@ func (g *Gormigrate) insertMigration(id string) error {
 	v.FieldByName("Sequence").SetInt(seq)
 	v.FieldByName("AppliedAt").Set(reflect.ValueOf(time.Now()))
 	v.FieldByName("Status").SetString("success")
-	return g.tx.Table(g.options.TableName).Create(record).Error
+	return g.tx.Table(g.options.TableName).Clauses(clause.OnConflict{DoNothing: true}).Create(record).Error
 }
 
+// begin starts a transaction when UseTransaction is enabled.
 func (g *Gormigrate) begin() {
 	if g.options.UseTransaction {
 		g.tx = g.db.Begin()
@@ -604,6 +687,7 @@ func (g *Gormigrate) begin() {
 	}
 }
 
+// commit commits the transaction if one is in progress.
 func (g *Gormigrate) commit() error {
 	if g.options.UseTransaction {
 		return g.tx.Commit().Error
@@ -611,6 +695,7 @@ func (g *Gormigrate) commit() error {
 	return nil
 }
 
+// rollback rolls back the transaction if one is in progress.
 func (g *Gormigrate) rollback() {
 	if g.options.UseTransaction {
 		g.tx.Rollback()

@@ -33,7 +33,7 @@ Runway ML provides video generation via an asynchronous task-based API. Bifrost 
 | `prompt` | string | ✅ | Text description of the video |
 | `input_reference` | string | ❌ | Input image for image-to-video |
 | `seconds` | string | ❌ | Duration in seconds (default: `"2"`) |
-| `size` | string | ❌ | Resolution as `WxH` (e.g., `1280x720`; default: `1280x720`) — converted to `W:H` ratio |
+| `size` | string | ❌ | Resolution as `WxH` (e.g., `1280x720`; default: `1280x720`) - converted to `W:H` ratio |
 | `seed` | int | ❌ | **Gen models only** |
 | `audio` | bool | ❌ | Enable audio generation. **Veo models only** |
 | `video_uri` | string | ❌ | Source video URL for video-to-video. **gen4_aleph only** |
@@ -50,7 +50,7 @@ Runway ML provides video generation via an asynchronous task-based API. Bifrost 
 
 - **Text-to-video**: `prompt` only
 - **Image-to-video**: `prompt` + `input_reference`
-- **Video-to-video**: `prompt` + `video_uri` — **gen4_aleph only**
+- **Video-to-video**: `prompt` + `video_uri` - **gen4_aleph only**
 
 **Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) with `id`, `status`, `videos[]`
 
@@ -68,42 +68,59 @@ These values are the normalized view returned by Bifrost's API. Runway's native 
 
 ---
 
-## Configuration
+## Setup & Configuration
+
+Configure Runway as a provider.
 
 <Tabs>
-<Tab title="Gateway">
+<Tab title="Web UI">
 
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-    "provider": "runway",
-    "keys": [
+![Runway ML provider dashboard](../../media/provider-dashboard-runway.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Runway ML** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Runway ML**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.RUNWAY_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "runway": {
+      "keys": [
         {
-            "name": "runway-key-1",
-            "value": "env.RUNWAY_API_KEY",
-            "models": [],
-            "weight": 1.0
+          "name": "runway-key-1",
+          "value": "env.RUNWAY_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
         }
-    ]
-}'
+      ]
+    }
+  }
+}
 ```
 
-See **[Provider Configuration](../../quickstart/gateway/provider-configuration)** for full setup options.
-
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
 </Tab>
 <Tab title="Go SDK">
 
 ```go
 case schemas.Runway:
     return []schemas.Key{{
-        Value:  os.Getenv("RUNWAY_API_KEY"),
-        Models: []string{},
+        Name:   "runway-key-1",
+        Value:  *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
+        Models: []string{"*"},
         Weight: 1.0,
     }}, nil
 ```
-
-See **[Provider Configuration](../../quickstart/go-sdk/provider-configuration)** for full setup options.
 
 </Tab>
 </Tabs>

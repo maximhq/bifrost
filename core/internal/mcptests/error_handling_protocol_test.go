@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -289,7 +290,7 @@ func TestErrorHandling_STDIO_MCPErrorResponse(t *testing.T) {
 	errorServerConfig := GetErrorTestServerConfig(bifrostRoot)
 
 	manager := setupMCPManager(t)
-	err := manager.AddClient(&errorServerConfig)
+	err := manager.AddClient(context.Background(), &errorServerConfig)
 	if err != nil {
 		t.Skipf("error-test-server not available: %v (build with: cd examples/mcps/error-test-server && go build -o bin/error-test-server)", err)
 	}
@@ -364,10 +365,10 @@ func TestErrorHandling_STDIO_TimeoutScenario(t *testing.T) {
 
 	// Set a short timeout for this test
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout: 2 * time.Second, // 2 second timeout
+		ToolExecutionTimeout: schemas.Duration(2 * time.Second), // 2 second timeout
 	})
 
-	err := manager.AddClient(&errorServerConfig)
+	err := manager.AddClient(context.Background(), &errorServerConfig)
 	if err != nil {
 		t.Skipf("error-test-server not available: %v", err)
 	}
@@ -420,7 +421,7 @@ func TestErrorHandling_STDIO_MalformedJSON(t *testing.T) {
 	errorServerConfig := GetErrorTestServerConfig(bifrostRoot)
 
 	manager := setupMCPManager(t)
-	err := manager.AddClient(&errorServerConfig)
+	err := manager.AddClient(context.Background(), &errorServerConfig)
 	if err != nil {
 		t.Skipf("error-test-server not available: %v", err)
 	}
@@ -469,7 +470,7 @@ func TestErrorHandling_STDIO_IntermittentFailures(t *testing.T) {
 	errorServerConfig := GetErrorTestServerConfig(bifrostRoot)
 
 	manager := setupMCPManager(t)
-	err := manager.AddClient(&errorServerConfig)
+	err := manager.AddClient(context.Background(), &errorServerConfig)
 	if err != nil {
 		t.Skipf("error-test-server not available: %v", err)
 	}

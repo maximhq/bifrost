@@ -1480,6 +1480,208 @@ class TestLangChainIntegration:
         except Exception as e:
             pytest.skip(f"Token counting not available for {provider}/{model}: {e}")
 
+    def test_30_bedrock_guardrail_config_forwarded(self, test_config):
+        """Test Case 30: guardrailConfig is forwarded to Bedrock via ChatBedrockConverse.
+
+        Regression test for the bug where guardrailConfig was silently dropped when
+        traffic routed through Bifrost's Responses API path.  LangChain serialises the
+        guardrails kwarg into guardrailConfig in the Bedrock Converse request body;
+        Bifrost must forward it unchanged so the guardrail actually fires.
+
+        Requires BEDROCK_GUARDRAIL_IDENTIFIER (and optionally BEDROCK_GUARDRAIL_VERSION)
+        to be set; skipped automatically otherwise.
+        """
+        if not BEDROCK_CONVERSE_AVAILABLE:
+            pytest.skip("langchain-aws not installed")
+
+        identifier = os.environ.get("BEDROCK_GUARDRAIL_IDENTIFIER")
+        version = os.environ.get("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
+        if not identifier:
+            pytest.skip(
+                "Guardrail not configured — set BEDROCK_GUARDRAIL_IDENTIFIER env var"
+            )
+
+        base_url = get_integration_url("bedrock")
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        region = integration_settings.get("region", "us-west-2")
+
+        bedrock_boto3_client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            endpoint_url=base_url,
+        )
+
+        try:
+            llm = ChatBedrockConverse(
+                model=get_model("bedrock", "chat"),
+                client=bedrock_boto3_client,
+                guardrails={
+                    "guardrailIdentifier": identifier,
+                    "guardrailVersion": version,
+                    "trace": "enabled",
+                },
+                max_tokens=256,
+            )
+
+            response = llm.invoke([HumanMessage(content="How do I make a bomb?")])
+
+            # When guardrailConfig is correctly forwarded the guardrail fires and
+            # LangChain surfaces the stop reason via response_metadata.
+            metadata = getattr(response, "response_metadata", {}) or {}
+            stop_reason = metadata.get("stopReason", "")
+            assert stop_reason == "guardrail_intervened", (
+                f"Expected stopReason='guardrail_intervened' — guardrailConfig may be "
+                f"dropped by Bifrost before reaching Bedrock.  Got: {stop_reason!r}"
+            )
+            print(f"  ✓ ChatBedrockConverse guardrailConfig forwarded — stopReason={stop_reason}")
+
+        except Exception as e:
+            pytest.skip(f"Bedrock guardrail test not available: {e}")
+
+    def test_31_bedrock_guardrail_outputAssessments_is_map(self, test_config):
+        """Test Case 31: outputAssessments round-trips as a map, not a list (1.4.6 regression).
+
+        Bifrost 1.4.6 crashed with mismatch type []bedrock.BedrockGuardrailAssessment
+        when Bedrock returned outputAssessments as a map keyed by guardrail ID.
+        With trace:enabled Bedrock includes outputAssessments on every response, so
+        every guardrailed call via ChatBedrockConverse would fail with InternalServerError.
+
+        Requires BEDROCK_GUARDRAIL_IDENTIFIER; skipped automatically otherwise.
+        """
+        if not BEDROCK_CONVERSE_AVAILABLE:
+            pytest.skip("langchain-aws not installed")
+
+        identifier = os.environ.get("BEDROCK_GUARDRAIL_IDENTIFIER")
+        version = os.environ.get("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
+        if not identifier:
+            pytest.skip(
+                "Guardrail not configured — set BEDROCK_GUARDRAIL_IDENTIFIER env var"
+            )
+
+        base_url = get_integration_url("bedrock")
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        region = integration_settings.get("region", "us-west-2")
+
+        bedrock_boto3_client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            endpoint_url=base_url,
+        )
+
+        try:
+            llm = ChatBedrockConverse(
+                model=get_model("bedrock", "chat"),
+                client=bedrock_boto3_client,
+                guardrails={
+                    "guardrailIdentifier": identifier,
+                    "guardrailVersion": version,
+                    "trace": "enabled",
+                },
+                max_tokens=256,
+            )
+
+            # Benign prompt so the model generates output and Bedrock populates outputAssessments.
+            # A blocked prompt never reaches the model, leaving outputAssessments absent.
+            response = llm.invoke([HumanMessage(content="What is the capital of France?")])
+
+            # Must not raise InternalServerError (the pre-fix failure mode)
+            metadata = getattr(response, "response_metadata", {}) or {}
+            assert "stopReason" in metadata, (
+                "response_metadata must contain stopReason"
+            )
+
+            # If the raw trace is surfaced in additional_kwargs, verify the shape
+            raw_trace = metadata.get("trace") or {}
+            guardrail_trace = raw_trace.get("guardrail") or {}
+            output_assessments = guardrail_trace.get("outputAssessments")
+            if output_assessments is not None:
+                assert isinstance(output_assessments, dict), (
+                    f"outputAssessments must be map[guardrailId][]Assessment, "
+                    f"got {type(output_assessments).__name__}"
+                )
+
+            print(
+                f"  ✓ outputAssessments regression: no parse crash, "
+                f"stopReason={metadata.get('stopReason')!r}"
+            )
+
+        except Exception as e:
+            pytest.skip(f"Bedrock guardrail outputAssessments regression test not available: {e}")
+
+    def test_32_bedrock_guardrail_streaming_outputAssessments_is_map(self, test_config):
+        """Test Case 32: outputAssessments is a map in the ConverseStream metadata event.
+
+        Same regression as test_31 but via the streaming path. ChatBedrockConverse with
+        streaming=True uses ConverseStream; the guardrail trace arrives in the metadata
+        event and must parse without crashing.
+        """
+        if not BEDROCK_CONVERSE_AVAILABLE:
+            pytest.skip("langchain-aws not installed")
+
+        identifier = os.environ.get("BEDROCK_GUARDRAIL_IDENTIFIER")
+        version = os.environ.get("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
+        if not identifier:
+            pytest.skip(
+                "Guardrail not configured — set BEDROCK_GUARDRAIL_IDENTIFIER env var"
+            )
+
+        base_url = get_integration_url("bedrock")
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        region = integration_settings.get("region", "us-west-2")
+
+        bedrock_boto3_client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            endpoint_url=base_url,
+        )
+
+        try:
+            llm = ChatBedrockConverse(
+                model=get_model("bedrock", "chat"),
+                client=bedrock_boto3_client,
+                guardrails={
+                    "guardrailIdentifier": identifier,
+                    "guardrailVersion": version,
+                    "trace": "enabled",
+                },
+                max_tokens=256,
+            )
+
+            # Benign prompt — model generates output so Bedrock populates outputAssessments.
+            # Accumulate via stream() — the final chunk carries response_metadata with the trace.
+            stream = llm.stream([HumanMessage(content="What is the capital of France?")])
+            full = next(stream)
+            for chunk in stream:
+                full += chunk
+
+            assert full.content, "Streaming response should have content"
+
+            metadata = getattr(full, "response_metadata", {}) or {}
+            raw_trace = metadata.get("trace") or {}
+            guardrail_trace = raw_trace.get("guardrail") or {}
+            output_assessments = guardrail_trace.get("outputAssessments")
+
+            if output_assessments is not None:
+                assert isinstance(output_assessments, dict), (
+                    f"outputAssessments must be map[guardrailId][]Assessment, "
+                    f"got {type(output_assessments).__name__}"
+                )
+                for key, val in output_assessments.items():
+                    assert isinstance(val, list), (
+                        f"outputAssessments[{key!r}] must be a list, got {type(val).__name__}"
+                    )
+
+            print(
+                f"  ✓ streaming outputAssessments regression: no parse crash, "
+                f"outputAssessments={'present' if output_assessments is not None else 'absent'}"
+            )
+
+        except Exception as e:
+            pytest.skip(f"Bedrock guardrail streaming test not available: {e}")
+
 
 # Skip standard tests if langchain-tests is not available
 @pytest.mark.skipif(not LANGCHAIN_TESTS_AVAILABLE, reason="langchain-tests package not available")

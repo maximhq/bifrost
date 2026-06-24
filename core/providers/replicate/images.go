@@ -41,29 +41,6 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
 
-		// Map InputImages to the appropriate field based on model
-		if len(params.InputImages) > 0 {
-			fieldName := getInputImageFieldName(bifrostReq.Model)
-
-			switch fieldName {
-			case "image_prompt":
-				// For flux-1.1-pro variants: use first image as image_prompt
-				input.ImagePrompt = &params.InputImages[0]
-
-			case "input_image":
-				// For flux-kontext variants: add to ExtraParams as input_image
-				input.InputImage = &params.InputImages[0]
-
-			case "image":
-				// For flux-dev variants: use first image as image field
-				input.Image = &params.InputImages[0]
-
-			case "input_images":
-				// For all other models: use input_images array
-				input.InputImages = params.InputImages
-			}
-		}
-
 		if bifrostReq.Params.N != nil {
 			input.NumberOfImages = bifrostReq.Params.N
 		}
@@ -72,8 +49,15 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 			input.AspectRatio = params.AspectRatio
 		}
 
-		if params.Resolution != nil {
-			input.Resolution = params.Resolution
+		if params.Size != nil {
+			aspectRatio, imageSize := providerUtils.ConvertSizeToAspectRatioAndResolution(*params.Size)
+			_, hasExplicitResolution := params.ExtraParams["resolution"]
+			if params.AspectRatio == nil && aspectRatio != "" {
+				input.AspectRatio = &aspectRatio
+			}
+			if imageSize != "" && !hasExplicitResolution {
+				input.Resolution = &imageSize
+			}
 		}
 
 		// Map OutputFormat
@@ -139,9 +123,6 @@ func ToBifrostImageGenerationResponse(
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "prediction response is nil",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider: schemas.Replicate,
 			},
 		}
 	}
@@ -243,7 +224,7 @@ func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *Rep
 				input.Image = &images[0]
 
 			case "input_images":
-				// For all other models: use input_images array
+				// For all other models: use input_images array (preserves multi-image support)
 				input.InputImages = images
 			}
 		}
@@ -255,6 +236,18 @@ func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *Rep
 
 		if params.N != nil {
 			input.NumberOfImages = params.N
+		}
+
+		if params.Size != nil {
+			aspectRatio, imageSize := providerUtils.ConvertSizeToAspectRatioAndResolution(*params.Size)
+			_, hasExplicitAspectRatio := params.ExtraParams["aspect_ratio"]
+			_, hasExplicitResolution := params.ExtraParams["resolution"]
+			if aspectRatio != "" && !hasExplicitAspectRatio {
+				input.AspectRatio = &aspectRatio
+			}
+			if imageSize != "" && !hasExplicitResolution {
+				input.Resolution = &imageSize
+			}
 		}
 
 		if params.OutputFormat != nil {

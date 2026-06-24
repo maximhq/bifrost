@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -83,7 +82,7 @@ func getVertexRerankOptions(projectID string, params *schemas.RerankParameters) 
 }
 
 // ToVertexRankRequest converts a Bifrost rerank request to Discovery Engine rank API format.
-func ToVertexRankRequest(bifrostReq *schemas.BifrostRerankRequest, modelDeployment string, options *vertexRerankOptions) (*VertexRankRequest, error) {
+func ToVertexRankRequest(bifrostReq *schemas.BifrostRerankRequest, options *vertexRerankOptions) (*VertexRankRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost rerank request is nil")
 	}
@@ -132,9 +131,11 @@ func ToVertexRankRequest(bifrostReq *schemas.BifrostRerankRequest, modelDeployme
 		rankRequest.TopN = &topN
 	}
 
-	if trimmedModel := strings.TrimSpace(modelDeployment); trimmedModel != "" {
-		rankRequest.Model = &trimmedModel
+	trimmedModel := strings.TrimSpace(bifrostReq.Model)
+	if trimmedModel == "" {
+		trimmedModel = vertexDefaultRerankModel
 	}
+	rankRequest.Model = &trimmedModel
 
 	ignoreRecordDetailsInResponse := options.IgnoreRecordDetailsInResponse
 	rankRequest.IgnoreRecordDetailsInResponse = &ignoreRecordDetailsInResponse
@@ -155,9 +156,9 @@ func (req *VertexRankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext
 	var provider schemas.ModelProvider
 	var model string
 	if req.Model != nil {
-		provider, model = schemas.ParseModelString(*req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Vertex))
+		provider, model = schemas.ParseModelString(*req.Model, schemas.Vertex)
 	} else {
-		provider = providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Vertex)
+		provider = schemas.Vertex
 	}
 
 	bifrostReq := &schemas.BifrostRerankRequest{

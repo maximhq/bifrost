@@ -377,6 +377,58 @@ func TestEnvVar_Redacted(t *testing.T) {
 	}
 }
 
+func TestEnvVar_FullyRedacted(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var ev *EnvVar
+		if got := ev.FullyRedacted(); got != nil {
+			t.Fatalf("expected nil, got %+v", got)
+		}
+	})
+
+	tests := []struct {
+		name        string
+		input       EnvVar
+		wantVal     string
+		wantFromEnv bool
+		wantEnvVar  string
+	}{
+		{
+			name:        "empty value",
+			input:       EnvVar{Val: ""},
+			wantVal:     "",
+			wantFromEnv: false,
+		},
+		{
+			name:        "long literal never leaks prefix or suffix",
+			input:       EnvVar{Val: "mysecretpassword", FromEnv: false},
+			wantVal:     "<REDACTED>",
+			wantFromEnv: false,
+		},
+		{
+			name:        "resolved env password preserves reference metadata",
+			input:       EnvVar{Val: "resolved-secret", FromEnv: true, EnvVar: "env.PROXY_PASS"},
+			wantVal:     "<REDACTED>",
+			wantFromEnv: true,
+			wantEnvVar:  "env.PROXY_PASS",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.input.FullyRedacted()
+			if result.Val != tt.wantVal {
+				t.Errorf("Val: want %q, got %q", tt.wantVal, result.Val)
+			}
+			if result.FromEnv != tt.wantFromEnv {
+				t.Errorf("FromEnv: want %v, got %v", tt.wantFromEnv, result.FromEnv)
+			}
+			if result.EnvVar != tt.wantEnvVar {
+				t.Errorf("EnvVar: want %q, got %q", tt.wantEnvVar, result.EnvVar)
+			}
+		})
+	}
+}
+
 func TestEnvVar_IsRedacted(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -408,6 +460,11 @@ func TestEnvVar_IsRedacted(t *testing.T) {
 			input:    EnvVar{Val: "sk-test-key"},
 			expected: false,
 		},
+		{
+			name:     "uppercase redacted sentinel",
+			input:    EnvVar{Val: "<REDACTED>"},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -419,3 +476,55 @@ func TestEnvVar_IsRedacted(t *testing.T) {
 		})
 	}
 }
+
+// TestEnvVar_IsSet verifies the semantic difference between GetValue() != "" and IsSet().
+// IsSet() must return true when the EnvVar references an env var (regardless of whether
+// that env var has been resolved to a non-empty Val). This is the property that the
+// BeforeSave hooks rely on so env var references survive persistence.
+func TestEnvVar_IsSet(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *EnvVar
+		expected bool
+	}{
+		{
+			name:     "nil envvar",
+			input:    nil,
+			expected: false,
+		},
+		{
+			name:     "completely empty",
+			input:    &EnvVar{},
+			expected: false,
+		},
+		{
+			name:     "only Val set (plain value)",
+			input:    &EnvVar{Val: "abc"},
+			expected: true,
+		},
+		{
+			name:     "only EnvVar reference set (env not resolved on this server)",
+			input:    &EnvVar{EnvVar: "env.MISSING", FromEnv: true},
+			expected: true,
+		},
+		{
+			name:     "Val and EnvVar both set (env was resolved)",
+			input:    &EnvVar{Val: "resolved-secret", EnvVar: "env.X", FromEnv: true},
+			expected: true,
+		},
+		{
+			name:     "FromEnv true but no reference and no value",
+			input:    &EnvVar{FromEnv: true},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.input.IsSet(); got != tt.expected {
+				t.Errorf("IsSet() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+

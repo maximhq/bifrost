@@ -8,7 +8,7 @@ messages:
     description: |
       Creates a message using Anthropic-compatible format via LangChain.
     tags:
-      - LangChain Integration
+    - LangChain Integration
     requestBody:
       required: true
       content:
@@ -38,6 +38,11 @@ messages:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 count-tokens:
   post:
     operationId: langchainAnthropicCountTokens
@@ -45,7 +50,7 @@ count-tokens:
     description: |
       Counts tokens using Anthropic-compatible format via LangChain.
     tags:
-      - LangChain Integration
+    - LangChain Integration
     requestBody:
       required: true
       content:
@@ -71,3 +76,8 @@ count-tokens:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

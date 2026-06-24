@@ -1,4 +1,6 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { virtualKeysApi } from '../../core/actions/api'
+import type { VirtualKeysPage } from './pages/virtual-keys.page'
 import {
     createVirtualKeyData,
     createVirtualKeyWithBudget,
@@ -9,12 +11,39 @@ import {
     SAMPLE_RATE_LIMITS,
 } from './virtual-keys.data'
 
+type VirtualKeyApiResponse = {
+  virtual_key: {
+    id: string
+    name: string
+    value: string
+  }
+}
+
+type BulkRotateVirtualKeysApiResponse = {
+  virtual_keys: Array<{
+    id: string
+    name: string
+    value: string
+  }>
+  errors?: Record<string, string>
+}
+
+async function skipIfConfigStoreMissing(virtualKeysPage: VirtualKeysPage): Promise<void> {
+  const missingConfigStore = await virtualKeysPage.page
+    .getByText('Config store setup is missing.')
+    .isVisible({ timeout: 1000 })
+    .catch(() => false)
+
+  test.skip(missingConfigStore, 'Config store setup is missing; virtual-key E2E tests require a configured config store.')
+}
+
 // Track created VKs for cleanup
 const createdVKs: string[] = []
 
 test.describe('Virtual Keys', () => {
   test.beforeEach(async ({ virtualKeysPage }) => {
     await virtualKeysPage.goto()
+    await skipIfConfigStoreMissing(virtualKeysPage)
   })
 
   test.afterEach(async ({ virtualKeysPage }) => {
@@ -104,32 +133,8 @@ test.describe('Virtual Keys', () => {
   })
 
   test.describe('Virtual Key with Budget', () => {
-    test('should create virtual key with small budget', async ({ virtualKeysPage }) => {
-      const vkData = createVirtualKeyWithBudget(SAMPLE_BUDGETS.small, {
-        name: `Small Budget VK ${Date.now()}`,
-      })
-
-      createdVKs.push(vkData.name)
-      await virtualKeysPage.createVirtualKey(vkData)
-
-      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
-      expect(vkExists).toBe(true)
-    })
-
-    test('should create virtual key with medium budget', async ({ virtualKeysPage }) => {
-      const vkData = createVirtualKeyWithBudget(SAMPLE_BUDGETS.medium, {
-        name: `Medium Budget VK ${Date.now()}`,
-      })
-
-      createdVKs.push(vkData.name)
-      await virtualKeysPage.createVirtualKey(vkData)
-
-      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
-      expect(vkExists).toBe(true)
-    })
-
     test('should create virtual key with daily budget', async ({ virtualKeysPage }) => {
-      const vkData = createVirtualKeyWithBudget(SAMPLE_BUDGETS.daily, {
+      const vkData = createVirtualKeyWithBudget([SAMPLE_BUDGETS.daily], {
         name: `Daily Budget VK ${Date.now()}`,
       })
 
@@ -138,6 +143,51 @@ test.describe('Virtual Keys', () => {
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+
+      // Verify budget was saved correctly
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const amountInput = virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')
+      await expect(amountInput).toHaveValue(String(SAMPLE_BUDGETS.daily.maxLimit))
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should create virtual key with every-minute budget', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithBudget([SAMPLE_BUDGETS.everyMinute], {
+        name: `Minute Budget VK ${Date.now()}`,
+      })
+
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
+      expect(vkExists).toBe(true)
+
+      // Verify budget was saved correctly
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const amountInput = virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')
+      await expect(amountInput).toHaveValue(String(SAMPLE_BUDGETS.everyMinute.maxLimit))
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should create virtual key with multiple budgets', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithBudget(
+        [SAMPLE_BUDGETS.daily, SAMPLE_BUDGETS.everyMinute],
+        { name: `Multi Budget VK ${Date.now()}` }
+      )
+
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
+      expect(vkExists).toBe(true)
+
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      await expect(virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')).toHaveValue(String(SAMPLE_BUDGETS.daily.maxLimit))
+      await expect(virtualKeysPage.page.getByTestId('vk-budget-lines-amount-1')).toHaveValue(String(SAMPLE_BUDGETS.everyMinute.maxLimit))
+      await virtualKeysPage.closeSheet()
     })
   })
 
@@ -152,6 +202,13 @@ test.describe('Virtual Keys', () => {
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+
+      // Verify rate limit was saved correctly
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const tokenLimitInput = virtualKeysPage.page.locator('#tokenMaxLimit')
+      await expect(tokenLimitInput).toHaveValue(String(SAMPLE_RATE_LIMITS.tokenOnly.tokenMaxLimit))
+      await virtualKeysPage.closeSheet()
     })
 
     test('should create virtual key with request rate limit', async ({ virtualKeysPage }) => {
@@ -199,7 +256,7 @@ test.describe('Virtual Keys', () => {
         name: `Full Config VK ${Date.now()}`,
         description: 'Virtual key with all configurations',
         isActive: true,
-        budget: SAMPLE_BUDGETS.medium,
+        budgets: [SAMPLE_BUDGETS.medium],
         rateLimit: SAMPLE_RATE_LIMITS.moderate,
       })
 
@@ -218,6 +275,7 @@ const managementVKs: string[] = []
 test.describe('Virtual Key Management', () => {
   test.beforeEach(async ({ virtualKeysPage }) => {
     await virtualKeysPage.goto()
+    await skipIfConfigStoreMissing(virtualKeysPage)
   })
 
   test.afterEach(async ({ virtualKeysPage }) => {
@@ -320,8 +378,10 @@ test.describe('Virtual Key Management', () => {
     // Click to view details
     await virtualKeysPage.viewVirtualKey(vkName)
 
-    // Detail sheet should be visible
+    // Detail sheet should be visible with correct content
     await expect(virtualKeysPage.sheet).toBeVisible()
+    await expect(virtualKeysPage.nameInput).toHaveValue(vkName)
+    await expect(virtualKeysPage.descriptionInput).toHaveValue('Detailed description for viewing')
 
     // Close the sheet (will be handled by afterEach if not)
     await virtualKeysPage.closeSheet()
@@ -334,10 +394,12 @@ test.describe('Virtual Key Management', () => {
     managementVKs.push(vkName)
     await virtualKeysPage.createVirtualKey(vkData)
 
-    // Copy the key value
+    // Copy the key value - method waits for success toast
     await virtualKeysPage.copyVirtualKeyValue(vkName)
 
-    // Should show success toast (assertion in the method)
+    // Verify copy succeeded: row still exists and key is intact
+    const vkExists = await virtualKeysPage.virtualKeyExists(vkName)
+    expect(vkExists).toBe(true)
   })
 
   test('should toggle key visibility', async ({ virtualKeysPage }) => {
@@ -347,45 +409,189 @@ test.describe('Virtual Key Management', () => {
     managementVKs.push(vkName)
     await virtualKeysPage.createVirtualKey(vkData)
 
+    // Initially key is masked
+    let isRevealed = await virtualKeysPage.isKeyRevealed(vkName)
+    expect(isRevealed).toBe(false)
+
     // Toggle visibility (show key)
     await virtualKeysPage.toggleKeyVisibility(vkName)
+    isRevealed = await virtualKeysPage.isKeyRevealed(vkName)
+    expect(isRevealed).toBe(true)
 
     // Toggle again (hide key)
     await virtualKeysPage.toggleKeyVisibility(vkName)
+    isRevealed = await virtualKeysPage.isKeyRevealed(vkName)
+    expect(isRevealed).toBe(false)
+  })
 
-    // Virtual key should still exist
-    const vkExists = await virtualKeysPage.virtualKeyExists(vkName)
-    expect(vkExists).toBe(true)
+  test.describe('Virtual Key Rotation', () => {
+    test('should rotate a virtual key from the edit sheet', async ({ virtualKeysPage }) => {
+      const vkName = `Rotate VK ${Date.now()}`
+      const vkData = createVirtualKeyData({ name: vkName })
+
+      managementVKs.push(vkName)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const oldValue = await virtualKeysPage.getDisplayedVirtualKeyValue(vkName)
+      expect(oldValue).toMatch(/^sk-bf-/)
+
+      await virtualKeysPage.rotateVirtualKey(vkName)
+
+      const newValue = await virtualKeysPage.waitForVirtualKeyValueToChange(vkName, oldValue)
+      expect(newValue).toMatch(/^sk-bf-/)
+      expect(newValue).not.toBe(oldValue)
+      expect(await virtualKeysPage.virtualKeyExists(vkName)).toBe(true)
+    })
+
+    test('should leave the virtual key unchanged when rotation is cancelled', async ({ virtualKeysPage }) => {
+      const vkName = `Cancel Rotate VK ${Date.now()}`
+      const vkData = createVirtualKeyData({ name: vkName })
+
+      managementVKs.push(vkName)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const oldValue = await virtualKeysPage.getDisplayedVirtualKeyValue(vkName)
+
+      await virtualKeysPage.cancelRotateVirtualKey(vkName)
+
+      const currentValue = await virtualKeysPage.getDisplayedVirtualKeyValue(vkName)
+      expect(currentValue).toBe(oldValue)
+    })
+
+    // TODO: Re-enable once the UI bug is fixed.
+    // Bug: selection state resets when the search input filters out an already-selected
+    // row (i.e. selected keys not present in the current search results lose their
+    // checked state). Because `bulkRotateVirtualKeys` searches per-name to tick each
+    // checkbox, the first key gets unselected when the search narrows to the second,
+    // so only the last selection ends up being rotated.
+    test.fixme('should bulk rotate selected virtual keys only', async ({ virtualKeysPage }) => {
+      const selectedOne = `Bulk Rotate One ${Date.now()}`
+      const selectedTwo = `Bulk Rotate Two ${Date.now()}`
+      const unselected = `Bulk Rotate Unselected ${Date.now()}`
+
+      for (const name of [selectedOne, selectedTwo, unselected]) {
+        managementVKs.push(name)
+        await virtualKeysPage.createVirtualKey(createVirtualKeyData({ name }))
+      }
+
+      const oldSelectedOne = await virtualKeysPage.getDisplayedVirtualKeyValue(selectedOne)
+      const oldSelectedTwo = await virtualKeysPage.getDisplayedVirtualKeyValue(selectedTwo)
+      const oldUnselected = await virtualKeysPage.getDisplayedVirtualKeyValue(unselected)
+
+      await virtualKeysPage.bulkRotateVirtualKeys([selectedOne, selectedTwo])
+
+      const newSelectedOne = await virtualKeysPage.waitForVirtualKeyValueToChange(selectedOne, oldSelectedOne)
+      const newSelectedTwo = await virtualKeysPage.waitForVirtualKeyValueToChange(selectedTwo, oldSelectedTwo)
+      const currentUnselected = await virtualKeysPage.getDisplayedVirtualKeyValue(unselected)
+
+      expect(newSelectedOne).not.toBe(oldSelectedOne)
+      expect(newSelectedTwo).not.toBe(oldSelectedTwo)
+      expect(currentUnselected).toBe(oldUnselected)
+    })
+
+    test('should rotate a virtual key through the API', async ({ request }) => {
+      const vkName = `API Rotate VK ${Date.now()}`
+      const createResp = (await virtualKeysApi.create(request, {
+        name: vkName,
+        description: 'API rotation test',
+        is_active: true,
+      })) as VirtualKeyApiResponse
+
+      managementVKs.push(vkName)
+      const oldValue = createResp.virtual_key.value
+
+      const rotateResp = (await virtualKeysApi.rotate(request, createResp.virtual_key.id)) as VirtualKeyApiResponse
+      expect(rotateResp.virtual_key.value).toMatch(/^sk-bf-/)
+      expect(rotateResp.virtual_key.value).not.toBe(oldValue)
+
+      const getResp = (await virtualKeysApi.get(request, createResp.virtual_key.id)) as VirtualKeyApiResponse
+      expect(getResp.virtual_key.value).toBe(rotateResp.virtual_key.value)
+    })
+
+    test('should bulk rotate valid API IDs and report missing IDs', async ({ request }) => {
+      const firstName = `API Bulk Rotate One ${Date.now()}`
+      const secondName = `API Bulk Rotate Two ${Date.now()}`
+
+      const first = (await virtualKeysApi.create(request, {
+        name: firstName,
+        description: 'API bulk rotation test one',
+        is_active: true,
+      })) as VirtualKeyApiResponse
+      const second = (await virtualKeysApi.create(request, {
+        name: secondName,
+        description: 'API bulk rotation test two',
+        is_active: true,
+      })) as VirtualKeyApiResponse
+
+      managementVKs.push(firstName, secondName)
+
+      const bulkResp = (await virtualKeysApi.bulkRotate(request, [
+        first.virtual_key.id,
+        'missing-vk-id',
+        second.virtual_key.id,
+      ])) as BulkRotateVirtualKeysApiResponse
+
+      expect(bulkResp.virtual_keys.map((vk) => vk.id).sort()).toEqual([
+        first.virtual_key.id,
+        second.virtual_key.id,
+      ].sort())
+      expect(bulkResp.errors?.['missing-vk-id']).toBe('virtual key not found')
+
+      const rotatedByID = new Map(bulkResp.virtual_keys.map((vk) => [vk.id, vk.value]))
+      expect(rotatedByID.get(first.virtual_key.id)).not.toBe(first.virtual_key.value)
+      expect(rotatedByID.get(second.virtual_key.id)).not.toBe(second.virtual_key.value)
+    })
   })
 })
+
+// Track VKs created in Virtual Keys Table tests for cleanup
+const tableTestVKs: string[] = []
 
 test.describe('Virtual Keys Table', () => {
   test.beforeEach(async ({ virtualKeysPage }) => {
     await virtualKeysPage.goto()
+    await skipIfConfigStoreMissing(virtualKeysPage)
+  })
+
+  test.afterEach(async ({ virtualKeysPage }) => {
+    await virtualKeysPage.closeSheet()
+    if (tableTestVKs.length > 0) {
+      await virtualKeysPage.cleanupVirtualKeys([...tableTestVKs])
+      tableTestVKs.length = 0
+    }
   })
 
   test('should display virtual keys table', async ({ virtualKeysPage }) => {
+    await virtualKeysPage.page.getByRole('heading', { name: /Virtual Keys/i }).or(virtualKeysPage.emptyState).first().waitFor({ state: 'visible', timeout: 10000 })
+    const hadTable = await virtualKeysPage.table.isVisible().catch(() => false)
+    if (!hadTable) {
+      await expect(virtualKeysPage.emptyState).toBeVisible({ timeout: 10000 })
+    } else {
+      await expect(virtualKeysPage.table).toBeVisible({ timeout: 10000 })
+    }
+    const vkData = createVirtualKeyData({ name: `Table test VK ${Date.now()}`, description: 'For table display test' })
+    tableTestVKs.push(vkData.name)
+    await virtualKeysPage.createVirtualKey(vkData)
     await expect(virtualKeysPage.table).toBeVisible({ timeout: 10000 })
-    // Verify table has the expected column headers
     await expect(virtualKeysPage.table.locator('th', { hasText: 'Name' })).toBeVisible()
     await expect(virtualKeysPage.table.locator('th', { hasText: 'Key' })).toBeVisible()
   })
 
   test('should show empty state when no virtual keys', async ({ virtualKeysPage }) => {
-    // Wait for the table to be visible first so we know the page has loaded
-    await expect(virtualKeysPage.table).toBeVisible({ timeout: 10000 })
-
-    // Delete all existing virtual keys to guarantee empty state
-    await virtualKeysPage.cleanupAllVirtualKeys()
-
-    const emptyMessage = virtualKeysPage.page.getByText('No virtual keys found')
-    await expect(emptyMessage).toBeVisible({ timeout: 10000 })
+    await virtualKeysPage.page.getByRole('heading', { name: /Virtual Keys/i }).or(virtualKeysPage.emptyState).first().waitFor({ state: 'visible', timeout: 10000 })
+    const tableVisible = await virtualKeysPage.table.isVisible().catch(() => false)
+    if (tableVisible) {
+      test.skip(true, 'Pre-existing virtual keys found; empty-state assertion requires isolated data.')
+      return
+    }
+    await expect(virtualKeysPage.emptyState).toBeVisible({ timeout: 10000 })
   })
 })
 
 test.describe('Form Validation', () => {
   test.beforeEach(async ({ virtualKeysPage }) => {
     await virtualKeysPage.goto()
+    await skipIfConfigStoreMissing(virtualKeysPage)
   })
 
   test.afterEach(async ({ virtualKeysPage }) => {
@@ -414,8 +620,9 @@ test.describe('Form Validation', () => {
     // Fill name (required field)
     await virtualKeysPage.nameInput.fill(`Valid Budget Test ${Date.now()}`)
 
-    // Fill budget
-    const budgetInput = virtualKeysPage.page.locator('#budgetMaxLimit')
+    // Add a budget line and fill amount
+    await virtualKeysPage.page.getByTestId('vk-budget-lines-add-btn').click()
+    const budgetInput = virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')
     await expect(budgetInput).toBeVisible({ timeout: 5000 })
     await budgetInput.fill('100')
 
@@ -430,6 +637,7 @@ const providerVKs: string[] = []
 test.describe('Provider Management', () => {
   test.beforeEach(async ({ virtualKeysPage }) => {
     await virtualKeysPage.goto()
+    await skipIfConfigStoreMissing(virtualKeysPage)
   })
 
   test.afterEach(async ({ virtualKeysPage }) => {
@@ -498,7 +706,7 @@ test.describe('Provider Management', () => {
     const vkName = `Provider Budget VK ${Date.now()}`
     const vkData = createVirtualKeyWithProvider('openai', {
       name: vkName,
-      budget: SAMPLE_BUDGETS.small,
+      budgets: [SAMPLE_BUDGETS.small],
     })
 
     providerVKs.push(vkName)
@@ -506,7 +714,7 @@ test.describe('Provider Management', () => {
 
     // Edit the virtual key
     await virtualKeysPage.editVirtualKey(vkName, {
-      budget: SAMPLE_BUDGETS.large,
+      budgets: [SAMPLE_BUDGETS.large],
     })
 
     // Verify it still exists

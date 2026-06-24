@@ -13,7 +13,7 @@ import (
 )
 
 func TestCreateHandler_SkipsRequestParserInLargePayloadMode(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	parserCalls := 0
 
 	route := RouteConfig{
@@ -38,7 +38,7 @@ func TestCreateHandler_SkipsRequestParserInLargePayloadMode(t *testing.T) {
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
 	router.SetLargePayloadHook(func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, routeType RouteConfigType) (bool, error) {
 		return true, nil
 	})
@@ -55,7 +55,7 @@ func TestCreateHandler_SkipsRequestParserInLargePayloadMode(t *testing.T) {
 }
 
 func TestCreateHandler_UsesRequestParserWhenNotInLargePayloadMode(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	parserCalls := 0
 
 	route := RouteConfig{
@@ -80,7 +80,7 @@ func TestCreateHandler_UsesRequestParserWhenNotInLargePayloadMode(t *testing.T) 
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)

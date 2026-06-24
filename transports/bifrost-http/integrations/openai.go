@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
-	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -58,7 +57,7 @@ func isAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
 	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI")
 }
 
-func hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostContext, req interface{}) {
+func hydrateOpenAIRequestFromLargePayloadMetadata(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) {
 	if bifrostCtx == nil {
 		return
 	}
@@ -99,6 +98,10 @@ func hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostCon
 		if hasStream && r.Stream == nil {
 			r.Stream = schemas.Ptr(streamRequested)
 		}
+	case *openai.OpenAICompactionRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
 	case *openai.OpenAIEmbeddingRequest:
 		if r.Model == "" {
 			r.Model = metadata.Model
@@ -135,24 +138,25 @@ func hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostCon
 		if r.Model == "" {
 			r.Model = metadata.Model
 		}
+	case *openai.OpenAIVideoGenerationRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
 	}
 }
 
 // openAILargePayloadPreHook populates model + stream from LargePayloadMetadata
 // when body parsing is skipped under large payload mode.
-func openAILargePayloadPreHook(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-	hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
+func openAILargePayloadPreHook(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+	schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 	return nil
 }
 
 func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
-
-
-		azureKey := ctx.Request.Header.Peek("authorization")
-		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
-		apiVersion := string(ctx.QueryArgs().Peek("api-version"))
+		hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+		schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 
 		// -----------------------------
 		// Parse deploymentPath wildcard
@@ -261,43 +265,6 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 			}
 		}
 
-		// -----------------------------
-		// Direct Azure Keys
-		// -----------------------------
-
-		if deploymentEndpoint == nil || azureKey == nil || !handlerStore.ShouldAllowDirectKeys() {
-			return nil
-		}
-
-		// Non-Azure providers skip direct Azure keys
-		if deploymentProviderStr != "" && deploymentProviderStr != string(schemas.Azure) {
-			return nil
-		}
-
-		azureKeyStr := string(azureKey)
-		deploymentEndpointStr := string(deploymentEndpoint)
-		apiVersionStr := apiVersion
-
-		key := schemas.Key{
-			ID:             uuid.New().String(),
-			Models:         []string{},
-			AzureKeyConfig: &schemas.AzureKeyConfig{},
-		}
-
-		if deploymentEndpointStr != "" && deploymentIDStr != "" && azureKeyStr != "" {
-			key.Value = *schemas.NewEnvVar(strings.TrimPrefix(azureKeyStr, "Bearer "))
-			key.AzureKeyConfig.Endpoint = *schemas.NewEnvVar(deploymentEndpointStr)
-			key.AzureKeyConfig.Deployments = map[string]string{
-				deploymentIDStr: deploymentIDStr,
-			}
-		}
-
-		if apiVersionStr != "" {
-			key.AzureKeyConfig.APIVersion = schemas.NewEnvVar(apiVersionStr)
-		}
-
-		ctx.SetUserValue(schemas.BifrostContextKeyDirectKey, key)
-
 		return nil
 	}
 }
@@ -320,6 +287,12 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			switch {
 			case strings.HasSuffix(path, "/chat/completions"):
 				return schemas.ChatCompletionRequest
+
+			case strings.HasSuffix(path, "/responses/input_tokens"):
+				return schemas.CountTokensRequest
+
+			case strings.HasSuffix(path, "/responses"):
+				return schemas.ResponsesRequest
 
 			case strings.HasSuffix(path, "/completions"):
 				return schemas.TextCompletionRequest
@@ -350,6 +323,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				switch requestType {
 				case schemas.ChatCompletionRequest:
 					return &openai.OpenAIChatRequest{}
+				case schemas.ResponsesRequest, schemas.CountTokensRequest:
+					return &openai.OpenAIResponsesRequest{}
 				case schemas.TextCompletionRequest:
 					return &openai.OpenAITextCompletionRequest{}
 				case schemas.EmbeddingRequest:
@@ -395,6 +370,15 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
 				return &schemas.BifrostRequest{
 					ChatRequest: openaiReq.ToBifrostChatRequest(ctx),
+				}, nil
+			} else if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
+				if reqType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); reqType == schemas.CountTokensRequest {
+					return &schemas.BifrostRequest{
+						CountTokensRequest: openaiReq.ToBifrostResponsesRequest(ctx),
+					}, nil
+				}
+				return &schemas.BifrostRequest{
+					ResponsesRequest: openaiReq.ToBifrostResponsesRequest(ctx),
 				}, nil
 			} else if openaiReq, ok := req.(*openai.OpenAITextCompletionRequest); ok {
 				return &schemas.BifrostRequest{
@@ -460,6 +444,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			return resp, nil
 		},
 		TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
+			if schemas.IsPlainTextTranscriptionFormat(resp.ResponseFormat) {
+				return []byte(resp.Text), nil
+			}
 			if resp.ExtraFields.Provider == schemas.OpenAI {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
@@ -474,6 +461,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 			}
 			return resp, nil
+		},
+		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp.WithDefaults(), nil
 		},
 		StreamConfig: &StreamConfig{
 			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
@@ -516,6 +511,18 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return "", resp, nil
 			},
+			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
+					}
+				}
+				converted := resp.WithDefaults()
+				if converted == nil {
+					return "", nil, nil
+				}
+				return string(resp.Type), converted, nil
+			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
@@ -544,9 +551,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
-					return &schemas.BifrostRequest{
+					br := &schemas.BifrostRequest{
 						ChatRequest: openaiReq.ToBifrostChatRequest(ctx),
-					}, nil
+					}
+					return br, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
@@ -556,6 +564,50 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
+				// Here we will combine content blocks into a single text block as required by openai SDK
+				if len(resp.Choices) == 0 {
+					return resp, nil
+				}
+				choice := resp.Choices[0]
+				allText := true
+				message := choice.ChatNonStreamResponseChoice.Message
+				if message == nil || message.Content == nil || message.Content.ContentBlocks == nil {
+					return resp, nil
+				}
+				for _, block := range message.Content.ContentBlocks {
+					if block.Type != schemas.ChatContentBlockTypeText {
+						allText = false
+						break
+					}
+				}
+				if !allText || len(message.Content.ContentBlocks) == 0 {
+					return resp, nil
+				}
+				var contentStr *string
+				contentBlocks := message.Content.ContentBlocks
+				var reasoningDetails []schemas.ChatReasoningDetails
+				if message.ChatAssistantMessage != nil && message.ChatAssistantMessage.ReasoningDetails != nil {
+					reasoningDetails = message.ChatAssistantMessage.ReasoningDetails
+				}
+				needsCombine := len(contentBlocks) > 1
+				if !needsCombine {
+					contentStr = contentBlocks[0].Text
+				} else {
+					var parts []string
+					// Then text blocks top to bottom
+					for _, block := range contentBlocks {
+						if block.Text != nil {
+							parts = append(parts, *block.Text)
+						}
+					}
+					joined := strings.Join(parts, "\n\n")
+					contentStr = &joined
+				}
+				if message.ChatAssistantMessage != nil {
+					message.ReasoningDetails = reasoningDetails
+				}
+				message.Content.ContentStr = contentStr
+				message.Content.ContentBlocks = nil
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
@@ -649,7 +701,6 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return &schemas.BifrostRequest{
 						ResponsesRequest: openaiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
-
 				}
 				return nil, errors.New("invalid request type")
 			},
@@ -700,7 +751,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				},
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-				hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
+				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 				if isAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
@@ -735,6 +787,52 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type for input tokens")
 			},
 			CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Compaction endpoint (POST /v1/responses/compact)
+	for _, path := range []string{
+		"/v1/responses/compact",
+		"/responses/compact",
+		"/openai/responses/compact",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
+				if isAzureSDKRequest(ctx) {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
+				}
+				return nil
+			},
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CompactionRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAICompactionRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if r, ok := req.(*openai.OpenAICompactionRequest); ok {
+					return &schemas.BifrostRequest{
+						CompactionRequest: r.ToBifrostCompactionRequest(ctx),
+					}, nil
+				}
+				return nil, errors.New("invalid compaction request type")
+			},
+			CompactionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCompactionResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -855,6 +953,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid transcription request type")
 			},
 			TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
+				if schemas.IsPlainTextTranscriptionFormat(resp.ResponseFormat) {
+					return []byte(resp.Text), nil
+				}
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -1065,6 +1166,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return err
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
 				if isAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
@@ -1244,6 +1346,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 
 	return routes
 }
+
+// CreateOpenAIListModelsRouteConfigs creates route configurations for OpenAI list models endpoint.
 func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
 
@@ -1277,32 +1381,10 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
-			PreCallback: setQueryParams(handlerStore),
 		})
 	}
 
 	return routes
-}
-
-// setQueryParams creates a pre-callback for OpenAI list models
-// that handles query parameter extraction
-func setQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		// Then extract query parameters for list models
-		if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
-			if listModelsReq.Provider == "" {
-				if isAzureSDKRequest(ctx) {
-					listModelsReq.Provider = schemas.Azure
-				} else {
-					listModelsReq.Provider = schemas.OpenAI
-				}
-			}
-
-			return nil
-		}
-
-		return nil
-	}
 }
 
 // CreateOpenAIBatchRouteConfigs creates route configurations for OpenAI Batch API endpoints.
@@ -1339,6 +1421,12 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 								openaiReq.InputFileID = string(decodedFileID)
 							}
 						}
+					case schemas.Vertex:
+						if openaiReq.InputFileID != "" {
+							if decodedFileID, err := base64.RawURLEncoding.DecodeString(openaiReq.InputFileID); err == nil {
+								openaiReq.InputFileID = string(decodedFileID)
+							}
+						}
 					}
 					return &BatchRequest{
 						Type:          schemas.BatchCreateRequest,
@@ -1355,6 +1443,12 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				case schemas.Bedrock:
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
 					resp.InputFileID = base64.StdEncoding.EncodeToString([]byte(resp.InputFileID))
+				case schemas.Vertex:
+					// id is a full resource name (projects/.../batchPredictionJobs/{id}) and
+					// input_file_id is a gs:// URI; both contain slashes. RawURLEncoding keeps
+					// them path-safe so callers can use them in retrieve/cancel without escaping.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
+					resp.InputFileID = base64.RawURLEncoding.EncodeToString([]byte(resp.InputFileID))
 				}
 				return resp, nil
 			},
@@ -1420,6 +1514,28 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 							}
 						}
 					}
+
+					// Azure (input_blob + output_folder) and Vertex (output_folder, a gs:// prefix)
+					// carry their storage location in the request body rather than a managed file.
+					if createReq.Provider == schemas.Azure || createReq.Provider == schemas.Vertex {
+						var extraFields map[string]interface{}
+						if err := json.Unmarshal(ctx.Request.Body(), &extraFields); err == nil {
+							if createReq.Provider == schemas.Azure {
+								if inputBlob, ok := extraFields["input_blob"].(string); ok {
+									createReq.InputBlob = &inputBlob
+								}
+							}
+							if outputFolder, ok := extraFields["output_folder"].(map[string]interface{}); ok {
+								outputURL, ok := outputFolder["url"].(string)
+								if !ok || strings.TrimSpace(outputURL) == "" {
+									return errors.New("output_folder.url must be a non-empty string")
+								}
+								createReq.OutputFolder = &schemas.BatchOutputFolder{
+									URL: outputURL,
+								}
+							}
+						}
+					}
 				}
 				return nil
 			},
@@ -1466,6 +1582,11 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 						resp.Data[i].ID = base64.StdEncoding.EncodeToString([]byte(batch.ID))
 						resp.Data[i].InputFileID = base64.StdEncoding.EncodeToString([]byte(batch.InputFileID))
 					}
+				case schemas.Vertex:
+					for i, batch := range resp.Data {
+						resp.Data[i].ID = base64.RawURLEncoding.EncodeToString([]byte(batch.ID))
+						resp.Data[i].InputFileID = base64.RawURLEncoding.EncodeToString([]byte(batch.InputFileID))
+					}
 				}
 				return resp, nil
 			},
@@ -1505,6 +1626,11 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 						if decodedBatchID, err := base64.StdEncoding.DecodeString(retrieveReq.BatchID); err == nil {
 							retrieveReq.BatchID = string(decodedBatchID)
 						}
+					case schemas.Vertex:
+						// Reverse the RawURLEncoding applied to the full resource name.
+						if decodedBatchID, err := base64.RawURLEncoding.DecodeString(retrieveReq.BatchID); err == nil {
+							retrieveReq.BatchID = string(decodedBatchID)
+						}
 					}
 					return &BatchRequest{
 						Type:            schemas.BatchRetrieveRequest,
@@ -1521,6 +1647,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				case schemas.Bedrock:
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
 					resp.InputFileID = base64.StdEncoding.EncodeToString([]byte(resp.InputFileID))
+				case schemas.Vertex:
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
+					resp.InputFileID = base64.RawURLEncoding.EncodeToString([]byte(resp.InputFileID))
 				}
 				return resp, nil
 			},
@@ -1560,6 +1689,11 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 						if decodedBatchID, err := base64.StdEncoding.DecodeString(cancelReq.BatchID); err == nil {
 							cancelReq.BatchID = string(decodedBatchID)
 						}
+					case schemas.Vertex:
+						// Reverse the RawURLEncoding applied to the full resource name.
+						if decodedBatchID, err := base64.RawURLEncoding.DecodeString(cancelReq.BatchID); err == nil {
+							cancelReq.BatchID = string(decodedBatchID)
+						}
 					}
 					return &BatchRequest{
 						Type:          schemas.BatchCancelRequest,
@@ -1574,6 +1708,8 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
 				case schemas.Bedrock:
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				}
 				return resp, nil
 			},
@@ -1624,7 +1760,13 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
 				case schemas.Bedrock:
+					// s3:// ids contain slashes that break single-segment path routing;
+					// encode to an opaque id (StdEncoding, as originally shipped for Bedrock).
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					// gs:// ids: RawURLEncoding is fully path-safe (no /, +, or = padding),
+					// so the id never needs percent-encoding. Matches the native handler.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				default:
 					return resp, nil
 				}
@@ -1690,6 +1832,10 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 					for i, file := range resp.Data {
 						resp.Data[i].ID = base64.StdEncoding.EncodeToString([]byte(file.ID))
 					}
+				case schemas.Vertex:
+					for i, file := range resp.Data {
+						resp.Data[i].ID = base64.RawURLEncoding.EncodeToString([]byte(file.ID))
+					}
 				}
 				return resp, nil
 			},
@@ -1737,7 +1883,13 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
 				case schemas.Bedrock:
+					// s3:// ids contain slashes that break single-segment path routing;
+					// encode to an opaque id (StdEncoding, as originally shipped for Bedrock).
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					// gs:// ids: RawURLEncoding is fully path-safe (no /, +, or = padding),
+					// so the id never needs percent-encoding. Matches the native handler.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				default:
 					return resp, nil
 				}
@@ -1789,7 +1941,13 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
 				case schemas.Bedrock:
+					// s3:// ids contain slashes that break single-segment path routing;
+					// encode to an opaque id (StdEncoding, as originally shipped for Bedrock).
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					// gs:// ids: RawURLEncoding is fully path-safe (no /, +, or = padding),
+					// so the id never needs percent-encoding. Matches the native handler.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				default:
 					return resp, nil
 				}
@@ -1845,7 +2003,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 }
 
 // extractBatchListQueryParams extracts query parameters for batch list requests
-func extractBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractBatchListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
 			// Extract provider from extra_query
@@ -1881,7 +2039,7 @@ func extractBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallba
 }
 
 // extractBatchIDFromPath extracts batch_id from path parameters and provider from query params
-func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractBatchIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		batchID := ctx.UserValue("batch_id")
 		if batchID == nil {
@@ -1923,7 +2081,7 @@ func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 }
 
 // extractVideoIDFromPath extracts video_id from path parameters in provider:id format.
-func extractVideoIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractVideoIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		videoID := ctx.UserValue("video_id")
 		if videoID == nil {
@@ -1969,7 +2127,7 @@ func extractVideoIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 }
 
 // extractFileListQueryParams extracts query parameters for file list requests
-func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractFileListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
 			// Extract provider from extra_query
@@ -2016,6 +2174,28 @@ func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallbac
 				}
 			}
 
+			// Extract GCS storage config for Vertex (bracket notation: storage_config[gcs][bucket])
+			if listReq.Provider == schemas.Vertex {
+				if gcsBucket := string(ctx.QueryArgs().Peek("storage_config[gcs][bucket]")); gcsBucket != "" {
+					if listReq.StorageConfig == nil {
+						listReq.StorageConfig = &schemas.FileStorageConfig{}
+					}
+					if listReq.StorageConfig.GCS == nil {
+						listReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+					}
+					listReq.StorageConfig.GCS.Bucket = gcsBucket
+				}
+				if gcsPrefix := string(ctx.QueryArgs().Peek("storage_config[gcs][prefix]")); gcsPrefix != "" {
+					if listReq.StorageConfig == nil {
+						listReq.StorageConfig = &schemas.FileStorageConfig{}
+					}
+					if listReq.StorageConfig.GCS == nil {
+						listReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+					}
+					listReq.StorageConfig.GCS.Prefix = gcsPrefix
+				}
+			}
+
 			// Extract purpose filter
 			if purpose := string(ctx.QueryArgs().Peek("purpose")); purpose != "" {
 				listReq.Purpose = schemas.FilePurpose(purpose)
@@ -2044,7 +2224,7 @@ func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallbac
 }
 
 // extractFileIDFromPath extracts file_id from path parameters and provider/S3 config from query params
-func extractFileIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractFileIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		fileID := ctx.UserValue("file_id")
 		if fileID == nil {
@@ -2067,7 +2247,15 @@ func extractFileIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 		}
 
 		var storageConfig *schemas.FileStorageConfig
-		if provider == schemas.Bedrock {
+		if provider == schemas.Vertex {
+			// Vertex file ids are RawURL-base64-encoded gs:// URIs (see file response
+			// converters); decode back. The bucket is parsed from the gs:// URI by the
+			// provider, so no storage config is needed. This branch is provider-gated,
+			// so no extra gs:// guard is needed.
+			if decodedFileID, err := base64.RawURLEncoding.DecodeString(fileIDStr); err == nil {
+				fileIDStr = string(decodedFileID)
+			}
+		} else if provider == schemas.Bedrock {
 			// Check fileIDStr is base64 encoded
 			if decodedFileID, err := base64.StdEncoding.DecodeString(fileIDStr); err == nil {
 				fileIDStr = string(decodedFileID)
@@ -2170,6 +2358,24 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 		uploadReq.Provider = schemas.ModelProvider(providerValues[0])
 	}
 
+	// Extract expiration config (bracket notation: expires_after[anchor], expires_after[seconds])
+	if anchorValues := form.Value["expires_after[anchor]"]; len(anchorValues) > 0 && anchorValues[0] != "" {
+		if uploadReq.ExpiresAfter == nil {
+			uploadReq.ExpiresAfter = &schemas.FileExpiresAfter{}
+		}
+		uploadReq.ExpiresAfter.Anchor = anchorValues[0]
+	}
+	if secondsValues := form.Value["expires_after[seconds]"]; len(secondsValues) > 0 && secondsValues[0] != "" {
+		seconds, err := strconv.Atoi(secondsValues[0])
+		if err != nil {
+			return errors.New("invalid expires_after[seconds] value: " + secondsValues[0])
+		}
+		if uploadReq.ExpiresAfter == nil {
+			uploadReq.ExpiresAfter = &schemas.FileExpiresAfter{}
+		}
+		uploadReq.ExpiresAfter.Seconds = seconds
+	}
+
 	// Extract S3 storage config from extra_body (form fields)
 	// OpenAI client sends nested objects as bracket notation: storage_config[s3][bucket]
 	if uploadReq.Provider == schemas.Bedrock {
@@ -2199,6 +2405,28 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 				uploadReq.StorageConfig.S3 = &schemas.S3StorageConfig{}
 			}
 			uploadReq.StorageConfig.S3.Prefix = s3PrefixValues[0]
+		}
+	}
+
+	// Extract GCS storage config for Vertex (bracket notation: storage_config[gcs][bucket])
+	if uploadReq.Provider == schemas.Vertex {
+		if gcsBucketValues := form.Value["storage_config[gcs][bucket]"]; len(gcsBucketValues) > 0 && gcsBucketValues[0] != "" {
+			if uploadReq.StorageConfig == nil {
+				uploadReq.StorageConfig = &schemas.FileStorageConfig{}
+			}
+			if uploadReq.StorageConfig.GCS == nil {
+				uploadReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+			}
+			uploadReq.StorageConfig.GCS.Bucket = gcsBucketValues[0]
+		}
+		if gcsPrefixValues := form.Value["storage_config[gcs][prefix]"]; len(gcsPrefixValues) > 0 && gcsPrefixValues[0] != "" {
+			if uploadReq.StorageConfig == nil {
+				uploadReq.StorageConfig = &schemas.FileStorageConfig{}
+			}
+			if uploadReq.StorageConfig.GCS == nil {
+				uploadReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+			}
+			uploadReq.StorageConfig.GCS.Prefix = gcsPrefixValues[0]
 		}
 	}
 
@@ -2369,7 +2597,7 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 }
 
 // extractContainerListQueryParams extracts query parameters for container list requests
-func extractContainerListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if listReq, ok := req.(*schemas.BifrostContainerListRequest); ok {
 			// Extract provider from query
@@ -2403,9 +2631,8 @@ func extractContainerListQueryParams(handlerStore lib.HandlerStore) PreRequestCa
 }
 
 // extractContainerIDFromPath extracts container_id from path parameters and provider from query params
-func extractContainerIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-
 		containerID := ctx.UserValue("container_id")
 		if containerID == nil {
 			return errors.New("container_id is required")
@@ -2623,7 +2850,7 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 }
 
 // extractContainerFileCreateParams extracts container_id from path and provider from query for file create
-func extractContainerFileCreateParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerFileCreateParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		containerID := ctx.UserValue("container_id")
 		if containerID == nil {
@@ -2652,9 +2879,8 @@ func extractContainerFileCreateParams(handlerStore lib.HandlerStore) PreRequestC
 }
 
 // extractContainerFileListQueryParams extracts query parameters for container file list requests
-func extractContainerFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerFileListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-
 		containerID := ctx.UserValue("container_id")
 		if containerID == nil {
 			return errors.New("container_id is required")
@@ -2701,7 +2927,6 @@ func extractContainerFileListQueryParams(handlerStore lib.HandlerStore) PreReque
 // extractContainerAndFileIDFromPath extracts container_id and file_id from path parameters and provider from query params
 func extractContainerAndFileIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-
 		containerID := ctx.UserValue("container_id")
 		if containerID == nil {
 			return errors.New("container_id is required")
@@ -2747,6 +2972,67 @@ func extractContainerAndFileIDFromPath(handlerStore lib.HandlerStore) PreRequest
 	}
 }
 
+// OpenAIWSResponsesPaths returns WebSocket GET paths for the Responses API.
+// Mirrors the HTTP POST paths from CreateOpenAIRouteConfigs for /v1/responses and /responses.
+// No /deployments/ paths — model is specified in event body, not URL.
+func OpenAIWSResponsesPaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/responses",
+		"/responses",
+		"/openai/responses",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
+// OpenAIRealtimePaths returns WebSocket GET paths for the Realtime API.
+// Azure GA uses /openai/v1/realtime?model=..., preview uses /openai/realtime?deployment=...
+// No /deployments/ paths — model is always in query params.
+func OpenAIRealtimePaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
+// OpenAIRealtimeWebRTCCallsPaths returns HTTP POST paths for the GA /realtime/calls
+// WebRTC SDP exchange endpoint (multipart sdp + session format).
+func OpenAIRealtimeWebRTCCallsPaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/realtime/calls",
+		"/realtime/calls",
+		"/openai/realtime/calls",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
+// OpenAIRealtimeClientSecretPaths returns HTTP POST paths for OpenAI-compatible
+// realtime client secret creation aliases.
+func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
@@ -2757,7 +3043,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	routes = append(routes, CreateOpenAIContainerFileRouteConfigs("/openai", handlerStore)...)
 
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }
 
@@ -3196,13 +3482,13 @@ func parseOpenAIVideoGenerationMultipartRequest(ctx *fasthttp.RequestCtx, req in
 	return nil
 }
 
-// enableRawRequestResponseForContainer sets context flags to always capture raw request/response
-// for container operations. Container operations don't have model-specific content, so raw
-// data is useful for debugging and should be enabled by default.
+// enableRawRequestResponseForContainer sets per-request overrides to always capture and
+// send back raw request/response for container operations. Container operations don't have
+// model-specific content, so raw data is useful for debugging and should be enabled by default.
 func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
-	bifrostCtx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 }
 
 // parseContainerFileCreateMultipartRequest is a RequestParser that handles multipart/form-data for container file create requests

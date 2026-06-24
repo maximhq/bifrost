@@ -147,7 +147,7 @@ fi
 echo "=========================================="
 echo "Running /v1 test suite..."
 echo "=========================================="
-if ! ./run-newman-tests.sh $REPORT_ARGS; then
+if ! ./runners/run-newman-inference-tests.sh $REPORT_ARGS; then
   echo "❌ /v1 test suite failed"
   exit 1
 fi
@@ -155,7 +155,7 @@ fi
 echo "=========================================="
 echo "Running /integrations test suites..."
 echo "=========================================="
-if ! ./run-all-integration-tests.sh $REPORT_ARGS; then
+if ! ./runners/run-all-integration-tests.sh $REPORT_ARGS; then
   echo "❌ /integrations test suites failed"
   exit 1
 fi
@@ -163,10 +163,33 @@ fi
 echo "=========================================="
 echo "Running /api test suite..."
 echo "=========================================="
-if ! ./run-newman-api-tests.sh $REPORT_ARGS; then
+if ! ./runners/run-newman-api-tests.sh $REPORT_ARGS; then
   echo "❌ /api test suite failed"
   exit 1
 fi
 
+echo "=========================================="
+echo "Running inference features test suite..."
+echo "=========================================="
+if ! ./runners/run-newman-inference-features-tests.sh $REPORT_ARGS; then
+  echo "❌ inference features test suite failed"
+  exit 1
+fi
+
+# The auth matrix boots its own servers (one per config combination), so it only
+# runs when we were given a binary to boot. When tests run against an externally
+# managed server we cannot vary its boot config, so the suite is skipped.
+if [ -n "${BIFROST_BINARY:-}" ]; then
+  echo "=========================================="
+  echo "Running auth matrix test suite..."
+  echo "=========================================="
+  if ! ./runners/individual/run-newman-auth-matrix-tests.sh --binary "$BIFROST_BINARY" --port "$((PORT + 7))" $REPORT_ARGS; then
+    echo "❌ auth matrix test suite failed"
+    exit 1
+  fi
+else
+  echo "ℹ️  Skipping auth matrix suite (no binary provided; it boots its own servers per config)"
+fi
+
 echo ""
-echo "✅ All E2E API tests passed (/v1, /integrations, /api)"
+echo "✅ All E2E API tests passed (/v1, /integrations, /api, inference features, auth matrix)"

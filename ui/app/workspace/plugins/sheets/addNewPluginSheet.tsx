@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -106,7 +104,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 			if (data.hasConfig && data.config) {
 				try {
 					parsedConfig = JSON.parse(data.config);
-				} catch (error) {
+				} catch {
 					toast.error("Invalid JSON configuration");
 					return;
 				}
@@ -122,21 +120,21 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 					},
 				}).unwrap();
 				toast.success("Plugin updated successfully");
-		} else {
-			// Create new plugin
-			await createPlugin({
-				name: data.name,
-				path: data.path,
-				enabled: true,
-				config: parsedConfig,
-			}).unwrap();
-			toast.success("Plugin created successfully");
-			// Notify parent with the config name to select it
-			onCreate?.(data.name);
-		}
+			} else {
+				// Create new plugin
+				await createPlugin({
+					name: data.name,
+					path: data.path,
+					enabled: true,
+					config: parsedConfig,
+				}).unwrap();
+				toast.success("Plugin created successfully");
+				// Notify parent with the config name to select it
+				onCreate?.(data.name);
+			}
 
-		form.reset();
-		onClose();
+			form.reset();
+			onClose();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -151,8 +149,8 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 
 	return (
 		<Sheet open={open} onOpenChange={handleClose}>
-			<SheetContent className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8">
-				<SheetHeader className="p-0 flex flex-col items-start">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4">
+				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky top-0 bg-card z-10">
 					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
 					<SheetDescription>
 						{isEditMode
@@ -163,11 +161,11 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="flex-1 space-y-4">
+						<div className="flex-1 space-y-4 px-8">
 							<PluginFormFragment form={form} isEditMode={isEditMode} />
 						</div>
 
-						<div className="flex justify-end gap-2">
+						<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-8 py-4">
 							<Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>
 								Cancel
 							</Button>

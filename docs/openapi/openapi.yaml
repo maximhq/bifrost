@@ -38,7 +38,7 @@ info:
     - `/api/config` - Configuration management
     - `/api/providers` - Provider and API key management
     - `/api/plugins` - Plugin management
-    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, and routing rules
+    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, routing rules, and pricing overrides
     - `/api/logs` - Log search and analytics
     - `/api/mcp/*` - MCP (Model Context Protocol) client management
     - `/api/session/*` - Authentication and session management
@@ -56,8 +56,17 @@ info:
     url: https://opensource.org/licenses/Apache-2.0
 
 servers:
-  - url: http://localhost:8080
-    description: Local development server
+  - url: "{baseUrl}"
+    description: Your Bifrost instance
+    variables:
+      baseUrl:
+        default: http://localhost:8080
+        description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)
+
+security:
+  - BearerAuth: []
+  - BasicAuth: []
+  - ApiKeyAuth: []
 
 tags:
   # Unified Inference API
@@ -69,6 +78,8 @@ tags:
     description: Text completion generation
   - name: Responses
     description: OpenAI Responses API compatible endpoints
+  - name: OCR
+    description: Optical character recognition for documents and images
   - name: Rerank
     description: Document reranking by relevance to a query
   - name: Embeddings
@@ -89,6 +100,8 @@ tags:
     description: Container management operations
   - name: Async Jobs
     description: Asynchronous job submission and retrieval endpoints
+  - name: Realtime
+    description: Realtime WebSocket and WebRTC endpoints
   # Provider Integrations
   - name: OpenAI Integration
     description: OpenAI-compatible API endpoints (/openai/*)
@@ -127,6 +140,8 @@ tags:
     description: Log search and management endpoints
   - name: Cache
     description: Cache management endpoints
+  - name: Skills
+    description: Skills Repository management, marketplace, and download endpoints
 
 paths:
   # ==================== Unified Inference API ====================
@@ -138,6 +153,8 @@ paths:
     $ref: './paths/inference/text-completions.yaml#/text-completions'
   /v1/responses:
     $ref: './paths/inference/responses.yaml#/responses'
+  /v1/ocr:
+    $ref: './paths/inference/ocr.yaml#/ocr'
   /v1/rerank:
     $ref: './paths/inference/rerank.yaml#/rerank'
   /v1/embeddings:
@@ -162,6 +179,8 @@ paths:
     $ref: './paths/inference/videos.yaml#/video-remix'
   /v1/responses/input_tokens:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
+  /v1/responses/compact:
+    $ref: './paths/inference/compaction.yaml#/compact'
   /v1/batches:
     $ref: './paths/inference/batches.yaml#/batches'
   /v1/batches/{batch_id}:
@@ -224,6 +243,24 @@ paths:
     $ref: './paths/inference/async.yaml#/async-image-edit-job'
   /v1/async/images/variations/{job_id}:
     $ref: './paths/inference/async.yaml#/async-image-variation-job'
+  /v1/async/rerank:
+    $ref: './paths/inference/async.yaml#/async-rerank'
+  /v1/async/rerank/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-rerank-job'
+  /v1/async/ocr:
+    $ref: './paths/inference/ocr.yaml#/async-ocr'
+  /v1/async/ocr/{job_id}:
+    $ref: './paths/inference/ocr.yaml#/async-ocr-job'
+
+  # ==================== Realtime API ====================
+  /v1/realtime:
+    $ref: './paths/inference/realtime.yaml#/realtime'
+  /v1/realtime/calls:
+    $ref: './paths/inference/realtime.yaml#/realtime-calls'
+  /v1/realtime/client_secrets:
+    $ref: './paths/inference/realtime.yaml#/realtime-client-secrets'
+  /v1/realtime/sessions:
+    $ref: './paths/inference/realtime.yaml#/realtime-sessions'
 
   # ==================== OpenAI Integration ====================
   # Chat Completions
@@ -245,6 +282,10 @@ paths:
     $ref: './paths/integrations/openai/responses.yaml#/azure-responses'
   /openai/v1/responses/input_tokens:
     $ref: './paths/integrations/openai/responses.yaml#/responses-input-tokens'
+
+  # Context Compaction
+  /openai/v1/responses/compact:
+    $ref: './paths/integrations/openai/compaction.yaml#/compact'
 
   # Embeddings
   /openai/v1/embeddings:
@@ -302,10 +343,32 @@ paths:
   /openai/v1/containers/{container_id}/files/{file_id}/content:
     $ref: './paths/integrations/openai/containers.yaml#/container-files-content'
 
+  # Videos API
+  /openai/v1/videos:
+    $ref: './paths/integrations/openai/videos.yaml#/videos'
+  /openai/v1/videos/{video_id}:
+    $ref: './paths/integrations/openai/videos.yaml#/videos-by-id'
+  /openai/v1/videos/{video_id}/content:
+    $ref: './paths/integrations/openai/videos.yaml#/videos-content'
+  /openai/v1/videos/{video_id}/remix:
+    $ref: './paths/integrations/openai/videos.yaml#/videos-remix'
+
+  # Realtime / WebSocket / WebRTC (OpenAI-prefixed aliases)
+  /openai/v1/realtime:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime'
+  /openai/v1/realtime/calls:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime-calls'
+  /openai/v1/realtime/client_secrets:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime-client-secrets'
+  /openai/v1/realtime/sessions:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime-sessions'
+
   # ==================== Anthropic Integration ====================
   # Messages API
   /anthropic/v1/messages:
     $ref: './paths/integrations/anthropic/messages.yaml#/messages'
+  /anthropic/v1/messages/{path}:
+    $ref: './paths/integrations/anthropic/messages.yaml#/messages-wildcard'
 
   # Legacy Complete API
   /anthropic/v1/complete:
@@ -362,6 +425,26 @@ paths:
   /genai/v1beta/files/{file_id}:
     $ref: './paths/integrations/genai/files.yaml#/files-by-id'
 
+  # Batches
+  /genai/v1beta/batches:
+    $ref: './paths/integrations/genai/batches.yaml#/batches'
+  /genai/v1beta/batches/{batch_id}:
+    $ref: './paths/integrations/genai/batches.yaml#/batches-by-id'
+
+  # Cached Contents
+  /genai/v1beta/cachedContents:
+    $ref: './paths/integrations/genai/cached-contents.yaml#/cached-contents'
+  /genai/v1beta/cachedContents/{cached_id}:
+    $ref: './paths/integrations/genai/cached-contents.yaml#/cached-contents-by-id'
+
+  # Rank (Vertex AI)
+  /genai/v1/rank:
+    $ref: './paths/integrations/genai/rank.yaml#/rank'
+
+  # Long-running video operation polling
+  /genai/v1beta/models/{model}/operations/{operation_id}:
+    $ref: './paths/integrations/genai/video-operations.yaml#/video-operations'
+
   # ==================== Bedrock Integration ====================
   # Converse API
   /bedrock/model/{modelId}/converse:
@@ -375,13 +458,25 @@ paths:
   /bedrock/model/{modelId}/invoke-with-response-stream:
     $ref: './paths/integrations/bedrock/invoke.yaml#/invoke-stream'
 
+  # Count Tokens API
+  /bedrock/model/{modelId}/count-tokens:
+    $ref: './paths/integrations/bedrock/count-tokens.yaml#/count-tokens'
+
   # Batch API
+  /bedrock/model-invocation-job:
+    $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-create'
   /bedrock/model-invocation-jobs:
-    $ref: './paths/integrations/bedrock/batch.yaml#/batch-jobs'
-  /bedrock/model-invocation-jobs/{jobIdentifier}:
+    $ref: './paths/integrations/bedrock/batch.yaml#/batch-jobs-list'
+  /bedrock/model-invocation-job/{job_arn}:
     $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-by-id'
-  /bedrock/model-invocation-jobs/{jobIdentifier}/stop:
+  /bedrock/model-invocation-job/{job_arn}/stop:
     $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-cancel'
+
+  # S3-compatible file storage (boto3 client compatible)
+  /bedrock/files/{bucket}:
+    $ref: './paths/integrations/bedrock/s3.yaml#/s3-bucket'
+  /bedrock/files/{bucket}/{key}:
+    $ref: './paths/integrations/bedrock/s3.yaml#/s3-object'
 
   # ==================== Cohere Integration ====================
   # Chat (v2)
@@ -392,9 +487,68 @@ paths:
   /cohere/v2/embed:
     $ref: './paths/integrations/cohere/embed.yaml#/embed'
 
+  # Rerank (v2)
+  /cohere/v2/rerank:
+    $ref: './paths/integrations/cohere/rerank.yaml#/rerank'
+
   # Tokenize (v1)
   /cohere/v1/tokenize:
     $ref: './paths/integrations/cohere/tokenize.yaml#/tokenize'
+
+  # ==================== Cursor IDE Integration ====================
+  # Hybrid chat completions (parses Responses payload, returns chat-completions shape)
+  /cursor/v1/chat/completions:
+    $ref: './paths/integrations/cursor/cursor.yaml#/chat-completions'
+
+  # Models (OpenAI shape)
+  /cursor/v1/models:
+    $ref: './paths/integrations/cursor/cursor.yaml#/models'
+
+  # Anthropic-compatible mounts
+  /cursor/v1/complete:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-complete'
+  /cursor/v1/messages:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-messages'
+  /cursor/v1/messages/{path}:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-messages-wildcard'
+  /cursor/v1/messages/count_tokens:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-count-tokens'
+
+  # Gemini-compatible mounts
+  /cursor/v1beta/models:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-models'
+  /cursor/v1beta/models/{model}:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-model-action'
+  /cursor/v1beta/models/{model}/operations/{operation_id}:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-video-operation'
+
+  # Gemini Rank (Vertex)
+  /cursor/v1/rank:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-rank'
+
+  # Bedrock-compatible mounts
+  /cursor/model/{modelId}/converse:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-converse'
+  /cursor/model/{modelId}/converse-stream:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-converse-stream'
+  /cursor/model/{modelId}/invoke:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-invoke'
+  /cursor/model/{modelId}/invoke-with-response-stream:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-invoke-stream'
+  /cursor/rerank:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-rerank'
+  /cursor/model/{modelId}/count-tokens:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-count-tokens'
+
+  # Cohere-compatible mounts
+  /cursor/v2/chat:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-chat'
+  /cursor/v2/embed:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-embed'
+  /cursor/v2/rerank:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-rerank'
+  /cursor/v1/tokenize:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-tokenize'
 
   # ==================== LiteLLM Integration ====================
   # OpenAI-compatible
@@ -548,6 +702,30 @@ paths:
   /api/pricing/force-sync:
     $ref: './paths/management/config.yaml#/force-sync-pricing'
 
+  # Users
+  /api/users:
+    $ref: './paths/management/users.yaml#/users'
+  /api/users/{id}:
+    $ref: './paths/management/users.yaml#/users-by-id'
+  /api/users/me/permissions:
+    $ref: './paths/management/users.yaml#/users-me-permissions'
+  /api/users/{id}/role:
+    $ref: './paths/management/users.yaml#/users-role'
+  /api/users/{id}/teams:
+    $ref: './paths/management/users.yaml#/users-teams'
+  /api/users/email/{email}/virtual-keys:
+    $ref: './paths/management/users.yaml#/users-email-virtual-keys'
+
+  # Teams
+  /api/teams:
+    $ref: './paths/management/users.yaml#/teams'
+  /api/teams/{id}:
+    $ref: './paths/management/users.yaml#/teams-by-id'
+  /api/teams/{id}/members:
+    $ref: './paths/management/users.yaml#/team-members'
+  /api/teams/{id}/members/{userId}:
+    $ref: './paths/management/users.yaml#/team-member-by-id'
+
   # Session
   /api/session/login:
     $ref: './paths/management/session.yaml#/login'
@@ -555,24 +733,38 @@ paths:
     $ref: './paths/management/session.yaml#/logout'
   /api/session/is-auth-enabled:
     $ref: './paths/management/session.yaml#/is-auth-enabled'
+  /api/session/ws-ticket:
+    $ref: './paths/management/session.yaml#/ws-ticket'
 
   # Providers
   /api/providers:
     $ref: './paths/management/providers.yaml#/providers'
   /api/providers/{provider}:
     $ref: './paths/management/providers.yaml#/providers-by-name'
+  /api/providers/{provider}/keys:
+    $ref: './paths/management/providers.yaml#/provider-keys'
+  /api/providers/{provider}/keys/{key_id}:
+    $ref: './paths/management/providers.yaml#/provider-key-by-id'
   /api/keys:
     $ref: './paths/management/providers.yaml#/keys'
   /api/models:
     $ref: './paths/management/providers.yaml#/models'
+  /api/models/details:
+    $ref: './paths/management/providers.yaml#/models-details'
+  /api/models/parameters:
+    $ref: './paths/management/providers.yaml#/models-parameters'
+  /api/models/base:
+    $ref: './paths/management/providers.yaml#/models-base'
 
   # Plugins
   /api/plugins:
     $ref: './paths/management/plugins.yaml#/plugins'
+  /api/plugins/builtins:
+    $ref: './paths/management/plugins.yaml#/plugins-builtins'
   /api/plugins/{name}:
     $ref: './paths/management/plugins.yaml#/~1plugins~1{name}'
 
-  # MCP
+  # MCP — client management
   /v1/mcp/tool/execute:
     $ref: './paths/management/mcp.yaml#/execute-tool'
   /api/mcp/clients:
@@ -583,16 +775,42 @@ paths:
     $ref: './paths/management/mcp.yaml#/client-by-id'
   /api/mcp/client/{id}/reconnect:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
+  /api/mcp/client/{id}/complete-oauth:
+    $ref: './paths/management/mcp.yaml#/client-complete-oauth'
 
-  # MCP - OAuth
+  # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
+  /api/mcp/sessions:
+    $ref: './paths/management/mcp.yaml#/sessions'
+  /api/mcp/sessions/{id}:
+    $ref: './paths/management/mcp.yaml#/session-by-id'
+  /api/mcp/sessions/{id}/reauth:
+    $ref: './paths/management/mcp.yaml#/session-reauth'
+
+  # MCP — per-user-headers submission flow
+  /api/mcp/per-user-headers/flows/{id}:
+    $ref: './paths/management/mcp.yaml#/per-user-headers-flow'
+  /api/mcp/per-user-headers/credential/{id}:
+    $ref: './paths/management/mcp.yaml#/per-user-headers-credential'
+
+  # MCP — per-user OAuth flow
+  /api/oauth/per-user/flows/{id}:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-flow-detail'
+  /api/oauth/per-user/flows/{id}/start:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-flow-start'
+
+  # MCP — server-level OAuth admin endpoints
   /api/oauth/callback:
     $ref: './paths/management/oauth.yaml#/oauth-callback'
   /api/oauth/config/{id}/status:
     $ref: './paths/management/oauth.yaml#/oauth-config-status'
+  /api/oauth/config/{id}:
+    $ref: './paths/management/oauth.yaml#/oauth-config-by-id'
 
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
     $ref: './paths/management/governance.yaml#/virtual-keys'
+  /api/governance/virtual-keys/quota:
+    $ref: './paths/management/governance.yaml#/virtual-keys-quota'
   /api/governance/virtual-keys/{vk_id}:
     $ref: './paths/management/governance.yaml#/virtual-keys-by-id'
 
@@ -607,6 +825,18 @@ paths:
     $ref: './paths/management/governance.yaml#/customers'
   /api/governance/customers/{customer_id}:
     $ref: './paths/management/governance.yaml#/customers-by-id'
+
+  # Governance - Business Units (Enterprise)
+  /api/governance/business-units:
+    $ref: './paths/management/businessunits.yaml#/business-units'
+  /api/governance/business-units/{id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-by-id'
+  /api/governance/business-units/{id}/teams:
+    $ref: './paths/management/businessunits.yaml#/business-units-teams'
+  /api/governance/business-units/{id}/teams/{team_id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-team-by-id'
+  /api/governance/business-units/{id}/governance:
+    $ref: './paths/management/businessunits.yaml#/business-units-governance'
 
   # Governance - Budgets and Rate Limits
   /api/governance/budgets:
@@ -630,25 +860,243 @@ paths:
   /api/governance/providers/{provider_name}:
     $ref: './paths/management/governance.yaml#/provider-governance-by-name'
 
+  # Governance - Pricing Overrides
+  /api/governance/pricing-overrides:
+    $ref: './paths/management/governance.yaml#/pricing-overrides'
+  /api/governance/pricing-overrides/{id}:
+    $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
+
+  # RBAC (roles, permissions, resources, operations)
+  /api/roles:
+    $ref: './paths/management/rbac.yaml#/roles'
+  /api/roles/{id}:
+    $ref: './paths/management/rbac.yaml#/roles-by-id'
+  /api/roles/{id}/permissions:
+    $ref: './paths/management/rbac.yaml#/roles-permissions'
+  /api/resources:
+    $ref: './paths/management/rbac.yaml#/resources'
+  /api/operations:
+    $ref: './paths/management/rbac.yaml#/operations'
+  /api/permissions:
+    $ref: './paths/management/rbac.yaml#/permissions'
+
+  # Access Profiles
+  /api/access-profiles:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles'
+  /api/access-profiles/{id}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-by-id'
+  /api/access-profiles/{id}/activate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-activate'
+  /api/access-profiles/{id}/deactivate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-deactivate'
+  /api/access-profiles/{id}/clone:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-clone'
+  /api/access-profiles/{id}/propagate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-propagate'
+  /api/access-profiles/{id}/roles:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-roles'
+  /api/access-profiles/{id}/roles/{role_id}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-role-by-id'
+  /api/access-profiles/{id}/versions:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-versions'
+  /api/access-profiles/{id}/versions/{version}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-version-by-number'
+  /api/access-profiles/{id}/audit-logs:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-by-id'
+  /api/access-profiles/audit-logs:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-all'
+  /api/users/{target_user_id}/access-profiles:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profiles'
+  /api/users/{target_user_id}/access-profiles/{profile_id}:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-by-id'
+  /api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys'
+  /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
+
+  # MCP Tool Groups
+  /api/mcp/tool-groups:
+    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups'
+  /api/mcp/tool-groups/{id}:
+    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
+
+  # Governance - Complexity Analyzer Config
+  /api/governance/complexity-analyzer-config:
+    $ref: './paths/management/governance.yaml#/complexity'
+  /api/governance/complexity-analyzer-config/reset:
+    $ref: './paths/management/governance.yaml#/complexity-reset'
+
   # Logging
   /api/logs:
     $ref: './paths/management/logging.yaml#/logs'
+  /api/logs/{id}:
+    $ref: './paths/management/logging.yaml#/logs-by-id'
+  /api/logs/sessions/{session_id}:
+    $ref: './paths/management/logging.yaml#/logs-sessions-by-id'
+  /api/logs/sessions/{session_id}/summary:
+    $ref: './paths/management/logging.yaml#/logs-sessions-summary-by-id'
   /api/logs/stats:
     $ref: './paths/management/logging.yaml#/logs-stats'
+  /api/logs/histogram:
+    $ref: './paths/management/logging.yaml#/logs-histogram'
+  /api/logs/histogram/tokens:
+    $ref: './paths/management/logging.yaml#/logs-histogram-tokens'
+  /api/logs/histogram/cost:
+    $ref: './paths/management/logging.yaml#/logs-histogram-cost'
+  /api/logs/histogram/models:
+    $ref: './paths/management/logging.yaml#/logs-histogram-models'
+  /api/logs/histogram/latency:
+    $ref: './paths/management/logging.yaml#/logs-histogram-latency'
+  /api/logs/histogram/cost/by-provider:
+    $ref: './paths/management/logging.yaml#/logs-histogram-cost-by-provider'
+  /api/logs/histogram/tokens/by-provider:
+    $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-provider'
+  /api/logs/histogram/latency/by-provider:
+    $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-provider'
+  /api/logs/histogram/cost/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-cost-by-dimension'
+  /api/logs/histogram/tokens/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-dimension'
+  /api/logs/histogram/latency/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-dimension'
   /api/logs/dropped:
     $ref: './paths/management/logging.yaml#/logs-dropped'
   /api/logs/filterdata:
     $ref: './paths/management/logging.yaml#/logs-filterdata'
+  /api/logs/rankings:
+    $ref: './paths/management/logging.yaml#/logs-rankings'
+  /api/logs/dashboard:
+    $ref: './paths/management/logging.yaml#/logs-dashboard'
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
 
+  # MCP Logs
+  /api/mcp-logs:
+    $ref: './paths/management/logging.yaml#/mcp-logs'
+  /api/mcp-logs/{id}:
+    $ref: './paths/management/logging.yaml#/mcp-logs-by-id'
+  /api/mcp-logs/stats:
+    $ref: './paths/management/logging.yaml#/mcp-logs-stats'
+  /api/mcp-logs/filterdata:
+    $ref: './paths/management/logging.yaml#/mcp-logs-filterdata'
+  /api/mcp-logs/histogram:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram'
+  /api/mcp-logs/histogram/cost:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-cost'
+  /api/mcp-logs/histogram/top-tools:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-top-tools'
+
+  # Prompt Repository
+  /api/prompt-repo/folders:
+    $ref: './paths/management/prompts.yaml#/folders'
+  /api/prompt-repo/folders/{id}:
+    $ref: './paths/management/prompts.yaml#/folders-by-id'
+  /api/prompt-repo/prompts:
+    $ref: './paths/management/prompts.yaml#/prompts'
+  /api/prompt-repo/prompts/{id}:
+    $ref: './paths/management/prompts.yaml#/prompts-by-id'
+  /api/prompt-repo/prompts/{id}/versions:
+    $ref: './paths/management/prompts.yaml#/prompt-versions'
+  /api/prompt-repo/versions/{id}:
+    $ref: './paths/management/prompts.yaml#/versions-by-id'
+  /api/prompt-repo/prompts/{id}/sessions:
+    $ref: './paths/management/prompts.yaml#/prompt-sessions'
+  /api/prompt-repo/sessions/{id}:
+    $ref: './paths/management/prompts.yaml#/sessions-by-id'
+  /api/prompt-repo/sessions/{id}/rename:
+    $ref: './paths/management/prompts.yaml#/sessions-rename'
+  /api/prompt-repo/sessions/{id}/commit:
+    $ref: './paths/management/prompts.yaml#/sessions-commit'
+
+  # Skills Repository
+  /api/skills/files/upload:
+    $ref: './paths/management/skills.yaml#/skill-file-upload'
+  /api/skills/files/orphans:
+    $ref: './paths/management/skills.yaml#/skill-orphan-files'
+  /api/skills/all/version:
+    $ref: './paths/management/skills.yaml#/all-skills-version'
+  /api/skills:
+    $ref: './paths/management/skills.yaml#/skills'
+  /api/skills/{id}:
+    $ref: './paths/management/skills.yaml#/skills-by-id'
+  /api/skills/{id}/versions:
+    $ref: './paths/management/skills.yaml#/skill-versions'
+  /api/skills/{id}/shift-version:
+    $ref: './paths/management/skills.yaml#/shift-skill-version'
+  /api/skills/serve/claude-code/.claude-plugin/marketplace.json:
+    $ref: './paths/management/skills.yaml#/claude-code-skills-marketplace'
+  /api/skills/serve/codex/.agents/plugins/marketplace.json:
+    $ref: './paths/management/skills.yaml#/codex-skills-marketplace'
+  /api/skills/serve/all/download.zip:
+    $ref: './paths/management/skills.yaml#/all-skills-download'
+  /api/skills/serve/{skill-name}/download.zip:
+    $ref: './paths/management/skills.yaml#/skill-download'
+  /api/skills/serve/{skill-name}/files/{filepath}:
+    $ref: './paths/management/skills.yaml#/skill-file-download'
+
   # Cache
-  /api/cache/clear/{requestId}:
-    $ref: './paths/management/cache.yaml#/clear-by-request-id'
+  /api/cache/clear/{cacheId}:
+    $ref: './paths/management/cache.yaml#/clear-by-cache-id'
   /api/cache/clear-by-key/{cacheKey}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-key'
 
+  # Infrastructure
+  /ws:
+    $ref: './paths/management/infrastructure.yaml#/websocket'
+  /mcp:
+    $ref: './paths/management/infrastructure.yaml#/mcp-server'
+  /metrics:
+    $ref: './paths/management/infrastructure.yaml#/metrics'
+
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication. Use your provider API key or Bifrost authentication token.
+        Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    ManagementBearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Management API authentication for `/api/*` endpoints. Use the `Authorization` header with `Bearer <API key>`.
+        Virtual keys, dashboard/user/session tokens, and `x-api-key` headers are not supported on management APIs.
+    BasicAuth:
+      type: http
+      scheme: basic
+      description: |
+        Basic authentication using username and password.
+    VirtualKeyAuth:
+      type: apiKey
+      in: header
+      name: x-bf-vk
+      description: |
+        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).
+        Example: `sk-bf-*` prefixed keys.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: |
+        API key authentication via the `x-api-key` header.
+        Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    SessionCookieAuth:
+      type: apiKey
+      in: cookie
+      name: token
+      description: |
+        Dashboard session authentication via the HTTPOnly `token` cookie that is
+        set by `POST /api/session/login`. Used by the Bifrost UI for same-origin
+        requests in place of an `Authorization` header. Accepted on session
+        endpoints (`logout`, `ws-ticket`) as an alternative to the management API key.
+
+  parameters:
+    AsyncJobId:
+      $ref: './paths/inference/async.yaml#/components/parameters/AsyncJobId'
+    AsyncResultTTL:
+      $ref: './paths/inference/async.yaml#/components/parameters/AsyncResultTTL'
+
   responses:
     BadRequest:
       description: Bad request
@@ -656,8 +1104,26 @@ components:
         application/json:
           schema:
             $ref: './schemas/inference/common.yaml#/BifrostError'
+    Unauthorized:
+      description: Unauthorized — missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
     InternalError:
       description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    ConfigStoreUnavailable:
+      description: Config store not available
       content:
         application/json:
           schema:
@@ -780,6 +1246,22 @@ components:
     FileListResponse:
       $ref: './schemas/inference/files.yaml#/FileListResponse'
 
+    # ==================== OCR ====================
+    OCRRequest:
+      $ref: './schemas/inference/ocr.yaml#/OCRRequest'
+    OCRDocument:
+      $ref: './schemas/inference/ocr.yaml#/OCRDocument'
+    OCRResponse:
+      $ref: './schemas/inference/ocr.yaml#/OCRResponse'
+    OCRPage:
+      $ref: './schemas/inference/ocr.yaml#/OCRPage'
+    OCRPageImage:
+      $ref: './schemas/inference/ocr.yaml#/OCRPageImage'
+    OCRPageDimensions:
+      $ref: './schemas/inference/ocr.yaml#/OCRPageDimensions'
+    OCRUsageInfo:
+      $ref: './schemas/inference/ocr.yaml#/OCRUsageInfo'
+
     # ==================== OpenAI Integration ====================
     OpenAIChatRequest:
       $ref: './schemas/integrations/openai/chat.yaml#/OpenAIChatRequest'
@@ -813,6 +1295,8 @@ components:
       $ref: './schemas/integrations/anthropic/common.yaml#/AnthropicListModelsResponse'
 
     # ==================== GenAI (Gemini) Integration ====================
+    GeminiSchema:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiSchema'
     GeminiGenerationRequest:
       $ref: './schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
     GeminiGenerationResponse:
@@ -908,6 +1392,8 @@ components:
       $ref: './schemas/management/providers.yaml#/UpdateProviderRequest'
     Key:
       $ref: './schemas/management/providers.yaml#/Key'
+    ListProviderKeysResponse:
+      $ref: './schemas/management/providers.yaml#/ListProviderKeysResponse'
     NetworkConfig:
       $ref: './schemas/management/providers.yaml#/NetworkConfig'
     ConcurrencyAndBufferSize:
@@ -940,6 +1426,28 @@ components:
       $ref: './schemas/management/oauth.yaml#/OAuthConfigStatus'
     OAuthToken:
       $ref: './schemas/management/oauth.yaml#/OAuthToken'
+    MCPOauthFlowDetail:
+      $ref: './schemas/management/oauth.yaml#/MCPOauthFlowDetail'
+
+    # MCP Sessions + per-user-headers
+    MCPClientSummary:
+      $ref: './schemas/management/mcp.yaml#/MCPClientSummary'
+    MCPVirtualKeySummary:
+      $ref: './schemas/management/mcp.yaml#/MCPVirtualKeySummary'
+    MCPUserSummary:
+      $ref: './schemas/management/mcp.yaml#/MCPUserSummary'
+    MCPSessionRow:
+      $ref: './schemas/management/mcp.yaml#/MCPSessionRow'
+    MCPSessionsListResponse:
+      $ref: './schemas/management/mcp.yaml#/MCPSessionsListResponse'
+    MCPSessionReauthResponse:
+      $ref: './schemas/management/mcp.yaml#/MCPSessionReauthResponse'
+    MCPHeadersFlowDetail:
+      $ref: './schemas/management/mcp.yaml#/MCPHeadersFlowDetail'
+    MCPHeadersSubmitRequest:
+      $ref: './schemas/management/mcp.yaml#/MCPHeadersSubmitRequest'
+    MCPHeadersSubmitResponse:
+      $ref: './schemas/management/mcp.yaml#/MCPHeadersSubmitResponse'
 
     # Governance - Virtual Keys
     VirtualKey:
@@ -952,6 +1460,8 @@ components:
       $ref: './schemas/management/governance.yaml#/VirtualKeyMCPConfig'
     ListVirtualKeysResponse:
       $ref: './schemas/management/governance.yaml#/ListVirtualKeysResponse'
+    VirtualKeyQuotaResponse:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyQuotaResponse'
     CreateVirtualKeyRequest:
       $ref: './schemas/management/governance.yaml#/CreateVirtualKeyRequest'
     UpdateVirtualKeyRequest:
@@ -1034,6 +1544,60 @@ components:
       $ref: './schemas/management/governance.yaml#/ListProviderGovernanceResponse'
     UpdateProviderGovernanceRequest:
       $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
+
+    # Governance - Pricing Overrides
+    PricingOverrideRequestType:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideRequestType'
+    PricingPatch:
+      $ref: './schemas/management/governance.yaml#/PricingPatch'
+    PricingOverride:
+      $ref: './schemas/management/governance.yaml#/PricingOverride'
+    CreatePricingOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/CreatePricingOverrideRequest'
+    UpdatePricingOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
+    PricingOverrideResponse:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideResponse'
+    ListPricingOverridesResponse:
+      $ref: './schemas/management/governance.yaml#/ListPricingOverridesResponse'
+
+    # Skills Repository
+    SkillSourceType:
+      $ref: './schemas/management/skills.yaml#/SkillSourceType'
+    SkillFileEntry:
+      $ref: './schemas/management/skills.yaml#/SkillFileEntry'
+    SkillFile:
+      $ref: './schemas/management/skills.yaml#/SkillFile'
+    SkillVersion:
+      $ref: './schemas/management/skills.yaml#/SkillVersion'
+    Skill:
+      $ref: './schemas/management/skills.yaml#/Skill'
+    CreateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/CreateSkillRequest'
+    UpdateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/UpdateSkillRequest'
+    SkillResponse:
+      $ref: './schemas/management/skills.yaml#/SkillResponse'
+    ListSkillsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillsResponse'
+    ListSkillVersionsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillVersionsResponse'
+    UploadSkillFileRequest:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileRequest'
+    UploadSkillFileResponse:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileResponse'
+    SkillOrphanCleanupResponse:
+      $ref: './schemas/management/skills.yaml#/SkillOrphanCleanupResponse'
+    AllSkillsVersionResponse:
+      $ref: './schemas/management/skills.yaml#/AllSkillsVersionResponse'
+    BumpAllSkillsVersionRequest:
+      $ref: './schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
+    ShiftSkillVersionRequest:
+      $ref: './schemas/management/skills.yaml#/ShiftSkillVersionRequest'
+    ClaudeCodeSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/ClaudeCodeSkillMarketplace'
+    CodexSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/CodexSkillMarketplace'
 
     # Logging
     LogEntry:

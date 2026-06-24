@@ -15,14 +15,14 @@ type TableRoutingRule struct {
 	ConfigHash    string `gorm:"type:varchar(255)" json:"config_hash"` // Hash of config.json version, used for change detection
 	Name          string `gorm:"type:varchar(255);not null;uniqueIndex:idx_routing_rule_scope_name" json:"name"`
 	Description   string `gorm:"type:text" json:"description"`
-	Enabled       bool   `gorm:"not null;default:true" json:"enabled"`
+	Enabled       *bool  `gorm:"not null;default:true" json:"enabled,omitempty"` // nil = DB default (true); use EnabledValue() to read
 	CelExpression string `gorm:"type:text;not null" json:"cel_expression"`
 
-	// Routing Target (output)
-	Provider        string   `gorm:"type:varchar(255);not null" json:"provider"` // Primary provider (e.g., "openai", "azure")
-	Model           string   `gorm:"type:varchar(255)" json:"model"`             // Optional model override, empty = use original
-	Fallbacks       *string  `gorm:"type:text" json:"-"`                         // JSON array of fallback chains
-	ParsedFallbacks []string `gorm:"-" json:"fallbacks"`                         // Parsed fallbacks from JSON
+	// Routing Targets (output) — 1:many relationship; weights must sum to 1
+	Targets []TableRoutingTarget `gorm:"foreignKey:RuleID;constraint:OnDelete:CASCADE" json:"targets"`
+
+	Fallbacks       *string  `gorm:"type:text" json:"-"`           // JSON array of fallback chains
+	ParsedFallbacks []string `gorm:"-" json:"fallbacks,omitempty"` // Parsed fallbacks from JSON
 
 	Query       *string        `gorm:"type:text" json:"-"`
 	ParsedQuery map[string]any `gorm:"-" json:"query,omitempty"`
@@ -30,6 +30,9 @@ type TableRoutingRule struct {
 	// Scope: where this rule applies
 	Scope   string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_routing_rule_scope_name" json:"scope"` // "global" | "team" | "customer" | "virtual_key"
 	ScopeID *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_rule_scope_name" json:"scope_id"`      // nil for global, otherwise entity ID
+
+	// Chaining
+	ChainRule bool `gorm:"not null;default:false" json:"chain_rule"` // If true, re-evaluates routing chain after this rule matches
 
 	// Execution
 	Priority int `gorm:"type:int;not null;default:0;index" json:"priority"` // Lower = evaluated first within scope
@@ -41,6 +44,17 @@ type TableRoutingRule struct {
 
 // TableName for TableRoutingRule
 func (TableRoutingRule) TableName() string { return "routing_rules" }
+
+// EnabledValue returns the effective Enabled bool, treating nil as true (DB default).
+func (r *TableRoutingRule) EnabledValue() bool {
+	if r == nil {
+		return false
+	}
+	if r.Enabled == nil {
+		return true
+	}
+	return *r.Enabled
+}
 
 // BeforeSave hook for TableRoutingRule to serialize JSON fields
 func (r *TableRoutingRule) BeforeSave(tx *gorm.DB) error {
@@ -79,3 +93,19 @@ func (r *TableRoutingRule) AfterFind(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+// TableRoutingTarget represents a weighted routing target for probabilistic routing.
+// Multiple targets can be associated with a single routing rule; weights determine
+// the probability of each target being selected and must sum to 1 across all targets in a rule.
+// The composite (RuleID, Provider, Model, KeyID) is unique to prevent duplicate target configs.
+type TableRoutingTarget struct {
+	RuleID          string  `gorm:"type:varchar(255);not null;index;uniqueIndex:idx_routing_target_config" json:"-"`
+	Provider        *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"provider,omitempty"` // nil = use incoming provider
+	Model           *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"model,omitempty"`    // nil = use incoming model
+	KeyID           *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"key_id,omitempty"`   // persisted key pin
+	ProviderKeyName *string `gorm:"-" json:"provider_key_name,omitempty"`                                              // config-only alias; resolved to key_id during load
+	Weight          float64 `gorm:"not null;default:1" json:"weight"`                                                  // must sum to 1 across all targets in a rule
+}
+
+// TableName for TableRoutingTarget
+func (TableRoutingTarget) TableName() string { return "routing_targets" }

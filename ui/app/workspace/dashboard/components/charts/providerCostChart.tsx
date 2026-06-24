@@ -1,0 +1,208 @@
+import type { ProviderCostHistogramResponse } from "@/lib/types/logs";
+import { formatCurrencyNumber } from "@/lib/utils/numbers";
+import { memo, useMemo } from "react";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+	formatCost,
+	formatFullTimestamp,
+	formatTimestamp,
+	getModelColor,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	pickTopSeries,
+} from "../../utils/chartUtils";
+import { ChartErrorBoundary } from "./chartErrorBoundary";
+import type { ChartType } from "./chartTypeToggle";
+
+interface ProviderCostChartProps {
+	data: ProviderCostHistogramResponse | null;
+	chartType: ChartType;
+	startTime: number;
+	endTime: number;
+	selectedProvider: string;
+}
+
+function CustomTooltip({ active, payload, selectedProvider, displayProviders }: any) {
+	if (!active || !payload || !payload.length) return null;
+
+	const data = payload[0]?.payload;
+	if (!data) return null;
+
+	return (
+		<div className="rounded-sm border border-zinc-200 bg-white px-3 py-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+			<div className="mb-1 text-xs text-zinc-500">{formatFullTimestamp(data.timestamp)}</div>
+			<div className="space-y-1 text-sm">
+				{selectedProvider === "all" ? (
+					<>
+						{displayProviders.map((provider: string, idx: number) => {
+							const isOther = provider === OTHER_SERIES_KEY;
+							const cost = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : data.by_provider?.[provider] || 0;
+							if (cost === 0) return null;
+							return (
+								<div key={provider} className="flex items-center justify-between gap-4">
+									<span className="flex items-center gap-1.5">
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
+											{isOther ? OTHER_SERIES_LABEL : provider}
+										</span>
+									</span>
+									<span className="font-medium">{formatCost(cost)}</span>
+								</div>
+							);
+						})}
+						<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
+							<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+							<span className="font-medium">{formatCost(data.total_cost)}</span>
+						</div>
+					</>
+				) : (
+					<div className="flex items-center justify-between gap-4">
+						<span className="flex items-center gap-1.5">
+							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+							<span className="text-zinc-600 dark:text-zinc-400">{selectedProvider}</span>
+						</span>
+						<span className="font-medium">{formatCost(data.by_provider?.[selectedProvider] || 0)}</span>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
+function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderCostChartProps) {
+	const { chartData, displayProviders } = useMemo(() => {
+		if (!data?.buckets || !data.bucket_size_seconds) {
+			return { chartData: [], displayProviders: [] };
+		}
+
+		let providers: string[];
+		let hasOther = false;
+		if (selectedProvider === "all") {
+			const top = pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p] ?? 0);
+			hasOther = top.length < data.providers.length;
+			providers = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+		} else {
+			providers = [selectedProvider];
+		}
+		const topSet = new Set(providers);
+
+		const processed = data.buckets.map((bucket, index) => {
+			const item: any = {
+				...bucket,
+				index,
+				formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
+			};
+			if (hasOther && bucket.by_provider) {
+				let otherSum = 0;
+				for (const provider of data.providers) {
+					if (!topSet.has(provider)) otherSum += bucket.by_provider[provider] ?? 0;
+				}
+				item[OTHER_SERIES_KEY] = otherSum;
+			}
+			providers.forEach((provider, idx) => {
+				item[`provider_${idx}`] = provider === OTHER_SERIES_KEY ? (item[OTHER_SERIES_KEY] ?? 0) : (bucket.by_provider?.[provider] ?? 0);
+			});
+			return item;
+		});
+
+		return { chartData: processed, displayProviders: providers };
+	}, [data, selectedProvider]);
+
+	if (!data?.buckets || chartData.length === 0) {
+		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+	}
+
+	const commonProps = {
+		data: chartData,
+		margin: { top: 6, right: 4, left: 4, bottom: 0 },
+	};
+
+	return (
+		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedProvider}`}>
+			<ResponsiveContainer width="100%" height="100%">
+				{chartType === "bar" ? (
+					<BarChart {...commonProps} barCategoryGap={1}>
+						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
+						<XAxis
+							dataKey="index"
+							type="number"
+							domain={[-0.5, chartData.length - 0.5]}
+							tick={{ fontSize: 11, className: "fill-zinc-500", dy: 5 }}
+							tickLine={false}
+							axisLine={false}
+							tickFormatter={(idx) => chartData[Math.round(idx)]?.formattedTime || ""}
+							interval="preserveStartEnd"
+						/>
+						<YAxis
+							tick={{ fontSize: 11, className: "fill-zinc-500" }}
+							tickLine={false}
+							axisLine={false}
+							width={50}
+							tickFormatter={(v) => formatCurrencyNumber(v)}
+							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
+							allowDataOverflow={false}
+						/>
+						<Tooltip
+							content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />}
+							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+						/>
+						{displayProviders.map((provider, idx) => (
+							<Bar
+								isAnimationActive={false}
+								key={provider}
+								dataKey={`provider_${idx}`}
+								stackId="cost"
+								fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+								fillOpacity={0.9}
+								barSize={30}
+								radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
+							/>
+						))}
+					</BarChart>
+				) : (
+					<AreaChart {...commonProps}>
+						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
+						<XAxis
+							dataKey="index"
+							type="number"
+							domain={[-0.5, chartData.length - 0.5]}
+							tick={{ fontSize: 11, className: "fill-zinc-500" }}
+							tickLine={false}
+							axisLine={false}
+							tickFormatter={(idx) => chartData[Math.round(idx)]?.formattedTime || ""}
+							interval="preserveStartEnd"
+						/>
+						<YAxis
+							tick={{ fontSize: 11, className: "fill-zinc-500" }}
+							tickLine={false}
+							axisLine={false}
+							width={50}
+							tickFormatter={(v) => formatCost(v)}
+							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
+							allowDataOverflow={false}
+						/>
+						<Tooltip content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />} />
+						{displayProviders.map((provider, idx) => {
+							const color = provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
+							return (
+								<Area
+									isAnimationActive={false}
+									key={provider}
+									type="monotone"
+									dataKey={`provider_${idx}`}
+									stackId="1"
+									stroke={color}
+									fill={color}
+									fillOpacity={0.7}
+								/>
+							);
+						})}
+					</AreaChart>
+				)}
+			</ResponsiveContainer>
+		</ChartErrorBoundary>
+	);
+}
+
+export const ProviderCostChart = memo(ProviderCostChartImpl);

@@ -1422,7 +1422,7 @@ func (a *testAccount) GetKeysForProvider(ctx context.Context, providerKey schema
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewEnvVar(apiKey),
-			Models: []string{}, // Empty means all models
+			Models: schemas.WhiteList{"*"},
 			Weight: 1.0,
 		},
 	}, nil
@@ -1460,6 +1460,17 @@ func setupBifrost(t *testing.T) *bifrost.Bifrost {
 	return bifrostInstance
 }
 
+// noopPluginPipeline is a passthrough pipeline used in tests that don't need plugin hooks.
+type noopPluginPipeline struct{}
+
+func (n *noopPluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	return req, nil, 0
+}
+
+func (n *noopPluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	return mcpResp, bifrostErr
+}
+
 // setupMCPManager creates an MCP manager for testing
 func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mcp.MCPManager {
 	t.Helper()
@@ -1472,9 +1483,14 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 		clientConfigPtrs[i] = &clientConfigs[i]
 	}
 
-	// Create MCP config
+	// Create MCP config with a no-op plugin pipeline so that codemode tool calls
+	// work correctly even when no Bifrost instance is attached.
 	mcpConfig := &schemas.MCPConfig{
 		ClientConfigs: clientConfigPtrs,
+		PluginPipelineProvider: func() interface{} {
+			return &noopPluginPipeline{}
+		},
+		ReleasePluginPipeline: func(pipeline interface{}) {},
 	}
 
 	// Create Starlark CodeMode
@@ -1482,6 +1498,8 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 
 	// Create MCP manager - dependencies are injected automatically
 	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
+	// Construction no longer dials; connect the configured clients explicitly.
+	manager.ConnectConfiguredClients(context.Background())
 
 	// Cleanup
 	t.Cleanup(func() {
@@ -1984,10 +2002,10 @@ func AssertExecutionTimeUnder(t *testing.T, fn func(), maxDuration time.Duration
 func CreateTestContextWithMCPFilter(includeClients []string, includeTools []string) *schemas.BifrostContext {
 	baseCtx := context.Background()
 	if includeClients != nil {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, includeClients)
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, includeClients)
 	}
 	if includeTools != nil {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, includeTools)
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, includeTools)
 	}
 	return schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 }

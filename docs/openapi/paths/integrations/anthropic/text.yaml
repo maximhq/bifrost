@@ -8,7 +8,7 @@ complete:
       Creates a text completion using Anthropic's legacy Complete API.
       Supports streaming via SSE.
     tags:
-      - Anthropic Integration
+    - Anthropic Integration
     requestBody:
       required: true
       content:
@@ -37,3 +37,8 @@ complete:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

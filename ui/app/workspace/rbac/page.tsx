@@ -1,12 +1,10 @@
-"use client"
-
-import { useRouter } from "next/navigation"
-import { useEffect } from "react"
+import { useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 
 export default function RBACRedirectPage() {
-  const router = useRouter()
-  useEffect(() => {
-    router.replace("/workspace/governance/rbac")
-  }, [router])
-  return null
+	const navigate = useNavigate();
+	useEffect(() => {
+		navigate({ to: "/workspace/governance/rbac", replace: true });
+	}, [navigate]);
+	return null;
 }

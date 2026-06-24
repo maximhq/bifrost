@@ -37,6 +37,72 @@ Replicate is architecturally different from other providers in Bifrost. It uses 
 **List Models** returns account-specific deployments only, not all public models on Replicate.
 </Note>
 
+## Setup & Configuration
+
+Configure Replicate as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Replicate provider dashboard](../../media/provider-dashboard-replicate.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Replicate** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Replicate**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.REPLICATE_API_TOKEN`).
+5. Leave **Use Deployments Endpoint** disabled for public model/version requests, or enable it for deployment routes.
+6. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+7. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "replicate": {
+      "keys": [
+        {
+          "name": "replicate-key-1",
+          "value": "env.REPLICATE_API_TOKEN",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0,
+          "replicate_key_config": {
+            "use_deployments_endpoint": false
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Replicate:
+    return []schemas.Key{{
+        Name:   "replicate-key-1",
+        Value:  *schemas.NewEnvVar("env.REPLICATE_API_TOKEN"),
+        Models: []string{"*"},
+        Weight: 1.0,
+        ReplicateKeyConfig: &schemas.ReplicateKeyConfig{
+            UseDeploymentsEndpoint: false,
+        },
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Set `replicate_key_config.use_deployments_endpoint` to `true` when requests should target `/v1/deployments/{owner}/{deployment}/predictions`. Use key `aliases` to map a Bifrost model name to the Replicate deployment path.
+
 ---
 
 # Model Identification
@@ -76,12 +142,20 @@ Configure deployed models in the Replicate key configuration. Deployments map cu
 ```json
 {
   "provider": "replicate",
-  "value": "your-api-key",
-  "replicate_key_config": {
-    "deployments": {
-      "my-model": "owner/my-deployment-name"
+  "keys": [
+    {
+      "name": "replicate-deployments",
+      "value": "env.REPLICATE_API_TOKEN",
+      "models": ["my-model"],
+      "weight": 1.0,
+      "aliases": {
+        "my-model": "owner/my-deployment-name"
+      },
+      "replicate_key_config": {
+        "use_deployments_endpoint": true
+      }
     }
-  }
+  ]
 }
 ```
 
@@ -743,7 +817,7 @@ Each Replicate model has unique parameters. To find available parameters:
 **Extra Params**: Pass model-specific fields directly in the JSON body (unrecognized fields become `extra_params` and are flattened into the prediction input). `webhook` and `webhook_events_filter` are extracted automatically.
 
 
-**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) — `id`, `status`, `model`, `videos[]`
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) - `id`, `status`, `model`, `videos[]`
 
 **Job Statuses**: `queued` (starting) → `in_progress` (processing) → `completed` / `failed`
 

@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/cli/internal/apis"
@@ -20,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/cli/internal/secrets"
 	"github.com/maximhq/bifrost/cli/internal/ui/logo"
 	"github.com/maximhq/bifrost/cli/internal/ui/tui"
+	"github.com/maximhq/bifrost/cli/internal/update"
 	"golang.org/x/term"
 )
 
@@ -60,12 +60,15 @@ func New(in io.Reader, out, errOut io.Writer, opts Options) *App {
 	}
 }
 
-// Run starts the interactive TUI loop. It loads config and state, then repeatedly
-// presents the chooser and launches the selected harness until the user quits.
+// Run starts the interactive TUI loop. It loads config and state, then presents
+// the chooser, launches harnesses in a tabbed multiplexer, and loops back when
+// all tabs are closed.
 func (a *App) Run(ctx context.Context) error {
 	if err := a.loadStateAndConfig(); err != nil {
 		return err
 	}
+
+	updateCh := update.CheckInBackground(a.opts.Version, a.statePath)
 
 	activeProfile := a.getOrCreateProfile()
 	if activeProfile == nil {
@@ -106,120 +109,211 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	worktree := strings.TrimSpace(a.opts.Worktree)
+	var updateVersion string
+
+	// chooseAndPrepare runs the chooser TUI, handles installation flows,
+	// persists state, and returns a launch spec. Loops internally until
+	// the user picks a valid harness or quits.
+	chooseAndPrepare := func(_ context.Context, notify func(runtime.TabNoticeLevel, string), tabBarLine func() string, stdinReader io.Reader, msg string, isAfterSession bool, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
+		seedApplied := false
+		for {
+			harnesses := a.harnessOptions()
+			baseURL := activeProfile.BaseURL
+			currentVK := vk
+			currentSelection := selection
+			currentWorktree := worktree
+			if seed != nil && !seedApplied {
+				baseURL = seed.BaseURL
+				currentVK = seed.VirtualKey
+				currentSelection.Harness = seed.Harness.ID
+				currentSelection.Model = seed.Model
+				currentWorktree = seed.Worktree
+				seedApplied = true
+			}
+
+			choice, err := tui.RunChooser(tui.ChooserConfig{
+				Version:       a.opts.Version,
+				Commit:        a.opts.Commit,
+				ConfigSrc:     a.configSource,
+				Message:       msg,
+				UpdateVersion: updateVersion,
+				BaseURL:       baseURL,
+				VirtualKey:    currentVK,
+				Harness:       currentSelection.Harness,
+				Model:         currentSelection.Model,
+				Worktree:      currentWorktree,
+				AfterSession:  isAfterSession,
+				ReservedRows:  1, // bottom tab bar
+				Harnesses:     harnesses,
+				TabBarLine:    tabBarLine,
+				FetchModels:   a.apiClient.ListModels,
+				Input:         stdinReader,
+				Notify: func(message string, isError bool) {
+					level := runtime.TabNoticeInfo
+					if isError {
+						level = runtime.TabNoticeError
+					}
+					if notify != nil {
+						notify(level, message)
+					}
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+			if choice.BackToTabs {
+				return nil, runtime.ErrBackToTabs
+			}
+			if choice.UpdateRequested {
+				return nil, runtime.ErrUpdateRequested
+			}
+			if choice.Quit {
+				return nil, nil
+			}
+
+			activeProfile.BaseURL = strings.TrimSpace(choice.BaseURL)
+			selection.Harness = strings.TrimSpace(choice.Harness)
+			selection.Model = strings.TrimSpace(choice.Model)
+			vk = strings.TrimSpace(choice.VirtualKey)
+			worktree = strings.TrimSpace(choice.Worktree)
+
+			h, ok := harness.Get(selection.Harness)
+			if !ok {
+				msg = "invalid harness selected"
+				isAfterSession = false
+				continue
+			}
+
+			// Handle install request
+			if choice.InstallHarness {
+				cmd, args := installer.InstallCommand(h)
+				shouldInstall, err := tui.RunConfirmInstall(a.bootHeader, h.Label, cmd+" "+strings.Join(args, " "))
+				if err != nil {
+					return nil, err
+				}
+				if !shouldInstall {
+					msg = h.Label + " installation skipped"
+					continue
+				}
+				if err := installer.EnsureNPM(); err != nil {
+					msg = err.Error()
+					continue
+				}
+				fmt.Fprintf(a.out, "\nInstalling %s...\n", h.Label)
+				if err := installer.RunInstall(ctx, a.out, a.errOut, h); err != nil {
+					msg = err.Error()
+					continue
+				}
+				if !installer.IsInstalled(h) {
+					msg = h.Label + " installed but binary still not in PATH"
+					continue
+				}
+				msg = h.Label + " installed successfully"
+				continue
+			}
+
+			// Save virtual key
+			if err := secrets.SetVirtualKey(activeProfile.ID, vk); err != nil {
+				fmt.Fprintf(a.errOut, "warning: %v\n", err)
+			}
+
+			// Persist state
+			a.state.LastProfileID = activeProfile.ID
+			a.state.Selections[activeProfile.ID] = selection
+			if err := config.SaveState(a.statePath, a.state); err != nil {
+				fmt.Fprintf(a.errOut, "warning: %v\n", err)
+			}
+
+			// Persist config
+			if a.cfgFile == nil {
+				a.cfgFile = &config.FileConfig{}
+			}
+			a.cfgFile.BaseURL = activeProfile.BaseURL
+			a.cfgFile.DefaultHarness = selection.Harness
+			a.cfgFile.DefaultModel = selection.Model
+			if a.configPath != "" {
+				if err := config.SaveConfig(a.configPath, a.cfgFile); err != nil {
+					fmt.Fprintf(a.errOut, "warning: save config: %v\n", err)
+				}
+			}
+
+			mcp.AttachBestEffort(ctx, a.out, a.errOut, h, activeProfile.BaseURL, vk)
+
+			return &runtime.LaunchSpec{
+				Harness:    h,
+				BaseURL:    activeProfile.BaseURL,
+				VirtualKey: vk,
+				Model:      selection.Model,
+				Worktree:   worktree,
+			}, nil
+		}
+	}
+
+	// Main loop — each iteration enters tabbed mode (Home → chooser → tabs).
+	// When all tabs close, we loop back.
 	message := ""
 	afterSession := false
-	var rawState *term.State
-	for {
-		harnesses := a.harnessOptions()
-		if afterSession {
-			if rawState != nil {
-				term.Restore(int(os.Stdin.Fd()), rawState)
-				rawState = nil
-			}
-			signal.Reset(syscall.SIGINT)
+
+	// Wait for update check to complete (up to 4s — the HTTP request has a 3s timeout).
+	select {
+	case result := <-updateCh:
+		if result != nil && result.UpdateAvailable {
+			updateVersion = result.LatestVersion
+			a.state.LastVersionCheck = result.CheckedAt
+			a.state.LastKnownVersion = result.LatestVersion
+			_ = config.SaveState(a.statePath, a.state) // best-effort
 		}
-		choice, err := tui.RunChooser(tui.ChooserConfig{
-			Version:      a.opts.Version,
-			Commit:       a.opts.Commit,
-			ConfigSrc:    a.configSource,
-			Message:      message,
-			BaseURL:      activeProfile.BaseURL,
-			VirtualKey:   vk,
-			Harness:      selection.Harness,
-			Model:        selection.Model,
-			Worktree:     worktree,
-			AfterSession: afterSession,
-			Harnesses:   harnesses,
-			FetchModels: a.apiClient.ListModels,
-		})
+		updateCh = nil
+	case <-time.After(4 * time.Second):
+	}
+
+	if updateVersion != "" {
+		shouldUpdate, err := tui.RunConfirmUpdateIO(a.bootHeader, updateVersion, a.in, a.out)
 		if err != nil {
 			return err
 		}
-		if choice.Quit {
+		if shouldUpdate {
+			if err := update.RunSelfUpdate(a.opts.Version); err != nil {
+				return fmt.Errorf("update failed: %w", err)
+			}
+			execPath, err := os.Executable()
+			if err != nil {
+				fmt.Fprintf(a.out, "Updated successfully. Please restart bifrost.\n")
+				return nil
+			}
+			return reexecSelf(execPath, os.Args, os.Environ())
+		}
+		updateVersion = ""
+	}
+
+	for {
+		// Enter tabbed mode — draws chrome, opens chooser, runs tabs.
+		err = runtime.RunTabbed(ctx, a.out, a.errOut, a.opts.Version, updateVersion, func(tabCtx context.Context, notify func(runtime.TabNoticeLevel, string), tabBarLine func() string, stdinReader io.Reader, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
+			return chooseAndPrepare(tabCtx, notify, tabBarLine, stdinReader, message, afterSession, seed)
+		})
+
+		if errors.Is(err, runtime.ErrUpdateRequested) {
+			if err := update.RunSelfUpdate(a.opts.Version); err != nil {
+				return fmt.Errorf("update failed: %w", err)
+			}
+			// Re-exec with the updated binary.
+			execPath, err := os.Executable()
+			if err != nil {
+				fmt.Fprintf(a.out, "Updated successfully. Please restart bifrost.\n")
+				return nil
+			}
+			return reexecSelf(execPath, os.Args, os.Environ())
+		}
+
+		if errors.Is(err, runtime.ErrQuit) {
 			return nil
 		}
-
-		activeProfile.BaseURL = strings.TrimSpace(choice.BaseURL)
-		selection.Harness = strings.TrimSpace(choice.Harness)
-		selection.Model = strings.TrimSpace(choice.Model)
-		vk = strings.TrimSpace(choice.VirtualKey)
-		worktree = strings.TrimSpace(choice.Worktree)
-
-		h, ok := harness.Get(selection.Harness)
-		if !ok {
-			message = "invalid harness selected"
-			continue
-		}
-
-		// Handle install request — chooser exits early when user picks an uninstalled harness
-		if choice.InstallHarness {
-			cmd, args := installer.InstallCommand(h)
-			shouldInstall, err := tui.RunConfirmInstall(a.bootHeader, h.Label, cmd+" "+strings.Join(args, " "))
-			if err != nil {
-				return err
-			}
-			if !shouldInstall {
-				message = h.Label + " installation skipped"
-				continue
-			}
-			if err := installer.EnsureNPM(); err != nil {
-				message = err.Error()
-				continue
-			}
-			fmt.Fprintf(a.out, "\nInstalling %s...\n", h.Label)
-			if err := installer.RunInstall(ctx, a.out, a.errOut, h); err != nil {
-				message = err.Error()
-				continue
-			}
-			if !installer.IsInstalled(h) {
-				message = h.Label + " installed but binary still not in PATH"
-				continue
-			}
-			message = h.Label + " installed successfully"
-			continue // re-enter chooser so user can proceed to model selection
-		}
-
-		if err := secrets.SetVirtualKey(activeProfile.ID, vk); err != nil {
-			fmt.Fprintf(a.errOut, "warning: %v\n", err)
-		}
-
-		a.state.LastProfileID = activeProfile.ID
-		a.state.Selections[activeProfile.ID] = selection
-		if err := config.SaveState(a.statePath, a.state); err != nil {
-			fmt.Fprintf(a.errOut, "warning: %v\n", err)
-		}
-
-		// Persist selections to config file
-		if a.cfgFile == nil {
-			a.cfgFile = &config.FileConfig{}
-		}
-		a.cfgFile.BaseURL = activeProfile.BaseURL
-		a.cfgFile.DefaultHarness = selection.Harness
-		a.cfgFile.DefaultModel = selection.Model
-		if a.configPath != "" {
-			if err := config.SaveConfig(a.configPath, a.cfgFile); err != nil {
-				fmt.Fprintf(a.errOut, "warning: save config: %v\n", err)
-			}
-		}
-
-		mcp.AttachBestEffort(ctx, a.out, a.errOut, h, activeProfile.BaseURL, vk)
-
-		err = runtime.RunInteractive(ctx, a.out, a.errOut, runtime.LaunchSpec{
-			Harness:    h,
-			BaseURL:    activeProfile.BaseURL,
-			VirtualKey: vk,
-			Model:      selection.Model,
-			Worktree:   worktree,
-		})
-		afterSession = true
-		signal.Ignore(syscall.SIGINT)
-		rawState, _ = term.MakeRaw(int(os.Stdin.Fd()))
-		ts := time.Now().Format("15:04:05")
 		if err != nil {
-			message = fmt.Sprintf("[%s] harness exited with error: %v", ts, err)
-		} else {
-			message = fmt.Sprintf("[%s] harness exited", ts)
+			return err
 		}
+
+		message = ""
+		afterSession = true
 	}
 }
 
@@ -300,20 +394,28 @@ func (a *App) getOrCreateProfile() *config.Profile {
 	return &a.state.Profiles[len(a.state.Profiles)-1]
 }
 
-// harnessOptions responds with available harness options with states like installed/not installed etc
+// harnessOptions responds with available harness options with states like installed/not installed etc.
+// Version detection runs concurrently across all harnesses to avoid serial subprocess waits.
 func (a *App) harnessOptions() []tui.HarnessOption {
 	ids := harness.IDs()
-	out := make([]tui.HarnessOption, 0, len(ids))
-	for _, id := range ids {
+	out := make([]tui.HarnessOption, len(ids))
+
+	var wg sync.WaitGroup
+	for i, id := range ids {
 		h, _ := harness.Get(id)
-		out = append(out, tui.HarnessOption{
+		out[i] = tui.HarnessOption{
 			ID:                    h.ID,
 			Label:                 h.Label,
-			Version:               harness.DetectVersion(h),
-			Installed:             installer.IsInstalled(h),
 			SupportsWorktree:      h.SupportsWorktree,
 			SupportsModelOverride: h.RunArgsForMod != nil || h.ModelEnv != "" || h.PreLaunch != nil,
-		})
+		}
+		wg.Add(1)
+		go func(idx int, h harness.Harness) {
+			defer wg.Done()
+			out[idx].Installed = installer.IsInstalled(h)
+			out[idx].Version = harness.DetectVersion(h)
+		}(i, h)
 	}
+	wg.Wait()
 	return out
 }

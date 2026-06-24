@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -80,7 +79,7 @@ func (request *BedrockTextCompletionRequest) ToBifrostTextCompletionRequest(ctx 
 		prompt = strings.Join(parts, "\n\n")
 	}
 
-	provider, model := schemas.ParseModelString(request.ModelID, utils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(request.ModelID, "")
 
 	bifrostReq := &schemas.BifrostTextCompletionRequest{
 		Provider: provider,
@@ -126,10 +125,7 @@ func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() 
 				FinishReason: &response.StopReason,
 			},
 		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.TextCompletionRequest,
-			Provider:    schemas.Bedrock,
-		},
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 }
 
@@ -151,12 +147,9 @@ func (response *BedrockMistralTextResponse) ToBifrostTextCompletionResponse() *s
 	}
 
 	return &schemas.BifrostTextCompletionResponse{
-		Object:  "text_completion",
-		Choices: choices,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.TextCompletionRequest,
-			Provider:    schemas.Bedrock,
-		},
+		Object:      "text_completion",
+		Choices:     choices,
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 }
 
@@ -167,11 +160,14 @@ func ToBedrockTextCompletionResponse(bifrostResp *schemas.BifrostTextCompletionR
 		return nil
 	}
 
-	// Determine response format based on model
-	// Use ModelRequested from ExtraFields if available, otherwise use Model
+	// Determine response format based on resolved model identity.
+	// Use ResolvedModelUsed (actual provider ID) for accurate family detection,
+	// falling back to bifrostResp.Model, then OriginalModelRequested as a last resort.
 	model := bifrostResp.Model
-	if bifrostResp.ExtraFields.ModelRequested != "" {
-		model = bifrostResp.ExtraFields.ModelRequested
+	if bifrostResp.ExtraFields.ResolvedModelUsed != "" {
+		model = bifrostResp.ExtraFields.ResolvedModelUsed
+	} else if model == "" && bifrostResp.ExtraFields.OriginalModelRequested != "" {
+		model = bifrostResp.ExtraFields.OriginalModelRequested
 	}
 
 	if strings.Contains(model, "anthropic.") || strings.Contains(model, "claude") {

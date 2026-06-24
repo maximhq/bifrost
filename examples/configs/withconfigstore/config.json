@@ -22,21 +22,9 @@
         "provider_configs": [
           {
             "provider": "azure",
-            "keys":[{
-              "key_id":"8c52039e-38c6-48b2-8016-0bd884b7befb",
-              "value":"abc",
-              "name":"azure-key-1",
-              "weight": 0.5,
-              "azure_key_config":{
-                "endpoint":"https://api.azure.com",
-                "api_version":"2024-09-01",
-                "deployments":{
-                  "gpt-4.1-2025-04-14":"gpt-4.1-2025-04-14",
-                  "gpt-4.1-mini-2025-04-14":"gpt-4.1-mini-2025-04-14",
-                  "gpt-4.1-nano-2025-04-14":"gpt-4.1-nano-2025-04-14"
-                }
-              }
-            }],
+            "key_ids": [
+              "*"
+            ],
             "allowed_models": [
               "gpt-4.1-2025-04-14",
               "gpt-4.1-mini-2025-04-14",
@@ -62,7 +50,8 @@
             ],
             "weight": 0.5
           }
-        ]
+        ],
+        "name": "vk-gpt"
       }
     ]
   }

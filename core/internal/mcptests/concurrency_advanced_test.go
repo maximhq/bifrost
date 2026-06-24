@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -163,7 +162,7 @@ func TestConcurrent_AddRemoveClients(t *testing.T) {
 				ToolsToAutoExecute: []string{},
 			}
 
-			err := manager.AddClient(&clientConfig)
+			err := manager.AddClient(context.Background(), &clientConfig)
 			if err != nil {
 				// InProcess connections without a server instance will fail
 				// This is expected - we're just testing that the operations are concurrent and don't deadlock
@@ -533,14 +532,14 @@ func TestConcurrent_FilteringChanges(t *testing.T) {
 			if id%2 == 0 {
 				// Even: allow all tools
 				baseCtx := context.Background()
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, []string{"*"})
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, []string{"bifrostInternal-*"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, []string{"*"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, []string{"bifrostInternal-*"})
 				ctx = schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 			} else {
 				// Odd: allow only echo
 				baseCtx := context.Background()
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, []string{"*"})
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, []string{"bifrostInternal-echo"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, []string{"*"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, []string{"bifrostInternal-echo"})
 				ctx = schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 			}
 

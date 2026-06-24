@@ -15,8 +15,10 @@ type SerialListHelper struct {
 
 // NewSerialListHelper creates a new SerialListHelper from the provided keys and encoded cursor.
 // If the cursor is empty or nil, pagination starts from the first key.
-// If the cursor is invalid, an error is returned.
-func NewSerialListHelper(keys []schemas.Key, encodedCursor *string, logger schemas.Logger) (*SerialListHelper, error) {
+// If allowNativeCursorFallback is true and there is exactly one key, an unrecognised cursor is
+// passed through as a native provider cursor so the upstream API can handle it gracefully.
+// Otherwise an invalid cursor returns an error.
+func NewSerialListHelper(keys []schemas.Key, encodedCursor *string, logger schemas.Logger, allowNativeCursorFallback bool) (*SerialListHelper, error) {
 	helper := &SerialListHelper{
 		Keys:   keys,
 		Logger: logger,
@@ -25,9 +27,15 @@ func NewSerialListHelper(keys []schemas.Key, encodedCursor *string, logger schem
 	if encodedCursor != nil && *encodedCursor != "" {
 		cursor, err := schemas.DecodeSerialCursor(*encodedCursor)
 		if err != nil {
-			return nil, err
+			if allowNativeCursorFallback && len(keys) == 1 {
+				// Single-key: treat as a native provider cursor so the upstream API handles it.
+				helper.Cursor = schemas.NewSerialCursor(0, *encodedCursor)
+			} else {
+				return nil, err
+			}
+		} else {
+			helper.Cursor = cursor
 		}
-		helper.Cursor = cursor
 	}
 
 	return helper, nil

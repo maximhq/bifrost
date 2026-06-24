@@ -58,6 +58,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS based on container cgroup limits
 
@@ -65,6 +66,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/profiling"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
 )
 
@@ -136,6 +138,9 @@ func main() {
 
 `, versionLine)
 
+	// Start profiling
+	pprofServer := profiling.Start()
+
 	// Configure logger from flags
 	logger.SetOutputType(schemas.LoggerOutputType(server.LogOutputStyle))
 	logger.SetLevel(schemas.LogLevel(server.LogLevel))
@@ -145,15 +150,27 @@ func main() {
 	handlers.SetLogger(logger)
 
 	ctx := context.Background()
+	t := time.Now()
 	err := server.Bootstrap(ctx)
 	if err != nil {
 		logger.Error("failed to bootstrap server: %v", err)
 		os.Exit(1)
 	}
+	logger.Info("Time spent in Bifrost server bootstrap %d ms", time.Since(t).Milliseconds())
 	err = server.Start()
 	if err != nil {
 		logger.Error("failed to start server: %v", err)
 		os.Exit(1)
+	}
+	// server.Start() blocks until SIGINT/SIGTERM triggers graceful shutdown, so
+	// by here the main server is draining/done. Shut the pprof server down too
+	// to let any in-flight profile requests finish instead of being killed.
+	if pprofServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("pprof server shutdown error: %v", err)
+		}
 	}
 	logger.Info("🏁 server stopped")
 }

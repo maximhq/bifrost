@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // CohereResponsesStreamState tracks state during streaming conversion for responses API
@@ -19,6 +20,7 @@ type CohereResponsesStreamState struct {
 	ItemIDs                       map[int]string // Maps output_index to item ID for stable IDs
 	ReasoningContentIndices       map[int]bool   // Tracks which content indices are reasoning blocks
 	AnnotationIndexToContentIndex map[int]int    // Maps annotation index to content index for citation pairing
+	TextBuffers                   map[int]*strings.Builder // Maps output_index to accumulated text content for done events
 	CurrentOutputIndex            int            // Current output index counter
 	MessageID                     *string        // Message ID from message_start
 	Model                         *string        // Model name from message_start
@@ -38,6 +40,7 @@ var cohereResponsesStreamStatePool = sync.Pool{
 			ItemIDs:                       make(map[int]string),
 			ReasoningContentIndices:       make(map[int]bool),
 			AnnotationIndexToContentIndex: make(map[int]int),
+			TextBuffers:                   make(map[int]*strings.Builder),
 			CurrentOutputIndex:            0,
 			CreatedAt:                     int(time.Now().Unix()),
 			HasEmittedCreated:             false,
@@ -81,6 +84,11 @@ func acquireCohereResponsesStreamState() *CohereResponsesStreamState {
 		state.AnnotationIndexToContentIndex = make(map[int]int)
 	} else {
 		clear(state.AnnotationIndexToContentIndex)
+	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.TextBuffers)
 	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
@@ -133,6 +141,11 @@ func (state *CohereResponsesStreamState) flush() {
 		state.AnnotationIndexToContentIndex = make(map[int]int)
 	} else {
 		clear(state.AnnotationIndexToContentIndex)
+	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.TextBuffers)
 	}
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -257,23 +270,27 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 		if state.ToolPlanOutputIndex != nil {
 			outputIndex := *state.ToolPlanOutputIndex
 			itemID := state.ItemIDs[outputIndex]
+			accText := ""
+			if buf := state.TextBuffers[outputIndex]; buf != nil {
+				accText = buf.String()
+			}
 
-			// Emit output_text.done (without accumulated text, just the event)
-			emptyText := ""
+			// Emit output_text.done with accumulated text
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   schemas.Ptr(0),
 				ItemID:         &itemID,
-				Text:           &emptyText,
+				Text:           &accText,
 				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
-			// Emit content_part.done
+			// Emit content_part.done with accumulated text
+			partText := accText
 			part := &schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
+				Text: &partText,
 				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -288,7 +305,8 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				Part:           part,
 			})
 
-			// Emit output_item.done
+			// Emit output_item.done with content blocks
+			itemText := accText
 			statusCompleted := "completed"
 			messageType := schemas.ResponsesMessageTypeMessage
 			role := schemas.ResponsesInputMessageRoleAssistant
@@ -297,7 +315,16 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				Role:   &role,
 				Status: &statusCompleted,
 				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &itemText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							},
+						},
+					},
 				},
 			}
 			if itemID != "" {
@@ -310,6 +337,10 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				ContentIndex:   schemas.Ptr(0),
 				Item:           doneItem,
 			})
+			delete(state.TextBuffers, outputIndex)
+			if mapped, ok := state.ContentIndexToOutputIndex[0]; ok && mapped == outputIndex {
+				delete(state.ContentIndexToOutputIndex, 0)
+			}
 			state.ToolPlanOutputIndex = nil // Mark as closed
 		}
 
@@ -426,6 +457,12 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 
 			// Handle text content delta
 			if chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil && chunk.Delta.Message.Content.CohereStreamContentObject != nil && chunk.Delta.Message.Content.CohereStreamContentObject.Text != nil && *chunk.Delta.Message.Content.CohereStreamContentObject.Text != "" {
+				// Accumulate text for done events
+				if state.TextBuffers[outputIndex] == nil {
+					state.TextBuffers[outputIndex] = &strings.Builder{}
+				}
+				state.TextBuffers[outputIndex].WriteString(*chunk.Delta.Message.Content.CohereStreamContentObject.Text)
+
 				// Emit output_text.delta (not reasoning_summary_text.delta for regular text)
 				itemID := state.ItemIDs[outputIndex]
 				response := &schemas.BifrostResponsesStreamResponse{
@@ -468,6 +505,12 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 			var responses []*schemas.BifrostResponsesStreamResponse
 			isReasoning := state.ReasoningContentIndices[*chunk.Index]
 
+			// Grab accumulated text up front (empty string for reasoning blocks)
+			accText := ""
+			if buf := state.TextBuffers[outputIndex]; buf != nil {
+				accText = buf.String()
+			}
+
 			// Check if this content index is a reasoning block
 			if isReasoning {
 				// Emit reasoning_summary_text.done (reasoning equivalent of output_text.done)
@@ -504,22 +547,22 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				// Clear the reasoning content index tracking
 				delete(state.ReasoningContentIndices, *chunk.Index)
 			} else {
-				// Regular text block - emit output_text.done (without accumulated text, just the event)
-				emptyText := ""
+				// Regular text block - emit output_text.done with accumulated text
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					ItemID:         &itemID,
-					Text:           &emptyText,
+					Text:           &accText,
 					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 				})
 
-				// Emit content_part.done
+				// Emit content_part.done with accumulated text
+				partText := accText
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeText,
-					Text: &emptyText,
+					Text: &partText,
 					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -533,6 +576,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 					ItemID:         &itemID,
 					Part:           part,
 				})
+				delete(state.TextBuffers, outputIndex)
 			}
 
 			// Emit output_item.done for all content blocks (text, reasoning, etc.)
@@ -550,6 +594,20 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 					},
 				}
 			} else {
+				contentBlocks := []schemas.ResponsesMessageContentBlock{}
+				if accText != "" {
+					itemText := accText
+					contentBlocks = []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &itemText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							},
+						},
+					}
+				}
 				messageType := schemas.ResponsesMessageTypeMessage
 				role := schemas.ResponsesInputMessageRoleAssistant
 				doneItem = &schemas.ResponsesMessage{
@@ -557,7 +615,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 					Role:   &role,
 					Status: &statusCompleted,
 					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+						ContentBlocks: contentBlocks,
 					},
 				}
 			}
@@ -639,6 +697,12 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				})
 			}
 
+			// Accumulate tool plan text for done events
+			if state.TextBuffers[outputIndex] == nil {
+				state.TextBuffers[outputIndex] = &strings.Builder{}
+			}
+			state.TextBuffers[outputIndex].WriteString(*chunk.Delta.Message.ToolPlan)
+
 			// Emit output_text.delta (not reasoning_summary_text.delta)
 			itemID := state.ItemIDs[outputIndex]
 			response := &schemas.BifrostResponsesStreamResponse{
@@ -662,23 +726,27 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 		if state.ToolPlanOutputIndex != nil {
 			outputIndex := *state.ToolPlanOutputIndex
 			itemID := state.ItemIDs[outputIndex]
+			accText := ""
+			if buf := state.TextBuffers[outputIndex]; buf != nil {
+				accText = buf.String()
+			}
 
-			// Emit output_text.done (without accumulated text, just the event)
-			emptyText := ""
+			// Emit output_text.done with accumulated text
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   schemas.Ptr(0),
 				ItemID:         &itemID,
-				Text:           &emptyText,
+				Text:           &accText,
 				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
-			// Emit content_part.done
+			// Emit content_part.done with accumulated text
+			partText := accText
 			part := &schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
+				Text: &partText,
 				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -693,7 +761,8 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				Part:           part,
 			})
 
-			// Emit output_item.done
+			// Emit output_item.done with content blocks
+			itemText := accText
 			statusCompleted := "completed"
 			messageType := schemas.ResponsesMessageTypeMessage
 			role := schemas.ResponsesInputMessageRoleAssistant
@@ -702,7 +771,16 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				Role:   &role,
 				Status: &statusCompleted,
 				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &itemText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							},
+						},
+					},
 				},
 			}
 			if itemID != "" {
@@ -715,6 +793,10 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				ContentIndex:   schemas.Ptr(0),
 				Item:           doneItem,
 			})
+			delete(state.TextBuffers, outputIndex)
+			if mapped, ok := state.ContentIndexToOutputIndex[0]; ok && mapped == outputIndex {
+				delete(state.ContentIndexToOutputIndex, 0)
+			}
 			state.ToolPlanOutputIndex = nil // Mark as closed
 		}
 
@@ -878,16 +960,21 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				}
 
 				if source.Document != nil {
-					if title, ok := (*source.Document)["title"].(string); ok {
+					doc := []byte(*source.Document)
+					if t := providerUtils.GetJSONField(doc, "title"); t.Exists() && t.Type == gjson.String {
+						title := t.String()
 						annotation.Title = &title
 					}
-					if id, ok := (*source.Document)["id"].(string); ok && annotation.FileID == nil {
-						annotation.FileID = &id
+					if id := providerUtils.GetJSONField(doc, "id"); id.Exists() && id.Type == gjson.String && annotation.FileID == nil {
+						idStr := id.String()
+						annotation.FileID = &idStr
 					}
-					if snippet, ok := (*source.Document)["snippet"].(string); ok {
+					if s := providerUtils.GetJSONField(doc, "snippet"); s.Exists() && s.Type == gjson.String {
+						snippet := s.String()
 						annotation.Text = &snippet
 					}
-					if url, ok := (*source.Document)["url"].(string); ok {
+					if u := providerUtils.GetJSONField(doc, "url"); u.Exists() && u.Type == gjson.String {
+						url := u.String()
 						annotation.URL = &url
 					}
 				}
@@ -1068,7 +1155,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 				cohereReq.Thinking = thinking
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					maxOutputTokens := DefaultCompletionMaxTokens
+					maxOutputTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 					if bifrostReq.Params.MaxOutputTokens != nil {
 						maxOutputTokens = *bifrostReq.Params.MaxOutputTokens
 					}
@@ -1208,6 +1295,16 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 // ConvertBifrostMessagesToCohereMessages converts an array of Bifrost ResponsesMessage to Cohere message format
 // This is the main conversion method from Bifrost to Cohere - handles all message types and returns messages
 func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesMessage, params *schemas.ResponsesParameters) []CohereMessage {
+	// If only a single system / developer message is present, convert it to a user message.
+	// Cohere requires a user message to be present in the conversation.
+	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		msg := bifrostMessages[0]
+		msg.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
+		if cohereMsg := convertBifrostMessageToCohereMessage(&msg); cohereMsg != nil {
+			return []CohereMessage{*cohereMsg}
+		}
+	}
+
 	var cohereMessages []CohereMessage
 	var systemContent []string
 	var pendingReasoningContentBlocks []CohereContentBlock
@@ -1228,7 +1325,8 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 				role = string(*msg.Role)
 			}
 
-			if role == "system" {
+			// Cohere has no support for role "developer", so we treat it as "system"
+			if role == "system" || role == "developer" {
 				// Collect system messages separately for Cohere
 				systemMsgs := convertBifrostMessageToCohereSystemContent(&msg)
 				systemContent = append(systemContent, systemMsgs...)

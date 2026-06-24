@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 // deepCopyChatStreamDelta creates a deep copy of ChatStreamResponseChoiceDelta
@@ -92,6 +94,10 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 				copyName := *tc.Function.Name
 				copyTc.Function.Name = &copyName
 			}
+			// Deep copy ExtraContent (json.RawMessage is a []byte)
+			if len(tc.ExtraContent) > 0 {
+				copyTc.ExtraContent = append(json.RawMessage(nil), tc.ExtraContent...)
+			}
 			copy.ToolCalls[i] = copyTc
 		}
 	}
@@ -139,10 +145,11 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 
 	// Tool call argument builders keyed by delta index
 	type tcAccum struct {
-		id   *string
-		typ  *string
-		name *string
-		args strings.Builder
+		id           *string
+		typ          *string
+		name         *string
+		args         strings.Builder
+		extraContent json.RawMessage
 	}
 	var tcAccums map[uint16]*tcAccum
 
@@ -250,6 +257,10 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			if args := deltaToolCall.Function.Arguments; args != "" {
 				acc.args.WriteString(args)
 			}
+			if len(deltaToolCall.ExtraContent) > 0 {
+				acc.extraContent = make(json.RawMessage, len(deltaToolCall.ExtraContent))
+				copy(acc.extraContent, deltaToolCall.ExtraContent)
+			}
 		}
 	}
 
@@ -332,7 +343,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0, len(tcIndices))
 		for _, idx := range tcIndices {
 			acc := tcAccums[uint16(idx)]
-			toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+			tc := schemas.ChatAssistantMessageToolCall{
 				Index: uint16(idx),
 				ID:    acc.id,
 				Type:  acc.typ,
@@ -340,7 +351,11 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 					Name:      acc.name,
 					Arguments: acc.args.String(),
 				},
-			})
+			}
+			if len(acc.extraContent) > 0 {
+				tc.ExtraContent = acc.extraContent
+			}
+			toolCalls = append(toolCalls, tc)
 		}
 		completeMessage.ChatAssistantMessage.ToolCalls = toolCalls
 	}
@@ -414,6 +429,23 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// Merge LogProbs from all chunks
+	if len(accumulator.ChatStreamChunks) > 0 {
+		var mergedLogProbs *schemas.BifrostLogProbs
+		for _, chunk := range accumulator.ChatStreamChunks {
+			if chunk.LogProbs != nil {
+				if mergedLogProbs == nil {
+					mergedLogProbs = &schemas.BifrostLogProbs{}
+				}
+				mergedLogProbs.Content = append(mergedLogProbs.Content, chunk.LogProbs.Content...)
+				mergedLogProbs.Refusal = append(mergedLogProbs.Refusal, chunk.LogProbs.Refusal...)
+				if chunk.LogProbs.TextCompletionLogProb != nil {
+					mergedLogProbs.TextCompletionLogProb = chunk.LogProbs.TextCompletionLogProb
+				}
+			}
+		}
+		data.LogProbs = mergedLogProbs
+	}
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.ChatStreamChunks) > 0 {
 		// Sort chunks by chunk index
@@ -446,7 +478,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
-	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
+	requestType, provider, model, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
 	streamType := StreamTypeChat
 	if requestType == schemas.TextCompletionStreamRequest {
@@ -470,6 +502,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 					Content: deltaCopy,
 				}
 				chunk.FinishReason = choice.FinishReason
+				chunk.LogProbs = choice.LogProbs
 			}
 		}
 		// Extract token usage
@@ -477,9 +510,12 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			chunk.TokenUsage = result.TextCompletionResponse.Usage
 		}
 		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
+		if result.TextCompletionResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.TextCompletionResponse.ExtraFields.RawResponse))
+		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
+				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
@@ -492,6 +528,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				// Deep copy delta to prevent shared data mutation between chunks
 				chunk.Delta = deepCopyChatStreamDelta(choice.ChatStreamResponseChoice.Delta)
 				chunk.FinishReason = choice.FinishReason
+				chunk.LogProbs = choice.LogProbs
 			}
 		}
 		// Extract token usage
@@ -504,7 +541,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
+				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
@@ -532,27 +569,33 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			return nil, processErr
 		}
 		var rawRequest interface{}
-		if result != nil && result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
-			rawRequest = result.ChatResponse.ExtraFields.RawRequest
-		} else if result != nil && result.TextCompletionResponse != nil && result.TextCompletionResponse.ExtraFields.RawRequest != nil {
-			rawRequest = result.TextCompletionResponse.ExtraFields.RawRequest
+		if result != nil {
+			if result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ChatResponse.ExtraFields.RawRequest
+			} else if result.TextCompletionResponse != nil && result.TextCompletionResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.TextCompletionResponse.ExtraFields.RawRequest
+			}
 		}
 		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: streamType,
-			Provider:   provider,
-			Model:      model,
-			Data:       data,
-			RawRequest: &rawRequest,
+			RequestID:      requestID,
+			StreamType:     streamType,
+			Provider:       provider,
+			RequestedModel: model,
+			ResolvedModel:  resolvedModel,
+			RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
+			Data:           data,
+			RawRequest:     &rawRequest,
 		}, nil
 	}
 	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
 	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
-		RequestID:  requestID,
-		StreamType: streamType,
-		Provider:   provider,
-		Model:      model,
-		Data:       nil,
+		RequestID:      requestID,
+		StreamType:     streamType,
+		Provider:       provider,
+		RequestedModel: model,
+		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
+		Data:           nil,
 	}, nil
 }

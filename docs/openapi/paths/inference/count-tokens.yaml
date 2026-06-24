@@ -5,7 +5,7 @@ count-tokens:
     description: |
       Counts the number of tokens in the provided messages.
     tags:
-      - Count Tokens
+    - Count Tokens
     requestBody:
       required: true
       content:
@@ -23,3 +23,8 @@ count-tokens:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

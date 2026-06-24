@@ -1,15 +1,13 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
   "client": {
-    "allow_direct_keys": false,
     "allowed_origins": [
       "*"
     ],
     "disable_content_logging": false,
     "drop_excess_requests": false,
-    "enable_litellm_fallbacks": false,
     "enable_logging": true,
-    "enforce_governance_header": true,
+    "enforce_auth_on_inference": true,
     "initial_pool_size": 300,
     "log_retention_days": 365,
     "max_request_body_size_mb": 100
@@ -41,18 +39,16 @@
   "mcp": {
     "client_configs": [
       {
-        "id": "weather-mcp-server",
         "name": "WeatherService",
         "connection_type": "http",
-        "http_url": "http://localhost:8080/mcp",
-        "is_enabled": true
+        "client_id": "weather-mcp-server",
+        "connection_string": "http://localhost:8080/mcp"
       },
       {
-        "id": "calendar-mcp-server",
         "name": "CalendarService",
         "connection_type": "http",
-        "http_url": "http://localhost:8081/mcp",
-        "is_enabled": true
+        "client_id": "calendar-mcp-server",
+        "connection_string": "http://localhost:8081/mcp"
       }
     ]
   },
@@ -88,7 +84,13 @@
         "provider_configs": [
           {
             "provider": "openai",
-            "weight": 1.0
+            "weight": 1.0,
+            "allowed_models": [
+              "*"
+            ],
+            "key_ids": [
+              "*"
+            ]
           }
         ]
       },
@@ -109,7 +111,13 @@
         "provider_configs": [
           {
             "provider": "openai",
-            "weight": 1.0
+            "weight": 1.0,
+            "allowed_models": [
+              "*"
+            ],
+            "key_ids": [
+              "*"
+            ]
           }
         ]
       }
@@ -130,7 +138,10 @@
         {
           "name": "openai-primary",
           "value": "env.OPENAI_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": [
+            "*"
+          ]
         }
       ]
     }

@@ -7,10 +7,6 @@ on:
       - ".github/workflows/openapi-bundle.yml"
       - "docs/openapi/**"
       - "!docs/openapi/openapi.json"
-  pull_request:
-    paths:
-      - "docs/openapi/**"
-      - "!docs/openapi/openapi.json"
 
 permissions:
   contents: write
@@ -20,13 +16,22 @@ jobs:
     name: Bundle OpenAPI Spec
     runs-on: ubuntu-latest
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            files.pythonhosted.org:443
+            github.com:443
+            pypi.org:443
+
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -52,5 +57,5 @@ jobs:
             echo "No changes to commit"
             exit 0
           fi
-          git commit -m "chore: regenerate openapi.json --skip-pipeline"
+          git commit -m "chore: regenerate openapi.json --skip-ci"
           git push origin "$CURRENT_BRANCH"

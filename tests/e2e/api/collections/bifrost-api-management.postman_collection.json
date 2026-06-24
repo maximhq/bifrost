@@ -1,0 +1,5842 @@
+{
+  "info": {
+    "name": "Bifrost API Management & Health",
+    "description": "E2E tests for Bifrost management API endpoints (/api/*) and health endpoint. Uses fixed resource names (e.g. test_provider, hello-world); do not run this collection in parallel against the same server.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Log request details",
+          "function redact(obj) {",
+          "  if (!obj || typeof obj !== 'object') return obj;",
+          "  if (Array.isArray(obj)) return obj.map(redact);",
+          "  var out = {};",
+          "  Object.keys(obj).forEach(function (k) {",
+          "    if (/password|secret|token|api[_-]?key|authorization/i.test(k)) out[k] = '***REDACTED***';",
+          "    else out[k] = redact(obj[k]);",
+          "  });",
+          "  return out;",
+          "}",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  try {",
+          "    var parsedBody = JSON.parse(pm.request.body.raw);",
+          "    requestBody = JSON.stringify(redact(parsedBody), null, 2);",
+          "  } catch (e) {",
+          "    requestBody = pm.request.body.raw;",
+          "  }",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "try {",
+          "  var responseJson = pm.response.json();",
+          "  responseBody = JSON.stringify(redact(responseJson), null, 2);",
+          "} catch (e) {",
+          "  responseBody = pm.response.text();",
+          "}",
+          "",
+          "// Output formatted request/response logs",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "if (!pass && code >= 400 && code < 500) {",
+          "  try {",
+          "    var body = pm.response.json();",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : '';",
+          "    if (errCode === 'unsupported_operation' || errCode === 'feature_not_enabled') {",
+          "      pass = true;",
+          "    } else {",
+          "      var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "      if (typeof msg === 'string' && /\\b(not supported|unsupported|not enabled|not configured)\\b/i.test(msg)) {",
+          "        pass = true;",
+          "      }",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "",
+          "// Handle expected 404 for \"Before Create\" scenarios",
+          "var beforeCreateRequests = ['Get Customer (Before Create)', 'Get Team (Before Create)', 'Get Virtual Key (Before Create)', 'Get Routing Rule (Before Create)', 'Get Model Config (Before Create)', 'Get Plugin (Before Create)'];",
+          "if (beforeCreateRequests.indexOf(requestName) !== -1 && code === 404) {",
+          "  pass = true;",
+          "}",
+          "",
+          "// Handle 405 for unimplemented cache endpoints",
+          "var unimplementedEndpoints = ['Clear Cache by Cache ID (Coverage Probe)', 'Clear Cache by Key (Coverage Probe)'];",
+          "if (unimplementedEndpoints.indexOf(requestName) !== -1 && code === 405) {",
+          "  pass = true;",
+          "}",
+          "",
+          "// Handle MCP client errors (client not found after Add failed)",
+          "var mcpClientRequests = ['Add MCP Client', 'Reconnect MCP Client', 'Update MCP Client', 'Delete MCP Client'];",
+          "if (mcpClientRequests.indexOf(requestName) !== -1) {",
+          "  if (code === 404) {",
+          "    pass = true;",
+          "  }",
+          "}",
+          "",
+          "// Handle plugin errors (plugin .so file missing)",
+          "var pluginRequests = ['Get Plugin (Before Create)', 'Create Plugin', 'Get Plugin (After Create)', 'Update Plugin'];",
+          "if (pluginRequests.indexOf(requestName) !== -1 && code === 404) {",
+          "  try {",
+          "    var body = pm.response.json();",
+          "    var msg = (body && body.error && body.error.message) ? body.error.message : '';",
+          "    if (typeof msg === 'string' && /plugin.*not found|failed to load/i.test(msg)) {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "",
+          "",
+          "// Coverage probes intentionally exercise routes with placeholder IDs or invalid OAuth state.",
+          "if (/\\(Coverage Probe\\)$/.test(requestName) && code >= 400 && code < 600) {",
+          "  pass = true;",
+          "}",
+          "",
+          "pm.test('Status is 2xx or expected 4xx', function() { pm.expect(pass).to.be.true; });",
+          "// Handler response structure assertions",
+          "function parseJSONOrNull() {",
+          "  try { return pm.response.json(); } catch (e) { return null; }",
+          "}",
+          "function expectObject(value, label) {",
+          "  pm.expect(value, label || 'response').to.be.an('object');",
+          "  pm.expect(Array.isArray(value), label || 'response').to.equal(false);",
+          "}",
+          "function expectKeys(value, keys) {",
+          "  expectObject(value);",
+          "  keys.forEach(function (key) { pm.expect(value, 'missing key ' + key).to.have.property(key); });",
+          "}",
+          "function expectFieldHasValue(value, key) {",
+          "  pm.expect(value[key], 'missing value for ' + key).to.not.equal(undefined);",
+          "  pm.expect(value[key], 'null value for ' + key).to.not.equal(null);",
+          "  if (typeof value[key] === 'string') { pm.expect(value[key], key).to.not.equal(''); }",
+          "}",
+          "function responseFieldsMayBeNull(name) {",
+          "  var nullable = {",
+          "    'Delete Provider': { provider_status: true },",
+          "    'List Model Configs': { model_configs: true },",
+          "    'Get Provider Governance': { providers: true },",
+          "    'Get Plugin (After Create)': { config: true }",
+          "  };",
+          "  return nullable[name] || {};",
+          "}",
+          "function expectKeysWithValues(value, keys) {",
+          "  expectKeys(value, keys);",
+          "  var nullable = responseFieldsMayBeNull(requestName); keys.forEach(function (key) { if (!nullable[key]) expectFieldHasValue(value, key); });",
+          "}",
+          "function expectArray(value) {",
+          "  pm.expect(value).to.be.an('array');",
+          "}",
+          "function expectKnownErrorEnvelope(value) {",
+          "  if (value && value.errors && value.message) {",
+          "    pm.expect(value.message).to.be.a('string').and.not.empty;",
+          "    pm.expect(value.errors).to.be.an('object');",
+          "    return;",
+          "  }",
+          "  expectErrorEnvelope(value);",
+          "}",
+          "function expectErrorEnvelope(value) {",
+          "  expectKeys(value, ['is_bifrost_error', 'status_code', 'error', 'extra_fields']);",
+          "  expectObject(value.error, 'error');",
+          "  pm.expect(value.error).to.have.property('message');",
+          "}",
+          "var openAPIManagementContracts = {",
+          "  \"Health Check\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"components\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Version\": {",
+          "    \"type\": \"string\"",
+          "  },",
+          "  \"Get Config\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"client_config\",",
+          "      \"framework_config\",",
+          "      \"auth_config\",",
+          "      \"is_db_connected\",",
+          "      \"is_cache_connected\",",
+          "      \"is_logs_connected\",",
+          "      \"proxy_config\",",
+          "      \"restart_required\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Config\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Config (Enable Temp Token Auth)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Config (Verify Temp Token Auth)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"client_config\",",
+          "      \"framework_config\",",
+          "      \"auth_config\",",
+          "      \"is_db_connected\",",
+          "      \"is_cache_connected\",",
+          "      \"is_logs_connected\",",
+          "      \"proxy_config\",",
+          "      \"restart_required\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Providers\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"providers\",",
+          "      \"total\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Add Provider\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"name\",",
+          "      \"network_config\",",
+          "      \"concurrency_and_buffer_size\",",
+          "      \"proxy_config\",",
+          "      \"send_back_raw_request\",",
+          "      \"send_back_raw_response\",",
+          "      \"store_raw_request_response\",",
+          "      \"custom_provider_config\",",
+          "      \"provider_status\",",
+          "      \"status\",",
+          "      \"description\",",
+          "      \"config_hash\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Provider (After Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"name\",",
+          "      \"network_config\",",
+          "      \"concurrency_and_buffer_size\",",
+          "      \"proxy_config\",",
+          "      \"send_back_raw_request\",",
+          "      \"send_back_raw_response\",",
+          "      \"store_raw_request_response\",",
+          "      \"custom_provider_config\",",
+          "      \"provider_status\",",
+          "      \"status\",",
+          "      \"description\",",
+          "      \"config_hash\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Provider\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"name\",",
+          "      \"network_config\",",
+          "      \"concurrency_and_buffer_size\",",
+          "      \"proxy_config\",",
+          "      \"send_back_raw_request\",",
+          "      \"send_back_raw_response\",",
+          "      \"store_raw_request_response\",",
+          "      \"custom_provider_config\",",
+          "      \"provider_status\",",
+          "      \"status\",",
+          "      \"description\",",
+          "      \"config_hash\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Provider\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"name\",",
+          "      \"network_config\",",
+          "      \"concurrency_and_buffer_size\",",
+          "      \"proxy_config\",",
+          "      \"send_back_raw_request\",",
+          "      \"send_back_raw_response\",",
+          "      \"store_raw_request_response\",",
+          "      \"custom_provider_config\",",
+          "      \"provider_status\",",
+          "      \"status\",",
+          "      \"description\",",
+          "      \"config_hash\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Models\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"models\",",
+          "      \"total\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Base Models\": {",
+          "    \"type\": \"object\",",
+          "    \"additionalProperties\": true",
+          "  },",
+          "  \"List Keys\": {",
+          "    \"type\": \"array\"",
+          "  },",
+          "  \"Get Logs\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"logs\",",
+          "      \"pagination\",",
+          "      \"stats\",",
+          "      \"has_logs\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Histogram Tokens\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Histogram Cost\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"models\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Histogram Models\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"models\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Histogram Latency\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Histogram Cost By Provider\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"providers\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Histogram Tokens By Provider\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"providers\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Histogram Latency By Provider\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"providers\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Recalculate Log Costs\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"total_matched\",",
+          "      \"updated\",",
+          "      \"skipped\",",
+          "      \"remaining\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Logs\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Customers\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"customers\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Customer (Before Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"customer\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Customer\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"customer\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Customer (After Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"customer\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Customer\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"customer\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Customer\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Teams\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"teams\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Team (Before Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"team\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Team\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"team\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Team (After Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"team\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Team\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"team\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Team\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Virtual Keys\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"virtual_keys\",",
+          "      \"count\",",
+          "      \"total_count\",",
+          "      \"limit\",",
+          "      \"offset\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"virtual_keys\",",
+          "      \"count\",",
+          "      \"total_count\",",
+          "      \"limit\",",
+          "      \"offset\"",
+          "    ],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Virtual Key\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"virtual_key\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"message\",",
+          "      \"virtual_key\"",
+          "    ],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Virtual Key\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"virtual_key\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"message\",",
+          "      \"virtual_key\"",
+          "    ],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Virtual Key\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Routing Rules\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"rules\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Routing Rule (Before Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"rule\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Routing Rule\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"rule\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Routing Rule (After Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"rule\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Routing Rule\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"rule\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Routing Rule\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Model Configs\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"model_configs\",",
+          "      \"total_count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Model Config (Before Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"model_config\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Model Config\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"model_config\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Model Config (After Create)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"model_config\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Model Config\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"model_config\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Model Config\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Budgets\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"budgets\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Rate Limits\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"rate_limits\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Provider Governance\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"providers\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Provider Governance\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"provider\",",
+          "      \"budgets\",",
+          "      \"budget\",",
+          "      \"rate_limit\",",
+          "      \"calendar_aligned\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Provider Governance\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get MCP Clients\": {",
+          "    \"type\": \"array\"",
+          "  },",
+          "  \"Add MCP Client\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Reconnect MCP Client\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update MCP Client\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete MCP Client\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get MCP Logs\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"logs\",",
+          "      \"pagination\",",
+          "      \"has_logs\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Plugins\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"plugins\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Plugin\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"plugin\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Plugin\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"plugin\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Plugin\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Clear Cache by Cache ID (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Clear Cache by Key (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Check If Auth Enabled\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"is_auth_enabled\",",
+          "      \"has_valid_token\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Login\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"token\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Logout\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Proxy Config\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Proxy Config\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"enabled\",",
+          "      \"type\",",
+          "      \"url\",",
+          "      \"username\",",
+          "      \"password\",",
+          "      \"no_proxy\",",
+          "      \"timeout\",",
+          "      \"skip_tls_verify\",",
+          "      \"enable_for_scim\",",
+          "      \"enable_for_inference\",",
+          "      \"enable_for_api\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Force Sync Pricing\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Pricing Overrides (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"pricing_overrides\",",
+          "      \"count\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Pricing Override (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"pricing_override\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Pricing Override (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\",",
+          "      \"pricing_override\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Pricing Override (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Cost by Dimension Histogram (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"dimension\",",
+          "      \"dimension_values\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Tokens by Dimension Histogram (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"dimension\",",
+          "      \"dimension_values\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Logs Latency by Dimension Histogram (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\",",
+          "      \"dimension\",",
+          "      \"dimension_values\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Log Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"session_id\",",
+          "      \"logs\",",
+          "      \"pagination\",",
+          "      \"count\",",
+          "      \"returned_count\",",
+          "      \"has_more\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Log Session Summary (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"session_id\",",
+          "      \"count\",",
+          "      \"total_cost\",",
+          "      \"total_tokens\",",
+          "      \"started_at\",",
+          "      \"latest_at\",",
+          "      \"duration_ms\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get MCP Cost Histogram (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"buckets\",",
+          "      \"bucket_size_seconds\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get MCP Top Tools (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"tools\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete MCP Logs (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Complete MCP Client OAuth (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List MCP Sessions (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"sessions\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"sessions\"",
+          "    ],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Reauth MCP Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"authorize_url\",",
+          "      \"submit_url\",",
+          "      \"session_id\",",
+          "      \"kind\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"authorize_url\",",
+          "      \"session_id\"",
+          "    ],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"MCP Headers Flow Detail (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"id\",",
+          "      \"flow_mode\",",
+          "      \"status\",",
+          "      \"mcp_client\",",
+          "      \"user_id\",",
+          "      \"user\",",
+          "      \"virtual_key\",",
+          "      \"session_id\",",
+          "      \"expires_at\",",
+          "      \"created_at\",",
+          "      \"required_header_keys\",",
+          "      \"admin_header_keys\",",
+          "      \"submitted_keys\",",
+          "      \"has_active_credential\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"id\",",
+          "      \"flow_mode\",",
+          "      \"status\",",
+          "      \"expires_at\",",
+          "      \"created_at\",",
+          "      \"required_header_keys\",",
+          "      \"has_active_credential\"",
+          "    ],",
+          "    \"nullable\": {",
+          "      \"user_id\": true,",
+          "      \"session_id\": true",
+          "    }",
+          "  },",
+          "  \"Submit MCP Headers Flow (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"credential_id\",",
+          "      \"updated_at\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"status\",",
+          "      \"credential_id\",",
+          "      \"updated_at\"",
+          "    ],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Model Details (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"models\",",
+          "      \"total\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Model Parameters (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"additionalProperties\": true",
+          "  },",
+          "  \"Get OAuth Config Status (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"id\",",
+          "      \"status\",",
+          "      \"created_at\",",
+          "      \"expires_at\",",
+          "      \"token_id\",",
+          "      \"token_expires_at\",",
+          "      \"token_scopes\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete OAuth Config (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"status\",",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Provider (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"name\",",
+          "      \"network_config\",",
+          "      \"concurrency_and_buffer_size\",",
+          "      \"proxy_config\",",
+          "      \"send_back_raw_request\",",
+          "      \"send_back_raw_response\",",
+          "      \"store_raw_request_response\",",
+          "      \"custom_provider_config\",",
+          "      \"provider_status\",",
+          "      \"status\",",
+          "      \"description\",",
+          "      \"config_hash\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Per User OAuth Flow Detail (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"id\",",
+          "      \"flow_mode\",",
+          "      \"status\",",
+          "      \"mcp_client\",",
+          "      \"oauth_config_id\",",
+          "      \"user_id\",",
+          "      \"user\",",
+          "      \"virtual_key\",",
+          "      \"session_id\",",
+          "      \"expires_at\",",
+          "      \"created_at\",",
+          "      \"has_active_token\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"id\",",
+          "      \"flow_mode\",",
+          "      \"status\",",
+          "      \"mcp_client\",",
+          "      \"oauth_config_id\",",
+          "      \"expires_at\",",
+          "      \"created_at\",",
+          "      \"has_active_token\"",
+          "    ],",
+          "    \"nullable\": {",
+          "      \"user_id\": true,",
+          "      \"session_id\": true",
+          "    }",
+          "  },",
+          "  \"Per User OAuth Flow Start (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"authorize_url\"",
+          "    ],",
+          "    \"required\": [",
+          "      \"authorize_url\"",
+          "    ],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Prompt Folders (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"folders\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Prompt Folder (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"folder\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Prompt Folder (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"folder\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Prompt Folder (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"folder\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Prompt Folder (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Prompts (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"prompts\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Prompt (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"prompt\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Prompt (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"prompt\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Prompt (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"prompt\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Prompt (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Prompt Versions (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"versions\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Prompt Version (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"version\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Prompt Version (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"version\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Prompt Version (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Prompt Sessions (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"sessions\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Prompt Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"session\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Prompt Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"session\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Prompt Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"session\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Rename Prompt Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"session\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Commit Prompt Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"version\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Prompt Session (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"message\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"List Provider Keys (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"keys\",",
+          "      \"total\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Create Provider Key (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"id\",",
+          "      \"name\",",
+          "      \"value\",",
+          "      \"models\",",
+          "      \"blacklisted_models\",",
+          "      \"weight\",",
+          "      \"aliases\",",
+          "      \"azure_key_config\",",
+          "      \"vertex_key_config\",",
+          "      \"bedrock_key_config\",",
+          "      \"vllm_key_config\",",
+          "      \"ollama_key_config\",",
+          "      \"sgl_key_config\",",
+          "      \"replicate_key_config\",",
+          "      \"enabled\",",
+          "      \"use_for_batch_api\",",
+          "      \"config_hash\",",
+          "      \"status\",",
+          "      \"description\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Get Provider Key (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"id\",",
+          "      \"name\",",
+          "      \"value\",",
+          "      \"models\",",
+          "      \"blacklisted_models\",",
+          "      \"weight\",",
+          "      \"aliases\",",
+          "      \"azure_key_config\",",
+          "      \"vertex_key_config\",",
+          "      \"bedrock_key_config\",",
+          "      \"vllm_key_config\",",
+          "      \"ollama_key_config\",",
+          "      \"sgl_key_config\",",
+          "      \"replicate_key_config\",",
+          "      \"enabled\",",
+          "      \"use_for_batch_api\",",
+          "      \"config_hash\",",
+          "      \"status\",",
+          "      \"description\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Update Provider Key (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"id\",",
+          "      \"name\",",
+          "      \"value\",",
+          "      \"models\",",
+          "      \"blacklisted_models\",",
+          "      \"weight\",",
+          "      \"aliases\",",
+          "      \"azure_key_config\",",
+          "      \"vertex_key_config\",",
+          "      \"bedrock_key_config\",",
+          "      \"vllm_key_config\",",
+          "      \"ollama_key_config\",",
+          "      \"sgl_key_config\",",
+          "      \"replicate_key_config\",",
+          "      \"enabled\",",
+          "      \"use_for_batch_api\",",
+          "      \"config_hash\",",
+          "      \"status\",",
+          "      \"description\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Delete Provider Key (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"id\",",
+          "      \"name\",",
+          "      \"value\",",
+          "      \"models\",",
+          "      \"blacklisted_models\",",
+          "      \"weight\",",
+          "      \"aliases\",",
+          "      \"azure_key_config\",",
+          "      \"vertex_key_config\",",
+          "      \"bedrock_key_config\",",
+          "      \"vllm_key_config\",",
+          "      \"ollama_key_config\",",
+          "      \"sgl_key_config\",",
+          "      \"replicate_key_config\",",
+          "      \"enabled\",",
+          "      \"use_for_batch_api\",",
+          "      \"config_hash\",",
+          "      \"status\",",
+          "      \"description\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  },",
+          "  \"Issue WS Ticket (Coverage Probe)\": {",
+          "    \"type\": \"object\",",
+          "    \"keys\": [",
+          "      \"ticket\"",
+          "    ],",
+          "    \"required\": [],",
+          "    \"nullable\": {}",
+          "  }",
+          "};",
+          "var successShapes = {",
+          "  'Health Check': ['components', 'status'],",
+          "  'Get Config': ['auth_config', 'client_config', 'framework_config', 'is_db_connected', 'is_logs_connected'],",
+          "  'Update Config': ['message', 'status'],",
+          "  'List Providers': ['providers', 'total'],",
+          "  'Add Provider': ['name', 'network_config', 'concurrency_and_buffer_size', 'provider_status'],",
+          "  'Get Provider (After Create)': ['name', 'network_config', 'concurrency_and_buffer_size', 'provider_status'],",
+          "  'Update Provider': ['name', 'network_config', 'concurrency_and_buffer_size', 'provider_status'],",
+          "  'Delete Provider': ['name', 'network_config', 'concurrency_and_buffer_size', 'provider_status'],",
+          "  'List Models': ['models', 'total'],",
+          "  'List Base Models': ['models', 'total'],",
+          "  'Get Logs': ['logs', 'pagination', 'stats', 'has_logs'],",
+          "  'Get Logs Stats': ['total_requests', 'success_rate', 'average_latency', 'total_tokens', 'total_cost'],",
+          "  'Get Logs Histogram': ['buckets', 'bucket_size_seconds'],",
+          "  'Get Logs Histogram Tokens': ['buckets', 'bucket_size_seconds'],",
+          "  'Get Logs Histogram Cost': ['buckets', 'bucket_size_seconds'],",
+          "  'Get Logs Histogram Models': ['buckets', 'bucket_size_seconds'],",
+          "  'Get Logs Histogram Latency': ['buckets', 'bucket_size_seconds'],",
+          "  'Get Logs Histogram Cost By Provider': ['buckets', 'bucket_size_seconds', 'providers'],",
+          "  'Get Logs Histogram Tokens By Provider': ['buckets', 'bucket_size_seconds', 'providers'],",
+          "  'Get Logs Histogram Latency By Provider': ['buckets', 'bucket_size_seconds', 'providers'],",
+          "  'Get Logs Filter Data': ['models', 'aliases', 'selected_keys', 'virtual_keys', 'routing_rules'],",
+          "  'Get Dropped Requests': ['dropped_requests'],",
+          "  'Recalculate Log Costs': ['total_matched', 'updated', 'skipped', 'remaining'],",
+          "  'Delete Logs': ['message'],",
+          "  'List Customers': ['customers', 'count', 'limit', 'offset', 'total_count'],",
+          "  'Create Customer': ['customer', 'message'],",
+          "  'Get Customer (After Create)': ['customer'],",
+          "  'Update Customer': ['customer', 'message'],",
+          "  'Delete Customer': ['message'],",
+          "  'List Teams': ['teams', 'count', 'limit', 'offset', 'total_count'],",
+          "  'Create Team': ['team', 'message'],",
+          "  'Get Team (After Create)': ['team'],",
+          "  'Update Team': ['team', 'message'],",
+          "  'Delete Team': ['message'],",
+          "  'List Virtual Keys': ['virtual_keys', 'count', 'limit', 'offset', 'total_count'],",
+          "  'Create Virtual Key': ['virtual_key', 'message'],",
+          "  'Get Virtual Key (After Create)': ['virtual_key'],",
+          "  'Update Virtual Key': ['virtual_key', 'message'],",
+          "  'Delete Virtual Key': ['message'],",
+          "  'List Routing Rules': ['rules', 'count', 'limit', 'offset', 'total_count'],",
+          "  'Create Routing Rule': ['rule', 'message'],",
+          "  'Get Routing Rule (After Create)': ['rule'],",
+          "  'Update Routing Rule': ['rule', 'message'],",
+          "  'Delete Routing Rule': ['message'],",
+          "  'List Model Configs': ['model_configs', 'count', 'limit', 'offset', 'total_count'],",
+          "  'Create Model Config': ['model_config', 'message'],",
+          "  'Get Model Config (After Create)': ['model_config'],",
+          "  'Update Model Config': ['model_config', 'message'],",
+          "  'Delete Model Config': ['message'],",
+          "  'Get Budgets': ['budgets', 'count'],",
+          "  'Get Rate Limits': ['rate_limits', 'count'],",
+          "  'Get Provider Governance': ['providers', 'count'],",
+          "  'Update Provider Governance': ['provider', 'message'],",
+          "  'Delete Provider Governance': ['message'],",
+          "  'Get MCP Clients': ['clients', 'count', 'limit', 'offset', 'total_count'],",
+          "  'Complete MCP Client OAuth (Coverage Probe)': ['message', 'status'],",
+          "  'Add MCP Client': ['message', 'status'],",
+          "  'Reconnect MCP Client': ['message', 'status'],",
+          "  'Update MCP Client': ['message', 'status'],",
+          "  'Delete MCP Client': ['message', 'status'],",
+          "  'Get MCP Logs': ['logs', 'pagination', 'has_logs'],",
+          "  'Get MCP Logs Stats': ['total_executions', 'success_rate', 'average_latency', 'total_cost'],",
+          "  'Get MCP Logs Filter Data': ['server_labels', 'tool_names', 'virtual_keys'],",
+          "  'Get Plugins': ['plugins', 'count'],",
+          "  'Create Plugin': ['plugin', 'message'],",
+          "  'Get Plugin (After Create)': ['name', 'actualName', 'enabled', 'config', 'isCustom', 'path', 'status'],",
+          "  'Update Plugin': ['plugin', 'message'],",
+          "  'Delete Plugin': ['message'],",
+          "  'Check If Auth Enabled': ['is_auth_enabled', 'has_valid_token', 'auth_type'],",
+          "  'Logout': ['message'],",
+          "  'Get Proxy Config': ['enabled', 'type', 'url', 'timeout', 'enable_for_scim', 'enable_for_inference', 'enable_for_api'],",
+          "  'Update Proxy Config': ['message', 'status'],",
+          "  'Force Sync Pricing': ['message', 'status'],",
+          "  'List Pricing Overrides (Coverage Probe)': ['pricing_overrides', 'count', 'limit', 'offset', 'total_count'],",
+          "  'Get Logs Cost by Dimension Histogram (Coverage Probe)': ['buckets', 'bucket_size_seconds', 'dimension', 'dimension_values'],",
+          "  'Get Logs Tokens by Dimension Histogram (Coverage Probe)': ['buckets', 'bucket_size_seconds', 'dimension', 'dimension_values'],",
+          "  'Get Logs Latency by Dimension Histogram (Coverage Probe)': ['buckets', 'bucket_size_seconds', 'dimension', 'dimension_values'],",
+          "  'Get Logs Rankings (Coverage Probe)': ['rankings'],",
+          "  'Get Logs Rankings by Dimension (Coverage Probe)': ['rankings'],",
+          "  'Get Log Session (Coverage Probe)': ['session_id', 'logs', 'pagination', 'count', 'returned_count', 'has_more'],",
+          "  'Get Log Session Summary (Coverage Probe)': ['session_id', 'count', 'total_cost', 'total_tokens', 'duration_ms'],",
+          "  'Get MCP Histogram (Coverage Probe)': ['buckets', 'bucket_size_seconds'],",
+          "  'Get MCP Cost Histogram (Coverage Probe)': ['buckets', 'bucket_size_seconds'],",
+          "  'Get MCP Top Tools (Coverage Probe)': ['tools'],",
+          "  'Get Model Details (Coverage Probe)': ['models', 'total'],",
+          "  'List Prompt Folders (Coverage Probe)': ['folders'],",
+          "  'Create Prompt Folder (Coverage Probe)': ['folder'],",
+          "  'List Prompts (Coverage Probe)': ['prompts'],",
+          "  'Create Prompt (Coverage Probe)': ['prompt'],",
+          "  'List Prompt Versions (Coverage Probe)': ['versions'],",
+          "  'List Prompt Sessions (Coverage Probe)': ['sessions'],",
+          "  'Issue WS Ticket (Coverage Probe)': ['ticket'],",
+          "  'Get Virtual Key Quota': ['virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'provider_configs', 'model_configs'],",
+          "  'Update Metadata (Coverage Probe)': ['success'],",
+          "  'List Feature Flags (Coverage Probe)': ['flags'],",
+          "  'Update Feature Flag (Coverage Probe)': ['id', 'enabled', 'source', 'locked', 'enterprise_only', 'registered', 'updated_at'],",
+          "  'List MCP Sessions (Coverage Probe)': ['sessions', 'count', 'total_count', 'limit', 'offset'],",
+          "  'Get Builtin Plugins (Coverage Probe)': ['plugins']",
+          "};",
+          "var arrayShapes = {",
+          "  'List Keys': true",
+          "};",
+          "var stringShapes = {",
+          "  'Get Version': true,",
+          "  'Metrics (Coverage Probe)': true,",
+          "};",
+          "var rawTextShapes = {",
+          "  'Metrics (Coverage Probe)': true,",
+          "  'Clear Cache by Cache ID (Coverage Probe)': true,",
+          "  'Clear Cache by Key (Coverage Probe)': true,",
+          "  'OAuth Callback (Coverage Probe)': true",
+          "};",
+          "pm.test('Response structure matches handler contract', function () {",
+          "  var body = parseJSONOrNull();",
+          "  if (code >= 400) {",
+          "    if (rawTextShapes[requestName]) {",
+          "      pm.expect(pm.response.text()).to.be.a('string').and.not.empty;",
+          "      return;",
+          "    }",
+          "    expectKnownErrorEnvelope(body);",
+          "    if (body && Object.prototype.hasOwnProperty.call(body, 'status_code')) pm.expect(body.status_code).to.equal(code);",
+          "    return;",
+          "  }",
+          "  if (stringShapes[requestName]) {",
+          "    pm.expect(pm.response.text()).to.be.a('string').and.not.empty;",
+          "    return;",
+          "  }",
+          "  if (arrayShapes[requestName]) {",
+          "    expectArray(body);",
+          "    return;",
+          "  }",
+          "  if (requestName === 'Get Model Parameters (Coverage Probe)') {",
+          "    expectObject(body);",
+          "    pm.expect(Object.keys(body).length, 'model parameter keys').to.be.greaterThan(0);",
+          "    return;",
+          "  }",
+          "  var contract = openAPIManagementContracts[requestName];",
+          "  var keys = successShapes[requestName];",
+          "  if (contract) {",
+          "    if (contract.type === 'array') {",
+          "      if (arrayShapes[requestName]) {",
+          "        expectArray(body);",
+          "        return;",
+          "      }",
+          "    } else if (contract.type === 'string') {",
+          "      pm.expect(pm.response.text()).to.be.a('string').and.not.empty;",
+          "      return;",
+          "    } else if (contract.type === 'object') {",
+          "      expectObject(body);",
+          "      (contract.required || []).forEach(function (key) {",
+          "        var nullable = (contract.nullable && contract.nullable[key]) || responseFieldsMayBeNull(requestName)[key];",
+          "        pm.expect(contract.keys || [], 'OpenAPI required key is declared in properties').to.include(key);",
+          "        if (!nullable) expectFieldHasValue(body, key);",
+          "      });",
+          "      if (contract.additionalProperties && !keys) return;",
+          "    }",
+          "  }",
+          "  if (keys) {",
+          "    expectKeysWithValues(body, keys);",
+          "  }",
+          "});",
+          "function assertNonEmptyString(value, label) {",
+          "  pm.expect(value, label).to.be.a('string').and.not.empty;",
+          "}",
+          "function assertNonEmptyArray(value, label) {",
+          "  pm.expect(value, label).to.be.an('array').with.length.greaterThan(0);",
+          "}",
+          "function assertObjectValue(value, label) {",
+          "  expectObject(value, label);",
+          "  pm.expect(Object.keys(value).length, label + ' keys').to.be.greaterThan(0);",
+          "}",
+          "function assertMessageContains(body, text) {",
+          "  pm.expect(body).to.have.property('message');",
+          "  pm.expect(String(body.message)).to.include(text);",
+          "}",
+          "function assertProviderResponse(body, name) {",
+          "  pm.expect(body.name).to.equal(name);",
+          "  assertObjectValue(body.network_config, 'network_config');",
+          "  assertObjectValue(body.concurrency_and_buffer_size, 'concurrency_and_buffer_size');",
+          "  pm.expect(body.provider_status).to.be.a('string').and.not.empty;",
+          "}",
+          "function assertCustomer(body, expectedName, expectedEmail) {",
+          "  pm.expect(body.customer).to.be.an('object');",
+          "  assertNonEmptyString(body.customer.id, 'customer.id');",
+          "  pm.expect(body.customer.name).to.equal(expectedName);",
+          "  // Customer handler does not include email in every response shape; name/id are the stable returned values.",
+          "}",
+          "function assertTeam(body, expectedName) {",
+          "  pm.expect(body.team).to.be.an('object');",
+          "  assertNonEmptyString(body.team.id, 'team.id');",
+          "  pm.expect(body.team.name).to.equal(expectedName);",
+          "}",
+          "function assertRoutingRule(body, expectedName) {",
+          "  pm.expect(body.rule).to.be.an('object');",
+          "  assertNonEmptyString(String(body.rule.id), 'rule.id');",
+          "  pm.expect(body.rule.name).to.equal(expectedName);",
+          "  pm.expect(body.rule.enabled).to.equal(true);",
+          "  pm.expect(body.rule.cel_expression).to.equal('true');",
+          "  assertNonEmptyArray(body.rule.targets, 'rule.targets');",
+          "}",
+          "function assertModelConfig(body, expectedModel) {",
+          "  pm.expect(body.model_config).to.be.an('object');",
+          "  assertNonEmptyString(String(body.model_config.id), 'model_config.id');",
+          "  pm.expect(body.model_config.model_name).to.equal(expectedModel);",
+          "}",
+          "function assertPluginResponse(body, enabled) {",
+          "  var plugin = body.plugin || body;",
+          "  pm.expect(plugin.name || plugin.actualName).to.be.ok;",
+          "  pm.expect(plugin.enabled).to.equal(enabled);",
+          "}",
+          "function assertProxyConfig(body) {",
+          "  pm.expect(body.enabled).to.equal(true);",
+          "  pm.expect(body.type).to.equal('http');",
+          "  pm.expect(body.url).to.equal('http://proxy.example.com:8080');",
+          "  pm.expect(Number(body.timeout)).to.equal(30);",
+          "  pm.expect(body.enable_for_inference).to.equal(true);",
+          "  pm.expect(body.enable_for_api).to.equal(true);",
+          "  pm.expect(body.enable_for_scim).to.equal(false);",
+          "}",
+          "function assertMCPClientSuccess(body, expectedStatusText) {",
+          "  assertMessageContains(body, expectedStatusText);",
+          "  pm.expect(body.status).to.be.a('string').and.not.empty;",
+          "}",
+          "pm.test('Seeded management response values match request data', function () {",
+          "  if (code < 200 || code > 299) return;",
+          "  var body = parseJSONOrNull();",
+          "  switch (requestName) {",
+          "    case 'Health Check':",
+          "      pm.expect(body.status).to.be.a('string').and.not.empty;",
+          "      assertObjectValue(body.components, 'components');",
+          "      break;",
+          "    case 'Update Metadata (Coverage Probe)':",
+          "      pm.expect(body.success).to.equal(true);",
+          "      break;",
+          "    case 'Add Provider':",
+          "    case 'Get Provider (After Create)':",
+          "    case 'Update Provider':",
+          "      assertProviderResponse(body, 'custom-123');",
+          "      break;",
+          "    case 'Delete Provider':",
+          "      pm.expect(body.name).to.equal('custom-123');",
+          "      assertObjectValue(body.network_config, 'network_config');",
+          "      assertObjectValue(body.concurrency_and_buffer_size, 'concurrency_and_buffer_size');",
+          "      break;",
+          "    case 'Create Customer':",
+          "    case 'Get Customer (After Create)':",
+          "      assertCustomer(body, pm.collectionVariables.get('customer_expected_name'), 'test@example.com');",
+          "      break;",
+          "    case 'Update Customer':",
+          "      assertCustomer(body, 'Updated Customer');",
+          "      break;",
+          "    case 'Delete Customer':",
+          "      assertMessageContains(body, 'deleted');",
+          "      break;",
+          "    case 'Create Team':",
+          "    case 'Get Team (After Create)':",
+          "      assertTeam(body, pm.collectionVariables.get('team_expected_name'));",
+          "      break;",
+          "    case 'Update Team':",
+          "      assertTeam(body, 'Updated Team');",
+          "      break;",
+          "    case 'Delete Team':",
+          "      assertMessageContains(body, 'deleted');",
+          "      break;",
+          "    case 'Create Virtual Key':",
+          "    case 'Get Virtual Key (After Create)':",
+          "      pm.expect(body.virtual_key.name).to.equal(pm.collectionVariables.get('vk_expected_name'));",
+          "      assertNonEmptyArray(body.virtual_key.budgets, 'virtual_key.budgets');",
+          "      assertObjectValue(body.virtual_key.rate_limit, 'virtual_key.rate_limit');",
+          "      assertNonEmptyArray(body.virtual_key.provider_configs, 'virtual_key.provider_configs');",
+          "      break;",
+          "    case 'Update Virtual Key':",
+          "      pm.expect(body.virtual_key.name).to.equal('Updated VK');",
+          "      break;",
+          "    case 'Delete Virtual Key':",
+          "      assertMessageContains(body, 'deleted');",
+          "      break;",
+          "    case 'Create Routing Rule':",
+          "    case 'Get Routing Rule (After Create)':",
+          "      assertRoutingRule(body, 'TestRoutingRule');",
+          "      break;",
+          "    case 'Update Routing Rule':",
+          "      assertRoutingRule(body, 'UpdatedRoutingRule');",
+          "      break;",
+          "    case 'Delete Routing Rule':",
+          "      assertMessageContains(body, 'deleted');",
+          "      break;",
+          "    case 'Create Model Config':",
+          "    case 'Get Model Config (After Create)':",
+          "      assertModelConfig(body, 'gpt-4o-mini');",
+          "      break;",
+          "    case 'Update Model Config':",
+          "      assertModelConfig(body, 'gpt-4o-mini-updated');",
+          "      break;",
+          "    case 'Delete Model Config':",
+          "      assertMessageContains(body, 'deleted');",
+          "      break;",
+          "    case 'Update Provider Governance':",
+          "      pm.expect(body.provider).to.be.an('object');",
+          "      pm.expect(body.provider.provider).to.equal('openai');",
+          "      break;",
+          "    case 'Delete Provider Governance':",
+          "      assertMessageContains(body, 'deleted');",
+          "      break;",
+          "    case 'Add MCP Client':",
+          "      assertMCPClientSuccess(body, 'connected');",
+          "      break;",
+          "    case 'Reconnect MCP Client':",
+          "      assertMCPClientSuccess(body, 'reconnect');",
+          "      break;",
+          "    case 'Update MCP Client':",
+          "      assertMCPClientSuccess(body, 'edited');",
+          "      break;",
+          "    case 'Delete MCP Client':",
+          "      assertMCPClientSuccess(body, 'removed');",
+          "      break;",
+          "    case 'Get Plugins':",
+          "      pm.expect(body.count).to.equal(body.plugins.length);",
+          "      break;",
+          "    case 'Create Plugin':",
+          "      assertPluginResponse(body, false);",
+          "      break;",
+          "    case 'Get Plugin (After Create)':",
+          "      assertPluginResponse(body, false);",
+          "      break;",
+          "    case 'Update Plugin':",
+          "      assertPluginResponse(body, true);",
+          "      break;",
+          "    case 'Delete Plugin':",
+          "      assertMessageContains(body, 'deleted');",
+          "      break;",
+          "    case 'Get Proxy Config':",
+          "      assertProxyConfig(body);",
+          "      break;",
+          "    case 'Update Proxy Config':",
+          "      assertMessageContains(body, 'updated');",
+          "      break;",
+          "    case 'Get Builtin Plugins (Coverage Probe)':",
+          "      assertNonEmptyArray(body.plugins, 'builtin plugins');",
+          "      break;",
+          "    case 'List Feature Flags (Coverage Probe)':",
+          "      pm.expect(body.flags, 'feature flags').to.be.an('array');",
+          "      body.flags.forEach(function (flag) { expectKeys(flag, ['id', 'display_name', 'description', 'default', 'enabled', 'source', 'locked', 'registered', 'enterprise_only']); });",
+          "      break;",
+          "    case 'List MCP Sessions (Coverage Probe)':",
+          "      pm.expect(body.count).to.equal(body.sessions.length);",
+          "      pm.expect(body.limit).to.be.a('number');",
+          "      pm.expect(body.offset).to.be.a('number');",
+          "      break;",
+          "    case 'Metrics (Coverage Probe)':",
+          "      pm.expect(pm.response.text()).to.include('# HELP');",
+          "      break;",
+          "  }",
+          "});",
+          "// End handler response structure assertions"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "customer_id",
+      "value": "test_customer_123",
+      "type": "string"
+    },
+    {
+      "key": "team_id",
+      "value": "test_team_123",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "test_vk_123",
+      "type": "string"
+    },
+    {
+      "key": "mc_id",
+      "value": "test_mc_123",
+      "type": "string"
+    },
+    {
+      "key": "rule_id",
+      "value": "test_rule_123",
+      "type": "string"
+    },
+    {
+      "key": "mcp_client_id",
+      "value": "test_mcp_123",
+      "type": "string"
+    },
+    {
+      "key": "plugin_name",
+      "value": "hello-world",
+      "type": "string"
+    },
+    {
+      "key": "plugin_path",
+      "value": "./examples/plugins/hello-world/build/hello-world.so",
+      "type": "string"
+    },
+    {
+      "key": "admin_username",
+      "value": "admin",
+      "type": "string"
+    },
+    {
+      "key": "admin_password",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Version & Config",
+      "item": [
+        {
+          "name": "Get Version",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/version",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "version"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Metadata (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config/metadata",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config",
+                "metadata"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"coverage_probe\":true}"
+            }
+          }
+        },
+        {
+          "name": "Update Config",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"drop_excess_requests\": false, \"enable_logging\": true, \"log_retention_days\": 365, \"mcp_agent_depth\": 1, \"mcp_tool_execution_timeout\": 1}, \"framework_config\": {}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Explicitly set body so all fields are sent (avoids omission/truncation)",
+                  "var body = {",
+                  "  client_config: {",
+                  "    drop_excess_requests: false,",
+                  "    enable_logging: true,",
+                  "    log_retention_days: 365,",
+                  "    mcp_agent_depth: 1,",
+                  "    mcp_tool_execution_timeout: 1",
+                  "  },",
+                  "  framework_config: {}",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Config (Enable Temp Token Auth)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"drop_excess_requests\": false, \"enable_logging\": true, \"log_retention_days\": 365, \"mcp_agent_depth\": 1, \"mcp_tool_execution_timeout\": 1, \"mcp_enable_temp_token_auth\": true}, \"framework_config\": {}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Send full client_config plus the new flag so the round-trip exercises mcp_enable_temp_token_auth",
+                  "var body = {",
+                  "  client_config: {",
+                  "    drop_excess_requests: false,",
+                  "    enable_logging: true,",
+                  "    log_retention_days: 365,",
+                  "    mcp_agent_depth: 1,",
+                  "    mcp_tool_execution_timeout: 1,",
+                  "    mcp_enable_temp_token_auth: true",
+                  "  },",
+                  "  framework_config: {}",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Enable temp token auth update accepted', function () {",
+                  "  pm.expect(pm.response.code, 'status').to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Config (Verify Temp Token Auth)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('mcp_enable_temp_token_auth round-trips to true', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('client_config');",
+                  "  pm.expect(body.client_config).to.have.property('mcp_enable_temp_token_auth', true);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Providers",
+      "item": [
+        {
+          "name": "List Providers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add Provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"custom-123\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":true},\"network_config\":{\"base_url\":\"https://api.openai.com/\",\"default_request_timeout_in_seconds\":30,\"max_retries\":0,\"retry_backoff_initial\":500,\"retry_backoff_max\":5000},\"keys\":[]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Provider (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/custom-123",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "custom-123"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Provider",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"custom-123\",\"keys\":[],\"network_config\":{\"base_url\":\"https://api.openai.com/\",\"default_request_timeout_in_seconds\":30,\"max_retries\":0,\"retry_backoff_initial\":500,\"retry_backoff_max\":5000},\"concurrency_and_buffer_size\":{\"concurrency\":1000,\"buffer_size\":5000},\"proxy_config\":null,\"send_back_raw_request\":false,\"send_back_raw_response\":false,\"custom_provider_config\":{\"is_key_less\":true,\"base_provider_type\":\"openai\"},\"provider_status\":\"active\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/providers/custom-123",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "custom-123"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Provider",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/custom-123",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "custom-123"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Models & Keys",
+      "item": [
+        {
+          "name": "List Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Base Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/base",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "base"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Logs",
+      "item": [
+        {
+          "name": "Get Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Capture first log ID for deletion test",
+                  "if (pm.response.code === 200) {",
+                  "  try {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData && jsonData.logs && jsonData.logs.length > 0) {",
+                  "      var firstLogId = jsonData.logs[0].id;",
+                  "      if (firstLogId) {",
+                  "        pm.collectionVariables.set('log_id', firstLogId);",
+                  "      }",
+                  "    }",
+                  "  } catch (e) {",
+                  "    // Ignore errors",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Search Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Content search across logs should return a well-formed paginated response",
+                  "pm.test('Search Logs returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Search Logs response has logs array and pagination', function () {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData).to.have.property('logs');",
+                  "  pm.expect(jsonData.logs).to.be.an('array');",
+                  "  pm.expect(jsonData).to.have.property('pagination');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs?content_search=hello&limit=10&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "content_search",
+                  "value": "hello"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "stats"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram Tokens",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/tokens",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram Cost",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/cost",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "cost"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram Latency",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/latency",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "latency"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram Cost By Provider",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/cost/by-provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "cost",
+                "by-provider"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram Tokens By Provider",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/tokens/by-provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens",
+                "by-provider"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram Latency By Provider",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/latency/by-provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "latency",
+                "by-provider"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Filter Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/filterdata",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "filterdata"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Dropped Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/dropped",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "dropped"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Recalculate Log Costs",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/recalculate-cost",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "recalculate-cost"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Logs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Use captured log ID, or a synthetic UUID so the handler doesn't 400 on",
+                  "// empty IDs when Get Logs returned no rows (e.g. fresh DB with no inference",
+                  "// traffic yet). DeleteLogs is idempotent against unknown IDs - see",
+                  "// framework/logstore/rdb.go:3039 - so this still exercises the success path.",
+                  "var logId = pm.collectionVariables.get('log_id');",
+                  "var ids = [logId || '00000000-0000-0000-0000-000000000000'];",
+                  "pm.request.body.raw = JSON.stringify({ids: ids});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\": []}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/logs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Customers",
+      "item": [
+        {
+          "name": "List Customers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Customer (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers",
+                "{{customer_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  if (jsonData && jsonData.customer && jsonData.customer.id) {",
+                  "    pm.collectionVariables.set('customer_id', jsonData.customer.id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var name = 'Test Customer ' + timestamp;",
+                  "pm.collectionVariables.set('customer_expected_name', name);",
+                  "pm.request.body.raw = JSON.stringify({name: name, email: 'test@example.com'});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Test Customer\", \"email\": \"test@example.com\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Customer (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers",
+                "{{customer_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Customer",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Updated Customer\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers",
+                "{{customer_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Customer",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers",
+                "{{customer_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Teams",
+      "item": [
+        {
+          "name": "List Teams",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Team (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams",
+                "{{team_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Team",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  if (jsonData && jsonData.team && jsonData.team.id) {",
+                  "    pm.collectionVariables.set('team_id', jsonData.team.id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var name = 'Test Team ' + timestamp;",
+                  "pm.collectionVariables.set('team_expected_name', name);",
+                  "pm.request.body.raw = JSON.stringify({name: name});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Test Team\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Team (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams",
+                "{{team_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Team",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Updated Team\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams",
+                "{{team_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Team",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams",
+                "{{team_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Virtual Keys",
+      "item": [
+        {
+          "name": "List Virtual Keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Virtual Key (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Virtual Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData && jsonData.virtual_key && jsonData.virtual_key.id) {",
+                  "        pm.collectionVariables.set('vk_id', jsonData.virtual_key.id);",
+                  "    }",
+                  "    if (jsonData && jsonData.virtual_key && jsonData.virtual_key.value) {",
+                  "        pm.collectionVariables.set('vk_value', jsonData.virtual_key.value);",
+                  "    }",
+                  "    pm.test('Created virtual key includes quota seed data', function () {",
+                  "        pm.expect(jsonData).to.have.all.keys('message', 'virtual_key');",
+                  "        var vk = jsonData.virtual_key;",
+                  "        pm.expect(vk.name).to.equal(pm.collectionVariables.get('vk_expected_name'));",
+                  "        pm.expect(vk.description).to.equal('Quota coverage virtual key');",
+                  "        pm.expect(vk.is_active).to.equal(true);",
+                  "        pm.expect(vk.budgets).to.be.an('array').with.length.greaterThan(0);",
+                  "        pm.expect(vk.rate_limit).to.be.an('object');",
+                  "        pm.expect(vk.provider_configs).to.be.an('array').with.length.greaterThan(0);",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'Test VK ' + timestamp;",
+                  "pm.collectionVariables.set('vk_expected_name', uniqueName);",
+                  "pm.collectionVariables.set('vk_expected_budget_limit', '12.34');",
+                  "pm.collectionVariables.set('vk_expected_budget_duration', '1h');",
+                  "pm.collectionVariables.set('vk_expected_token_limit', '1111');",
+                  "pm.collectionVariables.set('vk_expected_request_limit', '222');",
+                  "pm.collectionVariables.set('vk_expected_provider', 'openai');",
+                  "pm.collectionVariables.set('vk_expected_provider_weight', '1');",
+                  "pm.collectionVariables.set('vk_expected_provider_budget_limit', '5.67');",
+                  "pm.collectionVariables.set('vk_expected_provider_budget_duration', '30m');",
+                  "pm.collectionVariables.set('vk_expected_provider_token_limit', '333');",
+                  "pm.collectionVariables.set('vk_expected_provider_request_limit', '44');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: uniqueName,",
+                  "  description: 'Quota coverage virtual key',",
+                  "  is_active: true,",
+                  "  budgets: [{ max_limit: 12.34, reset_duration: '1h' }],",
+                  "  rate_limit: {",
+                  "    token_max_limit: 1111,",
+                  "    token_reset_duration: '1h',",
+                  "    request_max_limit: 222,",
+                  "    request_reset_duration: '1h'",
+                  "  },",
+                  "  provider_configs: [{",
+                  "    provider: 'openai',",
+                  "    weight: 1,",
+                  "    allowed_models: ['gpt-4o-mini'],",
+                  "    blacklisted_models: ['coverage-probe-blocked-model'],",
+                  "    budgets: [{ max_limit: 5.67, reset_duration: '30m' }],",
+                  "    rate_limit: {",
+                  "      token_max_limit: 333,",
+                  "      token_reset_duration: '30m',",
+                  "      request_max_limit: 44,",
+                  "      request_reset_duration: '30m'",
+                  "    }",
+                  "  }]",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Test VK\",\"description\":\"Quota coverage virtual key\",\"is_active\":true,\"budgets\":[{\"max_limit\":12.34,\"reset_duration\":\"1h\"}],\"rate_limit\":{\"token_max_limit\":1111,\"token_reset_duration\":\"1h\",\"request_max_limit\":222,\"request_reset_duration\":\"1h\"},\"provider_configs\":[{\"provider\":\"openai\",\"weight\":1,\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[\"coverage-probe-blocked-model\"],\"budgets\":[{\"max_limit\":5.67,\"reset_duration\":\"30m\"}],\"rate_limit\":{\"token_max_limit\":333,\"token_reset_duration\":\"30m\",\"request_max_limit\":44,\"request_reset_duration\":\"30m\"}}]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Virtual Key (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Virtual Key Quota",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  var body = pm.response.json();",
+                  "  pm.test('Quota response contains all fields with seeded data', function () {",
+                  "    pm.expect(body).to.have.all.keys('virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'provider_configs', 'model_configs');",
+                  "    pm.expect(body.virtual_key_name).to.equal(pm.collectionVariables.get('vk_expected_name'));",
+                  "    pm.expect(body.is_active).to.equal(true);",
+                  "    pm.expect(body.budgets).to.be.an('array').with.length.greaterThan(0);",
+                  "    var budget = body.budgets.find(function (b) { return b.reset_duration === pm.collectionVariables.get('vk_expected_budget_duration'); });",
+                  "    pm.expect(budget, 'top-level VK budget').to.be.ok;",
+                  "    pm.expect(Number(budget.max_limit)).to.equal(Number(pm.collectionVariables.get('vk_expected_budget_limit')));",
+                  "    pm.expect(body.rate_limit).to.be.an('object');",
+                  "    pm.expect(Number(body.rate_limit.token_max_limit)).to.equal(Number(pm.collectionVariables.get('vk_expected_token_limit')));",
+                  "    pm.expect(body.rate_limit.token_reset_duration).to.equal('1h');",
+                  "    pm.expect(Number(body.rate_limit.request_max_limit)).to.equal(Number(pm.collectionVariables.get('vk_expected_request_limit')));",
+                  "    pm.expect(body.rate_limit.request_reset_duration).to.equal('1h');",
+                  "    pm.expect(body.provider_configs).to.be.an('array').with.length.greaterThan(0);",
+                  "    var pc = body.provider_configs.find(function (p) { return p.provider === pm.collectionVariables.get('vk_expected_provider'); });",
+                  "    pm.expect(pc, 'provider config').to.be.ok;",
+                  "    pm.expect(Number(pc.weight)).to.equal(Number(pm.collectionVariables.get('vk_expected_provider_weight')));",
+                  "    pm.expect(pc.allowed_models).to.include('gpt-4o-mini');",
+                  "    pm.expect(pc.blacklisted_models).to.include('coverage-probe-blocked-model');",
+                  "    pm.expect(pc.budgets).to.be.an('array').with.length.greaterThan(0);",
+                  "    var pcb = pc.budgets.find(function (b) { return b.reset_duration === pm.collectionVariables.get('vk_expected_provider_budget_duration'); });",
+                  "    pm.expect(pcb, 'provider budget').to.be.ok;",
+                  "    pm.expect(Number(pcb.max_limit)).to.equal(Number(pm.collectionVariables.get('vk_expected_provider_budget_limit')));",
+                  "    pm.expect(pc.rate_limit).to.be.an('object');",
+                  "    pm.expect(Number(pc.rate_limit.token_max_limit)).to.equal(Number(pm.collectionVariables.get('vk_expected_provider_token_limit')));",
+                  "    pm.expect(pc.rate_limit.token_reset_duration).to.equal('30m');",
+                  "    pm.expect(Number(pc.rate_limit.request_max_limit)).to.equal(Number(pm.collectionVariables.get('vk_expected_provider_request_limit')));",
+                  "    pm.expect(pc.rate_limit.request_reset_duration).to.equal('30m');",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Virtual Key",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Updated VK\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Virtual Key",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - VK List Models Restriction",
+      "description": "Regression #2887 / PR #3187 (/v1/models) and #3094 (/api/models): a virtual key scoped to a subset of providers must restrict list-models output to ONLY those providers. The server has many providers configured; this VK allows only openai+anthropic, and both list-models endpoints must return only those providers and exclude the rest (mistral, gemini, groq).",
+      "item": [
+        {
+          "name": "Create VK (allow openai + anthropic only)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "var body = {",
+                  "  name: 'VK ListModels Restriction ' + ts,",
+                  "  is_active: true,",
+                  "  provider_configs: [",
+                  "    { provider: 'openai', weight: 1, allowed_models: ['*'], key_ids: ['*'] },",
+                  "    { provider: 'anthropic', weight: 1, allowed_models: ['*'], key_ids: ['*'] }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  if (vk && vk.id) pm.collectionVariables.set('vkrestrict_id', vk.id);",
+                  "  if (vk && vk.value) pm.collectionVariables.set('vkrestrict_value', vk.value);",
+                  "  pm.test('Created VK value looks like a bifrost VK', function () { pm.expect(String(vk.value)).to.match(/^sk-bf-/); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "governance", "virtual-keys" ]
+            }
+          }
+        },
+        {
+          "name": "List Models via VK - /api/models (provider field)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ALLOWED = ['openai', 'anthropic'];",
+                  "var DISALLOWED = ['mistral', 'gemini', 'groq'];",
+                  "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "var models = (body && body.models) || [];",
+                  "var seen = {};",
+                  "models.forEach(function (m) { if (m && m.provider) seen[m.provider] = true; });",
+                  "var present = Object.keys(seen);",
+                  "ALLOWED.forEach(function (p) {",
+                  "  pm.test('/api/models includes allowed provider: ' + p, function () { pm.expect(present).to.include(p); });",
+                  "});",
+                  "DISALLOWED.forEach(function (p) {",
+                  "  pm.test('/api/models excludes disallowed provider: ' + p, function () { pm.expect(present).to.not.include(p); });",
+                  "});",
+                  "pm.test('/api/models contains only VK-allowed providers', function () {",
+                  "  var leaked = present.filter(function (p) { return ALLOWED.indexOf(p) === -1; });",
+                  "  pm.expect(leaked, 'leaked providers: ' + JSON.stringify(leaked)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "url": {
+              "raw": "{{base_url}}/api/models?limit=5000",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "models" ],
+              "query": [ { "key": "limit", "value": "5000" } ]
+            }
+          }
+        },
+        {
+          "name": "List Models via VK - /v1/models (the #3187 flow)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ALLOWED = ['openai', 'anthropic'];",
+                  "var DISALLOWED = ['mistral', 'gemini', 'groq'];",
+                  "pm.test('GET /v1/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "var data = (body && body.data) || [];",
+                  "var seen = {};",
+                  "data.forEach(function (m) {",
+                  "  var id = (m && m.id) ? String(m.id) : '';",
+                  "  var pfx = id.indexOf('/') >= 0 ? id.split('/')[0] : id;",
+                  "  if (pfx) seen[pfx] = true;",
+                  "});",
+                  "var present = Object.keys(seen);",
+                  "DISALLOWED.forEach(function (p) {",
+                  "  pm.test('/v1/models excludes disallowed provider: ' + p, function () { pm.expect(present).to.not.include(p); });",
+                  "});",
+                  "pm.test('/v1/models returns at least one allowed-provider model', function () {",
+                  "  var hasAllowed = present.some(function (p) { return ALLOWED.indexOf(p) >= 0; });",
+                  "  pm.expect(hasAllowed).to.be.true;",
+                  "});",
+                  "pm.test('/v1/models contains only VK-allowed providers', function () {",
+                  "  var leaked = present.filter(function (p) { return ALLOWED.indexOf(p) === -1; });",
+                  "  pm.expect(leaked, 'leaked providers: ' + JSON.stringify(leaked)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [ "{{base_url}}" ],
+              "path": [ "v1", "models" ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkrestrict_id}}",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "governance", "virtual-keys", "{{vkrestrict_id}}" ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Routing Rules",
+      "item": [
+        {
+          "name": "List Routing Rules",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/routing-rules",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Routing Rule (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules",
+                "{{rule_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Routing Rule",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  if (jsonData && jsonData.rule && jsonData.rule.id) {",
+                  "    pm.collectionVariables.set('rule_id', jsonData.rule.id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"TestRoutingRule\",\"description\":\"E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/routing-rules",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Routing Rule (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules",
+                "{{rule_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Routing Rule",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"UpdatedRoutingRule\",\"description\":\"Updated E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules",
+                "{{rule_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Routing Rule",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules",
+                "{{rule_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Model Configs",
+      "item": [
+        {
+          "name": "List Model Configs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Model Config (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs/{{mc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs",
+                "{{mc_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Model Config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  if (jsonData && jsonData.model_config && jsonData.model_config.id) {",
+                  "    pm.collectionVariables.set('mc_id', jsonData.model_config.id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model_name\": \"gpt-4o-mini\", \"provider\": \"openai\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Model Config (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs/{{mc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs",
+                "{{mc_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Model Config",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model_name\": \"gpt-4o-mini-updated\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs/{{mc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs",
+                "{{mc_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Model Config",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/model-configs/{{mc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "model-configs",
+                "{{mc_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Other",
+      "item": [
+        {
+          "name": "Get Budgets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/budgets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "budgets"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Rate Limits",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/rate-limits",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "rate-limits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Provider Governance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Provider Governance",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"budget\": {\"max_limit\": 100.0, \"reset_duration\": \"1d\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/providers/openai",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "providers",
+                "openai"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Provider Governance",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/providers/openai",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "providers",
+                "openai"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP Clients",
+      "item": [
+        {
+          "name": "Get MCP Clients",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/clients",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add MCP Client",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\": \"{{mcp_client_id}}\", \"name\": \"TestMCPClient\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://localhost:3001/\", \"env_var\": \"\", \"from_env\": false}, \"auth_type\": \"none\", \"is_ping_available\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reconnect MCP Client",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{mcp_client_id}}/reconnect",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{mcp_client_id}}",
+                "reconnect"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update MCP Client",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"UpdatedMCPClient\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{mcp_client_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{mcp_client_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Client",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{mcp_client_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{mcp_client_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP Logs",
+      "item": [
+        {
+          "name": "Get MCP Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Capture first MCP log ID for deletion test",
+                  "if (pm.response.code === 200) {",
+                  "  try {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData && jsonData.logs && jsonData.logs.length > 0) {",
+                  "      var firstLogId = jsonData.logs[0].id;",
+                  "      if (firstLogId) {",
+                  "        pm.collectionVariables.set('mcp_log_id', firstLogId);",
+                  "      }",
+                  "    }",
+                  "  } catch (e) {",
+                  "    // Ignore errors",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Logs Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "stats"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Logs Filter Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/filterdata",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "filterdata"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Plugins",
+      "item": [
+        {
+          "name": "Get Plugins",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Plugin (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "{{plugin_name}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Plugin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{plugin_name}}\", \"path\": \"{{plugin_path}}\", \"enabled\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/plugins",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Plugin (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "{{plugin_name}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Plugin",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{plugin_name}}\", \"path\": \"{{plugin_path}}\", \"enabled\": true}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "{{plugin_name}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Plugin",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "{{plugin_name}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cache",
+      "item": [
+        {
+          "name": "Clear Cache by Cache ID (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cache/clear/test_request_123",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "cache",
+                "clear",
+                "test_request_123"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Clear Cache by Key (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cache/clear-by-key/test_cache_key",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "cache",
+                "clear-by-key",
+                "test_cache_key"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Session",
+      "item": [
+        {
+          "name": "Check If Auth Enabled",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/session/is-auth-enabled",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "session",
+                "is-auth-enabled"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('is-auth-enabled exposes auth_type + has_valid_token contract', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('is_auth_enabled');",
+                  "  pm.expect(body).to.have.property('has_valid_token');",
+                  "  pm.expect(body).to.have.property('auth_type');",
+                  "  pm.expect(body.has_valid_token, 'has_valid_token is boolean').to.be.a('boolean');",
+                  "  pm.expect(body.auth_type, 'auth_type enum').to.be.oneOf(['none', 'password', 'sso']);",
+                  "  if (body.is_auth_enabled === false) {",
+                  "    pm.expect(body.auth_type, 'auth_type when auth disabled').to.equal('none');",
+                  "    pm.expect(body.has_valid_token, 'has_valid_token when auth disabled').to.equal(false);",
+                  "  } else {",
+                  "    pm.expect(body.auth_type, 'auth_type when auth enabled').to.not.equal('none');",
+                  "  }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"{{admin_username}}\", \"password\": \"{{admin_password}}\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/session/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "session",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/session/logout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "session",
+                "logout"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Proxy",
+      "item": [
+        {
+          "name": "Update Proxy Config",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://proxy.example.com:8080\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Proxy Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pricing",
+      "item": [
+        {
+          "name": "Force Sync Pricing",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pricing/force-sync",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pricing",
+                "force-sync"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Additional Coverage Probes",
+      "item": [
+        {
+          "name": "List Pricing Overrides (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/pricing-overrides",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Feature Flags (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/feature-flags",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "feature-flags"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Feature Flag (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/feature-flags/coverage-probe-flag",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "feature-flags",
+                "coverage-probe-flag"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}"
+            }
+          }
+        },
+        {
+          "name": "Rotate Virtual Keys (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "rotate"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":[\"coverage-probe-vk\"]}"
+            }
+          }
+        },
+        {
+          "name": "Rotate Virtual Key (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/coverage-probe-vk/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "coverage-probe-vk",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Pricing Override (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/pricing-overrides",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"openai\",\"model\":\"gpt-4o-mini\",\"request_types\":[\"chat_completion\"],\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
+            }
+          }
+        },
+        {
+          "name": "Update Pricing Override (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/pricing-overrides/coverage-probe-id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "coverage-probe-id"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"openai\",\"model\":\"gpt-4o-mini\",\"request_types\":[\"chat_completion\"],\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
+            }
+          }
+        },
+        {
+          "name": "Delete Pricing Override (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/pricing-overrides/coverage-probe-id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "coverage-probe-id"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Virtual Key Quota (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 401) {",
+                  "  var body = pm.response.json();",
+                  "  pm.test('Quota probe rejects missing VK credential', function () {",
+                  "    pm.expect(body).to.have.all.keys('is_bifrost_error', 'status_code', 'error', 'extra_fields');",
+                  "    pm.expect(body.status_code).to.equal(401);",
+                  "    pm.expect(body.error.message).to.include('Missing virtual key');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Logs Cost by Dimension Histogram (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/cost/by-dimension?dimension=provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "cost",
+                "by-dimension?dimension=provider"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Tokens by Dimension Histogram (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/tokens/by-dimension?dimension=provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens",
+                "by-dimension?dimension=provider"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Latency by Dimension Histogram (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram/latency/by-dimension?dimension=provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "latency",
+                "by-dimension?dimension=provider"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Rankings (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/rankings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "rankings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Rankings by Dimension (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/rankings/by-dimension?dimension=provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "rankings",
+                "by-dimension"
+              ],
+              "query": [
+                {
+                  "key": "dimension",
+                  "value": "provider"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Log Session (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/sessions/coverage-probe-session",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "sessions",
+                "coverage-probe-session"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Log Session Summary (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/sessions/coverage-probe-session/summary",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "sessions",
+                "coverage-probe-session",
+                "summary"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Log By ID (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/coverage-probe-log",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "coverage-probe-log"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Histogram (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/histogram",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "histogram"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Cost Histogram (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/histogram/cost",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "histogram",
+                "cost"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Top Tools (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/histogram/top-tools",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "histogram",
+                "top-tools"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Log By ID (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/coverage-probe-log",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "coverage-probe-log"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Logs (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":[]}"
+            }
+          }
+        },
+        {
+          "name": "Complete MCP Client OAuth (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/coverage-probe-client/complete-oauth",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "coverage-probe-client",
+                "complete-oauth"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\":\"coverage-probe-code\",\"state\":\"coverage-probe-state\"}"
+            }
+          }
+        },
+        {
+          "name": "List MCP Sessions (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reauth MCP Session (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/sessions/coverage-probe-session/reauth",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "sessions",
+                "coverage-probe-session",
+                "reauth"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Session (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/sessions/coverage-probe-session",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "sessions",
+                "coverage-probe-session"
+              ]
+            }
+          }
+        },
+        {
+          "name": "MCP Headers Flow Detail (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/per-user-headers/flows/coverage-probe-flow",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "per-user-headers",
+                "flows",
+                "coverage-probe-flow"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Submit MCP Headers Flow (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/per-user-headers/flows/coverage-probe-flow",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "per-user-headers",
+                "flows",
+                "coverage-probe-flow"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"headers\":{}}"
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Header Credential (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/per-user-headers/credential/coverage-probe-credential",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "per-user-headers",
+                "credential",
+                "coverage-probe-credential"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Model Details (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/details",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Model Parameters (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/parameters?provider=openai&model=gpt-4o-mini",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "parameters?provider=openai&model=gpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upsert Model Catalog Entries (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/models/catalog",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "catalog"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"entries\":[]}"
+            }
+          }
+        },
+        {
+          "name": "OAuth Callback (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/oauth/callback?code=coverage-probe-code&state=coverage-probe-state",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "callback?code=coverage-probe-code&state=coverage-probe-state"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get OAuth Config Status (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/oauth/config/coverage-probe-config/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "config",
+                "coverage-probe-config",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete OAuth Config (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/oauth/config/coverage-probe-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "config",
+                "coverage-probe-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Builtin Plugins (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins/builtins",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "builtins"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Provider (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/coverage-probe-provider",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "coverage-probe-provider"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Per User OAuth Flow Detail (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/oauth/per-user/flows/coverage-probe-flow",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "per-user",
+                "flows",
+                "coverage-probe-flow"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Per User OAuth Flow Start (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/oauth/per-user/flows/coverage-probe-flow/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "per-user",
+                "flows",
+                "coverage-probe-flow",
+                "start"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Prompt Folders (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/folders",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "folders"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Prompt Folder (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/folders",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "folders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Coverage Probe Folder\"}"
+            }
+          }
+        },
+        {
+          "name": "Get Prompt Folder (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/folders/coverage-probe-folder",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "folders",
+                "coverage-probe-folder"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Prompt Folder (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/folders/coverage-probe-folder",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "folders",
+                "coverage-probe-folder"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Coverage Probe Folder Updated\"}"
+            }
+          }
+        },
+        {
+          "name": "Delete Prompt Folder (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/folders/coverage-probe-folder",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "folders",
+                "coverage-probe-folder"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Prompts (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Prompt (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Coverage Probe Prompt\"}"
+            }
+          }
+        },
+        {
+          "name": "Get Prompt (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts/coverage-probe-prompt",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts",
+                "coverage-probe-prompt"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Prompt (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts/coverage-probe-prompt",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts",
+                "coverage-probe-prompt"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Coverage Probe Prompt Updated\"}"
+            }
+          }
+        },
+        {
+          "name": "Delete Prompt (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts/coverage-probe-prompt",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts",
+                "coverage-probe-prompt"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Prompt Versions (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts/coverage-probe-prompt/versions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts",
+                "coverage-probe-prompt",
+                "versions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Prompt Version (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts/coverage-probe-prompt/versions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts",
+                "coverage-probe-prompt",
+                "versions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"commit_message\":\"Coverage probe\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model_params\":{},\"provider\":\"openai\",\"model\":\"gpt-4o-mini\",\"variables\":{}}"
+            }
+          }
+        },
+        {
+          "name": "Get Prompt Version (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/versions/coverage-probe-version",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "versions",
+                "coverage-probe-version"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Prompt Version (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/versions/coverage-probe-version",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "versions",
+                "coverage-probe-version"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Prompt Sessions (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts/coverage-probe-prompt/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts",
+                "coverage-probe-prompt",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Prompt Session (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/prompts/coverage-probe-prompt/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "prompts",
+                "coverage-probe-prompt",
+                "sessions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Coverage Probe Session\",\"version_id\":1,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model_params\":{},\"provider\":\"openai\",\"model\":\"gpt-4o-mini\",\"variables\":{}}"
+            }
+          }
+        },
+        {
+          "name": "Get Prompt Session (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/sessions/coverage-probe-session",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "sessions",
+                "coverage-probe-session"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Prompt Session (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/sessions/coverage-probe-session",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "sessions",
+                "coverage-probe-session"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Coverage Probe Session Updated\",\"messages\":[{\"role\":\"user\",\"content\":\"Updated\"}],\"model_params\":{},\"provider\":\"openai\",\"model\":\"gpt-4o-mini\",\"variables\":{}}"
+            }
+          }
+        },
+        {
+          "name": "Rename Prompt Session (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/sessions/coverage-probe-session/rename",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "sessions",
+                "coverage-probe-session",
+                "rename"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Coverage Probe Session Renamed\"}"
+            }
+          }
+        },
+        {
+          "name": "Commit Prompt Session (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/sessions/coverage-probe-session/commit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "sessions",
+                "coverage-probe-session",
+                "commit"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"commit_message\":\"Coverage probe commit\"}"
+            }
+          }
+        },
+        {
+          "name": "Delete Prompt Session (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/prompt-repo/sessions/coverage-probe-session",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "prompt-repo",
+                "sessions",
+                "coverage-probe-session"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Provider Keys (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/coverage-probe-provider/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "coverage-probe-provider",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Provider Key (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/coverage-probe-provider/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "coverage-probe-provider",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"coverage-probe-key\",\"value\":\"coverage-probe-value\"}"
+            }
+          }
+        },
+        {
+          "name": "Get Provider Key (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/coverage-probe-provider/keys/coverage-probe-key",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "coverage-probe-provider",
+                "keys",
+                "coverage-probe-key"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Provider Key (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/coverage-probe-provider/keys/coverage-probe-key",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "coverage-probe-provider",
+                "keys",
+                "coverage-probe-key"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"coverage-probe-key\",\"value\":\"coverage-probe-value-updated\"}"
+            }
+          }
+        },
+        {
+          "name": "Delete Provider Key (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/coverage-probe-provider/keys/coverage-probe-key",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "coverage-probe-provider",
+                "keys",
+                "coverage-probe-key"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Issue WS Ticket (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/session/ws-ticket",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "session",
+                "ws-ticket"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Metrics (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/metrics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "metrics"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

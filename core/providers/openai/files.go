@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"time"
 
-	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -55,7 +55,7 @@ func ToBifrostFileStatus(status string) schemas.FileStatus {
 }
 
 // ToBifrostFileUploadResponse converts OpenAI file response to Bifrost file upload response.
-func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
+func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
 	resp := &schemas.BifrostFileUploadResponse{
 		ID:             r.ID,
 		Object:         r.Object,
@@ -67,9 +67,7 @@ func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(providerName schemas.Mo
 		StatusDetails:  r.StatusDetails,
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileUploadRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -97,9 +95,7 @@ func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.
 		StatusDetails:  r.StatusDetails,
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -117,7 +113,7 @@ func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.
 func ConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, error) {
 	var buf bytes.Buffer
 	for _, req := range requests {
-		line, err := sonic.Marshal(req)
+		line, err := providerUtils.MarshalSorted(req)
 		if err != nil {
 			return nil, err
 		}

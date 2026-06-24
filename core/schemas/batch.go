@@ -13,7 +13,8 @@ const (
 	BatchStatusExpired    BatchStatus = "expired"
 	BatchStatusCancelling BatchStatus = "cancelling"
 	BatchStatusCancelled  BatchStatus = "cancelled"
-	BatchStatusEnded      BatchStatus = "ended" // Anthropic-specific
+	BatchStatusEnded      BatchStatus = "ended"   // Anthropic-specific
+	BatchStatusDeleted    BatchStatus = "deleted" // Gemini-specific
 )
 
 // BatchEndpoint represents supported batch API endpoints.
@@ -73,14 +74,23 @@ type BifrostBatchCreateRequest struct {
 	// Anthropic-style: inline requests
 	Requests []BatchRequestItem `json:"requests,omitempty"` // Inline request items
 
+	// Azure-style: Blob storage input and output folder
+	InputBlob    *string            `json:"input_blob,omitempty"`
+	OutputFolder *BatchOutputFolder `json:"output_folder,omitempty"`
+
 	// Common fields
-	Endpoint            BatchEndpoint      `json:"endpoint,omitempty"`              // Target endpoint for batch requests
-	CompletionWindow    string             `json:"completion_window,omitempty"`     // Time window (e.g., "24h")
-	Metadata            map[string]string  `json:"metadata,omitempty"`              // User-provided metadata
-	OutputExpiresAfter  *BatchExpiresAfter `json:"output_expires_after,omitempty"` // Expiration for batch output (OpenAI only)
+	DisplayName        *string            `json:"display_name,omitempty"`         // Human-readable job name (e.g. Vertex displayName)
+	Endpoint           BatchEndpoint      `json:"endpoint,omitempty"`             // Target endpoint for batch requests
+	CompletionWindow   string             `json:"completion_window,omitempty"`    // Time window (e.g., "24h")
+	Metadata           map[string]string  `json:"metadata,omitempty"`             // User-provided metadata
+	OutputExpiresAfter *BatchExpiresAfter `json:"output_expires_after,omitempty"` // Expiration for batch output (OpenAI only)
 
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]interface{} `json:"-"`
+}
+
+type BatchOutputFolder struct {
+	URL string `json:"url"`
 }
 
 // BatchExpiresAfter represents an expiration configuration for batch output.
@@ -97,7 +107,8 @@ func (request *BifrostBatchCreateRequest) GetRawRequestBody() []byte {
 // BifrostBatchCreateResponse represents the response from creating a batch job.
 type BifrostBatchCreateResponse struct {
 	ID               string             `json:"id"`
-	Object           string             `json:"object,omitempty"` // "batch" for OpenAI
+	Object           string             `json:"object,omitempty"`       // "batch" for OpenAI
+	DisplayName      *string            `json:"display_name,omitempty"` // Human-readable job name (e.g. Vertex displayName)
 	Endpoint         string             `json:"endpoint,omitempty"`
 	InputFileID      string             `json:"input_file_id,omitempty"`
 	CompletionWindow string             `json:"completion_window,omitempty"`
@@ -117,6 +128,11 @@ type BifrostBatchCreateResponse struct {
 
 	// Gemini-specific (operation response)
 	OperationName *string `json:"operation_name,omitempty"`
+
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
@@ -174,6 +190,7 @@ func (request *BifrostBatchRetrieveRequest) GetRawRequestBody() []byte {
 type BifrostBatchRetrieveResponse struct {
 	ID               string             `json:"id"`
 	Object           string             `json:"object,omitempty"`
+	DisplayName      *string            `json:"display_name,omitempty"` // Human-readable job name (e.g. Vertex displayName)
 	Endpoint         string             `json:"endpoint,omitempty"`
 	InputFileID      string             `json:"input_file_id,omitempty"`
 	CompletionWindow string             `json:"completion_window,omitempty"`
@@ -205,6 +222,11 @@ type BifrostBatchRetrieveResponse struct {
 	Done          *bool   `json:"done,omitempty"`
 	Progress      *int    `json:"progress,omitempty"` // Percentage progress
 
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
@@ -233,6 +255,33 @@ type BifrostBatchCancelResponse struct {
 	RequestCounts BatchRequestCounts `json:"request_counts,omitempty"`
 	CancellingAt  *int64             `json:"cancelling_at,omitempty"`
 	CancelledAt   *int64             `json:"cancelled_at,omitempty"`
+
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BifrostBatchDeleteRequest represents a request to delete a batch job.
+type BifrostBatchDeleteRequest struct {
+	Provider ModelProvider `json:"provider"`
+	Model    *string       `json:"model"`
+	BatchID  string        `json:"batch_id"` // ID of the batch to delete
+
+	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
+
+	// Extra parameters for provider-specific features
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetRawRequestBody returns the raw request body.
+func (request *BifrostBatchDeleteRequest) GetRawRequestBody() []byte {
+	return request.RawRequestBody
+}
+
+// BifrostBatchDeleteResponse represents the response from deleting a batch job.
+type BifrostBatchDeleteResponse struct {
+	ID            string             `json:"id"`
+	Object        string             `json:"object,omitempty"`
+	Status        BatchStatus        `json:"status"`
+	RequestCounts BatchRequestCounts `json:"request_counts,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

@@ -1,134 +1,46 @@
-"use client";
-
-import { FilterPopover } from "@/components/filters/filterPopover";
+import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-	useLazyGetLogsCostHistogramQuery,
-	useLazyGetLogsHistogramQuery,
-	useLazyGetLogsLatencyHistogramQuery,
-	useLazyGetLogsModelHistogramQuery,
-	useLazyGetLogsProviderCostHistogramQuery,
-	useLazyGetLogsProviderLatencyHistogramQuery,
-	useLazyGetLogsProviderTokenHistogramQuery,
-	useLazyGetLogsTokenHistogramQuery,
-} from "@/lib/store";
-import type {
-	CostHistogramResponse,
-	LatencyHistogramResponse,
-	LogFilters,
-	LogsHistogramResponse,
-	ModelHistogramResponse,
-	ProviderCostHistogramResponse,
-	ProviderLatencyHistogramResponse,
-	ProviderTokenHistogramResponse,
-	TokenHistogramResponse,
-} from "@/lib/types/logs";
+import { ScrollArea } from "@/components/ui/scrollArea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
+import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
+import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { useLocation } from "@tanstack/react-router";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChartCard } from "./components/chartCard";
-import { type ChartType, ChartTypeToggle } from "./components/chartTypeToggle";
-import { CostChart } from "./components/costChart";
-import { LatencyChart } from "./components/latencyChart";
-import { LogVolumeChart } from "./components/logVolumeChart";
-import { ModelFilterSelect } from "./components/modelFilterSelect";
-import { ModelUsageChart } from "./components/modelUsageChart";
-import { ProviderCostChart } from "./components/providerCostChart";
-import { ProviderFilterSelect } from "./components/providerFilterSelect";
-import { ProviderLatencyChart } from "./components/providerLatencyChart";
-import { ProviderTokenChart } from "./components/providerTokenChart";
-import { TokenUsageChart } from "./components/tokenUsageChart";
-import { CHART_COLORS, getModelColor, LATENCY_COLORS } from "./utils/chartUtils";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { type ChartType } from "./components/charts/chartTypeToggle";
+import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
+import { ExportPopover } from "./components/exportPopover";
+import { type DimensionRankingsTabViewHandle, DimensionRankingsTabView } from "./components/tabViews/dimensionRankingsTabView";
+import { type MCPTabViewHandle, MCPTabView } from "./components/tabViews/mcpTabView";
+import { type ModelRankingsTabViewHandle, ModelRankingsTabView } from "./components/tabViews/modelRankingsTabView";
+import { type OverviewTabViewHandle, OverviewTabView } from "./components/tabViews/overviewTabView";
+import { type ProviderUsageTabViewHandle, ProviderUsageTabView } from "./components/tabViews/providerUsageTabView";
+import type { DashboardData } from "./utils/exportUtils";
 
-// Type-safe parser for chart type URL state
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
 
-// Calculate default timestamps once at module level
-const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
-const DEFAULT_START_TIME = (() => {
-	const date = new Date();
-	date.setHours(date.getHours() - 24);
-	return Math.floor(date.getTime() / 1000);
-})();
-
-// Predefined time periods
-const TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
-];
-
-const CHART_HEADER_ACTIONS_CLASS = "flex min-w-0 w-full flex-col-reverse gap-2";
-const CHART_HEADER_LEGEND_CLASS = "flex min-w-0 flex-wrap items-center gap-2 pl-2 text-xs";
-const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2";
 const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
-const sanitizeSeriesLabels = (values?: string[]): string[] => {
-	if (!values) return [];
-	const trimmedValues = values
-		.map((value) => value.trim())
-		.filter((value) => value.length > 0);
-
-	return [...new Set(trimmedValues)];
-};
-
-function getTimeRangeFromPeriod(period: string): { start: number; end: number } {
-	const now = Math.floor(Date.now() / 1000);
-	switch (period) {
-		case "1h":
-			return { start: now - 3600, end: now };
-		case "6h":
-			return { start: now - 6 * 3600, end: now };
-		case "24h":
-			return { start: now - 24 * 3600, end: now };
-		case "7d":
-			return { start: now - 7 * 24 * 3600, end: now };
-		case "30d":
-			return { start: now - 30 * 24 * 3600, end: now };
-		default:
-			return { start: now - 24 * 3600, end: now };
-	}
-}
 
 export default function DashboardPage() {
-	// Data states
-	const [histogramData, setHistogramData] = useState<LogsHistogramResponse | null>(null);
-	const [tokenData, setTokenData] = useState<TokenHistogramResponse | null>(null);
-	const [costData, setCostData] = useState<CostHistogramResponse | null>(null);
-	const [modelData, setModelData] = useState<ModelHistogramResponse | null>(null);
-	const [latencyData, setLatencyData] = useState<LatencyHistogramResponse | null>(null);
-	const [providerCostData, setProviderCostData] = useState<ProviderCostHistogramResponse | null>(null);
-	const [providerTokenData, setProviderTokenData] = useState<ProviderTokenHistogramResponse | null>(null);
-	const [providerLatencyData, setProviderLatencyData] = useState<ProviderLatencyHistogramResponse | null>(null);
+	// MCP filter data
+	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
-	// Loading states
-	const [loadingHistogram, setLoadingHistogram] = useState(true);
-	const [loadingTokens, setLoadingTokens] = useState(true);
-	const [loadingCost, setLoadingCost] = useState(true);
-	const [loadingModels, setLoadingModels] = useState(true);
-	const [loadingLatency, setLoadingLatency] = useState(true);
-	const [loadingProviderCost, setLoadingProviderCost] = useState(true);
-	const [loadingProviderTokens, setLoadingProviderTokens] = useState(true);
-	const [loadingProviderLatency, setLoadingProviderLatency] = useState(true);
+	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
 
-	// RTK Query lazy hooks
-	const [triggerHistogram] = useLazyGetLogsHistogramQuery({});
-	const [triggerTokens] = useLazyGetLogsTokenHistogramQuery();
-	const [triggerCost] = useLazyGetLogsCostHistogramQuery();
-	const [triggerModels] = useLazyGetLogsModelHistogramQuery();
-	const [triggerLatency] = useLazyGetLogsLatencyHistogramQuery();
-	const [triggerProviderCost] = useLazyGetLogsProviderCostHistogramQuery();
-	const [triggerProviderTokens] = useLazyGetLogsProviderTokenHistogramQuery();
-	const [triggerProviderLatency] = useLazyGetLogsProviderLatencyHistogramQuery();
+	const [timezone, setTimezone] = useTimezonePreference();
 
-	// URL state management
+	const { search } = useLocation();
+	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
+
 	const [urlState, setUrlState] = useQueryStates(
 		{
-			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
-			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
-			period: parseAsString.withDefault("24h"),
+			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
+			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
+			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
+			tab: parseAsString.withDefault("overview"),
 			virtual_key_ids: parseAsString.withDefault(""),
 			providers: parseAsString.withDefault(""),
 			models: parseAsString.withDefault(""),
@@ -137,7 +49,9 @@ export default function DashboardPage() {
 			status: parseAsString.withDefault(""),
 			routing_rule_ids: parseAsString.withDefault(""),
 			routing_engine_used: parseAsString.withDefault(""),
+			stop_reasons: parseAsString.withDefault(""),
 			missing_cost_only: parseAsString.withDefault("false"),
+			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
 			token_chart: parseAsString.withDefault("bar"),
 			cost_chart: parseAsString.withDefault("bar"),
@@ -151,6 +65,16 @@ export default function DashboardPage() {
 			provider_cost_provider: parseAsString.withDefault("all"),
 			provider_token_provider: parseAsString.withDefault("all"),
 			provider_latency_provider: parseAsString.withDefault("all"),
+			mcp_volume_chart: parseAsString.withDefault("bar"),
+			mcp_cost_chart: parseAsString.withDefault("bar"),
+			mcp_tool_names: parseAsString.withDefault(""),
+			mcp_server_labels: parseAsString.withDefault(""),
+			parent_request_id: parseAsString.withDefault(""),
+			user_ids: parseAsString.withDefault(""),
+			team_ids: parseAsString.withDefault(""),
+			customer_ids: parseAsString.withDefault(""),
+			business_unit_ids: parseAsString.withDefault(""),
+			aliases: parseAsString.withDefault(""),
 		},
 		{
 			history: "push",
@@ -167,26 +91,66 @@ export default function DashboardPage() {
 	const selectedStatuses = useMemo(() => parseCsvParam(urlState.status), [urlState.status]);
 	const selectedRoutingRuleIds = useMemo(() => parseCsvParam(urlState.routing_rule_ids), [urlState.routing_rule_ids]);
 	const selectedRoutingEngines = useMemo(() => parseCsvParam(urlState.routing_engine_used), [urlState.routing_engine_used]);
+	const selectedStopReasons = useMemo(() => parseCsvParam(urlState.stop_reasons), [urlState.stop_reasons]);
 	const missingCostOnly = useMemo(() => urlState.missing_cost_only === "true", [urlState.missing_cost_only]);
+	const metadataFilters = useMemo(() => {
+		if (!urlState.metadata_filters) return undefined;
+		try {
+			return JSON.parse(urlState.metadata_filters) as Record<string, string>;
+		} catch {
+			return undefined;
+		}
+	}, [urlState.metadata_filters]);
 
-	// Derived filter for API calls
+	const selectedMcpToolNames = useMemo(() => parseCsvParam(urlState.mcp_tool_names), [urlState.mcp_tool_names]);
+	const selectedMcpServerLabels = useMemo(() => parseCsvParam(urlState.mcp_server_labels), [urlState.mcp_server_labels]);
+
+	const selectedUserIds = useMemo(() => parseCsvParam(urlState.user_ids), [urlState.user_ids]);
+	const selectedTeamIds = useMemo(() => parseCsvParam(urlState.team_ids), [urlState.team_ids]);
+	const selectedCustomerIds = useMemo(() => parseCsvParam(urlState.customer_ids), [urlState.customer_ids]);
+	const selectedBusinessUnitIds = useMemo(() => parseCsvParam(urlState.business_unit_ids), [urlState.business_unit_ids]);
+	const selectedAliases = useMemo(() => parseCsvParam(urlState.aliases), [urlState.aliases]);
+
 	const filters: LogFilters = useMemo(
 		() => ({
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedProviders.length > 0 && { providers: selectedProviders }),
 			...(selectedModels.length > 0 && { models: selectedModels }),
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
-			...(selectedVirtualKeyIds.length > 0 && { virtual_key_ids: selectedVirtualKeyIds }),
+			...(selectedVirtualKeyIds.length > 0 && {
+				virtual_key_ids: selectedVirtualKeyIds,
+			}),
 			...(selectedTypes.length > 0 && { objects: selectedTypes }),
 			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
-			...(selectedRoutingRuleIds.length > 0 && { routing_rule_ids: selectedRoutingRuleIds }),
-			...(selectedRoutingEngines.length > 0 && { routing_engine_used: selectedRoutingEngines }),
+			...(selectedRoutingRuleIds.length > 0 && {
+				routing_rule_ids: selectedRoutingRuleIds,
+			}),
+			...(selectedRoutingEngines.length > 0 && {
+				routing_engine_used: selectedRoutingEngines,
+			}),
+			...(selectedStopReasons.length > 0 && { stop_reasons: selectedStopReasons }),
 			...(missingCostOnly && { missing_cost_only: true }),
+			...(metadataFilters &&
+				Object.keys(metadataFilters).length > 0 && {
+					metadata_filters: metadataFilters,
+				}),
+			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
+			...(selectedUserIds.length > 0 && { user_ids: selectedUserIds }),
+			...(selectedTeamIds.length > 0 && { team_ids: selectedTeamIds }),
+			...(selectedCustomerIds.length > 0 && { customer_ids: selectedCustomerIds }),
+			...(selectedBusinessUnitIds.length > 0 && { business_unit_ids: selectedBusinessUnitIds }),
+			...(selectedAliases.length > 0 && { aliases: selectedAliases }),
 		}),
 		[
+			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
+			urlState.parent_request_id,
 			selectedProviders,
 			selectedModels,
 			selectedKeyIds,
@@ -195,173 +159,105 @@ export default function DashboardPage() {
 			selectedStatuses,
 			selectedRoutingRuleIds,
 			selectedRoutingEngines,
+			selectedStopReasons,
 			missingCostOnly,
+			metadataFilters,
+			selectedUserIds,
+			selectedTeamIds,
+			selectedCustomerIds,
+			selectedBusinessUnitIds,
+			selectedAliases,
 		],
 	);
 
-	// Date range for picker
-	const dateRange = useMemo(
+	const mcpFilters: MCPToolLogFilters = useMemo(
 		() => ({
-			from: dateUtils.fromUnixTimestamp(urlState.start_time),
-			to: dateUtils.fromUnixTimestamp(urlState.end_time),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
+			...(selectedMcpToolNames.length > 0 && {
+				tool_names: selectedMcpToolNames,
+			}),
+			...(selectedMcpServerLabels.length > 0 && {
+				server_labels: selectedMcpServerLabels,
+			}),
+			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
+			...(selectedVirtualKeyIds.length > 0 && {
+				virtual_key_ids: selectedVirtualKeyIds,
+			}),
 		}),
-		[urlState.start_time, urlState.end_time],
+		[
+			urlState.period,
+			urlState.start_time,
+			urlState.end_time,
+			selectedMcpToolNames,
+			selectedMcpServerLabels,
+			selectedStatuses,
+			selectedVirtualKeyIds,
+		],
 	);
 
-	// Model lists for each chart's legend (must match what the chart component actually renders)
-	const costModels = useMemo(() => sanitizeSeriesLabels(costData?.models), [costData?.models]);
-	const usageModels = useMemo(() => sanitizeSeriesLabels(modelData?.models), [modelData?.models]);
+	// Tab view refs for export data aggregation
+	const overviewRef = useRef<OverviewTabViewHandle>(null);
+	const providerRef = useRef<ProviderUsageTabViewHandle>(null);
+	const mcpRef = useRef<MCPTabViewHandle>(null);
+	const modelRankingsRef = useRef<ModelRankingsTabViewHandle>(null);
+	const teamRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const customerRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const virtualKeyRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
-	// Available models for filter dropdowns (union of both sources)
-	const availableModels = useMemo(() => {
-		const costModelLabels = sanitizeSeriesLabels(costData?.models);
-		if (costModelLabels.length) return costModelLabels;
-		return sanitizeSeriesLabels(modelData?.models);
-	}, [costData?.models, modelData?.models]);
+	const allRefs = [
+		overviewRef,
+		providerRef,
+		mcpRef,
+		modelRankingsRef,
+		teamRankingsRef,
+		customerRankingsRef,
+		buRankingsRef,
+		userRankingsRef,
+		virtualKeyRankingsRef,
+	];
 
-	// Available providers for provider chart filter dropdowns
-	const availableProviders = useMemo(() => {
-		const providerCostLabels = sanitizeSeriesLabels(providerCostData?.providers);
-		if (providerCostLabels.length) return providerCostLabels;
-		const providerTokenLabels = sanitizeSeriesLabels(providerTokenData?.providers);
-		if (providerTokenLabels.length) return providerTokenLabels;
-		return sanitizeSeriesLabels(providerLatencyData?.providers);
-	}, [providerCostData?.providers, providerTokenData?.providers, providerLatencyData?.providers]);
-
-	// Provider lists for each chart's legend
-	const providerCostProviders = useMemo(() => sanitizeSeriesLabels(providerCostData?.providers), [providerCostData?.providers]);
-	const providerTokenProviders = useMemo(() => sanitizeSeriesLabels(providerTokenData?.providers), [providerTokenData?.providers]);
-	const providerLatencyProviders = useMemo(() => sanitizeSeriesLabels(providerLatencyData?.providers), [providerLatencyData?.providers]);
-
-	// Fetch all data
-	const fetchAllData = useCallback(async () => {
-		setLoadingHistogram(true);
-		setLoadingTokens(true);
-		setLoadingCost(true);
-		setLoadingModels(true);
-		setLoadingLatency(true);
-		setLoadingProviderCost(true);
-		setLoadingProviderTokens(true);
-		setLoadingProviderLatency(true);
-
-		const fetchFilters = { filters };
-
-		// Fetch all in parallel, forcing fresh data (preferCacheValue: false bypasses RTK Query cache)
-		const [
-			histogramResult,
-			tokenResult,
-			costResult,
-			modelResult,
-			latencyResult,
-			providerCostResult,
-			providerTokenResult,
-			providerLatencyResult,
-		] = await Promise.all([
-			triggerHistogram(fetchFilters, false),
-			triggerTokens(fetchFilters, false),
-			triggerCost(fetchFilters, false),
-			triggerModels(fetchFilters, false),
-			triggerLatency(fetchFilters, false),
-			triggerProviderCost(fetchFilters, false),
-			triggerProviderTokens(fetchFilters, false),
-			triggerProviderLatency(fetchFilters, false),
-		]);
-
-		if (histogramResult.data) {
-			setHistogramData(histogramResult.data);
-		} else {
-			setHistogramData(null);
+	const getDashboardData = useCallback((): DashboardData => {
+		const merged: Partial<DashboardData> = {};
+		for (const r of allRefs) {
+			if (r.current) Object.assign(merged, r.current.getData());
 		}
-		setLoadingHistogram(false);
+		return {
+			histogramData: null,
+			tokenData: null,
+			costData: null,
+			modelData: null,
+			latencyData: null,
+			providerCostData: null,
+			providerTokenData: null,
+			providerLatencyData: null,
+			rankingsData: null,
+			teamRankingsData: null,
+			customerRankingsData: null,
+			buRankingsData: null,
+			userRankingsData: null,
+			virtualKeyRankingsData: null,
+			mcpHistogramData: null,
+			mcpCostData: null,
+			mcpTopToolsData: null,
+			...merged,
+		};
+	}, []);
 
-		if (tokenResult.data) {
-			setTokenData(tokenResult.data);
-		} else {
-			setTokenData(null);
-		}
-		setLoadingTokens(false);
+	const handlePreloadData = useCallback(async () => {
+		await Promise.all(allRefs.map((r) => r.current?.loadData()));
+	}, []);
 
-		if (costResult.data) {
-			setCostData(costResult.data);
-		} else {
-			setCostData(null);
-		}
-		setLoadingCost(false);
-
-		if (modelResult.data) {
-			setModelData(modelResult.data);
-		} else {
-			setModelData(null);
-		}
-		setLoadingModels(false);
-
-		if (latencyResult.data) {
-			setLatencyData(latencyResult.data);
-		} else {
-			setLatencyData(null);
-		}
-		setLoadingLatency(false);
-
-		if (providerCostResult.data) {
-			setProviderCostData(providerCostResult.data);
-		} else {
-			setProviderCostData(null);
-		}
-		setLoadingProviderCost(false);
-
-		if (providerTokenResult.data) {
-			setProviderTokenData(providerTokenResult.data);
-		} else {
-			setProviderTokenData(null);
-		}
-		setLoadingProviderTokens(false);
-
-		if (providerLatencyResult.data) {
-			setProviderLatencyData(providerLatencyResult.data);
-		} else {
-			setProviderLatencyData(null);
-		}
-		setLoadingProviderLatency(false);
-	}, [
-		filters,
-		triggerHistogram,
-		triggerTokens,
-		triggerCost,
-		triggerModels,
-		triggerLatency,
-		triggerProviderCost,
-		triggerProviderTokens,
-		triggerProviderLatency,
-	]);
-
-	// Fetch data on mount and when filters change
-	useEffect(() => {
-		fetchAllData();
-	}, [fetchAllData]);
-
-	// Handle time period change
-	const handlePeriodChange = useCallback(
-		(period: string | undefined) => {
-			if (!period) return;
-			const { start, end } = getTimeRangeFromPeriod(period);
-			setUrlState({
-				start_time: start,
-				end_time: end,
-				period,
-			});
-		},
-		[setUrlState],
-	);
-
-	// Handle custom date range change
-	const handleDateRangeChange = useCallback(
-		(range: { from?: Date; to?: Date }) => {
-			if (!range.from || !range.to) return;
-			setUrlState({
-				start_time: dateUtils.toUnixTimestamp(range.from),
-				end_time: dateUtils.toUnixTimestamp(range.to),
-				period: "", // Clear period when custom range is selected
-			});
+	// Tab change handler
+	const handleTabChange = useCallback(
+		(tab: string) => {
+			setUrlState({ tab });
 		},
 		[setUrlState],
 	);
@@ -372,41 +268,15 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 	const handleLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ latency_chart: type }), [setUrlState]);
-
-	// Filter change handler for FilterPopover
-	const handleFilterChange = useCallback(
-		(key: keyof LogFilters, values: string[] | boolean) => {
-			const urlKeyMap: Partial<Record<keyof LogFilters, string>> = {
-				providers: "providers",
-				models: "models",
-				selected_key_ids: "selected_key_ids",
-				virtual_key_ids: "virtual_key_ids",
-				objects: "objects",
-				status: "status",
-				routing_rule_ids: "routing_rule_ids",
-				routing_engine_used: "routing_engine_used",
-				missing_cost_only: "missing_cost_only",
-			};
-			const urlKey = urlKeyMap[key];
-			if (!urlKey) return;
-			if (typeof values === "boolean") {
-				setUrlState({ [urlKey]: String(values) });
-			} else {
-				setUrlState({ [urlKey]: values.join(",") });
-			}
-		},
-		[setUrlState],
-	);
-
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
 	const handleProviderLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ provider_latency_chart: type }), [setUrlState]);
+	const handleMcpVolumeChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_volume_chart: type }), [setUrlState]);
+	const handleMcpCostChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_cost_chart: type }), [setUrlState]);
 
-	// Model filter changes
+	// Model / provider filter changes
 	const handleCostModelChange = useCallback((model: string) => setUrlState({ cost_model: model }), [setUrlState]);
 	const handleUsageModelChange = useCallback((model: string) => setUrlState({ usage_model: model }), [setUrlState]);
-
-	// Provider filter changes
 	const handleProviderCostProviderChange = useCallback(
 		(provider: string) => setUrlState({ provider_cost_provider: provider }),
 		[setUrlState],
@@ -420,537 +290,402 @@ export default function DashboardPage() {
 		[setUrlState],
 	);
 
+	// Adapter: converts a full LogFilters object to dashboard's CSV-based URL state
+	const setFilters = useCallback(
+		(newFilters: LogFilters) => {
+			const newStartTime = newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined;
+			const newEndTime = newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined;
+			const timeChanged = newStartTime !== urlState.start_time || newEndTime !== urlState.end_time;
+			setUrlState({
+				...(timeChanged && { period: "" }),
+				start_time: newStartTime,
+				end_time: newEndTime,
+				period: urlState.period,
+				providers: (newFilters.providers || []).join(","),
+				models: (newFilters.models || []).join(","),
+				selected_key_ids: (newFilters.selected_key_ids || []).join(","),
+				virtual_key_ids: (newFilters.virtual_key_ids || []).join(","),
+				objects: (newFilters.objects || []).join(","),
+				status: (newFilters.status || []).join(","),
+				routing_rule_ids: (newFilters.routing_rule_ids || []).join(","),
+				routing_engine_used: (newFilters.routing_engine_used || []).join(","),
+				stop_reasons: (newFilters.stop_reasons || []).join(","),
+				missing_cost_only: String(newFilters.missing_cost_only ?? false),
+				metadata_filters:
+					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0
+						? JSON.stringify(newFilters.metadata_filters)
+						: "",
+				parent_request_id: newFilters.parent_request_id || "",
+				user_ids: (newFilters.user_ids || []).join(","),
+				team_ids: (newFilters.team_ids || []).join(","),
+				customer_ids: (newFilters.customer_ids || []).join(","),
+				business_unit_ids: (newFilters.business_unit_ids || []).join(","),
+				aliases: (newFilters.aliases || []).join(","),
+			});
+		},
+		[setUrlState, urlState.start_time, urlState.end_time, urlState.period],
+	);
+
+	// Date range for picker
+	const dateRange = useMemo(
+		() => ({
+			from: dateUtils.fromUnixTimestamp(urlState.start_time),
+			to: dateUtils.fromUnixTimestamp(urlState.end_time),
+		}),
+		[urlState.start_time, urlState.end_time],
+	);
+
+	const handlePeriodChange = useCallback(
+		(period: string | undefined) => {
+			if (!period) return;
+			const { from, to } = getRangeForPeriod(period);
+			setUrlState({
+				period,
+				start_time: Math.floor(from.getTime() / 1000),
+				end_time: Math.floor(to.getTime() / 1000),
+			});
+		},
+		[setUrlState],
+	);
+
+	const handleDateRangeChange = useCallback(
+		(range: { from?: Date; to?: Date }) => {
+			if (!range.from || !range.to) return;
+			setUrlState({
+				period: "",
+				start_time: dateUtils.toUnixTimestamp(range.from),
+				end_time: dateUtils.toUnixTimestamp(range.to),
+			});
+		},
+		[setUrlState],
+	);
+
+	// PDF export mode
+	const [pdfMode, setPdfMode] = useState(false);
+	const dashboardMinHeightRef = useRef<string>("");
+	const hiddenTabsRef = useRef<HTMLElement[]>([]);
+
+	const handlePdfExport = useCallback(async (): Promise<HTMLElement[]> => {
+		await handlePreloadData();
+		setPdfMode(true);
+
+		await new Promise<void>((resolve) => {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => resolve());
+			});
+		});
+
+		const hiddenTabs = document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"][hidden]');
+		hiddenTabsRef.current = Array.from(hiddenTabs);
+		for (const tab of hiddenTabs) {
+			tab.removeAttribute("hidden");
+			tab.style.display = "block";
+		}
+
+		const dashboardEl = document.getElementById("dashboard-root");
+		if (dashboardEl) {
+			dashboardMinHeightRef.current = dashboardEl.style.minHeight;
+			dashboardEl.style.minHeight = "0";
+		}
+
+		window.dispatchEvent(new Event("resize"));
+		await new Promise<void>((resolve) => {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => resolve());
+			});
+		});
+
+		const ids = [
+			"dashboard-section-overview",
+			"dashboard-section-provider-usage",
+			"dashboard-section-rankings",
+			"dashboard-section-mcp",
+			"dashboard-section-team-rankings",
+			"dashboard-section-customer-rankings",
+			"dashboard-section-bu-rankings",
+			"dashboard-section-user-rankings",
+			"dashboard-section-virtual-key-rankings",
+		];
+		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
+	}, [handlePreloadData]);
+
+	const handlePdfExportDone = useCallback(() => {
+		const dashboardEl = document.getElementById("dashboard-root");
+		if (dashboardEl) {
+			dashboardEl.style.minHeight = dashboardMinHeightRef.current;
+		}
+
+		for (const tab of hiddenTabsRef.current) {
+			tab.setAttribute("hidden", "");
+			tab.style.display = "";
+		}
+		hiddenTabsRef.current = [];
+
+		setPdfMode(false);
+	}, []);
+
+	const activeTab = urlState.tab || "overview";
+
 	return (
-		<div className="mx-auto flex h-full min-h-[calc(100vh-100px)] w-full flex-col gap-4">
-			{/* Header with time filter */}
-			<div className="flex items-center justify-between">
-				<div className="flex items-center gap-2">
-					<h1 className="text-lg font-semibold">Dashboard </h1>
+		<div id="dashboard-root" className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+			{/* Sidebar Filters */}
+			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
+
+			{/* Main Content */}
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md">
+				{/* Header */}
+				<div className="flex items-center justify-between p-4">
+					<div className="flex items-center gap-2">
+						<h1 className="text-lg font-semibold">Dashboard</h1>
+					</div>
+					<div className="flex items-center gap-2">
+						<ExportPopover
+							getData={getDashboardData}
+							onPreloadData={handlePreloadData}
+							onPdfExport={handlePdfExport}
+							onPdfExportDone={handlePdfExportDone}
+						/>
+						{activeTab === "mcp" && mcpFilterData && (
+							<div className="flex items-center gap-1">
+								{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
+									<ModelFilterSelect
+										models={mcpFilterData.tool_names ?? []}
+										selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
+										onModelChange={(value) => {
+											if (value === "all") {
+												setUrlState({ mcp_tool_names: "" });
+											} else {
+												setUrlState({ mcp_tool_names: value });
+											}
+										}}
+										placeholder="All Tools"
+										data-testid="dashboard-mcp-tool-filter"
+									/>
+								)}
+								{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
+									<ModelFilterSelect
+										models={mcpFilterData.server_labels ?? []}
+										selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
+										onModelChange={(value) => {
+											if (value === "all") {
+												setUrlState({ mcp_server_labels: "" });
+											} else {
+												setUrlState({ mcp_server_labels: value });
+											}
+										}}
+										placeholder="All Servers"
+										data-testid="dashboard-mcp-server-filter"
+									/>
+								)}
+							</div>
+						)}
+						<DateTimePickerWithRange
+							dateTime={dateRange}
+							onDateTimeUpdate={handleDateRangeChange}
+							preDefinedPeriods={TIME_PERIODS}
+							predefinedPeriod={urlState.period || undefined}
+							onPredefinedPeriodChange={handlePeriodChange}
+							triggerTestId="dashboard-filter-daterange"
+							popupAlignment="end"
+							showTimezone
+							timezone={timezone}
+							onTimezoneChange={setTimezone}
+						/>
+					</div>
 				</div>
-				<div className="flex items-center gap-2">
-					<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
-					<DateTimePickerWithRange
-						dateTime={dateRange}
-						onDateTimeUpdate={handleDateRangeChange}
-						preDefinedPeriods={TIME_PERIODS}
-						predefinedPeriod={urlState.period || undefined}
-						onPredefinedPeriodChange={handlePeriodChange}
-						triggerTestId="dashboard-filter-daterange"
-						popupAlignment="end"
-					/>
+
+				<div className="p-4">
+					{/* Tabs */}
+					<Tabs value={activeTab} onValueChange={handleTabChange}>
+						<TabsList className="mb-2">
+							<TabsTrigger value="overview" data-testid="dashboard-tab-overview">
+								Overview
+							</TabsTrigger>
+							<TabsTrigger value="provider-usage" data-testid="dashboard-tab-provider-usage">
+								Provider Usage
+							</TabsTrigger>
+							<TabsTrigger value="rankings" data-testid="dashboard-tab-rankings">
+								Model Rankings
+							</TabsTrigger>
+							<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
+								MCP usage
+							</TabsTrigger>
+							<TabsTrigger value="team-rankings" data-testid="dashboard-tab-team-rankings">
+								Team Rankings
+							</TabsTrigger>
+							<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
+								User Rankings
+							</TabsTrigger>
+							<TabsTrigger value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
+								Virtual Key Rankings
+							</TabsTrigger>
+							<TabsTrigger value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
+								Customer Rankings
+							</TabsTrigger>
+							<TabsTrigger value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
+								BU Rankings
+							</TabsTrigger>
+						</TabsList>
+
+						{/* Overview Tab */}
+						<TabsContent value="overview" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-overview">
+								<OverviewTabView
+									ref={overviewRef}
+									filters={filters}
+									active={activeTab === "overview" || pdfMode}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									volumeChartType={toChartType(urlState.volume_chart)}
+									tokenChartType={toChartType(urlState.token_chart)}
+									costChartType={toChartType(urlState.cost_chart)}
+									modelChartType={toChartType(urlState.model_chart)}
+									latencyChartType={toChartType(urlState.latency_chart)}
+									costModel={urlState.cost_model}
+									usageModel={urlState.usage_model}
+									onVolumeChartToggle={handleVolumeChartToggle}
+									onTokenChartToggle={handleTokenChartToggle}
+									onCostChartToggle={handleCostChartToggle}
+									onModelChartToggle={handleModelChartToggle}
+									onLatencyChartToggle={handleLatencyChartToggle}
+									onCostModelChange={handleCostModelChange}
+									onUsageModelChange={handleUsageModelChange}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Provider Usage Tab */}
+						<TabsContent value="provider-usage" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-provider-usage">
+								<ProviderUsageTabView
+									ref={providerRef}
+									filters={filters}
+									active={activeTab === "provider-usage" || pdfMode}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									providerCostChartType={toChartType(urlState.provider_cost_chart)}
+									providerTokenChartType={toChartType(urlState.provider_token_chart)}
+									providerLatencyChartType={toChartType(urlState.provider_latency_chart)}
+									providerCostProvider={urlState.provider_cost_provider}
+									providerTokenProvider={urlState.provider_token_provider}
+									providerLatencyProvider={urlState.provider_latency_provider}
+									onProviderCostChartToggle={handleProviderCostChartToggle}
+									onProviderTokenChartToggle={handleProviderTokenChartToggle}
+									onProviderLatencyChartToggle={handleProviderLatencyChartToggle}
+									onProviderCostProviderChange={handleProviderCostProviderChange}
+									onProviderTokenProviderChange={handleProviderTokenProviderChange}
+									onProviderLatencyProviderChange={handleProviderLatencyProviderChange}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Model Rankings Tab */}
+						<TabsContent value="rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-rankings">
+								<ModelRankingsTabView
+									ref={modelRankingsRef}
+									filters={filters}
+									active={activeTab === "rankings" || pdfMode}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* MCP Tab */}
+						<TabsContent value="mcp" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-mcp">
+								<MCPTabView
+									ref={mcpRef}
+									filters={mcpFilters}
+									active={activeTab === "mcp" || pdfMode}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									mcpVolumeChartType={toChartType(urlState.mcp_volume_chart)}
+									mcpCostChartType={toChartType(urlState.mcp_cost_chart)}
+									onMcpVolumeChartToggle={handleMcpVolumeChartToggle}
+									onMcpCostChartToggle={handleMcpCostChartToggle}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Team Rankings Tab */}
+						<TabsContent value="team-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-team-rankings">
+								<DimensionRankingsTabView
+									ref={teamRankingsRef}
+									filters={filters}
+									active={activeTab === "team-rankings" || pdfMode}
+									dimension="team"
+									dimensionLabel="Team"
+									testIdPrefix="dashboard-team-rankings"
+									dataKey="teamRankingsData"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Customer Rankings Tab */}
+						<TabsContent value="customer-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-customer-rankings">
+								<DimensionRankingsTabView
+									ref={customerRankingsRef}
+									filters={filters}
+									active={activeTab === "customer-rankings" || pdfMode}
+									dimension="customer"
+									dimensionLabel="Customer"
+									testIdPrefix="dashboard-customer-rankings"
+									dataKey="customerRankingsData"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Business Unit Rankings Tab */}
+						<TabsContent value="bu-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-bu-rankings">
+								<DimensionRankingsTabView
+									ref={buRankingsRef}
+									filters={filters}
+									active={activeTab === "bu-rankings" || pdfMode}
+									dimension="business_unit"
+									dimensionLabel="Business Unit"
+									testIdPrefix="dashboard-bu-rankings"
+									dataKey="buRankingsData"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* User Rankings Tab */}
+						<TabsContent value="user-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-user-rankings">
+								<DimensionRankingsTabView
+									ref={userRankingsRef}
+									filters={filters}
+									active={activeTab === "user-rankings" || pdfMode}
+									dimension="user"
+									dimensionLabel="User"
+									testIdPrefix="dashboard-user-rankings"
+									dataKey="userRankingsData"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Virtual Key Rankings Tab */}
+						<TabsContent value="virtual-key-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-virtual-key-rankings">
+								<DimensionRankingsTabView
+									ref={virtualKeyRankingsRef}
+									filters={filters}
+									active={activeTab === "virtual-key-rankings" || pdfMode}
+									dimension="virtual_key"
+									dimensionLabel="Virtual Key"
+									testIdPrefix="dashboard-virtual-key-rankings"
+									dataKey="virtualKeyRankingsData"
+								/>
+							</div>
+						</TabsContent>
+					</Tabs>
 				</div>
-			</div>
-
-			{/* Charts Grid */}
-			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
-				{/* Log Volume Chart */}
-				<ChartCard
-					title="Request Volume"
-					loading={loadingHistogram}
-					testId="chart-log-volume"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
-									<span className="text-muted-foreground">Success</span>
-								</span>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
-									<span className="text-muted-foreground">Error</span>
-								</span>
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.volume_chart)}
-									onToggle={handleVolumeChartToggle}
-									data-testid="dashboard-volume-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<LogVolumeChart
-						data={histogramData}
-						chartType={toChartType(urlState.volume_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-					/>
-				</ChartCard>
-
-				{/* Token Usage Chart */}
-				<ChartCard
-					title="Token Usage"
-					loading={loadingTokens}
-					testId="chart-token-usage"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
-									<span className="text-muted-foreground">Input</span>
-								</span>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
-									<span className="text-muted-foreground">Output</span>
-								</span>
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.token_chart)}
-									onToggle={handleTokenChartToggle}
-									data-testid="dashboard-token-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<TokenUsageChart
-						data={tokenData}
-						chartType={toChartType(urlState.token_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-					/>
-				</ChartCard>
-
-				{/* Cost Chart */}
-				<ChartCard
-					title="Cost"
-					loading={loadingCost}
-					testId="chart-cost-total"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								{urlState.cost_model === "all" ? (
-									costModels.length > 0 && (
-										<>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span className="flex items-center gap-1">
-														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-														<span className="text-muted-foreground max-w-[100px] truncate">{costModels[0]}</span>
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>{costModels[0]}</TooltipContent>
-											</Tooltip>
-											{costModels.length > 1 && (
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<span className="text-muted-foreground cursor-default">+{costModels.length - 1} more</span>
-													</TooltipTrigger>
-													<TooltipContent>
-														<div className="flex flex-col gap-1">
-															{costModels.slice(1).map((model, idx) => (
-																<span key={model} className="flex items-center gap-1">
-																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
-																	{model}
-																</span>
-															))}
-														</div>
-													</TooltipContent>
-												</Tooltip>
-											)}
-										</>
-									)
-								) : (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span className="flex items-center gap-1">
-												<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-												<span className="text-muted-foreground max-w-[100px] truncate">{urlState.cost_model}</span>
-											</span>
-										</TooltipTrigger>
-										<TooltipContent>{urlState.cost_model}</TooltipContent>
-									</Tooltip>
-								)}
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ModelFilterSelect
-									models={availableModels}
-									selectedModel={urlState.cost_model}
-									onModelChange={handleCostModelChange}
-									data-testid="dashboard-cost-model-filter"
-								/>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.cost_chart)}
-									onToggle={handleCostChartToggle}
-									data-testid="dashboard-cost-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<CostChart
-						data={costData}
-						chartType={toChartType(urlState.cost_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						selectedModel={urlState.cost_model}
-					/>
-				</ChartCard>
-
-				{/* Model Usage Chart */}
-				<ChartCard
-					title="Model Usage"
-					loading={loadingModels}
-					testId="chart-model-usage"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								{urlState.usage_model === "all" ? (
-									usageModels.length > 0 && (
-										<>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span className="flex items-center gap-1">
-														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-														<span className="text-muted-foreground max-w-[100px] truncate">{usageModels[0]}</span>
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>{usageModels[0]}</TooltipContent>
-											</Tooltip>
-											{usageModels.length > 1 && (
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<span className="text-muted-foreground cursor-default">+{usageModels.length - 1} more</span>
-													</TooltipTrigger>
-													<TooltipContent>
-														<div className="flex flex-col gap-1">
-															{usageModels.slice(1).map((model, idx) => (
-																<span key={model} className="flex items-center gap-1">
-																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
-																	{model}
-																</span>
-															))}
-														</div>
-													</TooltipContent>
-												</Tooltip>
-											)}
-										</>
-									)
-								) : (
-									<>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
-											<span className="text-muted-foreground">Success</span>
-										</span>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
-											<span className="text-muted-foreground">Error</span>
-										</span>
-									</>
-								)}
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ModelFilterSelect
-									models={availableModels}
-									selectedModel={urlState.usage_model}
-									onModelChange={handleUsageModelChange}
-									data-testid="dashboard-usage-model-filter"
-								/>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.model_chart)}
-									onToggle={handleModelChartToggle}
-									data-testid="dashboard-usage-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<ModelUsageChart
-						data={modelData}
-						chartType={toChartType(urlState.model_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						selectedModel={urlState.usage_model}
-					/>
-				</ChartCard>
-
-				{/* Latency Chart */}
-				<ChartCard
-					title="Latency"
-					loading={loadingLatency}
-					testId="chart-latency"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
-									<span className="text-muted-foreground">Avg</span>
-								</span>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
-									<span className="text-muted-foreground">P90</span>
-								</span>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
-									<span className="text-muted-foreground">P95</span>
-								</span>
-								<span className="flex items-center gap-1">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
-									<span className="text-muted-foreground">P99</span>
-								</span>
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.latency_chart)}
-									onToggle={handleLatencyChartToggle}
-									data-testid="dashboard-latency-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<LatencyChart
-						data={latencyData}
-						chartType={toChartType(urlState.latency_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-					/>
-				</ChartCard>
-			</div>
-
-			{/* Provider Level Metrics */}
-			<h2 className="mt-2 text-sm font-semibold">Provider Level Metrics</h2>
-			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
-				{/* Provider Cost Chart */}
-				<ChartCard
-					title="Provider Cost"
-					loading={loadingProviderCost}
-					testId="chart-provider-cost"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								{urlState.provider_cost_provider === "all" ? (
-									providerCostProviders.length > 0 && (
-										<>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span className="flex items-center gap-1">
-														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-														<span className="text-muted-foreground max-w-[100px] truncate">{providerCostProviders[0]}</span>
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>{providerCostProviders[0]}</TooltipContent>
-											</Tooltip>
-											{providerCostProviders.length > 1 && (
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<span className="text-muted-foreground cursor-default">+{providerCostProviders.length - 1} more</span>
-													</TooltipTrigger>
-													<TooltipContent>
-														<div className="flex flex-col gap-1">
-															{providerCostProviders.slice(1).map((provider, idx) => (
-																<span key={provider} className="flex items-center gap-1">
-																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
-																	{provider}
-																</span>
-															))}
-														</div>
-													</TooltipContent>
-												</Tooltip>
-											)}
-										</>
-									)
-								) : (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span className="flex items-center gap-1">
-												<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-												<span className="text-muted-foreground max-w-[100px] truncate">{urlState.provider_cost_provider}</span>
-											</span>
-										</TooltipTrigger>
-										<TooltipContent>{urlState.provider_cost_provider}</TooltipContent>
-									</Tooltip>
-								)}
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ProviderFilterSelect
-									providers={availableProviders}
-									selectedProvider={urlState.provider_cost_provider}
-									onProviderChange={handleProviderCostProviderChange}
-									data-testid="dashboard-provider-cost-filter"
-								/>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.provider_cost_chart)}
-									onToggle={handleProviderCostChartToggle}
-									data-testid="dashboard-provider-cost-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<ProviderCostChart
-						data={providerCostData}
-						chartType={toChartType(urlState.provider_cost_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						selectedProvider={urlState.provider_cost_provider}
-					/>
-				</ChartCard>
-
-				{/* Provider Token Usage Chart */}
-				<ChartCard
-					title="Provider Token Usage"
-					loading={loadingProviderTokens}
-					testId="chart-provider-tokens"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								{urlState.provider_token_provider === "all" ? (
-									providerTokenProviders.length > 0 && (
-										<>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span className="flex items-center gap-1">
-														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-														<span className="text-muted-foreground max-w-[100px] truncate">{providerTokenProviders[0]}</span>
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>{providerTokenProviders[0]}</TooltipContent>
-											</Tooltip>
-											{providerTokenProviders.length > 1 && (
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<span className="text-muted-foreground cursor-default">+{providerTokenProviders.length - 1} more</span>
-													</TooltipTrigger>
-													<TooltipContent>
-														<div className="flex flex-col gap-1">
-															{providerTokenProviders.slice(1).map((provider, idx) => (
-																<span key={provider} className="flex items-center gap-1">
-																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
-																	{provider}
-																</span>
-															))}
-														</div>
-													</TooltipContent>
-												</Tooltip>
-											)}
-										</>
-									)
-								) : (
-									<>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
-											<span className="text-muted-foreground">Input</span>
-										</span>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
-											<span className="text-muted-foreground">Output</span>
-										</span>
-									</>
-								)}
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ProviderFilterSelect
-									providers={availableProviders}
-									selectedProvider={urlState.provider_token_provider}
-									onProviderChange={handleProviderTokenProviderChange}
-									data-testid="dashboard-provider-token-filter"
-								/>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.provider_token_chart)}
-									onToggle={handleProviderTokenChartToggle}
-									data-testid="dashboard-provider-token-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<ProviderTokenChart
-						data={providerTokenData}
-						chartType={toChartType(urlState.provider_token_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						selectedProvider={urlState.provider_token_provider}
-					/>
-				</ChartCard>
-
-				{/* Provider Latency Chart */}
-				<ChartCard
-					title="Provider Latency"
-					loading={loadingProviderLatency}
-					testId="chart-provider-latency"
-					headerActions={
-						<div className={CHART_HEADER_ACTIONS_CLASS}>
-							<div className={CHART_HEADER_LEGEND_CLASS}>
-								{urlState.provider_latency_provider === "all" ? (
-									providerLatencyProviders.length > 0 && (
-										<>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span className="flex items-center gap-1">
-														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-														<span className="text-muted-foreground max-w-[100px] truncate">{providerLatencyProviders[0]}</span>
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>{providerLatencyProviders[0]}</TooltipContent>
-											</Tooltip>
-											{providerLatencyProviders.length > 1 && (
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<span className="text-muted-foreground cursor-default">+{providerLatencyProviders.length - 1} more</span>
-													</TooltipTrigger>
-													<TooltipContent>
-														<div className="flex flex-col gap-1">
-															{providerLatencyProviders.slice(1).map((provider, idx) => (
-																<span key={provider} className="flex items-center gap-1">
-																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
-																	{provider}
-																</span>
-															))}
-														</div>
-													</TooltipContent>
-												</Tooltip>
-											)}
-										</>
-									)
-								) : (
-									<>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
-											<span className="text-muted-foreground">Avg</span>
-										</span>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
-											<span className="text-muted-foreground">P90</span>
-										</span>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
-											<span className="text-muted-foreground">P95</span>
-										</span>
-										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
-											<span className="text-muted-foreground">P99</span>
-										</span>
-									</>
-								)}
-							</div>
-							<div className={CHART_HEADER_CONTROLS_CLASS}>
-								<ProviderFilterSelect
-									providers={availableProviders}
-									selectedProvider={urlState.provider_latency_provider}
-									onProviderChange={handleProviderLatencyProviderChange}
-									data-testid="dashboard-provider-latency-filter"
-								/>
-								<ChartTypeToggle
-									chartType={toChartType(urlState.provider_latency_chart)}
-									onToggle={handleProviderLatencyChartToggle}
-									data-testid="dashboard-provider-latency-chart-toggle"
-								/>
-							</div>
-						</div>
-					}
-				>
-					<ProviderLatencyChart
-						data={providerLatencyData}
-						chartType={toChartType(urlState.provider_latency_chart)}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						selectedProvider={urlState.provider_latency_provider}
-					/>
-				</ChartCard>
-			</div>
+			</ScrollArea>
 		</div>
 	);
 }

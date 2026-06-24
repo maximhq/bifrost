@@ -1,69 +1,27 @@
 package azure
 
 import (
-	"fmt"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool) ([]byte, *schemas.BifrostError) {
-	var jsonBody []byte
-	var err error
-
-	// Check if raw request body should be used
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonBody = request.GetRawRequestBody()
-		// Unmarshal and check if model and region are present
-		var requestBody map[string]interface{}
-		if err := sonic.Unmarshal(jsonBody, &requestBody); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("failed to unmarshal request body: %w", err), providerName)
-		}
-		// Add max_tokens if not present
-		if _, exists := requestBody["max_tokens"]; !exists {
-			requestBody["max_tokens"] = anthropic.AnthropicDefaultMaxTokens
-		}
-		// Replace model with deployment
-		requestBody["model"] = deployment
-		delete(requestBody, "fallbacks")
-		// Add stream if not present
-		if isStreaming {
-			requestBody["stream"] = true
-		}
-		jsonBody, err = sonic.Marshal(requestBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-		}
-	} else {
-		// Convert request to Anthropic format
-		request.Model = deployment
-		reqBody, err := anthropic.ToAnthropicResponsesRequest(ctx, request)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
-		}
-		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
-		}
-
-		if isStreaming {
-			reqBody.Stream = schemas.Ptr(true)
-		}
-
-		// Convert struct to map
-		jsonBody, err = sonic.Marshal(reqBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
-		}
-	}
-
-	return jsonBody, nil
+// getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Azure.
+// It delegates to BuildAnthropicResponsesRequestBody with the Azure provider and the target deployment name.
+func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
+	return anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+		Provider:                  schemas.Azure,
+		Deployment:                deployment,
+		IsStreaming:               isStreaming,
+		ValidateTools:             true,
+		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
+		ShouldSendBackRawResponse: shouldSendBackRawResponse,
+	})
 }
 
-// getCleanedScopes returns cleaned scopes or default scope if none are valid.
-// It filters out empty/whitespace-only strings and returns the default scope if no valid scopes remain.
+// getAzureScopes returns the configured scopes or the default scope if none are valid.
+// It filters out empty/whitespace-only strings.
 func getAzureScopes(configuredScopes []string) []string {
 	scopes := []string{DefaultAzureScope}
 	if len(configuredScopes) > 0 {
@@ -78,4 +36,46 @@ func getAzureScopes(configuredScopes []string) []string {
 		}
 	}
 	return scopes
+}
+
+// resolveAnthropicVersion returns the anthropic-version header value for the
+// current attempt. Uses the AzureAliasCfg.AnthropicVersion override from the
+// resolved alias when present, otherwise the Azure default.
+func resolveAnthropicVersion(ctx *schemas.BifrostContext) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.AzureAliasCfg != nil && ra.Config.AzureAliasCfg.AnthropicVersion != nil && *ra.Config.AzureAliasCfg.AnthropicVersion != "" {
+		return *ra.Config.AzureAliasCfg.AnthropicVersion
+	}
+	return AzureAnthropicAPIVersionDefault
+}
+
+// resolveAPIVersion returns the Azure api-version query parameter value for
+// the current attempt. Uses the AzureAliasCfg.APIVersion override from the
+// resolved alias when present, otherwise the provided default. Different
+// Azure routes have different defaults (DefaultAzureAPIVersion for classic
+// /openai/deployments/, AzureAPIVersionPreview for /openai/v1/responses);
+// callers pass the route's default so the override can take precedence
+// without losing the route-specific fallback.
+func resolveAPIVersion(ctx *schemas.BifrostContext, defaultVersion string) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.AzureAliasCfg != nil && ra.Config.AzureAliasCfg.APIVersion != nil && *ra.Config.AzureAliasCfg.APIVersion != "" {
+		return *ra.Config.AzureAliasCfg.APIVersion
+	}
+	return defaultVersion
+}
+
+// resolveAzureEndpoint returns the Azure cognitive-services endpoint URL for
+// the current attempt. Uses the AzureAliasCfg.Endpoint override from the
+// resolved alias when present, otherwise the key-level endpoint. Lets one
+// Azure credential (ClientID/Secret/TenantID or API key) span deployments
+// hosted on different Azure resources (e.g. OpenAI on east-us, Anthropic on
+// west-us2).
+func resolveAzureEndpoint(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.AzureAliasCfg != nil && ra.Config.AzureAliasCfg.Endpoint != nil {
+		if v := ra.Config.AzureAliasCfg.Endpoint.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.AzureKeyConfig != nil {
+		return key.AzureKeyConfig.Endpoint.GetValue()
+	}
+	return ""
 }

@@ -3,8 +3,6 @@ name: Snyk checks
 on:
   push:
     branches: [main, master, "**/*"]
-  pull_request:
-    branches: ["**/*"]
   workflow_dispatch:
 
 permissions:
@@ -12,108 +10,140 @@ permissions:
   security-events: write
 
 jobs:
-  # Check if pipeline should be skipped based on first line of commit message
-  check-skip:
-    runs-on: ubuntu-latest
-    outputs:
-      should-skip: ${{ steps.check.outputs.should-skip }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Check if pipeline should be skipped
-        id: check
-        run: |
-          COMMIT_MESSAGE=$(git log -1 --pretty=%B)
-          FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
-          if [[ "$FIRST_LINE" == *"--skip-pipeline"* ]]; then
-            echo "should-skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "should-skip=false" >> $GITHUB_OUTPUT
-          fi
-
   snyk-open-source:
-    needs: [check-skip]
-    if: needs.check-skip.outputs.should-skip != 'true'
     name: Snyk Open Source (deps)
     runs-on: ubuntu-latest
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            api.snyk.io:443
+            downloads.snyk.io:443
+            files.pythonhosted.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            proxy.golang.org:443
+            raw.githubusercontent.com:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            static.snyk.io:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node (for UI)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "25"
 
-      - name: Setup Python (for tests tooling)
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
         with:
+          version: "0.11.0"
           python-version: "3.11"
 
+      - name: Sync Python dependencies (integrations)
+        working-directory: tests/integrations/python
+        run: uv sync --frozen
+
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.4"
+
+      - name: Setup Go workspace
+        run: make setup-workspace
+
+      - name: Build
+        run: make build LOCAL=1
 
       - name: Install Snyk CLI
-        uses: snyk/actions/setup@master
+        uses: maximhq/snyk-actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
+        with:
+          snyk-version: v1.1303.2
 
       - name: Snyk test (all projects)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --all-projects --detection-depth=4 --sarif-file-output=snyk.sarif || true
+        run: snyk test --all-projects --detection-depth=4 --exclude=examples,tests --sarif-file-output=snyk.sarif || true
 
       - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('snyk.sarif') != ''
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4.34.1
         with:
           sarif_file: snyk.sarif
 
   snyk-code:
-    needs: [check-skip]
-    if: needs.check-skip.outputs.should-skip != 'true'
     name: Snyk Code (SAST)
     runs-on: ubuntu-latest
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            api.snyk.io:443
+            deeproxy.snyk.io:443
+            downloads.snyk.io:443
+            files.pythonhosted.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            proxy.golang.org:443
+            raw.githubusercontent.com:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node (for UI)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "25"
 
-      - name: Setup Python (for tests tooling)
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
         with:
+          version: "0.11.0"
           python-version: "3.11"
 
-      - name: Setup Python (for tests tooling)
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: |
-            tests/integrations/requirements.txt
-            tests/governance/requirements.txt
-
-      - name: Install Python dependencies (tests tooling)
-        run: |
-          python -m pip install --disable-pip-version-check \
-            -r tests/integrations/requirements.txt \
-            -r tests/governance/requirements.txt
+      - name: Sync Python dependencies (integrations)
+        working-directory: tests/integrations/python
+        run: uv sync --frozen
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.4"
+
+      - name: Setup Go workspace
+        run: make setup-workspace
 
       - name: Build
-        run: make build
+        run: make build LOCAL=1
 
       - name: Install Snyk CLI
-        uses: snyk/actions/setup@master
+        uses: maximhq/snyk-actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
+        with:
+          snyk-version: v1.1303.2
 
       - name: Snyk Code test
         env:
@@ -121,7 +151,7 @@ jobs:
         run: snyk code test --sarif-file-output=snyk-code.sarif || true
 
       - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4.34.1
         with:
           sarif_file: snyk-code.sarif

@@ -57,7 +57,7 @@ export class RoutingRulesPage extends BasePage {
     this.table = page.locator('table').filter({
       has: page.locator('th').filter({ hasText: /^Priority$/ })
     }).first()
-    this.emptyState = page.getByText(/No routing rules yet/i)
+    this.emptyState = page.getByTestId('routing-rules-empty-state')
     // Use .first() to handle both "New Rule" and "Create First Rule" buttons
     this.createBtn = page.locator('[data-testid="create-routing-rule-btn"]').or(
       page.getByRole('button', { name: /New Rule|Create First Rule/i }).first()
@@ -585,6 +585,17 @@ export class RoutingRulesPage extends BasePage {
   async reorderRuleByPriority(name: string, newPriority: number): Promise<void> {
     // Edit the rule and change its priority
     await this.editRoutingRule(name, { priority: newPriority })
+  }
+
+  /**
+   * Get rule's description from the table (first column contains name + description)
+   */
+  async getRuleDescription(name: string): Promise<string> {
+    const row = this.getRuleRow(name)
+    const descEl = row.getByTestId('routing-rule-description')
+    const count = await descEl.count()
+    if (count === 0) return ''
+    return (await descEl.textContent()) ?? ''
   }
 
   /**

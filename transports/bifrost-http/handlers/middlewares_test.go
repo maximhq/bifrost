@@ -1,10 +1,22 @@
 package handlers
 
 import (
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
+	"context"
+	cryptoRand "crypto/rand"
+	"encoding/json"
+	"io"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -26,7 +38,7 @@ func (m *mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
 func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -62,7 +74,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -84,7 +96,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 	allowedOrigin := "https://example.com"
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{allowedOrigin},
 		},
 	}
@@ -115,7 +127,7 @@ func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 // TestCorsMiddleware_NonAllowedOrigins tests that non-allowed origins don't get CORS headers
 func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -146,7 +158,7 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 // TestCorsMiddleware_PreflightAllowedOrigin tests OPTIONS preflight requests for allowed origins
 func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 		},
 	}
@@ -183,7 +195,7 @@ func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightNonAllowedOrigin tests OPTIONS preflight requests for non-allowed origins
 func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -220,7 +232,7 @@ func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightLocalhost tests OPTIONS preflight requests for localhost
 func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -257,7 +269,7 @@ func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 // TestCorsMiddleware_NoOriginHeader tests behavior when no Origin header is present
 func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -399,6 +411,69 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 
 	chained := lib.ChainMiddlewares(handler, middleware)
 	chained(ctx)
+}
+
+func TestIsInferenceWSEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/responses",
+		"/v1/realtime",
+		"/responses",
+		"/realtime",
+		"/openai/v1/responses",
+		"/openai/responses",
+		"/openai/openai/responses",
+		"/openai/v1/realtime",
+		"/openai/realtime",
+		"/openai/openai/realtime",
+	}
+
+	for _, path := range paths {
+		if !isInferenceWSEndpoint(path) {
+			t.Fatalf("expected inference websocket path %s to be recognized", path)
+		}
+	}
+
+	if isInferenceWSEndpoint("/api/ws") {
+		t.Fatal("dashboard websocket path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/openai/chat/completions") {
+		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+}
+
+func TestIsRealtimeTransportEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+		"/openai/v1/realtime",
+		"/openai/openai/realtime",
+		"/v1/realtime/calls",
+		"/realtime/calls",
+		"/openai/realtime/calls",
+		"/openai/v1/realtime/calls",
+		"/openai/openai/realtime/calls",
+	}
+
+	for _, path := range paths {
+		if !isRealtimeTransportEndpoint(path) {
+			t.Fatalf("expected realtime transport path %s to be recognized", path)
+		}
+	}
+
+	nonTransportPaths := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+		"/v1/chat/completions",
+	}
+
+	for _, path := range nonTransportPaths {
+		if isRealtimeTransportEndpoint(path) {
+			t.Fatalf("did not expect non-transport path %s to be recognized", path)
+		}
+	}
 }
 
 // Testlib.ChainMiddlewares_ShortCircuit tests that when a middleware writes a response
@@ -615,6 +690,50 @@ func TestAuthMiddleware_EnabledAuthConfig_NoAuth(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	t.Run("serve routes bypass auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills/serve/my-skill.git/info/refs?service=git-upload-pack")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if !nextCalled {
+			t.Fatal("expected public skills serving route to bypass auth")
+		}
+	})
+
+	t.Run("management routes require auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if nextCalled {
+			t.Fatal("expected skills management route to require auth")
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+			t.Fatalf("expected %d, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+		}
+	})
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -651,6 +770,120 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 				t.Errorf("Next handler should be called for whitelisted route %s", route)
 			}
 		})
+	}
+}
+
+func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+	routes := []string{
+		"/v1/realtime",
+		"/openai/v1/realtime",
+		"/v1/realtime/calls?model=gpt-realtime",
+		"/openai/v1/realtime/calls?model=gpt-realtime",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatalf("expected realtime transport route %s to bypass auth", route)
+			}
+		})
+	}
+}
+
+// TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance verifies that the
+// inference middleware passes every inference request through — including realtime minting
+// endpoints and credential-less requests — even with dashboard auth enabled. Inference
+// authentication is owned by the governance plugin downstream (the authoritative VK
+// validator), not by this dashboard-auth middleware. Re-introducing a credential check
+// here would reject virtual-key callers and break inference auth, so the middleware must
+// never short-circuit an inference request.
+func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	cases := []struct {
+		name      string
+		uri       string
+		headerKey string
+		headerVal string
+	}{
+		{name: "chat completion with virtual key", uri: "/v1/chat/completions", headerKey: "x-bf-vk", headerVal: "sk-bf-abc123"},
+		{name: "chat completion without credentials", uri: "/v1/chat/completions"},
+		{name: "realtime minting (client_secrets)", uri: "/v1/realtime/client_secrets"},
+		{name: "realtime minting (sessions)", uri: "/openai/v1/realtime/sessions"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.headerKey != "" {
+				ctx.Request.Header.Set(tc.headerKey, tc.headerVal)
+			}
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+			am.InferenceMiddleware()(next)(ctx)
+
+			if !nextCalled {
+				t.Fatalf("expected inference request %q to pass the middleware (governance enforces auth downstream), got %d", tc.name, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+// TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass guards against the privilege-
+// escalation loophole: a virtual key must never grant access to admin/dashboard routes.
+func TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/config")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-abc123")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+	am.APIMiddleware()(next)(ctx)
+
+	if nextCalled {
+		t.Fatal("virtual key must not bypass auth on admin/dashboard routes")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected %d for admin route with VK, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	}
 }
 
@@ -836,7 +1069,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{}, // No custom headers
 		},
@@ -855,10 +1088,125 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_NonCredentialed tests that wildcard allowed headers
+// sets Access-Control-Allow-Headers to * for non-credentialed requests (wildcard origins).
+func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Non-credentialed: wildcard is valid per spec
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "*" {
+		t.Errorf("Expected Access-Control-Allow-Headers to be *, got %s", actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedPreflight tests that wildcard allowed headers
+// reflects Access-Control-Request-Headers for credentialed preflight requests instead of sending
+// the literal *, which browsers don't treat as a wildcard when credentials are present.
+func TestCorsMiddleware_WildcardHeaders_CredentialedPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("OPTIONS")
+	ctx.Request.Header.Set("Origin", "https://example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Headers", "Authorization, X-Custom-Header")
+
+	next := func(ctx *fasthttp.RequestCtx) {
+		t.Error("Next handler should not be called for preflight")
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed preflight: should reflect requested headers, not *
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "Authorization, X-Custom-Header" {
+		t.Errorf("Expected Access-Control-Allow-Headers to reflect requested headers, got %s", actualHeaders)
+	}
+
+	// Should also have credentials
+	creds := string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials"))
+	if creds != "true" {
+		t.Errorf("Expected Access-Control-Allow-Credentials to be true, got %s", creds)
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight tests that wildcard allowed headers
+// uses defaults for credentialed non-preflight requests (no Access-Control-Request-Headers).
+func TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed non-preflight: should use defaults (not *)
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	defaultHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
+	for _, header := range defaultHeaders {
+		if !containsHeader(actualHeaders, header) {
+			t.Errorf("Expected Access-Control-Allow-Headers to contain %s, got %s", header, actualHeaders)
+		}
+	}
+	if actualHeaders == "*" {
+		t.Error("Expected Access-Control-Allow-Headers to NOT be * for credentialed requests")
 	}
 
 	if !nextCalled {
@@ -871,7 +1219,7 @@ func TestCorsMiddleware_CustomHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{"X-Custom-Header", "X-Another-Header"},
 		},
@@ -916,7 +1264,7 @@ func TestCorsMiddleware_DuplicateHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			// Include a header that's already in defaults
 			AllowedHeaders: []string{"Content-Type", "X-Custom-Header"},
@@ -959,7 +1307,7 @@ func TestCorsMiddleware_CustomHeadersWithLocalhost(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 			AllowedHeaders: []string{"X-Development-Header"},
 		},
@@ -993,7 +1341,7 @@ func TestCorsMiddleware_CustomHeadersNotSetForNonAllowedOrigin(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 			AllowedHeaders: []string{"X-Custom-Header"},
 		},
@@ -1139,5 +1487,743 @@ func TestFasthttpToHTTPRequest_PathParams(t *testing.T) {
 	}
 	if fileID := req.CaseInsensitivePathParamLookup("FILE_ID"); fileID != "file-abc123" {
 		t.Errorf("CaseInsensitivePathParamLookup should be case-insensitive: expected 'file-abc123', got '%s'", fileID)
+	}
+}
+
+func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	testCases := []struct {
+		name     string
+		encoding string
+		encode   func([]byte) ([]byte, error)
+	}{
+		{name: "gzip", encoding: "gzip", encode: gzipCompress},
+		{name: "deflate", encoding: "deflate", encode: deflateCompress},
+		{name: "brotli", encoding: "br", encode: brotliCompress},
+		{name: "zstd", encoding: "zstd", encode: zstdCompress},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			compressedBody, err := tc.encode(plainBody)
+			if err != nil {
+				t.Fatalf("failed to encode body: %v", err)
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+			ctx.Request.SetBodyRaw(compressedBody)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+				if string(ctx.Request.Body()) != string(plainBody) {
+					t.Fatalf("expected decompressed body, got %q", string(ctx.Request.Body()))
+				}
+			}
+
+			handler := RequestDecompressionMiddleware(config)(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatal("next handler was not called")
+			}
+			if got := string(ctx.Request.Header.Peek("Content-Encoding")); got != "" {
+				t.Fatalf("expected content-encoding to be cleared, got %q", got)
+			}
+			if got := string(ctx.Request.Header.Peek("Content-Length")); got != "" {
+				t.Fatalf("expected content-length to be cleared, got %q", got)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyRaw([]byte("not-a-valid-gzip-payload"))
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for invalid compressed payload")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "invalid compressed request body") {
+		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
+	}
+}
+
+func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "snappy")
+	ctx.Request.SetBodyRaw([]byte("whatever"))
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for unsupported content-encoding")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "unsupported Content-Encoding") {
+		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
+	}
+}
+
+func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 1,
+		},
+	}
+
+	plainBody := bytes.Repeat([]byte("a"), (1024*1024)+10)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip test payload: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyRaw(compressedBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called when decompressed body exceeds limit")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413, got %d", ctx.Response.StatusCode())
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "decompressed request body exceeds max allowed size") {
+		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
+	}
+}
+
+func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	encodings := []string{"gzip", "deflate", "br", "zstd"}
+	for _, enc := range encodings {
+		t.Run(enc, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.Set("Content-Encoding", enc)
+			ctx.Request.SetBodyRaw([]byte{})
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := RequestDecompressionMiddleware(config)(next)
+			handler(ctx)
+
+			// Empty body with Content-Encoding should return 400 (decoders fail on empty input)
+			if nextCalled {
+				// Some decoders may produce empty output — that's acceptable too
+				return
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	originalBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyRaw(originalBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if string(ctx.Request.Body()) != string(originalBody) {
+			t.Fatalf("expected body to be unchanged, got %q", string(ctx.Request.Body()))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 1,
+		},
+	}
+
+	plainBody := bytes.Repeat([]byte("a"), 1024*1024) // exactly 1 MB
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip test payload: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyRaw(compressedBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if len(ctx.Request.Body()) != 1024*1024 {
+			t.Fatalf("expected body length %d, got %d", 1024*1024, len(ctx.Request.Body()))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called — body exactly at limit should pass")
+	}
+}
+
+// --- Streaming decompression path tests ---
+
+func TestShouldStreamDecompress(t *testing.T) {
+	defaultThreshold := int(schemas.DefaultLargePayloadRequestThresholdBytes)
+	tests := []struct {
+		name            string
+		contentLength   int
+		customThreshold int64 // 0 means no custom threshold (use default)
+		want            bool
+	}{
+		{"chunked (CL=-1)", -1, 0, true},
+		{"empty body (CL=0)", 0, 0, false},
+		{"small body", 100, 0, false},
+		{"at default threshold", defaultThreshold, 0, false},
+		{"above default threshold", defaultThreshold + 1, 0, true},
+		// Custom enterprise threshold (1MB) — body at 2MB should stream.
+		{"above custom threshold", 2 * 1024 * 1024, 1 * 1024 * 1024, true},
+		// Custom enterprise threshold (20MB) — body at default 10MB+1 should NOT stream.
+		{"below custom threshold", defaultThreshold + 1, 20 * 1024 * 1024, false},
+		// Chunked always streams regardless of custom threshold.
+		{"chunked with custom threshold", -1, 50 * 1024 * 1024, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &lib.Config{}
+			if tt.customThreshold > 0 {
+				cfg.StreamingDecompressThreshold = tt.customThreshold
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("Content-Encoding", "gzip")
+			if tt.contentLength >= 0 {
+				ctx.Request.Header.SetContentLength(tt.contentLength)
+			} else {
+				// Simulate chunked: set body stream with unknown size
+				ctx.Request.SetBodyStream(bytes.NewReader(nil), -1)
+			}
+			if got := shouldStreamDecompress(cfg, ctx); got != tt.want {
+				t.Errorf("shouldStreamDecompress() = %v, want %v (CL=%d, threshold=%d)", got, tt.want, tt.contentLength, tt.customThreshold)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// Chunked: SetBodyStream with size -1 triggers the streaming path
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		// Content-Encoding should be cleared
+		if ce := string(ctx.Request.Header.Peek("Content-Encoding")); ce != "" {
+			t.Errorf("expected Content-Encoding to be cleared, got %q", ce)
+		}
+		// Body should be correctly decompressed
+		body := ctx.Request.Body()
+		if string(body) != string(plainBody) {
+			t.Errorf("decompressed body mismatch: got %d bytes, want %d bytes", len(body), len(plainBody))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	testCases := []struct {
+		name     string
+		encoding string
+		encode   func([]byte) ([]byte, error)
+	}{
+		{name: "gzip", encoding: "gzip", encode: gzipCompress},
+		{name: "deflate", encoding: "deflate", encode: deflateCompress},
+		{name: "brotli", encoding: "br", encode: brotliCompress},
+		{name: "zstd", encoding: "zstd", encode: zstdCompress},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			compressedBody, err := tc.encode(plainBody)
+			if err != nil {
+				t.Fatalf("failed to encode body: %v", err)
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+			// Use chunked (-1) to trigger streaming path regardless of compressed size
+			ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+				body := ctx.Request.Body()
+				if string(body) != string(plainBody) {
+					t.Fatalf("expected decompressed body, got %q", string(body))
+				}
+			}
+
+			handler := RequestDecompressionMiddleware(config)(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatal("next handler was not called")
+			}
+			if got := string(ctx.Request.Header.Peek("Content-Encoding")); got != "" {
+				t.Fatalf("expected content-encoding to be cleared, got %q", got)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// Chunked with invalid gzip data → streaming path → error
+	ctx.Request.SetBodyStream(bytes.NewReader([]byte("not-a-valid-gzip-payload")), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for invalid compressed payload")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "snappy")
+	ctx.Request.SetBodyStream(bytes.NewReader([]byte("whatever")), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for unsupported encoding")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	// Verify compressed body is below threshold (should use buffered path)
+	if int64(len(compressedBody)) > schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Skip("compressed body unexpectedly exceeds threshold")
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// SetBodyRaw with known small Content-Length → buffered path
+	ctx.Request.SetBodyRaw(compressedBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if string(ctx.Request.Body()) != string(plainBody) {
+			t.Fatalf("expected decompressed body, got %q", string(ctx.Request.Body()))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_LargeGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	// Random bytes are incompressible — compressed size ≈ input size + gzip overhead.
+	bodySize := int(schemas.DefaultLargePayloadRequestThresholdBytes) + 1024*1024
+	plainBody := make([]byte, bodySize)
+	if _, err := cryptoRand.Read(plainBody); err != nil {
+		t.Fatalf("failed to generate random data: %v", err)
+	}
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	if int64(len(compressedBody)) <= schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Skipf("compressed body %d bytes is below threshold %d",
+			len(compressedBody), schemas.DefaultLargePayloadRequestThresholdBytes)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.Header.SetContentLength(len(compressedBody))
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), len(compressedBody))
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if ce := string(ctx.Request.Header.Peek("Content-Encoding")); ce != "" {
+			t.Errorf("expected Content-Encoding to be cleared, got %q", ce)
+		}
+		body := ctx.Request.Body()
+		if len(body) != len(plainBody) {
+			t.Errorf("decompressed body length: got %d, want %d", len(body), len(plainBody))
+		}
+		if !bytes.Equal(body, plainBody) {
+			t.Error("decompressed body content does not match original")
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func gzipCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// deflateCompress produces zlib-wrapped DEFLATE (RFC 1950) — the correct
+// format for HTTP Content-Encoding "deflate" per RFC 9110 §8.4.1.2.
+func deflateCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := zlib.NewWriterLevel(&buf, zlib.DefaultCompression)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(data); err != nil {
+		_ = w.Close()
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func brotliCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w := brotli.NewWriter(&buf)
+	if _, err := w.Write(data); err != nil {
+		_ = w.Close()
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func zstdCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(enc, bytes.NewReader(data)); err != nil {
+		enc.Close()
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// captureTracePlugin is an ObservabilityPlugin that captures the root and llm.call
+// span timestamps from a flushed trace. Timestamps are copied synchronously inside
+// Inject because the tracer releases the pooled trace once Inject returns.
+type captureTracePlugin struct {
+	done      chan struct{}
+	rootStart time.Time
+	rootEnd   time.Time
+	llmEnd    time.Time
+	foundLLM  bool
+}
+
+func (p *captureTracePlugin) GetName() string { return "capture-trace" }
+func (p *captureTracePlugin) Cleanup() error  { return nil }
+func (p *captureTracePlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	if trace == nil || trace.RootSpan == nil {
+		return nil
+	}
+	p.rootStart = trace.RootSpan.StartTime
+	p.rootEnd = trace.RootSpan.EndTime
+	for _, span := range trace.Spans {
+		if span != nil && span.Kind == schemas.SpanKindLLMCall {
+			p.llmEnd = span.EndTime
+			p.foundLLM = true
+		}
+	}
+	return nil
+}
+
+// TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan asserts that for a deferred
+// (streaming) request the root HTTP span is ended by the trace completer — after the
+// stream drains — rather than at handler return. Before the fix the middleware ended
+// the root span in its defer, so the root closed before the deferred llm.call span,
+// making the child appear longer than its parent in trace viewers.
+func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureTracePlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	tm := NewTracingMiddleware(tracer)
+
+	var traceID, rootSpanID string
+	var completer func([]schemas.PluginLogEntry)
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ = ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		rootSpanID, _ = ctx.UserValue(schemas.BifrostContextKeySpanID).(string)
+		completer, _ = ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+		// Mark this as a deferred (streaming) request so the middleware leaves the
+		// root span open for the completer to end.
+		ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	// Runs setup, next, and the middleware defer (which must NOT end the root span
+	// because the request is deferred).
+	tm.Middleware()(next)(ctx)
+
+	if traceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if completer == nil {
+		t.Fatal("middleware did not set a trace completer")
+	}
+
+	// Simulate the provider goroutine: the deferred llm.call span ends mid-stream...
+	goCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	goCtx = context.WithValue(goCtx, schemas.BifrostContextKeySpanID, rootSpanID)
+	_, llmHandle := tracer.StartSpan(goCtx, "chat test-model", schemas.SpanKindLLMCall)
+	time.Sleep(10 * time.Millisecond)
+	tracer.EndSpan(llmHandle, schemas.SpanStatusOk, "")
+
+	// ...and the trace completer fires after the stream fully drains.
+	completer(nil)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace injection")
+	}
+
+	if !plugin.foundLLM {
+		t.Fatal("llm.call span not found in flushed trace")
+	}
+	if plugin.rootEnd.IsZero() {
+		t.Fatal("root span EndTime is zero — it was never ended")
+	}
+	if plugin.rootEnd.Before(plugin.llmEnd) {
+		t.Fatalf("root span ended before llm.call span: root.EndTime=%v, llm.EndTime=%v", plugin.rootEnd, plugin.llmEnd)
+	}
+	if !plugin.rootEnd.After(plugin.rootStart) {
+		t.Fatalf("root span has non-positive duration: start=%v, end=%v", plugin.rootStart, plugin.rootEnd)
+	}
+}
+
+func TestCollectDimensionHeaders(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-team", "ml")
+	ctx.Request.Header.Set("x-bf-dim-", "ignored")  // empty dimension name
+	ctx.Request.Header.Set("x-request-id", "req-1") // non-dimension header
+
+	dims := collectDimensionHeaders(ctx)
+	if len(dims) != 2 {
+		t.Fatalf("collectDimensionHeaders() = %v, want 2 entries", dims)
+	}
+	if dims["environment"] != "prod" || dims["team"] != "ml" {
+		t.Errorf("collectDimensionHeaders() = %v, want environment=prod team=ml", dims)
+	}
+
+	if got := collectDimensionHeaders(&fasthttp.RequestCtx{}); got != nil {
+		t.Errorf("collectDimensionHeaders(no dims) = %v, want nil", got)
+	}
+	if got := collectDimensionHeaders(nil); got != nil {
+		t.Errorf("collectDimensionHeaders(nil) = %v, want nil", got)
 	}
 }

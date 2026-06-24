@@ -145,7 +145,8 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   }
   let clients: MCPClientItem[]
   try {
-    clients = JSON.parse(clientsRes.body) as MCPClientItem[]
+    const parsed = JSON.parse(clientsRes.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
+    clients = Array.isArray(parsed) ? parsed : (parsed.clients ?? [])
   } catch {
     throw new Error('Invalid JSON from GET /api/mcp/clients')
   }
@@ -174,7 +175,8 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   if (listResAfter.statusCode !== 200) {
     throw new Error(`GET /api/mcp/clients failed after create: ${listResAfter.statusCode} ${listResAfter.body}`)
   }
-  const listAfter = JSON.parse(listResAfter.body) as MCPClientItem[]
+  const parsedAfter = JSON.parse(listResAfter.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
+  const listAfter = Array.isArray(parsedAfter) ? parsedAfter : (parsedAfter.clients ?? [])
   const clientAfter = listAfter.find((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
   if (!clientAfter) {
     throw new Error(`MCP client "${TEST_MCP_CLIENT_NAME}" not found after create.`)
@@ -194,7 +196,8 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   if (listRes2.statusCode !== 200) {
     throw new Error(`GET /api/mcp/clients failed after reconnect: ${listRes2.statusCode} ${listRes2.body}`)
   }
-  const list2 = (JSON.parse(listRes2.body) as MCPClientItem[]).filter((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
+  const parsed2 = JSON.parse(listRes2.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
+  const list2 = (Array.isArray(parsed2) ? parsed2 : (parsed2.clients ?? [])).filter((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
   const client = list2[0]
   if (!client || client.state !== 'connected') {
     throw new Error(
@@ -312,8 +315,80 @@ async function runMCPSetup(): Promise<void> {
     console.log('✓ STDIO server already built')
   }
 
+  // Build and start auth-demo-server on port 3002
+  try {
+    const authServerBinaryName = isWindows ? 'auth-demo-server.exe' : 'auth-demo-server'
+    const authServerDir = join(REPO_ROOT, 'examples', 'mcps', 'auth-demo-server')
+    const authServerBinary = join(authServerDir, authServerBinaryName)
+    const authServerExec = isWindows ? authServerBinaryName : './auth-demo-server'
+
+    if (!existsSync(authServerBinary)) {
+      console.log('Building auth-demo-server...')
+      runCommand(goCommand, ['build', '-o', authServerBinaryName, 'main.go'], {
+        cwd: authServerDir,
+        env: { ...process.env, CGO_ENABLED: '0' },
+      })
+    } else {
+      console.log('✓ auth-demo-server binary already exists')
+    }
+
+    console.log('Starting auth-demo-server on port 3002...')
+    const authServer = spawn(authServerExec, [], {
+      cwd: authServerDir,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    authServer.stdout?.on('data', (data) => console.log(`[Auth Server] ${data.toString().trim()}`))
+    authServer.stderr?.on('data', (data) => console.error(`[Auth Server Error] ${data.toString().trim()}`))
+    if (authServer.pid) {
+      authServer.unref()
+      MCP_SERVERS.push(authServer)
+      await setTimeout(1000)
+      console.log('✓ auth-demo-server started on http://localhost:3002/')
+    }
+  } catch (err) {
+    console.warn(`⚠️  Failed to start auth-demo-server (header auth tests may skip): ${(err as Error).message}`)
+  }
+
+  // Build and start oauth-demo-server on port 3003
+  try {
+    const oauthServerBinaryName = isWindows ? 'oauth-demo-server.exe' : 'oauth-demo-server'
+    const oauthServerDir = join(REPO_ROOT, 'examples', 'mcps', 'oauth-demo-server')
+    const oauthServerBinary = join(oauthServerDir, oauthServerBinaryName)
+    const oauthServerExec = isWindows ? oauthServerBinaryName : './oauth-demo-server'
+
+    if (!existsSync(oauthServerBinary)) {
+      console.log('Building oauth-demo-server...')
+      runCommand(goCommand, ['build', '-o', oauthServerBinaryName, 'main.go'], {
+        cwd: oauthServerDir,
+        env: { ...process.env, CGO_ENABLED: '0' },
+      })
+    } else {
+      console.log('✓ oauth-demo-server binary already exists')
+    }
+
+    console.log('Starting oauth-demo-server on port 3003...')
+    const oauthServer = spawn(oauthServerExec, [], {
+      cwd: oauthServerDir,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    oauthServer.stdout?.on('data', (data) => console.log(`[OAuth Server] ${data.toString().trim()}`))
+    oauthServer.stderr?.on('data', (data) => console.error(`[OAuth Server Error] ${data.toString().trim()}`))
+    if (oauthServer.pid) {
+      oauthServer.unref()
+      MCP_SERVERS.push(oauthServer)
+      await setTimeout(1000)
+      console.log('✓ oauth-demo-server started on http://localhost:3003/')
+    }
+  } catch (err) {
+    console.warn(`⚠️  Failed to start oauth-demo-server (OAuth tests may fail): ${(err as Error).message}`)
+  }
+
   console.log('✓ MCP servers ready')
   console.log('  - HTTP/SSE server: http://localhost:3001/')
+  console.log('  - Auth demo server: http://localhost:3002/')
+  console.log('  - OAuth demo server: http://localhost:3003/')
   console.log('  - STDIO server: test-tools-server/dist/index.js')
 }
 

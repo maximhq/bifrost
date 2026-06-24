@@ -2,6 +2,8 @@ package vectorstore
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -31,22 +33,32 @@ type RedisConfig struct {
 	Password *schemas.EnvVar `json:"password,omitempty"` // Password for Redis AUTH (optional)
 	DB       *schemas.EnvVar `json:"db,omitempty"`       // Redis database number (default: 0)
 
-	// Connection pool and timeout settings (passed directly to Redis client)
-	PoolSize        int           `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
-	MaxActiveConns  int           `json:"max_active_conns,omitempty"`   // Maximum number of active connections (optional)
-	MinIdleConns    int           `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
-	MaxIdleConns    int           `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
-	ConnMaxLifetime time.Duration `json:"conn_max_lifetime,omitempty"`  // Connection maximum lifetime (optional)
-	ConnMaxIdleTime time.Duration `json:"conn_max_idle_time,omitempty"` // Connection maximum idle time (optional)
-	DialTimeout     time.Duration `json:"dial_timeout,omitempty"`       // Timeout for socket connection (optional)
-	ReadTimeout     time.Duration `json:"read_timeout,omitempty"`       // Timeout for socket reads (optional)
-	WriteTimeout    time.Duration `json:"write_timeout,omitempty"`      // Timeout for socket writes (optional)
-	ContextTimeout  time.Duration `json:"context_timeout,omitempty"`    // Timeout for Redis operations (optional)
+	// TLS settings
+	UseTLS             *schemas.EnvVar `json:"use_tls,omitempty"`              // Enable TLS for connection (default: false)
+	InsecureSkipVerify *schemas.EnvVar `json:"insecure_skip_verify,omitempty"` // Skip TLS cert verification (default: false)
+	CACertPEM          *schemas.EnvVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust for Redis/Valkey TLS
+
+	// Cluster mode
+	ClusterMode *schemas.EnvVar `json:"cluster_mode,omitempty"` // Use Redis Cluster client (default: false)
+
+	// Connection pool and timeout settings (passed directly to Redis client).
+	// All duration fields accept either a Go duration string (e.g. "5s", "500ms",
+	// "1m30s") or a plain integer nanosecond value for backward compatibility.
+	PoolSize        int              `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
+	MaxActiveConns  int              `json:"max_active_conns,omitempty"`   // Maximum number of active connections (optional)
+	MinIdleConns    int              `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
+	MaxIdleConns    int              `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
+	ConnMaxLifetime schemas.Duration `json:"conn_max_lifetime,omitempty"`  // Connection maximum lifetime (optional)
+	ConnMaxIdleTime schemas.Duration `json:"conn_max_idle_time,omitempty"` // Connection maximum idle time (optional)
+	DialTimeout     schemas.Duration `json:"dial_timeout,omitempty"`       // Timeout for socket connection (optional)
+	ReadTimeout     schemas.Duration `json:"read_timeout,omitempty"`       // Timeout for socket reads (optional)
+	WriteTimeout    schemas.Duration `json:"write_timeout,omitempty"`      // Timeout for socket writes (optional)
+	ContextTimeout  schemas.Duration `json:"context_timeout,omitempty"`    // Timeout for Redis operations (optional)
 }
 
 // RedisStore represents the Redis vector store.
 type RedisStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	config RedisConfig
 	logger schemas.Logger
 
@@ -61,14 +73,24 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 
 // CreateNamespace creates a new namespace in the Redis vector store.
 func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	// Check if index already exists
 	infoResult := s.client.Do(ctx, "FT.INFO", namespace)
 	if infoResult.Err() == nil {
+		ftInfo, ftInfoErr := s.client.FTInfo(ctx, namespace).Result()
+		if ftInfoErr != nil {
+			s.logger.Warn(fmt.Sprintf("could not inspect existing index %q for dimension validation (check skipped): %v", namespace, ftInfoErr))
+		} else {
+			for _, attr := range ftInfo.Attributes {
+				if strings.EqualFold(attr.Type, "VECTOR") && attr.Dim > 0 && attr.Dim != dimension {
+					return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing index manually", namespace, attr.Dim, dimension)
+				}
+			}
+		}
 		s.cacheNamespaceFieldTypes(namespace, properties)
-		return nil // Index already exists
+		return nil // Index already exists with matching dimension
 	}
 	if err := infoResult.Err(); err != nil && strings.Contains(strings.ToLower(err.Error()), "unknown command") {
 		return fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). original error: %w", err)
@@ -123,7 +145,7 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 
 // GetChunk retrieves a chunk from the Redis vector store.
 func (s *RedisStore) GetChunk(ctx context.Context, namespace string, id string) (SearchResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
@@ -160,7 +182,7 @@ func (s *RedisStore) GetChunk(ctx context.Context, namespace string, id string) 
 
 // GetChunks retrieves multiple chunks from the Redis vector store.
 func (s *RedisStore) GetChunks(ctx context.Context, namespace string, ids []string) ([]SearchResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if len(ids) == 0 {
@@ -224,7 +246,7 @@ func (s *RedisStore) GetChunks(ctx context.Context, namespace string, ids []stri
 
 // GetAll retrieves all chunks from the Redis vector store.
 func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	// Set default limit if not provided
@@ -337,6 +359,9 @@ func (s *RedisStore) executeSearch(ctx context.Context, namespace string, redisQ
 		if result.Err() != nil {
 			errMsg = strings.ToLower(result.Err().Error())
 			if isQuerySyntaxError(errMsg) {
+				if IsScanFallbackDisabled(ctx) {
+					return nil, fmt.Errorf("%w: %w", ErrQuerySyntax, result.Err())
+				}
 				s.logger.Debug(fmt.Sprintf("FT.SEARCH scan fallback triggered for namespace %s: %s", namespace, result.Err()))
 				scanResults, _, scanErr := s.getAllByScan(ctx, namespace, queries, selectFields, nil, int64(searchLimit))
 				if scanErr != nil {
@@ -357,82 +382,15 @@ func (s *RedisStore) executeSearch(ctx context.Context, namespace string, redisQ
 }
 
 func (s *RedisStore) getAllByScan(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
-	pattern := buildKey(namespace, "*")
-	var (
-		scanCursor uint64
-		all        []SearchResult
-	)
-
 	// Parse offset for deterministic in-memory pagination after full scan.
 	offset, err := parseOffsetCursor(cursor)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	for {
-		keys, nextCursor, err := s.client.Scan(ctx, scanCursor, pattern, BatchLimit).Result()
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to scan keys: %w", err)
-		}
-
-		if len(keys) > 0 {
-			pipe := s.client.Pipeline()
-			cmds := make([]*redis.MapStringStringCmd, len(keys))
-			for i, key := range keys {
-				cmds[i] = pipe.HGetAll(ctx, key)
-			}
-
-			if _, err := pipe.Exec(ctx); err != nil {
-				return nil, nil, fmt.Errorf("failed to fetch scanned keys: %w", err)
-			}
-
-			for i, cmd := range cmds {
-				if cmd.Err() != nil {
-					continue
-				}
-				fields := cmd.Val()
-				if len(fields) == 0 {
-					continue
-				}
-
-				key := keys[i]
-				id := strings.TrimPrefix(key, namespace+":")
-				if id == key {
-					continue
-				}
-
-				properties := make(map[string]interface{}, len(fields))
-				for k, v := range fields {
-					properties[k] = v
-				}
-
-				if !matchesQueriesForScan(properties, queries) {
-					continue
-				}
-
-				searchResult := SearchResult{
-					ID:         id,
-					Properties: make(map[string]interface{}),
-				}
-
-				if len(selectFields) == 0 {
-					searchResult.Properties = properties
-				} else {
-					for _, field := range selectFields {
-						if val, ok := properties[field]; ok {
-							searchResult.Properties[field] = val
-						}
-					}
-				}
-
-				all = append(all, searchResult)
-			}
-		}
-
-		scanCursor = nextCursor
-		if scanCursor == 0 {
-			break
-		}
+	all, err := s.scanAllMatchingResults(ctx, namespace, queries, selectFields)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Ensure stable pagination boundaries for offset cursors across calls.
@@ -464,6 +422,143 @@ func (s *RedisStore) getAllByScan(ctx context.Context, namespace string, queries
 	}
 
 	return results, next, nil
+}
+
+func (s *RedisStore) scanAllMatchingResults(ctx context.Context, namespace string, queries []Query, selectFields []string) ([]SearchResult, error) {
+	if clusterClient, ok := s.client.(*redis.ClusterClient); ok {
+		return s.scanAllMatchingResultsCluster(ctx, clusterClient, namespace, queries, selectFields)
+	}
+	return s.scanAllMatchingResultsSingle(ctx, s.client, namespace, queries, selectFields)
+}
+
+func (s *RedisStore) scanAllMatchingResultsSingle(ctx context.Context, client redis.Cmdable, namespace string, queries []Query, selectFields []string) ([]SearchResult, error) {
+	pattern := buildKey(namespace, "*")
+	var (
+		scanCursor uint64
+		all        []SearchResult
+	)
+
+	for {
+		keys, nextCursor, err := client.Scan(ctx, scanCursor, pattern, BatchLimit).Result()
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan keys: %w", err)
+		}
+
+		matches, err := s.fetchMatchingSearchResults(ctx, client, namespace, keys, queries, selectFields)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, matches...)
+
+		scanCursor = nextCursor
+		if scanCursor == 0 {
+			break
+		}
+	}
+
+	return all, nil
+}
+
+func (s *RedisStore) scanAllMatchingResultsCluster(ctx context.Context, client *redis.ClusterClient, namespace string, queries []Query, selectFields []string) ([]SearchResult, error) {
+	var (
+		all       []SearchResult
+		allMu     sync.Mutex
+		seenIDs   = make(map[string]struct{})
+		seenIDsMu sync.Mutex
+	)
+
+	err := client.ForEachMaster(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
+		matches, err := s.scanAllMatchingResultsSingle(ctx, nodeClient, namespace, queries, selectFields)
+		if err != nil {
+			return err
+		}
+
+		unique := make([]SearchResult, 0, len(matches))
+		seenIDsMu.Lock()
+		for _, match := range matches {
+			if _, ok := seenIDs[match.ID]; ok {
+				continue
+			}
+			seenIDs[match.ID] = struct{}{}
+			unique = append(unique, match)
+		}
+		seenIDsMu.Unlock()
+
+		if len(unique) == 0 {
+			return nil
+		}
+
+		allMu.Lock()
+		all = append(all, unique...)
+		allMu.Unlock()
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan cluster nodes: %w", err)
+	}
+
+	return all, nil
+}
+
+func (s *RedisStore) fetchMatchingSearchResults(ctx context.Context, client redis.Cmdable, namespace string, keys []string, queries []Query, selectFields []string) ([]SearchResult, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	pipe := client.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(keys))
+	for i, key := range keys {
+		cmds[i] = pipe.HGetAll(ctx, key)
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("failed to fetch scanned keys: %w", err)
+	}
+
+	results := make([]SearchResult, 0, len(keys))
+	for i, cmd := range cmds {
+		if cmd.Err() != nil {
+			continue
+		}
+		fields := cmd.Val()
+		if len(fields) == 0 {
+			continue
+		}
+
+		key := keys[i]
+		id := strings.TrimPrefix(key, namespace+":")
+		if id == key {
+			continue
+		}
+
+		properties := make(map[string]interface{}, len(fields))
+		for k, v := range fields {
+			properties[k] = v
+		}
+
+		if !matchesQueriesForScan(properties, queries) {
+			continue
+		}
+
+		searchResult := SearchResult{
+			ID:         id,
+			Properties: make(map[string]interface{}),
+		}
+
+		if len(selectFields) == 0 {
+			searchResult.Properties = properties
+		} else {
+			for _, field := range selectFields {
+				if val, ok := properties[field]; ok {
+					searchResult.Properties[field] = val
+				}
+			}
+		}
+
+		results = append(results, searchResult)
+	}
+
+	return results, nil
 }
 
 func matchesQueriesForScan(properties map[string]interface{}, queries []Query) bool {
@@ -1043,7 +1138,7 @@ func buildRedisQueryCondition(query Query, fieldTypes map[string]VectorStoreProp
 
 // GetNearest retrieves the nearest chunks from the Redis vector store.
 func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []float32, queries []Query, selectFields []string, threshold float64, limit int64) ([]SearchResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	// Build Redis query from the provided queries
@@ -1153,7 +1248,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 
 // Add stores a new chunk in the Redis vector store.
 func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
@@ -1207,7 +1302,7 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 
 // Delete deletes a chunk from the Redis vector store.
 func (s *RedisStore) Delete(ctx context.Context, namespace string, id string) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
@@ -1233,7 +1328,7 @@ func (s *RedisStore) Delete(ctx context.Context, namespace string, id string) er
 
 // DeleteAll deletes all chunks from the Redis vector store.
 func (s *RedisStore) DeleteAll(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	return s.deleteAllBySnapshot(ctx, namespace, queries)
@@ -1346,6 +1441,9 @@ func (s *RedisStore) getAllMatchingIDs(ctx context.Context, namespace string, qu
 			if result.Err() != nil {
 				errMsg = strings.ToLower(result.Err().Error())
 				if isQuerySyntaxError(errMsg) {
+					if IsScanFallbackDisabled(ctx) {
+						return nil, fmt.Errorf("failed to collect matching ids without scan fallback: %w", result.Err())
+					}
 					s.logger.Debug(fmt.Sprintf("FT.SEARCH scan fallback triggered for namespace %s while collecting ids: %s", namespace, result.Err()))
 					scanResults, _, scanErr := s.getAllByScan(ctx, namespace, queries, nil, nil, 0)
 					if scanErr != nil {
@@ -1378,20 +1476,72 @@ func (s *RedisStore) getAllMatchingIDs(ctx context.Context, namespace string, qu
 
 // DeleteNamespace deletes a namespace from the Redis vector store.
 func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
-	// Drop the index using FT.DROPINDEX
-	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace).Err(); err != nil {
+	// Drop the index AND its documents using FT.DROPINDEX ... DD. Without DD,
+	// only the index definition is removed while the underlying hashes (keyed
+	// by the "<namespace>:" prefix this index owns) survive - so recreating the
+	// namespace re-indexes the stale documents. DD deletes exactly the documents
+	// matching this index's prefix, keeping DeleteNamespace consistent with the
+	// collection-deleting semantics of the other vector store backends.
+	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace, "DD").Err(); err != nil {
 		// Check if error is "Unknown Index name" - that's OK, index doesn't exist
 		if strings.Contains(strings.ToLower(err.Error()), "unknown index name") {
 			s.deleteNamespaceFieldTypes(namespace)
-			return nil // Index doesn't exist, nothing to drop
+			// The index is gone, so FT.DROPINDEX ... DD could not reach any
+			// documents. Hashes written under the "<namespace>:" prefix by a
+			// prior run (e.g. one that dropped the index without DD) may still
+			// linger; sweep them directly so a recreated namespace starts empty.
+			return s.deleteNamespaceKeys(ctx, namespace)
 		}
 		return fmt.Errorf("failed to drop semantic index %s: %w", namespace, err)
 	}
 
 	s.deleteNamespaceFieldTypes(namespace)
+	return nil
+}
+
+// deleteNamespaceKeys removes every hash stored under the "<namespace>:" prefix.
+//
+// It is the fallback path for DeleteNamespace when the search index no longer
+// exists: the normal path relies on FT.DROPINDEX ... DD to delete the indexed
+// documents, but with no index present that command cannot reach them, leaving
+// orphaned hashes that would be re-indexed (and surface as stale cache hits)
+// the next time the namespace is created. On a Redis Cluster the work is fanned
+// out across every master so all hash slots are covered; on a single node it
+// runs directly against the client.
+func (s *RedisStore) deleteNamespaceKeys(ctx context.Context, namespace string) error {
+	if clusterClient, ok := s.client.(*redis.ClusterClient); ok {
+		return clusterClient.ForEachMaster(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
+			return s.deleteNamespaceKeysSingle(ctx, nodeClient, namespace)
+		})
+	}
+	return s.deleteNamespaceKeysSingle(ctx, s.client, namespace)
+}
+
+// deleteNamespaceKeysSingle SCANs a single Redis node for keys matching the
+// "<namespace>:*" pattern and DELs them in cursor-sized batches until the scan
+// cursor wraps to 0. It operates on one node only; callers handle cluster
+// fan-out. A missing key set is not an error - the loop simply deletes nothing.
+func (s *RedisStore) deleteNamespaceKeysSingle(ctx context.Context, client redis.Cmdable, namespace string) error {
+	pattern := buildKey(namespace, "*")
+	var scanCursor uint64
+	for {
+		keys, nextCursor, err := client.Scan(ctx, scanCursor, pattern, BatchLimit).Result()
+		if err != nil {
+			return fmt.Errorf("failed to scan keys for namespace %s: %w", namespace, err)
+		}
+		if len(keys) > 0 {
+			if err := client.Del(ctx, keys...).Err(); err != nil {
+				return fmt.Errorf("failed to delete keys for namespace %s: %w", namespace, err)
+			}
+		}
+		scanCursor = nextCursor
+		if scanCursor == 0 {
+			break
+		}
+	}
 	return nil
 }
 
@@ -1580,23 +1730,67 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 	if config.DB != nil {
 		db = config.DB.CoerceInt(0)
 	}
-	// Preparing the redis connection
-	client := redis.NewClient(&redis.Options{
-		Addr:            config.Addr.GetValue(),
-		Username:        config.Username.GetValue(),
-		Password:        config.Password.GetValue(),
-		DB:              db,
-		Protocol:        3, // Explicitly use RESP3 protocol
-		PoolSize:        config.PoolSize,
-		MaxActiveConns:  config.MaxActiveConns,
-		MinIdleConns:    config.MinIdleConns,
-		MaxIdleConns:    config.MaxIdleConns,
-		ConnMaxLifetime: config.ConnMaxLifetime,
-		ConnMaxIdleTime: config.ConnMaxIdleTime,
-		DialTimeout:     config.DialTimeout,
-		ReadTimeout:     config.ReadTimeout,
-		WriteTimeout:    config.WriteTimeout,
-	})
+
+	// TLS configuration
+	var tlsConfig *tls.Config
+	if config.UseTLS.CoerceBool(false) {
+		tlsConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: config.InsecureSkipVerify.CoerceBool(false),
+		}
+		if config.CACertPEM != nil && config.CACertPEM.GetValue() != "" {
+			rootCAs, err := systemCertPoolWithCA(config.CACertPEM.GetValue())
+			if err != nil {
+				return nil, fmt.Errorf("failed to configure Redis TLS CA certificate: %w", err)
+			}
+			tlsConfig.RootCAs = rootCAs
+		}
+	}
+
+	clusterMode := config.ClusterMode.CoerceBool(false)
+
+	var client redis.UniversalClient
+	if clusterMode {
+		// Redis Cluster does not support database selection
+		if db != 0 {
+			return nil, fmt.Errorf("redis cluster mode does not support database selection (DB must be 0)")
+		}
+		client = redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs:           []string{config.Addr.GetValue()},
+			Username:        config.Username.GetValue(),
+			Password:        config.Password.GetValue(),
+			Protocol:        3, // Explicitly use RESP3 protocol
+			TLSConfig:       tlsConfig,
+			PoolSize:        config.PoolSize,
+			MaxActiveConns:  config.MaxActiveConns,
+			MinIdleConns:    config.MinIdleConns,
+			MaxIdleConns:    config.MaxIdleConns,
+			ConnMaxLifetime: time.Duration(config.ConnMaxLifetime),
+			ConnMaxIdleTime: time.Duration(config.ConnMaxIdleTime),
+			DialTimeout:     time.Duration(config.DialTimeout),
+			ReadTimeout:     time.Duration(config.ReadTimeout),
+			WriteTimeout:    time.Duration(config.WriteTimeout),
+		})
+	} else {
+		client = redis.NewClient(&redis.Options{
+			Addr:            config.Addr.GetValue(),
+			Username:        config.Username.GetValue(),
+			Password:        config.Password.GetValue(),
+			DB:              db,
+			Protocol:        3, // Explicitly use RESP3 protocol
+			TLSConfig:       tlsConfig,
+			PoolSize:        config.PoolSize,
+			MaxActiveConns:  config.MaxActiveConns,
+			MinIdleConns:    config.MinIdleConns,
+			MaxIdleConns:    config.MaxIdleConns,
+			ConnMaxLifetime: time.Duration(config.ConnMaxLifetime),
+			ConnMaxIdleTime: time.Duration(config.ConnMaxIdleTime),
+			DialTimeout:     time.Duration(config.DialTimeout),
+			ReadTimeout:     time.Duration(config.ReadTimeout),
+			WriteTimeout:    time.Duration(config.WriteTimeout),
+		})
+	}
+
 	// Creating store connection
 	store := &RedisStore{
 		client:              client,
@@ -1604,5 +1798,20 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 		logger:              logger,
 		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
 	}
+	// Eagerly verify connectivity, consistent with other store constructors (e.g. Qdrant)
+	if err := store.Ping(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to connect to redis: %w", err)
+	}
 	return store, nil
+}
+
+func systemCertPoolWithCA(caCertPEM string) (*x509.CertPool, error) {
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil {
+		rootCAs = x509.NewCertPool()
+	}
+	if !rootCAs.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("failed to parse CA certificate PEM")
+	}
+	return rootCAs, nil
 }

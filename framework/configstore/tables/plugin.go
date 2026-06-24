@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
@@ -21,6 +22,9 @@ type TablePlugin struct {
 	Version    int16     `gorm:"not null;default:1" json:"version"`
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
 	IsCustom   bool      `gorm:"not null;default:false" json:"isCustom"`
+
+	Placement *schemas.PluginPlacement `gorm:"column:placement;type:varchar(20);null" json:"placement,omitempty"`
+	Order     *int                     `gorm:"column:exec_order;type:int;null" json:"order,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -49,7 +53,14 @@ func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
 	}
 
 	// Encrypt config after serialization
-	if encrypt.IsEnabled() && p.ConfigJSON != "" && p.ConfigJSON != "{}" {
+	if VaultIsEnabled() && p.ConfigJSON != "" && p.ConfigJSON != "{}" {
+		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "ConfigJSON")
+		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), p.TableName(), p.Name, fieldName)
+		if err := vaultString(tx.Statement.Context, path, &p.ConfigJSON); err != nil {
+			return fmt.Errorf("failed to vault plugin config: %w", err)
+		}
+		p.EncryptionStatus = EncryptionStatusVault
+	} else if encrypt.IsEnabled() && p.ConfigJSON != "" && p.ConfigJSON != "{}" {
 		encrypted, err := encrypt.Encrypt(p.ConfigJSON)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt plugin config: %w", err)
@@ -64,12 +75,21 @@ func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
 // AfterFind is a GORM hook that decrypts the plugin config JSON (if encrypted) and
 // deserializes it back into the runtime Config field after reading from the database.
 func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
-	if p.EncryptionStatus == "encrypted" && p.ConfigJSON != "" {
-		decrypted, err := encrypt.Decrypt(p.ConfigJSON)
-		if err != nil {
-			return fmt.Errorf("failed to decrypt plugin config: %w", err)
+	switch p.EncryptionStatus {
+	case EncryptionStatusVault:
+		if p.ConfigJSON != "" {
+			if err := resolveVaultString(tx.Statement.Context, &p.ConfigJSON); err != nil {
+				return fmt.Errorf("failed to resolve vault plugin config: %w", err)
+			}
 		}
-		p.ConfigJSON = decrypted
+	case EncryptionStatusEncrypted:
+		if p.ConfigJSON != "" {
+			decrypted, err := encrypt.Decrypt(p.ConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt plugin config: %w", err)
+			}
+			p.ConfigJSON = decrypted
+		}
 	}
 	if p.ConfigJSON != "" {
 		if err := json.Unmarshal([]byte(p.ConfigJSON), &p.Config); err != nil {
@@ -79,5 +99,16 @@ func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
 		p.Config = nil
 	}
 
+	return nil
+}
+
+// AfterDelete hook for best-effort vault cleanup on row deletion.
+func (p *TablePlugin) AfterDelete(tx *gorm.DB) error {
+	if p.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
+		return nil
+	}
+	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "ConfigJSON")
+	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), p.TableName(), p.Name, fieldName)
+	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }

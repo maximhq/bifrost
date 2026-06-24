@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -12,26 +13,60 @@ var (
 	ErrPluginNotFound = fmt.Errorf("plugin not found")
 )
 
+// pluginDownloadClient is a fasthttp client with a larger read buffer to handle
+// responses with large headers.
+var pluginDownloadClient = &fasthttp.Client{
+	ReadBufferSize: 64 * 1024, // 64KB, matches the bifrost HTTP server setting
+}
+
 // DownloadPlugin downloads a plugin from a URL and returns the local file path
-func DownloadPlugin(url string, extension string) (string, error) {
+func DownloadPlugin(pluginURL string, extension string) (string, error) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 	response := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(response)
 
-	req.SetRequestURI(url)
 	req.Header.SetMethod(fasthttp.MethodGet)
 	req.Header.Set("Accept", "application/octet-stream")
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
-	err := fasthttp.DoTimeout(req, response, 120*time.Second)
-	if err != nil {
-		return "", err
-	}
+	const maxRedirects = 5
+	currentURL := pluginURL
+	for i := 0; i <= maxRedirects; i++ {
+		req.SetRequestURI(currentURL)
+		if i > 0 {
+			response.Reset()
+		}
 
-	if response.StatusCode() != fasthttp.StatusOK {
-		return "", fmt.Errorf("failed to download plugin: %d", response.StatusCode())
+		if err := pluginDownloadClient.DoTimeout(req, response, 120*time.Second); err != nil {
+			return "", err
+		}
+
+		statusCode := response.StatusCode()
+		if statusCode == fasthttp.StatusOK {
+			break
+		}
+		if statusCode >= 300 && statusCode < 400 {
+			if i == maxRedirects {
+				return "", fmt.Errorf("too many redirects downloading plugin")
+			}
+			location := string(response.Header.Peek("Location"))
+			if location == "" {
+				return "", fmt.Errorf("redirect response missing Location header: HTTP %d", statusCode)
+			}
+			loc, err := url.Parse(location)
+			if err != nil {
+				return "", fmt.Errorf("invalid Location header %q: %w", location, err)
+			}
+			base, err := url.Parse(currentURL)
+			if err != nil {
+				return "", fmt.Errorf("invalid request URL %q: %w", currentURL, err)
+			}
+			currentURL = base.ResolveReference(loc).String()
+			continue
+		}
+		return "", fmt.Errorf("failed to download plugin: HTTP %d", statusCode)
 	}
 
 	// Decompress the response body if it was gzip/deflate compressed

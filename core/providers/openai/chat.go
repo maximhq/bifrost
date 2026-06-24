@@ -9,7 +9,7 @@ import (
 
 // ToBifrostChatRequest converts an OpenAI chat request to Bifrost format
 func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
-	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(req.Model, "")
 
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
@@ -29,7 +29,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
+		Provider: bifrostReq.Provider,
 	}
+
+	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
@@ -39,68 +43,80 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
+
+		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
+		if len(openaiReq.ChatParameters.Tools) > 0 {
+			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
+			for i, tool := range openaiReq.ChatParameters.Tools {
+				normalizedTools[i] = tool
+				if tool.Function != nil && tool.Function.Parameters != nil {
+					funcCopy := *tool.Function
+					funcCopy.Parameters = tool.Function.Parameters.Normalized()
+					normalizedTools[i].Function = &funcCopy
+				}
+			}
+			openaiReq.ChatParameters.Tools = normalizedTools
+		}
 	}
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
+		openaiReq.normalizeReasoningEffort(capModel)
 		return openaiReq
 	case schemas.XAI:
-		openaiReq.filterOpenAISpecificParameters()
-		openaiReq.applyXAICompatibility(bifrostReq.Model)
+		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.applyXAICompatibility(capModel)
 		return openaiReq
 	case schemas.Gemini:
-		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.filterOpenAISpecificParameters(capModel)
 		// Removing extra parameters that are not supported by Gemini
 		openaiReq.ServiceTier = nil
 		return openaiReq
 	case schemas.Mistral:
-		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.filterOpenAISpecificParameters(capModel)
 		openaiReq.applyMistralCompatibility()
 		return openaiReq
 	case schemas.Vertex:
-		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.filterOpenAISpecificParameters(capModel)
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {
 			openaiReq.applyMistralCompatibility()
+		} else if openaiReq.Reasoning != nil && openaiReq.Reasoning.Effort != nil &&
+			*openaiReq.Reasoning.Effort == "none" {
+			// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking,
+			// minimax-m2, ...) reject reasoning_effort "none" — only
+			// minimal/low/medium/high are accepted. Drop it so the model uses its
+			// default. (Mistral on Vertex does accept "none" and is handled above;
+			// // proprietary OpenAI/Azure GPT-5.1+ keep "none" via their own cases.)
+			openaiReq.Reasoning.Effort = nil
 		}
+		return openaiReq
+	case schemas.Fireworks:
+		// Fireworks uses prompt_cache_isolation_key for cache isolation on chat/completions.
+		// Preserve it before the generic filter strips prompt_cache_key.
+		if openaiReq.ChatParameters.PromptCacheKey != nil && openaiReq.PromptCacheIsolationKey == nil {
+			openaiReq.PromptCacheIsolationKey = openaiReq.ChatParameters.PromptCacheKey
+		}
+		// Fireworks supports predicted outputs; save before the filter strips them.
+		prediction := openaiReq.ChatParameters.Prediction
+		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
 			return openaiReq
 		}
-		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.filterOpenAISpecificParameters(capModel)
 		return openaiReq
 	}
 }
 
 // Filter OpenAI Specific Parameters
-func (req *OpenAIChatRequest) filterOpenAISpecificParameters() {
+func (req *OpenAIChatRequest) filterOpenAISpecificParameters(capModel string) {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
-	if req.ChatParameters.Reasoning != nil {
-		if req.ChatParameters.Reasoning.Effort != nil {
-			// Native field is provided, use it (and clear max_tokens)
-			effort := *req.ChatParameters.Reasoning.Effort
-			// Convert "minimal" to "low" for non-OpenAI providers
-			if effort == "minimal" {
-				req.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
-			}
-			// Clear max_tokens since OpenAI doesn't use it
-			req.ChatParameters.Reasoning.MaxTokens = nil
-		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
-			// Estimate effort from max_tokens
-			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
-			maxCompletionTokens := DefaultCompletionMaxTokens
-			if req.ChatParameters.MaxCompletionTokens != nil {
-				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
-			}
-			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
-			// Clear max_tokens since OpenAI doesn't use it
-			req.ChatParameters.Reasoning.MaxTokens = nil
-		}
-	}
+	req.normalizeReasoningEffort(capModel)
 
 	if req.ChatParameters.Prediction != nil {
 		req.ChatParameters.Prediction = nil
@@ -122,6 +138,31 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters() {
 	}
 }
 
+func (req *OpenAIChatRequest) normalizeReasoningEffort(capModel string) {
+	if req.ChatParameters.Reasoning != nil {
+		reasoningCopy := *req.ChatParameters.Reasoning
+		req.ChatParameters.Reasoning = &reasoningCopy
+		if req.ChatParameters.Reasoning.Effort != nil {
+			// Native field is provided, use it (and clear max_tokens)
+			effort := *req.ChatParameters.Reasoning.Effort
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(capModel, effort))
+			// Clear max_tokens since OpenAI doesn't use it
+			req.ChatParameters.Reasoning.MaxTokens = nil
+		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
+			// Estimate effort from max_tokens
+			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
+			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
+			if req.ChatParameters.MaxCompletionTokens != nil {
+				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
+			}
+			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
+			// Clear max_tokens since OpenAI doesn't use it
+			req.ChatParameters.Reasoning.MaxTokens = nil
+		}
+	}
+}
+
 // applyMistralCompatibility applies Mistral-specific transformations to the request
 func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	// Mistral uses max_tokens instead of max_completion_tokens
@@ -134,6 +175,13 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	if req.ToolChoice != nil && req.ToolChoice.ChatToolChoiceStruct != nil {
 		req.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
 		req.ToolChoice.ChatToolChoiceStruct = nil
+	}
+
+	// Mistral only support reasoning effort "none" and "high"
+	if req.Reasoning != nil && req.Reasoning.Effort != nil {
+		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
+			req.Reasoning.Effort = schemas.Ptr("high")
+		}
 	}
 }
 

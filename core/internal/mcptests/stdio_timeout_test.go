@@ -3,6 +3,8 @@ package mcptests
 import (
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestSTDIO_InitTimeout verifies that STDIO initialization fails gracefully
@@ -53,10 +55,18 @@ func TestSTDIO_InitTimeout(t *testing.T) {
 
 	elapsed := time.Since(start)
 
-	// If we get here, check if the client actually connected
+	// If we get here, check if the client actually connected.
+	// Disconnected entries may be retained in memory for auto-recovery,
+	// so only count non-disconnected clients as "connected".
 	clients := manager.GetClients()
-	if len(clients) > 0 {
-		t.Fatalf("Expected no clients to connect, but got %d", len(clients))
+	connectedClients := 0
+	for _, c := range clients {
+		if c.State != schemas.MCPConnectionStateDisconnected {
+			connectedClients++
+		}
+	}
+	if connectedClients > 0 {
+		t.Fatalf("Expected no clients to connect, but got %d", connectedClients)
 	}
 
 	// Verify it failed quickly (< 35 seconds)

@@ -1,7 +1,5 @@
-"use client";
-
 import { Command as CommandPrimitive } from "cmdk";
-import { SearchIcon } from "lucide-react";
+import { Loader2Icon, SearchIcon } from "lucide-react";
 import * as React from "react";
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -45,10 +43,10 @@ function CommandDialog({
 	);
 }
 
-function CommandInput({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.Input>) {
+function CommandInput({ className, isLoading, ...props }: React.ComponentProps<typeof CommandPrimitive.Input> & { isLoading?: boolean }) {
 	return (
 		<div data-slot="command-input-wrapper" className="flex h-9 items-center gap-2 border-b px-3">
-			<SearchIcon className="size-4 shrink-0 opacity-50" />
+			{isLoading ? <Loader2Icon className="size-4 shrink-0 opacity-50 animate-spin" /> : <SearchIcon className="size-4 shrink-0 opacity-50" />}
 			<CommandPrimitive.Input
 				data-slot="command-input"
 				className={cn(

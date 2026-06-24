@@ -64,10 +64,10 @@ func TestChatStreamingFinalChunkNoDeadlock(t *testing.T) {
 				TotalTokens:      150,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionStreamRequest,
-				Provider:       schemas.Anthropic,
-				ModelRequested: "claude-opus-4",
-				ChunkIndex:     9,
+				RequestType:            schemas.ChatCompletionStreamRequest,
+				Provider:               schemas.Anthropic,
+				OriginalModelRequested: "claude-opus-4",
+				ChunkIndex:             9,
 			},
 		},
 	}
@@ -140,10 +140,10 @@ func TestResponsesStreamingFinalChunkNoDeadlock(t *testing.T) {
 				OutputTokens: 50,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesStreamRequest,
-				Provider:       schemas.Anthropic,
-				ModelRequested: "claude-opus-4",
-				ChunkIndex:     4,
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               schemas.Anthropic,
+				OriginalModelRequested: "claude-opus-4",
+				ChunkIndex:             4,
 			},
 		},
 	}
@@ -488,10 +488,10 @@ func TestAudioStreamingFinalChunkNoDeadlock(t *testing.T) {
 				TotalTokens:  150,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.SpeechStreamRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "tts-1",
-				ChunkIndex:     7,
+				RequestType:            schemas.SpeechStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "tts-1",
+				ChunkIndex:             7,
 			},
 		},
 	}
@@ -559,10 +559,10 @@ func TestTranscriptionStreamingFinalChunkNoDeadlock(t *testing.T) {
 		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
 			Text: "Complete transcription",
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.TranscriptionStreamRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "whisper-1",
-				ChunkIndex:     5,
+				RequestType:            schemas.TranscriptionStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "whisper-1",
+				ChunkIndex:             5,
 			},
 		},
 	}
@@ -657,5 +657,70 @@ func TestGetLastAudioAndTranscriptionChunksSafe(t *testing.T) {
 	}
 	if lastTranscription != nil && lastTranscription.ChunkIndex != 3 {
 		t.Errorf("Expected transcription chunk index 3, got %d", lastTranscription.ChunkIndex)
+	}
+}
+
+func TestProcessStreamingResponseSupportsWebSocketResponsesRequest(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "test-ws-responses-request"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	chunk := &ResponsesStreamChunk{
+		ChunkIndex: 0,
+		Timestamp:  time.Now(),
+		StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: "response.completed",
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  12,
+					OutputTokens: 7,
+					TotalTokens:  19,
+				},
+			},
+		},
+		TokenUsage: &schemas.BifrostLLMUsage{
+			PromptTokens:     12,
+			CompletionTokens: 7,
+			TotalTokens:      19,
+		},
+	}
+	if err := accumulator.addResponsesStreamChunk(requestID, chunk, true); err != nil {
+		t.Fatalf("addResponsesStreamChunk() error = %v", err)
+	}
+
+	responseID := "resp_ws_123"
+	response := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID: &responseID,
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  12,
+				OutputTokens: 7,
+				TotalTokens:  19,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.WebSocketResponsesRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				ChunkIndex:             0,
+			},
+		},
+	}
+
+	processed, err := accumulator.ProcessStreamingResponse(ctx, response, nil)
+	if err != nil {
+		t.Fatalf("ProcessStreamingResponse() error = %v", err)
+	}
+	if processed == nil {
+		t.Fatal("expected processed response, got nil")
+	}
+	if processed.Data == nil || processed.Data.TokenUsage == nil {
+		t.Fatal("expected token usage to be accumulated for websocket responses")
+	}
+	if processed.Data.TokenUsage.TotalTokens != 19 {
+		t.Fatalf("expected total tokens 19, got %d", processed.Data.TokenUsage.TotalTokens)
 	}
 }

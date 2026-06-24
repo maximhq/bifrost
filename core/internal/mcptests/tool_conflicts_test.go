@@ -202,9 +202,16 @@ func TestMultipleSameNameTools_ThreeClients(t *testing.T) {
 		require.NotNil(t, result)
 	}
 
-	// Verify client exists
+	// Verify only the bifrostInternal client is active (disconnected clients may be
+	// retained in memory for auto-recovery and should not be counted here)
 	clients := manager.GetClients()
-	assert.Len(t, clients, 1, "should have 1 bifrostInternal client")
+	activeClients := 0
+	for _, c := range clients {
+		if c.State != schemas.MCPConnectionStateDisconnected {
+			activeClients++
+		}
+	}
+	assert.Equal(t, 1, activeClients, "should have 1 bifrostInternal client")
 	t.Log("✓ Calculator executed successfully across 15 calls")
 }
 
@@ -302,9 +309,16 @@ func TestToolConflict_OneClientDisconnected(t *testing.T) {
 	// Wait a bit for client2 to fail connection
 	time.Sleep(2 * time.Second)
 
-	// Verify client states
+	// Verify only bifrostInternal is active (disconnected clients may be retained
+	// in memory for auto-recovery but should not be counted as active)
 	clients := manager.GetClients()
-	require.Len(t, clients, 1, "should only have 1 connected client (client1)")
+	activeClients := 0
+	for _, c := range clients {
+		if c.State != schemas.MCPConnectionStateDisconnected {
+			activeClients++
+		}
+	}
+	require.Equal(t, 1, activeClients, "should only have 1 active client (bifrostInternal)")
 
 	ctx := createTestContext()
 

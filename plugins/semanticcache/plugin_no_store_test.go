@@ -8,17 +8,18 @@ import (
 
 // TestCacheNoStoreBasicFunctionality tests that CacheNoStoreKey prevents caching
 func TestCacheNoStoreBasicFunctionality(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	testRequest := CreateBasicChatRequest("What is artificial intelligence?", 0.7, 100)
 
 	// Test 1: Normal caching (control test)
-	ctx1 := CreateContextWithCacheKey("test-no-store-control")
+	ctx1 := CreateContextWithCacheKey(t, "test-no-store-control")
 	t.Log("Making normal request (should be cached)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request
 
@@ -37,11 +38,11 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should be cached
 
 	// Test 2: NoStore = true (should not cache)
-	ctx2 := CreateContextWithCacheKeyAndNoStore("test-no-store-disabled", true)
+	ctx2 := CreateContextWithCacheKeyAndNoStore(t, "test-no-store-disabled", true)
 	t.Log("Making request with CacheNoStoreKey=true (should not be cached)...")
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}) // Fresh request
 
@@ -51,16 +52,16 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	t.Log("Verifying no-store request was not cached...")
 	response4, err4 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err4 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err4)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}) // Should still be fresh (not cached)
 
 	// Test 3: NoStore = false (should cache normally)
-	ctx3 := CreateContextWithCacheKeyAndNoStore("test-no-store-enabled", false)
+	ctx3 := CreateContextWithCacheKeyAndNoStore(t, "test-no-store-enabled", false)
 	t.Log("Making request with CacheNoStoreKey=false (should be cached)...")
 	response5, err5 := setup.Client.ChatCompletionRequest(ctx3, testRequest)
 	if err5 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err5)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response5}) // Fresh request
 
@@ -79,6 +80,7 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 
 // TestCacheNoStoreWithDifferentRequestTypes tests NoStore with various request types
 func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
+	t.Parallel()
 	t.Skip("Skipping Embedding Tests")
 
 	setup := NewTestSetup(t)
@@ -86,12 +88,12 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 
 	// Test with chat completion
 	chatRequest := CreateBasicChatRequest("Test no-store with chat", 0.7, 50)
-	ctx1 := CreateContextWithCacheKeyAndNoStore("test-no-store-chat", true)
+	ctx1 := CreateContextWithCacheKeyAndNoStore(t, "test-no-store-chat", true)
 
 	t.Log("Testing no-store with chat completion...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, chatRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -100,18 +102,18 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 	// Verify not cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, chatRequest)
 	if err2 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err2)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // Should not be cached
 
 	// Test with embedding request
 	embeddingRequest := CreateEmbeddingRequest([]string{"Test no-store with embeddings"})
-	ctx2 := CreateContextWithCacheKeyAndNoStore("test-no-store-embedding", true)
+	ctx2 := CreateContextWithCacheKeyAndNoStore(t, "test-no-store-embedding", true)
 
 	t.Log("Testing no-store with embedding request...")
 	response3, err3 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response3})
 
@@ -120,7 +122,7 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 	// Verify not cached
 	response4, err4 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
 	if err4 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err4)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response4}) // Should not be cached
 
@@ -129,6 +131,7 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 
 // TestCacheNoStoreWithConversationHistory tests NoStore with conversation context
 func TestCacheNoStoreWithConversationHistory(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -141,12 +144,12 @@ func TestCacheNoStoreWithConversationHistory(t *testing.T) {
 	request := CreateConversationRequest(messages, 0.7, 100)
 
 	// Test with no-store enabled
-	ctx := CreateContextWithCacheKeyAndNoStore("test-no-store-conversation", true)
+	ctx := CreateContextWithCacheKeyAndNoStore(t, "test-no-store-conversation", true)
 
 	t.Log("Testing no-store with conversation history...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -155,7 +158,7 @@ func TestCacheNoStoreWithConversationHistory(t *testing.T) {
 	// Verify not cached (same conversation should not hit cache)
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err2 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err2)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // Should not be cached due to no-store
 
@@ -164,20 +167,21 @@ func TestCacheNoStoreWithConversationHistory(t *testing.T) {
 
 // TestCacheNoStoreWithCacheTypes tests NoStore interaction with CacheTypeKey
 func TestCacheNoStoreWithCacheTypes(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	testRequest := CreateBasicChatRequest("Test no-store with cache types", 0.7, 50)
 
 	// Test no-store with direct cache type
-	ctx1 := CreateContextWithCacheKey("test-no-store-cache-types")
+	ctx1 := CreateContextWithCacheKey(t, "test-no-store-cache-types")
 	ctx1 = ctx1.WithValue(CacheNoStoreKey, true)
 	ctx1 = ctx1.WithValue(CacheTypeKey, CacheTypeDirect)
 
 	t.Log("Testing no-store with CacheTypeKey=direct...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -186,19 +190,19 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 	// Should not be cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err2 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err2)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // No-store should override cache type
 
 	// Test no-store with semantic cache type
-	ctx2 := CreateContextWithCacheKey("test-no-store-cache-types")
+	ctx2 := CreateContextWithCacheKey(t, "test-no-store-cache-types")
 	ctx2 = ctx2.WithValue(CacheNoStoreKey, true)
 	ctx2 = ctx2.WithValue(CacheTypeKey, CacheTypeSemantic)
 
 	t.Log("Testing no-store with CacheTypeKey=semantic...")
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
@@ -207,7 +211,7 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 	// Should not be cached
 	response4, err4 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err4 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err4)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}) // No-store should override cache type
 
@@ -216,19 +220,20 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 
 // TestCacheNoStoreErrorHandling tests error scenarios with NoStore
 func TestCacheNoStoreErrorHandling(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	testRequest := CreateBasicChatRequest("Test no-store error handling", 0.7, 50)
 
 	// Test with invalid no-store value (non-boolean)
-	ctx1 := CreateContextWithCacheKey("test-no-store-errors")
+	ctx1 := CreateContextWithCacheKey(t, "test-no-store-errors")
 	ctx1 = ctx1.WithValue(CacheNoStoreKey, "invalid")
 
 	t.Log("Testing no-store with invalid value (should cache normally)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -246,13 +251,13 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should be cached (invalid value ignored)
 
 	// Test with nil value (should cache normally)
-	ctx2 := CreateContextWithCacheKey("test-no-store-nil")
+	ctx2 := CreateContextWithCacheKey(t, "test-no-store-nil")
 	ctx2 = ctx2.WithValue(CacheNoStoreKey, nil)
 
 	t.Log("Testing no-store with nil value (should cache normally)...")
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
@@ -270,24 +275,25 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 
 // TestCacheNoStoreReadButNoWrite tests that NoStore allows reading cache but prevents writing
 func TestCacheNoStoreReadButNoWrite(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	testRequest := CreateBasicChatRequest("Describe Isaac Newton's three laws of motion", 0.7, 50)
 
 	// Step 1: Cache a response normally
-	ctx1 := CreateContextWithCacheKey("test-no-store-read")
+	ctx1 := CreateContextWithCacheKey(t, "test-no-store-read")
 	t.Log("Caching response normally...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache(setup.Plugin)
 
 	// Step 2: Try to read with no-store enabled (should still read from cache)
-	ctx2 := CreateContextWithCacheKeyAndNoStore("test-no-store-read", true)
+	ctx2 := CreateContextWithCacheKeyAndNoStore(t, "test-no-store-read", true)
 	t.Log("Reading with no-store enabled (should still hit cache for reads)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {

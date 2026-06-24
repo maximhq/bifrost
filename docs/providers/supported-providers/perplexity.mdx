@@ -32,6 +32,63 @@ Perplexity is an OpenAI-compatible API with built-in web search capabilities and
 **Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, Batch, and List Models are not supported by the upstream Perplexity API. These return `UnsupportedOperationError`.
 </Note>
 
+## Setup & Configuration
+
+Configure Perplexity as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Perplexity provider dashboard](../../media/provider-dashboard-perplexity.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Perplexity** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Perplexity**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.PERPLEXITY_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "perplexity": {
+      "keys": [
+        {
+          "name": "perplexity-key-1",
+          "value": "env.PERPLEXITY_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Perplexity:
+    return []schemas.Key{{
+        Name:   "perplexity-key-1",
+        Value:  *schemas.NewEnvVar("env.PERPLEXITY_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
 ---
 
 # 1. Chat Completions

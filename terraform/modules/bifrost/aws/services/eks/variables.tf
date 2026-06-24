@@ -73,18 +73,6 @@ variable "security_group_ids" {
   type        = list(string)
 }
 
-variable "vpc_id" {
-  description = "VPC ID for the EKS cluster."
-  type        = string
-}
-
-# --- Secrets ---
-
-variable "secret_arn" {
-  description = "ARN of the Secrets Manager secret containing config.json."
-  type        = string
-}
-
 # --- EKS cluster ---
 
 variable "create_cluster" {

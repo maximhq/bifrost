@@ -3,6 +3,15 @@
 Budget:
   type: object
   description: Budget configuration
+  required:
+    - id
+    - max_limit
+    - reset_duration
+    - last_reset
+    - current_usage
+    - config_hash
+    - created_at
+    - updated_at
   properties:
     id:
       type: string
@@ -12,14 +21,26 @@ Budget:
     reset_duration:
       type: string
       description: Reset duration (e.g., "30s", "5m", "1h", "1d", "1w", "1M")
+    calendar_aligned:
+      type: boolean
+      description: When true, resets align to calendar period boundaries in UTC (not rolling from last reset)
+      default: false
     last_reset:
       type: string
       format: date-time
     current_usage:
       type: number
-    config_hash:
+    team_id:
       type: string
-      nullable: true
+      description: Team that owns this budget, when the budget is team-scoped
+    virtual_key_id:
+      type: string
+      description: Virtual key that owns this budget, when the budget is virtual-key-scoped
+    provider_config_id:
+      type: integer
+      description: Provider config that owns this budget, when the budget is provider-config-scoped
+    config_hash:
+      type: [string, 'null']
     created_at:
       type: string
       format: date-time
@@ -30,6 +51,15 @@ Budget:
 RateLimit:
   type: object
   description: Rate limit configuration
+  required:
+    - id
+    - token_current_usage
+    - token_last_reset
+    - request_current_usage
+    - request_last_reset
+    - config_hash
+    - created_at
+    - updated_at
   properties:
     id:
       type: string
@@ -45,12 +75,10 @@ RateLimit:
       type: string
       format: date-time
     request_max_limit:
-      type: integer
+      type: [integer, 'null']
       format: int64
-      nullable: true
     request_reset_duration:
-      type: string
-      nullable: true
+      type: [string, 'null']
     request_current_usage:
       type: integer
       format: int64
@@ -58,8 +86,7 @@ RateLimit:
       type: string
       format: date-time
     config_hash:
-      type: string
-      nullable: true
+      type: [string, 'null']
     created_at:
       type: string
       format: date-time
@@ -78,6 +105,15 @@ CreateBudgetRequest:
       type: number
     reset_duration:
       type: string
+    calendar_aligned:
+      type: boolean
+      default: false
+      description: >
+        When true, usage resets at the start of each calendar period in UTC instead of on a rolling window
+        from last reset. Only valid with reset durations that use day, week, month, or year suffixes
+        (`d`, `w`, `M`, `Y`). For example `1d` resets at midnight UTC; `1w` at Monday 00:00 UTC;
+        `1M` on the first day of each month; `1Y` on January 1. Sub-day durations (e.g. `1h`) cannot use
+        calendar alignment.
 
 UpdateBudgetRequest:
   type: object
@@ -87,6 +123,13 @@ UpdateBudgetRequest:
       type: number
     reset_duration:
       type: string
+    calendar_aligned:
+      type: [boolean, 'null']
+      description: >
+        Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations
+        that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`,
+        `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on
+        an existing budget, current usage is reset to zero and last_reset snaps to the current period start.
 
 CreateRateLimitRequest:
   type: object
@@ -121,6 +164,15 @@ UpdateRateLimitRequest:
 VirtualKeyProviderConfig:
   type: object
   description: Provider configuration for a virtual key
+  required:
+    - id
+    - virtual_key_id
+    - provider
+    - weight
+    - allowed_models
+    - blacklisted_models
+    - allow_all_keys
+    - keys
   properties:
     id:
       type: integer
@@ -129,32 +181,54 @@ VirtualKeyProviderConfig:
     provider:
       type: string
     weight:
-      type: number
+      type: [number, 'null']
+      description: Weight for provider load balancing. Null means excluded from weighted routing.
     allowed_models:
       type: array
       items:
         type: string
-    budget_id:
-      type: string
+    blacklisted_models:
+      type: array
+      items:
+        type: string
+    allow_all_keys:
+      type: boolean
     rate_limit_id:
       type: string
-    budget:
-      $ref: '#/Budget'
+    budgets:
+      type: array
+      description: Budget quotas assigned to this provider config
+      items:
+        $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
     keys:
-      type: array
+      type: [array, 'null']
+      description: >
+        Associated API keys for this provider config. **Always null in the quota endpoint** —
+        keys are intentionally not loaded here to keep the response lean and avoid
+        exposing sensitive credentials. Use the admin virtual-key API to inspect actual key assignments.
       items:
         $ref: '#/TableKey'
 
 VirtualKeyMCPConfig:
   type: object
   description: MCP configuration for a virtual key
+  required:
+    - id
+    - virtual_key_id
+    - mcp_client_id
+    - mcp_client
+    - tools_to_execute
   properties:
     id:
       type: integer
-    mcp_client_name:
+    virtual_key_id:
       type: string
+    mcp_client_id:
+      type: integer
+    mcp_client:
+      $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
     tools_to_execute:
       type: array
       items:
@@ -163,6 +237,17 @@ VirtualKeyMCPConfig:
 VirtualKey:
   type: object
   description: Virtual key configuration
+  required:
+    - id
+    - name
+    - value
+    - is_active
+    - provider_configs
+    - mcp_configs
+    - calendar_aligned
+    - config_hash
+    - created_at
+    - updated_at
   properties:
     id:
       type: string
@@ -182,6 +267,36 @@ VirtualKey:
       type: array
       items:
         $ref: '#/VirtualKeyMCPConfig'
+    team_id:
+      type: string
+    customer_id:
+      type: string
+    rate_limit_id:
+      type: string
+    calendar_aligned:
+      type: boolean
+    team:
+      $ref: '#/Team'
+    customer:
+      $ref: '#/Customer'
+    budgets:
+      type: array
+      description: Budget quotas assigned directly to this virtual key
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    config_hash:
+      type: string
+    created_by_user_id:
+      type: string
+      description: User that created this virtual key, when available
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
 
 CreateVirtualKeyRequest:
   type: object
@@ -195,19 +310,28 @@ CreateVirtualKeyRequest:
       type: string
     provider_configs:
       type: array
+      description: Provider configurations (empty means no providers allowed, deny-by-default)
       items:
         type: object
         properties:
           provider:
             type: string
           weight:
-            type: number
+            type: [number, 'null']
+            description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
               type: string
-          budget:
-            $ref: '#/CreateBudgetRequest'
+          blacklisted_models:
+            type: array
+            items:
+              type: string
+          budgets:
+            type: array
+            description: Provider-specific budget quotas
+            items:
+              $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/CreateRateLimitRequest'
           key_ids:
@@ -216,6 +340,7 @@ CreateVirtualKeyRequest:
               type: string
     mcp_configs:
       type: array
+      description: MCP configurations (empty means no MCP tools allowed, deny-by-default)
       items:
         type: object
         properties:
@@ -229,12 +354,18 @@ CreateVirtualKeyRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/CreateBudgetRequest'
+    budgets:
+      type: array
+      description: Budget quotas assigned directly to this virtual key
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/CreateRateLimitRequest'
     is_active:
       type: boolean
+    calendar_aligned:
+      type: boolean
+      default: false
 
 UpdateVirtualKeyRequest:
   type: object
@@ -254,13 +385,21 @@ UpdateVirtualKeyRequest:
           provider:
             type: string
           weight:
-            type: number
+            type: [number, 'null']
+            description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
               type: string
-          budget:
-            $ref: '#/UpdateBudgetRequest'
+          blacklisted_models:
+            type: array
+            items:
+              type: string
+          budgets:
+            type: array
+            description: Provider-specific budget quotas. Replaces all budgets for that provider config when provided.
+            items:
+              $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/UpdateRateLimitRequest'
           key_ids:
@@ -284,16 +423,30 @@ UpdateVirtualKeyRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/UpdateBudgetRequest'
+    budgets:
+      type: array
+      description: Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided.
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
     is_active:
       type: boolean
+    calendar_aligned:
+      type: boolean
+    reset_budget_usage:
+      type: boolean
+      description: When true, resets usage for virtual-key and provider-config budget records reconciled by this update.
 
 ListVirtualKeysResponse:
   type: object
   description: List virtual keys response
+  required:
+    - virtual_keys
+    - count
+    - total_count
+    - limit
+    - offset
   properties:
     virtual_keys:
       type: array
@@ -301,10 +454,131 @@ ListVirtualKeysResponse:
         $ref: '#/VirtualKey'
     count:
       type: integer
+    total_count:
+      type: integer
+      format: int64
+      description: Total number of virtual keys matching the query
+    limit:
+      type: integer
+      description: Page size used for the response
+    offset:
+      type: integer
+      description: Page offset used for the response
+
+VirtualKeyQuotaResponse:
+  type: object
+  description: Virtual key quota response (self-service, no admin auth required)
+  required:
+    - virtual_key_name
+    - is_active
+    - budgets
+    - rate_limit
+    - provider_configs
+    - model_configs
+  properties:
+    virtual_key_name:
+      type: string
+      description: Name of the virtual key
+    is_active:
+      type: boolean
+      description: Whether the virtual key is active
+    budgets:
+      type: [array, 'null']
+      description: >
+        Overall budget quotas for this virtual key. Each budget also carries the actual
+        per-model spend (from request logs) accumulated in its current cycle.
+      items:
+        $ref: '#/VirtualKeyBudgetUsage'
+    rate_limit:
+      oneOf:
+        - $ref: '#/RateLimit'
+        - type: 'null'
+    provider_configs:
+      type: [array, 'null']
+      description: Per-provider budget quotas and rate limits (provider-level splits and limits)
+      items:
+        $ref: '#/VirtualKeyProviderConfig'
+    model_configs:
+      type: array
+      description: >
+        Per-model budget quotas and rate limits configured for this virtual key (model-level
+        limits). Always an array — the endpoint fails closed (500) rather than returning null
+        when the model-config lookup errors.
+      items:
+        $ref: '#/VirtualKeyModelUsage'
+
+VirtualKeyBudgetUsage:
+  description: >
+    A virtual key budget with the actual per-model spend (from request logs) accumulated in
+    its current cycle [last_reset, now]. The per-model totals reconcile with current_usage.
+    The models list is empty when the logging plugin is not enabled.
+  allOf:
+    - $ref: '#/Budget'
+    - type: object
+      required:
+        - per_model_usage
+      properties:
+        per_model_usage:
+          type: array
+          description: Per-model actual usage within this budget's current cycle
+          items:
+            $ref: '#/VirtualKeyModelSpend'
+
+VirtualKeyModelSpend:
+  type: object
+  description: One model's actual usage (from request logs) within a budget cycle
+  required:
+    - model
+    - total_requests
+    - total_tokens
+    - total_cost
+  properties:
+    model:
+      type: string
+      description: The model name
+    provider:
+      type: string
+      description: Provider that served the model; omitted when unknown
+    total_requests:
+      type: integer
+      format: int64
+      description: Number of requests to this model in the cycle
+    total_tokens:
+      type: integer
+      format: int64
+      description: Total tokens consumed by this model in the cycle
+    total_cost:
+      type: number
+      description: Total cost in dollars for this model in the cycle
+
+VirtualKeyModelUsage:
+  type: object
+  description: Per-model budgets and rate limit (with current usage) for a model governed under a virtual key
+  required:
+    - model_name
+  properties:
+    model_name:
+      type: string
+      description: The model this usage applies to
+    provider:
+      type: string
+      description: Provider this model config is scoped to; omitted when it applies to all providers
+    budgets:
+      type: [array, 'null']
+      description: Budget quotas for this model
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      oneOf:
+        - $ref: '#/RateLimit'
+        - type: 'null'
 
 VirtualKeyResponse:
   type: object
   description: Virtual key operation response
+  required:
+    - message
+    - virtual_key
   properties:
     message:
       type: string
@@ -328,7 +602,11 @@ Team:
     budget:
       $ref: '#/Budget'
     virtual_keys:
-      type: array
+      type: [array, 'null']
+      description: >
+        Virtual keys assigned to this team. This field may be omitted or returned as null in some
+        responses (for example, when a team is embedded inside a virtual-key response) to avoid
+        nested `virtual_keys` recursion.
       items:
         $ref: '#/VirtualKey'
     profile:
@@ -341,8 +619,7 @@ Team:
       type: object
       additionalProperties: true
     config_hash:
-      type: string
-      nullable: true
+      type: [string, 'null']
     created_at:
       type: string
       format: date-time
@@ -485,6 +762,194 @@ CustomerResponse:
     customer:
       $ref: '#/Customer'
 
+# Business Units (Enterprise)
+
+BusinessUnit:
+  type: object
+  description: Business unit configuration with governance association
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    source_id:
+      type: string
+      description: External source identifier (e.g. from SCIM provisioning)
+    profile:
+      type: object
+      additionalProperties: true
+      nullable: true
+    config:
+      type: object
+      additionalProperties: true
+      nullable: true
+    claims:
+      type: object
+      additionalProperties: true
+      nullable: true
+    budget_id:
+      type: string
+    rate_limit_id:
+      type: string
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    config_hash:
+      type: string
+    created_by_user_id:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+BusinessUnitListItem:
+  type: object
+  description: Business unit summary as returned in list responses
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+ListBusinessUnitsResponse:
+  type: object
+  description: Paginated list of business units
+  required:
+    - business_units
+    - total
+    - page
+    - limit
+  properties:
+    business_units:
+      type: array
+      items:
+        $ref: '#/BusinessUnitListItem'
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+BusinessUnitDetailResponse:
+  type: object
+  description: Single business unit with governance and team count
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateBusinessUnitRequest:
+  type: object
+  description: Create business unit request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+
+BusinessUnitMutationResponse:
+  type: object
+  description: Response for business unit create/update operations
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
+AssignTeamToBusinessUnitRequest:
+  type: object
+  description: Request to assign a team to a business unit
+  required:
+    - team_id
+  properties:
+    team_id:
+      type: string
+
+BusinessUnitTeamsResponse:
+  type: object
+  description: Paginated list of teams assigned to a business unit
+  required:
+    - teams
+    - total
+    - page
+    - limit
+  properties:
+    teams:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          name:
+            type: string
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+CreateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Create business unit governance request. The business unit is identified by
+    the {id} path parameter. At least one of budget or rate_limit is required.
+  anyOf:
+    - required: [budget]
+    - required: [rate_limit]
+  properties:
+    budget:
+      $ref: '#/CreateBudgetRequest'
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+
+UpdateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Update business unit governance request. Passing an empty budget or rate_limit
+    object removes that governance component.
+  properties:
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+
+BusinessUnitGovernanceResponse:
+  type: object
+  description: Business unit governance operation response
+  properties:
+    message:
+      type: string
+    business_unit:
+      $ref: '#/BusinessUnit'
+
 TableKey:
   type: object
   description: Table key configuration
@@ -506,16 +971,13 @@ TableKey:
       items:
         type: string
     weight:
-      type: number
-      nullable: true
+      type: [number, 'null']
     enabled:
-      type: boolean
+      type: [boolean, 'null']
       default: true
-      nullable: true
     use_for_batch_api:
-      type: boolean
+      type: [boolean, 'null']
       default: false
-      nullable: true
     created_at:
       type: string
       format: date-time
@@ -523,55 +985,89 @@ TableKey:
       type: string
       format: date-time
     config_hash:
-      type: string
-      nullable: true
+      type: [string, 'null']
     # Azure config fields
     azure_endpoint:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
-    azure_api_version:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     azure_client_id:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     azure_client_secret:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     azure_tenant_id:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     # Vertex config fields
     vertex_project_id:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     vertex_project_number:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     vertex_region:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     vertex_auth_credentials:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     # Bedrock config fields
     bedrock_access_key:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_secret_key:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_session_token:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_region:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_arn:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
 
 # Routing Rules schemas
+
+RoutingTarget:
+  type: object
+  description: A single weighted routing target within a routing rule
+  required:
+    - weight
+  dependentRequired:
+    key_id:
+      - provider
+  properties:
+    provider:
+      type: [string, 'null']
+      description: Target provider (omit or empty to use the incoming request provider)
+    model:
+      type: [string, 'null']
+      description: Target model (omit or empty to use the incoming request model)
+    key_id:
+      type: [string, 'null']
+      description: UUID of the API key to pin for this target (omit for load-balanced key selection)
+    weight:
+      type: number
+      format: double
+      exclusiveMinimum: 0
+      description: Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)
+      example: 0.5
 
 RoutingRule:
   type: object
@@ -592,14 +1088,11 @@ RoutingRule:
     cel_expression:
       type: string
       description: CEL (Common Expression Language) expression for matching
-    provider:
-      type: string
-      description: Target provider (empty string uses incoming request provider)
-      nullable: true
-    model:
-      type: string
-      description: Target model (empty string uses incoming request model)
-      nullable: true
+    targets:
+      type: array
+      description: Weighted routing targets; weights must sum to 1; target is selected probabilistically at request time
+      items:
+        $ref: '#/RoutingTarget'
     fallbacks:
       type: array
       items:
@@ -610,16 +1103,14 @@ RoutingRule:
       enum: [global, team, customer, virtual_key]
       description: Scope level for the rule
     scope_id:
-      type: string
+      type: [string, 'null']
       description: ID for the scope (empty for global scope)
-      nullable: true
     priority:
       type: integer
       description: Priority for rule evaluation (lower number = higher priority)
     query:
-      type: object
+      type: [object, 'null']
       description: Visual rule tree structure from query builder
-      nullable: true
     created_at:
       type: string
       format: date-time
@@ -655,6 +1146,7 @@ CreateRoutingRuleRequest:
     - cel_expression
     - scope
     - priority
+    - targets
   properties:
     name:
       type: string
@@ -668,14 +1160,12 @@ CreateRoutingRuleRequest:
     cel_expression:
       type: string
       description: CEL expression for matching
-    provider:
-      type: string
-      description: Target provider (optional, empty uses incoming)
-      nullable: true
-    model:
-      type: string
-      description: Target model (optional, empty uses incoming)
-      nullable: true
+    targets:
+      type: array
+      minItems: 1
+      description: Weighted routing targets; weights must sum to 1; target is selected probabilistically at request time
+      items:
+        $ref: '#/RoutingTarget'
     fallbacks:
       type: array
       items:
@@ -686,16 +1176,14 @@ CreateRoutingRuleRequest:
       enum: [global, team, customer, virtual_key]
       description: Scope level for the rule
     scope_id:
-      type: string
+      type: [string, 'null']
       description: ID for the scope (required if scope is not global)
-      nullable: true
     priority:
       type: integer
       description: Priority for rule evaluation (lower number = higher priority)
     query:
-      type: object
+      type: [object, 'null']
       description: Visual rule tree structure
-      nullable: true
   oneOf:
     - type: object
       properties:
@@ -719,7 +1207,7 @@ CreateRoutingRuleRequest:
 
 UpdateRoutingRuleRequest:
   type: object
-  description: Request to update a routing rule
+  description: Request to update a routing rule (all fields optional; providing `targets` replaces all existing targets)
   properties:
     name:
       type: string
@@ -729,12 +1217,12 @@ UpdateRoutingRuleRequest:
       type: boolean
     cel_expression:
       type: string
-    provider:
-      type: string
-      nullable: true
-    model:
-      type: string
-      nullable: true
+    targets:
+      type: array
+      minItems: 1
+      description: Replaces all existing targets when provided; weights must sum to 1
+      items:
+        $ref: '#/RoutingTarget'
     fallbacks:
       type: array
       items:
@@ -742,8 +1230,7 @@ UpdateRoutingRuleRequest:
     priority:
       type: integer
     query:
-      type: object
-      nullable: true
+      type: [object, 'null']
 
 RoutingRuleResponse:
   type: object
@@ -777,13 +1264,35 @@ ModelConfig:
       description: Unique identifier for the model config
     model_name:
       type: string
-      description: Name of the model
+      description: Name of the model. Use `*` to match all models.
     provider:
       type: string
       description: Provider name (optional - applies to all providers if not specified)
+    scope:
+      type: string
+      description: Scope where this limit applies. `global` covers all traffic; `virtual_key` scopes to a single virtual key; `user` scopes to a single user (Enterprise only).
+      enum: [global, virtual_key, user]
+      default: global
+    scope_id:
+      type: string
+      nullable: true
+      description: ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`.
+    scope_name:
+      type: string
+      nullable: true
+      description: Resolved human-readable name of the scope target (read-only, set by server).
+    calendar_aligned:
+      type: boolean
+      description: When true, all budgets reset at clean calendar boundaries (midnight UTC for day, Monday for week, 1st for month, Jan 1 for year).
+      default: false
+    budgets:
+      type: array
+      description: Budget configurations for this model limit. Each entry must have a unique reset_duration.
+      items:
+        $ref: '#/Budget'
     budget:
       $ref: '#/Budget'
-      description: Budget configuration for this model
+      description: "Deprecated: use `budgets`. Returns the first budget for backward compatibility."
     rate_limit:
       $ref: '#/RateLimit'
       description: Rate limit configuration for this model
@@ -813,9 +1322,9 @@ ListModelConfigsResponse:
       type: array
       items:
         $ref: '#/ModelConfig'
-    count:
+    total_count:
       type: integer
-      description: Number of model configs returned
+      description: Total number of model configs matching the filter (used for pagination)
 
 CreateModelConfigRequest:
   type: object
@@ -825,20 +1334,30 @@ CreateModelConfigRequest:
   properties:
     model_name:
       type: string
-      description: Name of the model (required)
+      description: Name of the model (required). Use `*` to match all models.
     provider:
       type: string
       description: Provider name (optional - applies to all providers if not specified)
-    budget:
-      $ref: '#/CreateBudgetRequest'
-      description: Budget configuration
+    scope:
+      type: string
+      description: Scope where this limit applies. Defaults to `global`.
+      enum: [global, virtual_key, user]
+      default: global
+    scope_id:
+      type: string
+      description: ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`.
+    budgets:
+      type: array
+      description: Budget lines for this limit. Each entry must have a unique reset_duration.
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/CreateRateLimitRequest'
       description: Rate limit configuration
 
 UpdateModelConfigRequest:
   type: object
-  description: Request to update an existing model config
+  description: Request to update an existing model config. Scope and scope_id are identity fields and cannot be changed.
   properties:
     model_name:
       type: string
@@ -846,9 +1365,11 @@ UpdateModelConfigRequest:
     provider:
       type: string
       description: Provider name
-    budget:
-      $ref: '#/UpdateBudgetRequest'
-      description: Budget configuration
+    budgets:
+      type: array
+      description: Full desired set of budgets (reconciled server-side). Send an empty array to remove all budgets.
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
@@ -876,12 +1397,21 @@ ProviderGovernanceResponse:
     provider:
       type: string
       description: Provider name
+    budgets:
+      type: array
+      description: Budget configurations for this provider. Each entry has a unique reset_duration.
+      items:
+        $ref: '#/Budget'
     budget:
       $ref: '#/Budget'
-      description: Budget configuration
+      description: "Deprecated: use `budgets`. Returns the first budget for backward compatibility."
     rate_limit:
       $ref: '#/RateLimit'
       description: Rate limit configuration
+    calendar_aligned:
+      type: boolean
+      description: When true, all budgets reset at clean calendar boundaries (midnight UTC for day, Monday for week, 1st for month, Jan 1 for year).
+      default: false
 
 ListProviderGovernanceResponse:
   type: object
@@ -899,9 +1429,423 @@ UpdateProviderGovernanceRequest:
   type: object
   description: Request to update provider governance settings
   properties:
+    budgets:
+      type: array
+      nullable: true
+      description: >
+        Full desired set of budgets. Pointer-to-slice semantics apply:
+        omitting the field leaves budgets unchanged; sending an empty array `[]` removes all budgets;
+        sending a non-empty array replaces all existing budgets with the provided set.
+      items:
+        $ref: '#/CreateBudgetRequest'
     budget:
       $ref: '#/UpdateBudgetRequest'
-      description: Budget configuration
+      description: "Deprecated: use `budgets`."
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
+    calendar_aligned:
+      type: boolean
+      nullable: true
+      description: When true, all budgets reset at clean calendar boundaries. Omit to leave unchanged.
+
+# Pricing Overrides
+
+PricingOverrideRequestType:
+  type: string
+  description: >
+    Request type for pricing override filtering. Stream variants are treated
+    identically to their base type - specifying `chat_completion` covers both
+    streaming and non-streaming chat requests.
+  enum:
+    - chat_completion
+    - text_completion
+    - responses
+    - embedding
+    - rerank
+    - speech
+    - transcription
+    - image_generation
+    - image_variation
+    - image_edit
+    - video_generation
+    - video_remix
+
+PricingPatch:
+  type: object
+  description: >
+    Pricing fields to override. Only non-zero/non-null fields are applied.
+    All values are cost per unit in USD.
+  properties:
+    input_cost_per_token:
+      type: number
+      minimum: 0
+    output_cost_per_token:
+      type: number
+      minimum: 0
+    input_cost_per_token_batches:
+      type: number
+      minimum: 0
+    output_cost_per_token_batches:
+      type: number
+      minimum: 0
+    input_cost_per_token_priority:
+      type: number
+      minimum: 0
+    output_cost_per_token_priority:
+      type: number
+      minimum: 0
+    input_cost_per_character:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_200k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_200k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_200k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_200k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_priority:
+      type: number
+      minimum: 0
+    cache_read_input_image_token_cost:
+      type: number
+      minimum: 0
+    cache_creation_input_audio_token_cost:
+      type: number
+      minimum: 0
+    input_cost_per_image:
+      type: number
+      minimum: 0
+    output_cost_per_image:
+      type: number
+      minimum: 0
+    input_cost_per_pixel:
+      type: number
+      minimum: 0
+    output_cost_per_pixel:
+      type: number
+      minimum: 0
+    input_cost_per_image_token:
+      type: number
+      minimum: 0
+    output_cost_per_image_token:
+      type: number
+      minimum: 0
+    output_cost_per_image_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_auto_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_premium_image:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_512_and_512_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2048_and_2048_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_4096_and_4096_pixels:
+      type: number
+      minimum: 0
+    input_cost_per_audio_token:
+      type: number
+      minimum: 0
+    output_cost_per_audio_token:
+      type: number
+      minimum: 0
+    input_cost_per_audio_per_second:
+      type: number
+      minimum: 0
+    input_cost_per_second:
+      type: number
+      minimum: 0
+    input_cost_per_video_per_second:
+      type: number
+      minimum: 0
+    output_cost_per_video_per_second:
+      type: number
+      minimum: 0
+    output_cost_per_second:
+      type: number
+      minimum: 0
+    search_context_cost_per_query:
+      type: number
+      minimum: 0
+    code_interpreter_cost_per_session:
+      type: number
+      minimum: 0
+
+PricingOverride:
+  type: object
+  description: A pricing override that applies custom rates to matching requests.
+  properties:
+    id:
+      type: string
+      description: Unique override ID (UUID)
+    name:
+      type: string
+      description: Human-readable label
+    scope_kind:
+      type: string
+      enum:
+        - global
+        - provider
+        - provider_key
+        - virtual_key
+        - virtual_key_provider
+        - virtual_key_provider_key
+      description: Scope that determines which requests this override applies to
+    virtual_key_id:
+      type: [string, 'null']
+      description: Required for virtual_key* scopes
+    provider_id:
+      type: [string, 'null']
+      description: Required for provider and virtual_key_provider scopes
+    provider_key_id:
+      type: [string, 'null']
+      description: Required for provider_key and virtual_key_provider_key scopes
+    match_type:
+      type: string
+      enum:
+        - exact
+        - wildcard
+      description: How the pattern is matched against the model name
+    pattern:
+      type: string
+      description: Model name or wildcard prefix (e.g. "gpt-4o" or "claude-3*")
+    request_types:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/PricingOverrideRequestType'
+      description: Request types this override applies to. At least one value is required.
+    pricing_patch:
+      type: string
+      description: JSON-encoded pricing fields to override (as stored in the database)
+    patch:
+      $ref: '#/PricingPatch'
+      description: Decoded pricing fields (present in API responses)
+    config_hash:
+      type: [string, 'null']
+      description: Auto-managed hash for config-file-sourced overrides. Do not set manually.
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreatePricingOverrideRequest:
+  type: object
+  description: Request body for creating a pricing override.
+  required:
+    - name
+    - scope_kind
+    - match_type
+    - pattern
+    - request_types
+  properties:
+    name:
+      type: string
+      description: Human-readable label
+    scope_kind:
+      type: string
+      enum:
+        - global
+        - provider
+        - provider_key
+        - virtual_key
+        - virtual_key_provider
+        - virtual_key_provider_key
+    virtual_key_id:
+      type: string
+      description: Required for virtual_key* scopes
+    provider_id:
+      type: string
+      description: Required for provider and virtual_key_provider scopes
+    provider_key_id:
+      type: string
+      description: Required for provider_key and virtual_key_provider_key scopes
+    match_type:
+      type: string
+      enum:
+        - exact
+        - wildcard
+    pattern:
+      type: string
+      description: Model name or wildcard prefix ending with * (e.g. "claude-3*")
+    request_types:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/PricingOverrideRequestType'
+      description: Request types this override applies to. At least one value is required.
+    patch:
+      $ref: '#/PricingPatch'
+
+UpdatePricingOverrideRequest:
+  type: object
+  description: >
+    Request body for updating a pricing override. All fields are optional -
+    omitted fields are merged from the existing record. The `patch` field is
+    always replaced in full when provided.
+  properties:
+    name:
+      type: string
+      description: Human-readable label
+    scope_kind:
+      type: string
+      enum:
+        - global
+        - provider
+        - provider_key
+        - virtual_key
+        - virtual_key_provider
+        - virtual_key_provider_key
+    virtual_key_id:
+      type: string
+      description: Required for virtual_key* scopes
+    provider_id:
+      type: string
+      description: Required for provider and virtual_key_provider scopes
+    provider_key_id:
+      type: string
+      description: Required for provider_key and virtual_key_provider_key scopes
+    match_type:
+      type: string
+      enum:
+        - exact
+        - wildcard
+    pattern:
+      type: string
+      description: Model name or wildcard prefix ending with * (e.g. "claude-3*")
+    request_types:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/PricingOverrideRequestType'
+      description: Request types this override applies to.
+    patch:
+      $ref: '#/PricingPatch'
+
+PricingOverrideResponse:
+  type: object
+  properties:
+    message:
+      type: string
+    pricing_override:
+      $ref: '#/PricingOverride'
+
+ListPricingOverridesResponse:
+  type: object
+  properties:
+    pricing_overrides:
+      type: array
+      items:
+        $ref: '#/PricingOverride'
+    count:
+      type: integer
+      description: Total number of overrides returned
+
+# Complexity Tier Boundaries
+
+ComplexityTierBoundaries:
+  type: object
+  description: Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+  additionalProperties: false
+  required:
+    - simple_medium
+    - medium_complex
+    - complex_reasoning
+  properties:
+    simple_medium:
+      type: number
+      description: Score boundary between SIMPLE and MEDIUM tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+    medium_complex:
+      type: number
+      description: Score boundary between MEDIUM and COMPLEX tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+    complex_reasoning:
+      type: number
+      description: Score boundary between COMPLEX and REASONING tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+
+ComplexityKeywordConfig:
+  type: object
+  description: |
+    Editable keyword lists used by the complexity analyzer. Only the four user-facing
+    dimensions are exposed; `reasoning_keywords` entries drive the reasoning tier
+    override. Matching is normalized to lowercase and duplicates are removed on save.
+  additionalProperties: false
+  required:
+    - code_keywords
+    - reasoning_keywords
+    - technical_keywords
+    - simple_keywords
+  properties:
+    code_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    reasoning_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    technical_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    simple_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+
+ComplexityAnalyzerConfig:
+  type: object
+  description: Full runtime configuration for complexity routing analysis.
+  additionalProperties: false
+  required:
+    - tier_boundaries
+    - keywords
+  properties:
+    tier_boundaries:
+      $ref: '#/ComplexityTierBoundaries'
+    keywords:
+      $ref: '#/ComplexityKeywordConfig'

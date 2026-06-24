@@ -7,44 +7,60 @@ icon: "book-open"
 The Model Catalog is a foundational component of Bifrost that provides a unified interface for managing AI models, including their pricing, capabilities, and availability. It serves as a centralized repository for all model-related information, enabling dynamic cost calculation, intelligent model routing, and efficient resource management.
 
 <Info>
-**Related Documentation**: The Model Catalog powers Bifrost's intelligent routing system. See [Provider Routing](/providers/provider-routing) for detailed examples of how governance and load balancing use the catalog to make routing decisions, including cross-provider scenarios and weighted routing via proxy providers.
+  **Related Documentation**: The Model Catalog powers Bifrost's intelligent
+  routing system. See [Provider Routing](/providers/provider-routing) for
+  detailed examples of how governance and load balancing use the catalog to make
+  routing decisions, including cross-provider scenarios and weighted routing via
+  proxy providers.
 </Info>
 
 ## Core Features
 
 ### **1. Automatic Pricing Synchronization**
+
 The Model Catalog manages pricing data through a two-phase approach:
 
 **Startup Behavior:**
+
 - **With ConfigStore**: Downloads a pricing sheet from Maxim's datasheet, persists it to the config store, and then loads it into memory for fast lookups.
 - **Without ConfigStore**: Downloads the pricing sheet directly into memory on every startup.
 
 **Ongoing Synchronization:**
+
 - When ConfigStore is available, an automatic sync occurs every 24 hours to keep pricing data current.
 - All pricing data is cached in memory for O(1) lookup performance during cost calculations.
 
 This ensures that cost calculations always use the latest pricing information from AI providers while maintaining optimal performance.
 
 ### **2. Multi-Modal Cost Calculation**
+
 It supports diverse pricing models across different AI operation types:
-- **Text Operations**: Token-based and character-based pricing for chat completions, text completions, and embeddings.
-- **Audio Processing**: Token-based and duration-based pricing for speech synthesis and transcription.
-- **Image Processing**: Per-image costs with tiered pricing for high-token contexts.
+
+- **Text Operations**: Token-based pricing for chat completions, text completions, responses, and embeddings. Cache-read/cache-write pricing applies to chat/text/responses when providers surface prompt cache token details.
+- **Audio Processing**: Character-based, token-based, and duration-based pricing for speech synthesis and transcription, with audio token detail breakdown. Speech responses populate `usage.input_chars` so speech can be billed by input characters in addition to tokens/duration.
+- **Image Processing**: Per-image (`input_cost_per_image`/`output_cost_per_image`), per-pixel (`input_cost_per_pixel`/`output_cost_per_pixel`), or token-based pricing with text/image token breakdown.
+- **Video Processing**: Token-based or duration-based pricing. Input can use prompt tokens or `input_cost_per_video_per_second`; output can use completion tokens or fall back to `output_cost_per_video_per_second` / `output_cost_per_second`.
+- **Reranking**: Input/output token pricing with search query cost support.
 - **Prompt Caching**: Separate rates for cache-read tokens (`cached_read_tokens`) and cache-creation tokens (`cached_write_tokens`), both surfaced under `prompt_tokens_details` (see [Prompt Cache Cost Calculation](#prompt-cache-cost-calculation)).
 
 ### **3. Model Information Management**
+
 The Model Catalog maintains a pool of available models for each provider, populated from both pricing data and provider list models APIs. This enables:
+
 - **Model Discovery**: Listing all available models for a given provider
 - **Provider Discovery**: Finding all providers that support a specific model with intelligent cross-provider resolution (OpenRouter, Vertex, Groq, Bedrock)
 - **Model Validation**: Checking if a model is allowed for a provider based on allowed models lists (supports provider-prefixed entries)
 
 ### **4. Intelligent Cache Cost Handling**
+
 It integrates with semantic caching to provide accurate cost calculations:
+
 - **Cache Hits**: Zero cost for direct cache hits, and embedding cost only for semantic matches.
 - **Cache Misses**: Combined cost of the base model usage plus the embedding generation cost for cache storage.
 
 ### **5. Tiered Pricing Support**
-The system automatically applies different pricing rates for high-token contexts (e.g., above 128k tokens), reflecting real provider pricing models for various modalities.
+
+The system automatically applies different pricing rates for high-token contexts, reflecting real provider pricing models. Two tiers are supported: above 128k tokens and above 200k tokens, with the higher tier taking precedence when both are configured.
 
 ## Configuration
 
@@ -72,6 +88,7 @@ modelCatalog, err := modelcatalog.Init(context.Background(), config, configStore
 ## Architecture
 
 ### ModelCatalog
+
 The `ModelCatalog` is the central component that handles all model and pricing operations:
 
 ```go
@@ -98,40 +115,65 @@ type ModelCatalog struct {
 ```
 
 ### Pricing Data Structure
+
 Each model's pricing information includes comprehensive cost metrics, supporting various modalities and tiered pricing:
 
 ```go
-// PricingEntry represents a single model's pricing information
+// PricingEntry represents a single model's pricing information.
+// The fields below are an excerpt - see framework/modelcatalog/main.go for the full definition.
 type PricingEntry struct {
-    // Basic pricing
-    InputCostPerToken  float64 `json:"input_cost_per_token"`
-    OutputCostPerToken float64 `json:"output_cost_per_token"`
-    Provider           string  `json:"provider"`
-    Mode               string  `json:"mode"`
+    BaseModel string `json:"base_model,omitempty"`
+    Provider  string `json:"provider"`
+    Mode      string `json:"mode"`
 
-    // Additional pricing for media
-    InputCostPerImage          *float64 `json:"input_cost_per_image,omitempty"`
-    InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
-    InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+    // Costs - Text
+    InputCostPerToken                 float64  `json:"input_cost_per_token"`
+    OutputCostPerToken                float64  `json:"output_cost_per_token"`
+    InputCostPerTokenBatches          *float64 `json:"input_cost_per_token_batches,omitempty"`
+    OutputCostPerTokenBatches         *float64 `json:"output_cost_per_token_batches,omitempty"`
+    InputCostPerTokenPriority         *float64 `json:"input_cost_per_token_priority,omitempty"`
+    OutputCostPerTokenPriority        *float64 `json:"output_cost_per_token_priority,omitempty"`
+    InputCostPerTokenAbove200kTokens  *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+    OutputCostPerTokenAbove200kTokens *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 
-    // Character-based pricing
-    InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
-    OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
+    // Costs - Cache
+    CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
+    CacheReadInputTokenCost                            *float64 `json:"cache_read_input_token_cost,omitempty"`
+    CacheCreationInputTokenCostAbove200kTokens         *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+    CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+    CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+    CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+    CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
+    CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
 
-    // Pricing above 128k tokens
-    InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-    InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
-    InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
-    InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
-    InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
-    OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-    OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+    // Costs - Image
+    InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
+    InputCostPerPixel                             *float64 `json:"input_cost_per_pixel,omitempty"`
+    OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
+    OutputCostPerPixel                            *float64 `json:"output_cost_per_pixel,omitempty"`
+    OutputCostPerImagePremiumImage                *float64 `json:"output_cost_per_image_premium_image,omitempty"`
+    OutputCostPerImageAbove512x512Pixels          *float64 `json:"output_cost_per_image_above_512_and_512_pixels,omitempty"`
+    OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
+    OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
+    OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+    OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
+    OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+    OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
+    OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
+    OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
+    OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
+    // Costs - Audio/Video
+    InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
+    InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+    InputCostPerSecond          *float64 `json:"input_cost_per_second,omitempty"`
+    InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
+    OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
+    OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+    OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
-    // Cache and batch pricing
-    CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
-    CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-    InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
-    OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
+    // Costs - Other
+    SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+    CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
 }
 ```
 
@@ -140,10 +182,14 @@ type PricingEntry struct {
 The Model Catalog is designed to be shared across all Bifrost plugins, providing consistent model information and validation logic for governance, load balancing, and other routing mechanisms.
 
 <Note>
-**Governance & Load Balancing**: Both plugins delegate model validation to the Model Catalog's `IsModelAllowedForProvider` method, ensuring consistent handling of cross-provider scenarios and provider-prefixed allowed models. See [Provider Routing](/providers/provider-routing) for configuration examples.
+  **Governance & Load Balancing**: Both plugins delegate model validation to the
+  Model Catalog's `IsModelAllowedForProvider` method, ensuring consistent
+  handling of cross-provider scenarios and provider-prefixed allowed models. See
+  [Provider Routing](/providers/provider-routing) for configuration examples.
 </Note>
 
 ### Initialization
+
 In Bifrost's gateway, the `ModelCatalog` is initialized once at the start and shared across all plugins:
 
 ```go
@@ -157,85 +203,40 @@ if err != nil {
 ```
 
 ### Basic Cost Calculation
+
 Calculate costs from a Bifrost response:
 
 ```go
 // Calculate cost for a completed request
 cost := modelCatalog.CalculateCost(
     result, // *schemas.BifrostResponse
+    nil,    // *PricingLookupScopes (nil = no scoped overrides)
 )
 
 logger.Info("Request cost: $%.6f", cost)
 ```
 
-### Advanced Cost Calculation with Usage Details
-For more granular cost calculation with custom usage data:
+### Unified Cost Calculation
+
+`CalculateCost` is the single entry point for all cost calculations. It handles all request types, semantic cache billing, and tiered pricing automatically:
 
 ```go
-// Custom usage calculation
-usage := &schemas.BifrostLLMUsage{
-    PromptTokens:     1500,
-    CompletionTokens: 800,
-    TotalTokens:      2300,
-}
-
-cost := modelCatalog.CalculateCostFromUsage(
-    "openai",                      // provider
-    "gpt-4",                       // model
-    "",                            // deployment (optional, used as fallback key)
-    usage,                         // usage data
-    schemas.ChatCompletionRequest, // request type
-    false,                         // is batch
-    nil,                           // audio seconds (for audio/speech models)
-    nil,                           // audio token details (for transcription)
-    nil,                           // image usage (for image generation)
-    nil,                           // video seconds (for video generation)
-)
-```
-
-### Prompt Cache Cost Calculation
-
-All providers expose prompt-cache token counts through a unified structure on `prompt_tokens_details`:
-
-| Field | JSON key | What it counts |
-|---|---|---|
-| `CachedReadTokens` | `cached_read_tokens` | Tokens served from the prompt cache (cache hit), billed at the reduced cache-read rate |
-| `CachedWriteTokens` | `cached_write_tokens` | Tokens written to the prompt cache on this request, billed at the cache-creation rate |
-
-`prompt_tokens` always includes both cached-read and cached-write tokens. The cost formula is:
-
-```
-input_cost  = (prompt_tokens − cached_read_tokens − cached_write_tokens) × InputCostPerToken
-            + cached_read_tokens  × CacheReadInputTokenCost
-            + cached_write_tokens × CacheCreationInputTokenCost
-
-output_cost = completion_tokens × OutputCostPerToken
-```
-
-For tiered (>128k) or batch requests, substitute the corresponding tier or batch rate fields (e.g., `InputCostPerTokenAbove128kTokens`, `OutputCostPerTokenBatches`) into the same formula in place of the base rates.
-
-<Note>
-`cached_write_tokens` (cache creation) is an **input** cost — despite the cache write happening during the request, it's billed against the input budget at its own rate, not as output tokens.
-</Note>
-
-### Cache Aware Cost Calculation
-For workflows that implement semantic caching, use cache-aware cost calculation:
-
-```go
-// This automatically handles cache hits/misses and embedding costs
-cost := modelCatalog.CalculateCostWithCacheDebug(
-    result, // *schemas.BifrostResponse with cache debug info
-)
+// CalculateCost handles all cost scenarios including cache-aware pricing
+cost := modelCatalog.CalculateCost(result, nil) // *schemas.BifrostResponse, *PricingLookupScopes
 
 // Cache hits return 0 for direct hits, embedding cost for semantic matches
 // Cache misses return base model cost + embedding generation cost
+// Returns 0.0 if pricing data is not found (logs a debug message)
 ```
 
 ### Model Discovery
+
 The `ModelCatalog` provides several methods to query for model and provider information.
 
 #### Get Models for a Provider
+
 Retrieve a list of all models supported by a specific provider.
+
 ```go
 openaiModels := modelCatalog.GetModelsForProvider(schemas.OpenAI)
 for _, model := range openaiModels {
@@ -246,6 +247,7 @@ for _, model := range openaiModels {
 **Thread-safe**: Uses read lock for concurrent access.
 
 #### Get Providers for a Model
+
 Find all providers that offer a specific model, including cross-provider resolution.
 
 ```go
@@ -268,6 +270,7 @@ This method implements intelligent cross-provider routing logic to discover all 
 5. **Bedrock Claude Models**: For Claude models, flexible matching against Bedrock's full ARN format
 
 **Example**:
+
 ```go
 providers := modelCatalog.GetProvidersForModel("claude-3-5-sonnet")
 // Returns: [anthropic, vertex, bedrock, openrouter]
@@ -275,18 +278,22 @@ providers := modelCatalog.GetProvidersForModel("claude-3-5-sonnet")
 ```
 
 <Note>
-This cross-provider logic powers Bifrost's intelligent routing capabilities. See [Provider Routing](/providers/provider-routing#the-model-catalog) for detailed examples of how this enables features like weighted routing via proxy providers.
+  This cross-provider logic powers Bifrost's intelligent routing capabilities.
+  See [Provider Routing](/providers/provider-routing#the-model-catalog) for
+  detailed examples of how this enables features like weighted routing via proxy
+  providers.
 </Note>
 
 #### Check Model Allowance for Provider
+
 Validate if a model is allowed for a specific provider based on an allowed models list. This method is used internally by governance and load balancing plugins.
 
 ```go
-// Empty allowedModels - uses catalog to determine support
+// ["*"] wildcard - uses catalog to determine support
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenRouter,
     "gpt-4o",
-    []string{}, // empty = check catalog
+    schemas.WhiteList{"*"}, // wildcard = check catalog
 )
 // Returns: true (catalog knows OpenRouter supports openai/gpt-4o)
 
@@ -294,7 +301,7 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenRouter,
     "gpt-4o",
-    []string{"openai/gpt-4o", "anthropic/claude-3-5-sonnet"},
+    schemas.WhiteList{"openai/gpt-4o", "anthropic/claude-3-5-sonnet"},
 )
 // Returns: true (strips "openai/" prefix and matches "gpt-4o")
 
@@ -302,45 +309,66 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenAI,
     "gpt-4o",
-    []string{"gpt-4o", "gpt-4o-mini"},
+    schemas.WhiteList{"gpt-4o", "gpt-4o-mini"},
 )
 // Returns: true (direct match)
 ```
 
 **Behavior**:
-- **Empty `allowedModels`**: Delegates to `GetProvidersForModel` (includes cross-provider logic)
-- **Non-empty `allowedModels`**: Checks for both direct matches and provider-prefixed entries
-  - Direct: `"gpt-4o"` matches `"gpt-4o"`
-  - Prefixed: `"openai/gpt-4o"` matches request for `"gpt-4o"` (prefix stripped)
+
+- **`["*"]` wildcard**: Delegates to `GetProvidersForModel` (includes cross-provider logic) - this is the "allow all via catalog" mode
+- **Non-empty explicit list**: Checks for both direct matches and provider-prefixed entries
+- **Empty slice (`[]string{}` / empty `schemas.WhiteList`)**: Returns `false` (deny-all) - mirrors the config deny-by-default semantics
+
+<Note>
+  In `config.json` and the governance API, `allowed_models: []` (empty array)
+  means **deny all models** (deny-by-default, v1.5.0+). The Go helper
+  `IsModelAllowedForProvider` behaves the same way: an empty `allowedModels`
+  slice also returns `false`. Use `["*"]` to allow all models validated through
+  the catalog.
+</Note>
+- Direct: `"gpt-4o"` matches `"gpt-4o"`
+- Prefixed: `"openai/gpt-4o"` matches request for `"gpt-4o"` (prefix stripped)
 
 **Use Cases**:
+
 - **Governance Routing**: Validate if a model request is allowed for a provider configuration
 - **Load Balancing**: Filter providers based on allowed models before performance scoring
 - **Virtual Key Validation**: Check if a model can be used with a specific virtual key's provider configs
 
 <Tip>
-This method is the central validation point for both governance and load balancing plugins, ensuring consistent model allowance logic across all routing mechanisms. It handles all edge cases including proxy providers (OpenRouter, Vertex) and provider-prefixed model entries.
+  This method is the central validation point for both governance and load
+  balancing plugins, ensuring consistent model allowance logic across all
+  routing mechanisms. It handles all edge cases including proxy providers
+  (OpenRouter, Vertex) and provider-prefixed model entries.
 </Tip>
 
 #### Dynamically Add Models
+
 You can dynamically add models to the catalog's pool from a `v1/models` compatible response structure. This is useful for providers that expose a model list endpoint.
+
 ```go
 // response is *schemas.BifrostListModelsResponse
 modelCatalog.AddModelDataToPool(response)
 ```
+
 This is automatically done in Bifrost gateway initialization for all providers that are supported by Bifrost.
 
 **When to use**:
+
 - After fetching models from a provider's `/v1/models` endpoint
 - When a new provider is dynamically added at runtime
 - For testing with custom model lists
+
 ### Reloading Configuration
+
 You can reload the pricing configuration at runtime if you need to change the pricing URL or sync interval.
+
 ```go
 newConfig := &modelcatalog.Config{
     PricingSyncInterval: 12 * time.Hour,
 }
-err := modelCatalog.ReloadPricing(ctx, newConfig)
+err := modelCatalog.UpdateSyncConfig(ctx, newConfig)
 ```
 
 ## Error Handling and Fallbacks
@@ -348,30 +376,59 @@ err := modelCatalog.ReloadPricing(ctx, newConfig)
 The Model Catalog handles missing pricing data gracefully with intelligent fallbacks:
 
 ```go
-// getPricing returns pricing information for a model (thread-safe)
+// resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
+func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
+	pricing, exists := mc.getPricing(model, provider, requestType)
+	if exists {
+		return pricing
+	}
+	// If pricing not found for model, try the deployment name
+	if deployment != "" {
+		pricing, exists = mc.getPricing(deployment, provider, requestType)
+		if exists {
+			return pricing
+		}
+	}
+	return nil
+}
+
+// getPricing returns pricing information for a model (thread-safe).
+// It implements a multi-step fallback chain:
+//   1. Direct lookup by model + provider + mode
+//   2. Gemini → Vertex provider fallback
+//   3. Vertex "provider/model" prefix stripping
+//   4. Bedrock "anthropic." prefix addition for Claude models
+//   5. Responses → Chat mode fallback (at each step)
+//   6. ImageEdit / ImageVariation → ImageGeneration mode fallback
 func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
-	pricing, ok := mc.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
-	if !ok {
-		// Example fallback: if a gemini model is not found, try looking it up under the vertex provider
-		if provider == string(schemas.Gemini) {
-			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
-			if ok {
-				return &pricing, true
-			}
-        }
-		return nil, false
+	mode := normalizeRequestType(requestType)
+
+	pricing, ok := mc.pricingData[makeKey(model, provider, mode)]
+	if ok {
+		return &pricing, true
 	}
-	return &pricing, true
+
+	// Provider-specific fallbacks (Gemini→Vertex, Vertex prefix strip, Bedrock anthropic. prefix)
+	// Each fallback also tries Responses→Chat mode if applicable
+	// ...
+
+	// Final fallback: Responses → Chat mode for any provider
+	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+		if ok {
+			return &pricing, true
+		}
+	}
+
+	return nil, false
 }
 
-// When pricing is not found, CalculateCost returns 0.0 and logs a warning
-// This ensures operations continue smoothly without billing failures
+// When pricing is not found, CalculateCost returns 0.0 and logs a debug message.
+// This ensures operations continue smoothly without billing failures.
 ```
-
 
 ## Cleanup and Lifecycle Management
 
@@ -395,7 +452,7 @@ All `ModelCatalog` operations are thread-safe, making it suitable for concurrent
 1. **Shared Instance**: Use a single `ModelCatalog` instance across all plugins to avoid redundant data synchronization.
 2. **Error Handling**: Always handle the case where pricing returns 0.0 due to missing model data.
 3. **Logging**: Monitor pricing sync failures and missing model warnings in production.
-4. **Cache Awareness**: Use `CalculateCostWithCacheDebug` when implementing caching features.
+4. **Cache Awareness**: Use `CalculateCost` which automatically handles cache hits/misses and embedding costs.
 5. **Resource Cleanup**: Always call `Cleanup()` during application shutdown to prevent resource leaks.
 
 The Model Catalog provides a robust, production-ready foundation for implementing billing, budgeting, and cost monitoring features in Bifrost plugins.

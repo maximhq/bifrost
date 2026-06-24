@@ -20,6 +20,7 @@ func TestSGL(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.SGL,
@@ -28,26 +29,27 @@ func TestSGL(t *testing.T) {
 		TextModel:      "qwen/qwen2.5-0.5b-instruct",
 		EmbeddingModel: "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        true,
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              true,
-			ImageBase64:           true,
-			MultipleImages:        true,
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			ListModels:            true,
+			TextCompletion:             true,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   true,
+			ImageBase64:                true,
+			MultipleImages:             true,
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			ListModels:                 true,
+			PassThroughExtraParams:     true,
 		},
 	}
 
 	t.Run("SGLTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

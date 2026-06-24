@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ChevronDown, ChevronUp, Copy } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 
 interface CollapsibleBoxProps {
 	title: string;
@@ -15,6 +15,7 @@ export default function CollapsibleBox({ title, children, collapsedHeight = 60, 
 	const [isExpanded, setIsExpanded] = useState(false);
 	const [needsExpansion, setNeedsExpansion] = useState(false);
 	const innerContentRef = useRef<HTMLDivElement>(null);
+	const { copy } = useCopyToClipboard();
 
 	useEffect(() => {
 		if (!innerContentRef.current) return;
@@ -39,15 +40,7 @@ export default function CollapsibleBox({ title, children, collapsedHeight = 60, 
 
 	const handleCopy = () => {
 		if (!onCopy) return;
-
-		navigator.clipboard
-			.writeText(onCopy())
-			.then(() => {
-				toast.success("Copied to clipboard");
-			})
-			.catch(() => {
-				toast.error("Failed to copy");
-			});
+		copy(onCopy());
 	};
 
 	return (

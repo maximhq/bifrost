@@ -29,10 +29,10 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      teamBudget,
 				ResetDuration: teamResetDuration,
-			},
+			}},
 		},
 	})
 
@@ -221,10 +221,10 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       teamName,
 			CustomerID: &customerID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // Medium
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -252,8 +252,10 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 			},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					Budget: &BudgetRequest{
 						MaxLimit:      providerBudget,
 						ResetDuration: "1h",
@@ -1084,10 +1086,10 @@ func TestTeamDeletionCascade(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -1348,13 +1350,15 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 			ProviderConfigs: []ProviderConfigRequest{
 				{
 					Provider:      "openai",
-					Weight:        openaiWeight,
+					Weight:        &openaiWeight,
 					AllowedModels: []string{"gpt-4o"},
+					KeyIDs:        []string{"*"},
 				},
 				{
 					Provider:      "azure",
-					Weight:        azureWeight,
+					Weight:        &azureWeight,
 					AllowedModels: []string{"gpt-4o"},
+					KeyIDs:        []string{"*"},
 				},
 			},
 		},
@@ -1422,7 +1426,7 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 		// Try to detect which provider was used
 		// Check if model in response contains provider name
 		if provider, ok := resp.Body["extra_fields"].(map[string]interface{})["provider"].(string); ok {
-			model, ok := resp.Body["extra_fields"].(map[string]interface{})["model_requested"].(string)
+			model, ok := resp.Body["extra_fields"].(map[string]interface{})["original_model_requested"].(string)
 			if !ok {
 				t.Logf("Request %d failed to get model requested", i+1)
 				continue
@@ -1482,13 +1486,15 @@ func TestProviderFallbackMechanism(t *testing.T) {
 			ProviderConfigs: []ProviderConfigRequest{
 				{
 					Provider:      "anthropic",
-					Weight:        anthropicWeight,
+					Weight:        &anthropicWeight,
 					AllowedModels: []string{"claude-3-sonnet"}, // Does NOT include gpt-4o
+					KeyIDs:        []string{"*"},
 				},
 				{
 					Provider:      "openai",
-					Weight:        openaiWeight,
+					Weight:        &openaiWeight,
 					AllowedModels: []string{"gpt-4o"}, // DOES include gpt-4o
+					KeyIDs:        []string{"*"},
 				},
 			},
 		},

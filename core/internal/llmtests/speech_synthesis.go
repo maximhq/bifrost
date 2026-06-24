@@ -111,7 +111,6 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					OnFinalFail: retryConfig.OnFinalFail,
 				}
 
-				
 				speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 					requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.SpeechRequest(requestCtx, request)
@@ -189,6 +188,11 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				Fallbacks: testConfig.SpeechSynthesisFallbacks,
 			}
 
+			// Groq doesn't support instructions
+			if testConfig.Provider == schemas.Groq {
+				request.Params.Instructions = ""
+			}
+
 			retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisHD", testConfig)
 			retryContext := TestRetryContext{
 				ScenarioName: "SpeechSynthesis_HD_LongText",
@@ -218,8 +222,6 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				OnFinalFail: retryConfig.OnFinalFail,
 			}
 
-			
-
 			speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_HD", func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 				requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.SpeechRequest(requestCtx, request)
@@ -237,8 +239,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				t.Fatalf("HD audio data too small: got %d bytes, expected at least 5000", audioSize)
 			}
 
-			if speechResponse.ExtraFields.ModelRequested != testConfig.SpeechSynthesisModel {
-				t.Logf("⚠️ Expected HD model, got: %s", speechResponse.ExtraFields.ModelRequested)
+			if speechResponse.ExtraFields.OriginalModelRequested != testConfig.SpeechSynthesisModel {
+				t.Logf("⚠️ Expected HD model, got: %s", speechResponse.ExtraFields.OriginalModelRequested)
 			}
 
 			t.Logf("✅ HD speech synthesis successful: %d bytes generated", len(speechResponse.Audio))
@@ -302,7 +304,6 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 						OnFinalFail: voiceRetryConfig.OnFinalFail,
 					}
 
-					
 					speechResponse, bifrostErr := WithSpeechTestRetry(t, voiceSpeechRetryConfig, voiceRetryContext, expectations, "SpeechSynthesis_VoiceType_"+voiceType, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 						requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 						return client.SpeechRequest(requestCtx, request)
@@ -343,8 +344,8 @@ func validateSpeechSynthesisSpecific(t *testing.T, response *schemas.BifrostSpee
 		t.Fatalf("Audio data too small: got %d bytes, expected at least %d", audioSize, expectMinBytes)
 	}
 
-	if expectedModel != "" && response.ExtraFields.ModelRequested != expectedModel {
-		t.Logf("⚠️ Expected model, got: %s", response.ExtraFields.ModelRequested)
+	if expectedModel != "" && response.ExtraFields.OriginalModelRequested != expectedModel {
+		t.Logf("⚠️ Expected model, got: %s", response.ExtraFields.OriginalModelRequested)
 	}
 
 	t.Logf("✅ Audio validation passed: %d bytes generated", audioSize)

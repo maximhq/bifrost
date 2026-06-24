@@ -1,0 +1,131 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Rate Limit / Budget",
+    "description": "Rate limit enforcement tests. Creates VK with request_max_limit: 2, expects 429 on 3rd request.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup - Create VK with rate limit",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ts = Date.now();",
+              "var body = {",
+              "  name: 'Rate Limit Test VK ' + ts,",
+              "  rate_limit: {",
+              "    request_max_limit: 2,",
+              "    request_reset_duration: '1m'",
+              "  }",
+              "};",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  var vk = json.virtual_key || json;",
+              "  if (vk.id) pm.collectionVariables.set('vk_id', vk.id);",
+              "  if (vk.value) pm.collectionVariables.set('vk_value', vk.value);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete VK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var vkId = pm.collectionVariables.get('vk_id');",
+              "if (!vkId) { pm.test('Teardown skipped - no VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Delete VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ]
+        }
+      }
+    }
+  ]
+}

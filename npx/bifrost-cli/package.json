@@ -1,6 +1,6 @@
 {
     "name": "@maximhq/bifrost-cli",
-    "version": "0.9.1",
+    "version": "1.0.1",
     "description": "Bifrost CLI - Use any harness + any models through Bifrost gateway with full observability and governance",
     "keywords": [
         "ai",
@@ -14,7 +14,7 @@
     "homepage": "https://github.com/maximhq/bifrost",
     "repository": {
         "type": "git",
-        "url": "https://github.com/maximhq/bifrost.git"
+        "url": "git+https://github.com/maximhq/bifrost.git"
     },
     "license": "Apache-2.0",
     "author": "Maxim HQ",

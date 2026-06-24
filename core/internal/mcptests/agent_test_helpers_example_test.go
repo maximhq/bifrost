@@ -53,9 +53,6 @@ func TestAgentHelpers_Example_SimpleInProcessAgent(t *testing.T) {
 		req,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions using agent-specific helpers
@@ -101,9 +98,6 @@ func TestAgentHelpers_Example_MultiConnectionTypes(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assert parallel execution
@@ -145,9 +139,6 @@ func TestAgentHelpers_Example_ContextFiltering(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assert echo executed but weather blocked (agent stops with error at turn 2)
@@ -210,9 +201,6 @@ func TestAgentHelpers_Example_MaxDepthLimit(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Agent should stop at max depth (initial call + up to maxDepth-1 continuations)

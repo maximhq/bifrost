@@ -17,14 +17,17 @@ oauth-callback:
           type: string
       - name: code
         in: query
-        required: true
-        description: Authorization code from the OAuth provider
+        required: false
+        description: |
+          Authorization code from the OAuth provider. Present on success only;
+          `code` and `error` are mutually exclusive — one of them is always set.
         schema:
           type: string
       - name: error
         in: query
         required: false
-        description: Error code if authorization failed
+        description: |
+          Error code if authorization failed. Mutually exclusive with `code`.
         schema:
           type: string
       - name: error_description
@@ -33,6 +36,10 @@ oauth-callback:
         description: Error description if authorization failed
         schema:
           type: string
+    # Public: hit by the browser after the upstream OAuth provider redirects
+    # back, with no cookie/bearer context. Whitelisted server-side; the `state`
+    # query parameter provides CSRF protection.
+    security: []
     responses:
       '200':
         description: OAuth authorization successful. Returns HTML page that closes the authorization window.
@@ -64,6 +71,8 @@ oauth-config-status:
         description: OAuth config ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: OAuth config status retrieved successfully
@@ -80,11 +89,12 @@ oauth-config-status:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+oauth-config-by-id:
   delete:
     operationId: revokeOAuthConfig
     summary: Revoke OAuth config
     description: |
-      Revokes an OAuth configuration and its associated access token.
+      Revokes a server-level OAuth configuration and its associated access token.
       After revocation, the MCP client will no longer be able to use this OAuth token.
     tags:
       - OAuth
@@ -95,6 +105,8 @@ oauth-config-status:
         description: OAuth config ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: OAuth token revoked successfully
@@ -102,5 +114,111 @@ oauth-config-status:
           application/json:
             schema:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ─── MCP Per-User OAuth flow (consent page support) ─────────────────────────
+# Two endpoints powering the /workspace/mcp-sessions/auth?flow=<id> consent
+# page. The Bifrost backend mints the flow when a per-user OAuth tool call
+# fires its inline-401; the page calls flowDetail to render the binding, then
+# flowStart to retrieve the upstream provider's authorize URL.
+
+per-user-oauth-flow-detail:
+  get:
+    operationId: getPerUserOauthFlow
+    summary: Get per-user OAuth flow detail
+    description: |
+      Returns the pending OAuth flow row metadata: which MCP client is being
+      authorized, which identity (user / VK / session) the resulting token
+      will be bound to, and whether an active token already exists for that
+      binding (`has_active_token`).
+
+      Requires management API authentication via `Authorization: Bearer <API key>`.
+    tags:
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Flow row ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Flow detail
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/MCPOauthFlowDetail'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+per-user-oauth-flow-start:
+  get:
+    operationId: startPerUserOauthFlow
+    summary: Start the upstream OAuth authorization for a pending flow
+    description: |
+      Reconstructs the upstream provider's authorize URL for a pending OAuth
+      flow. The auth-landing page redirects the browser to that URL; the user
+      completes upstream auth; the upstream provider redirects back to
+      `/api/oauth/callback`, which exchanges the code for tokens server-side
+      and stores them against the flow's identity.
+
+      Returns 410 if the flow is no longer pending (expired / completed /
+      failed). The caller should restart the original action to get a fresh
+      flow.
+    tags:
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Flow row ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Authorize URL
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authorize_url]
+              properties:
+                authorize_url:
+                  type: string
+                  description: Where to send the browser to complete upstream OAuth
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '410':
+        description: Flow is no longer pending; restart the original action
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '503':
+        description: OAuth provider not configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ─── Removed: OAuth-server endpoints (RFC 7591/8414 surface) ────────────────
+# Bifrost is not an OAuth Authorization Server. Upstream OAuth happens via
+# the per-user-oauth-flow-* endpoints above.
+
+# Legacy block intentionally removed:

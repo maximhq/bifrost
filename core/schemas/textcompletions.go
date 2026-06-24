@@ -94,9 +94,9 @@ func (t *TextCompletionInput) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("text completion input must set exactly one of: prompt_str or prompt_array")
 	}
 	if t.PromptStr != nil {
-		return Marshal(*t.PromptStr)
+		return MarshalSorted(*t.PromptStr)
 	}
-	return Marshal(t.PromptArray)
+	return MarshalSorted(t.PromptArray)
 }
 
 func (t *TextCompletionInput) UnmarshalJSON(data []byte) error {

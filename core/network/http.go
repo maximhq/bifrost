@@ -5,6 +5,7 @@ package network
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -35,11 +36,13 @@ var DefaultClientConfig = struct {
 	ReadTimeout         time.Duration
 	WriteTimeout        time.Duration
 	MaxIdleConnDuration time.Duration
+	MaxConnDuration     time.Duration
 	MaxConnsPerHost     int
 }{
 	ReadTimeout:         60 * time.Second,
 	WriteTimeout:        60 * time.Second,
 	MaxIdleConnDuration: 30 * time.Second,
+	MaxConnDuration:     300 * time.Second,
 	MaxConnsPerHost:     200,
 }
 
@@ -214,7 +217,10 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 		ReadTimeout:         DefaultClientConfig.ReadTimeout,
 		WriteTimeout:        DefaultClientConfig.WriteTimeout,
 		MaxIdleConnDuration: DefaultClientConfig.MaxIdleConnDuration,
+		MaxConnDuration:     DefaultClientConfig.MaxConnDuration,
 		MaxConnsPerHost:     DefaultClientConfig.MaxConnsPerHost,
+		MaxConnWaitTimeout:  DefaultClientConfig.ReadTimeout,
+		ConnPoolStrategy:    fasthttp.FIFO,
 		RetryIfErr:          StaleConnectionRetryIfErr,
 	}
 
@@ -253,14 +259,21 @@ func StaleConnectionRetryIfErr(_ *fasthttp.Request, attempts int, err error) (re
 	if err == nil {
 		return false, false
 	}
-	errStr := err.Error()
-	// io.EOF — server closed the connection (fasthttp converts this to
-	//   ErrConnectionClosed AFTER the retry loop, so RetryIfErr sees raw EOF)
-	// "cannot find whitespace in the first line of response" — stale chunked data in buffer
-	// "connection reset by peer" — server RST'd the idle connection
-	if err == io.EOF ||
+	errStr := strings.ToLower(err.Error())
+	// ErrConnectionClosed — server closed the connection before returning the first
+	//   response byte. fasthttp converts raw io.EOF to this AFTER the retry loop, so
+	//   RetryIfErr normally sees raw io.EOF; we match both to stay robust across versions.
+	// io.EOF / io.ErrUnexpectedEOF — server closed the connection.
+	// "cannot find whitespace in the first line of response" — stale chunked data in buffer.
+	// reset / broken pipe / closed connection variants — server or intermediary closed idle conn.
+	if errors.Is(err, fasthttp.ErrConnectionClosed) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
 		strings.Contains(errStr, "cannot find whitespace") ||
-		strings.Contains(errStr, "connection reset by peer") {
+		strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "use of closed network connection") ||
+		strings.Contains(errStr, "server closed connection") {
 		return true, true
 	}
 	return false, false
@@ -323,6 +336,10 @@ func (f *HTTPClientFactory) createHTTPClient(purpose ClientPurpose) *http.Client
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableCompression:    false,
 		DisableKeepAlives:     false,
+		// Disable HTTP/2 — these clients are used for auxiliary purposes (proxy/SCIM/API)
+		// where HTTP/1.1 is sufficient. Without this, Go's http2 package auto-registers
+		// h2 via TLSNextProto in init(), causing unintended HTTP/2 connections.
+		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 	}
 
 	// Configure proxy if enabled for this purpose

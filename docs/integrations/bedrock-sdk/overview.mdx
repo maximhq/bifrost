@@ -211,42 +211,6 @@ for event in response.get("body"):
                 print(result["completion"], end="", flush=True)
 ```
 
-## Using Direct Keys
-
-Pass AWS credentials or Bedrock API keys directly in requests to bypass Bifrost's load balancing. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
-
-> **Learn more:** See [Key Management](../../features/keys-management#direct-key-bypass) for enabling direct API key usage.
-
-When direct keys are enabled, you can pass your AWS credentials directly to the boto3 client instead of using dummy credentials.
-
-<Tabs group="bedrock-sdk">
-<Tab title="Python">
-
-```python
-import boto3
-
-# When direct keys are enabled, pass real AWS credentials to boto3
-client = boto3.client(
-    service_name="bedrock-runtime",
-    endpoint_url="http://localhost:8080/bedrock",
-    region_name="us-west-2",
-    aws_access_key_id="your-aws-access-key",  # Real credentials when direct keys enabled
-    aws_secret_access_key="your-aws-secret-key"  # Real credentials when direct keys enabled
-)
-
-response = client.converse(
-    modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
-    messages=[{"role": "user", "content": [{"text": "Hello!"}]}]
-)
-```
-
-</Tab>
-</Tabs>
-
-> **Note:** When using Bifrost's configured keys (not direct keys), you must provide dummy AWS credentials (`aws_access_key_id` and `aws_secret_access_key`) to the boto3 client. This is because boto3 requires credentials to sign requests, even though Bifrost will use its own configured keys. The dummy values can be any string (e.g., `"bifrost-dummy-key"` and `"bifrost-dummy-secret"`).
-
----
-
 ## Supported Features
 
 The Bedrock integration currently supports:

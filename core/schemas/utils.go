@@ -32,6 +32,17 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
+// EnvVarAsString returns the wire form used when serializing *EnvVar as a string.
+func EnvVarAsString(e *EnvVar) string {
+	if e == nil {
+		return ""
+	}
+	if e.IsFromEnv() {
+		return e.EnvVar
+	}
+	return e.GetValue()
+}
+
 // knownProvidersMu protects concurrent access to knownProviders.
 var knownProvidersMu sync.RWMutex
 
@@ -820,6 +831,12 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 func DeepCopyChatTool(original ChatTool) ChatTool {
 	copyTool := ChatTool{
 		Type: original.Type,
+		// Anthropic server tools (shape 3) carry their identity at the top level:
+		// Name for computer/text_editor/bash/memory/web_* tools, MCPServerName for
+		// mcp_toolset. Copying these is required or the cloned request loses the
+		// tool's identity (e.g. Bedrock rejects a server tool with no name).
+		Name:          original.Name,
+		MCPServerName: original.MCPServerName,
 	}
 
 	// Deep copy Function if present
@@ -834,48 +851,37 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		}
 
 		if original.Function.Parameters != nil {
-			copyParams := &ToolFunctionParameters{
-				Type:     original.Function.Parameters.Type,
-				keyOrder: original.Function.Parameters.keyOrder,
-			}
-
-			if original.Function.Parameters.Description != nil {
-				copyParamDesc := *original.Function.Parameters.Description
-				copyParams.Description = &copyParamDesc
-			}
-
-			if original.Function.Parameters.Required != nil {
-				copyParams.Required = make([]string, len(original.Function.Parameters.Required))
-				copy(copyParams.Required, original.Function.Parameters.Required)
-			}
-
-			if original.Function.Parameters.Properties != nil {
-				// Deep copy preserving insertion order
-				copyProps := NewOrderedMapWithCapacity(original.Function.Parameters.Properties.Len())
-				original.Function.Parameters.Properties.Range(func(k string, v interface{}) bool {
-					copyProps.Set(k, DeepCopy(v))
-					return true
-				})
-				copyParams.Properties = copyProps
-			}
-
-			if original.Function.Parameters.Enum != nil {
-				copyParams.Enum = make([]string, len(original.Function.Parameters.Enum))
-				copy(copyParams.Enum, original.Function.Parameters.Enum)
-			}
-
-			if original.Function.Parameters.AdditionalProperties != nil {
-				copyAdditionalProps := *original.Function.Parameters.AdditionalProperties
-				copyParams.AdditionalProperties = &copyAdditionalProps
-			}
-
-			copyTool.Function.Parameters = copyParams
+			copyTool.Function.Parameters = DeepCopyToolFunctionParameters(original.Function.Parameters)
 		}
 
 		if original.Function.Strict != nil {
 			copyStrict := *original.Function.Strict
 			copyTool.Function.Strict = &copyStrict
 		}
+	}
+
+	// Deep copy Annotations if present
+	if original.Annotations != nil {
+		copyAnnotations := &MCPToolAnnotations{
+			Title: original.Annotations.Title,
+		}
+		if original.Annotations.ReadOnlyHint != nil {
+			v := *original.Annotations.ReadOnlyHint
+			copyAnnotations.ReadOnlyHint = &v
+		}
+		if original.Annotations.DestructiveHint != nil {
+			v := *original.Annotations.DestructiveHint
+			copyAnnotations.DestructiveHint = &v
+		}
+		if original.Annotations.IdempotentHint != nil {
+			v := *original.Annotations.IdempotentHint
+			copyAnnotations.IdempotentHint = &v
+		}
+		if original.Annotations.OpenWorldHint != nil {
+			v := *original.Annotations.OpenWorldHint
+			copyAnnotations.OpenWorldHint = &v
+		}
+		copyTool.Annotations = copyAnnotations
 	}
 
 	// Deep copy Custom if present
@@ -913,7 +919,288 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		copyTool.CacheControl = copyCacheControl
 	}
 
+	// Anthropic-native per-tool flags (promoted to the neutral layer).
+	if original.DeferLoading != nil {
+		v := *original.DeferLoading
+		copyTool.DeferLoading = &v
+	}
+	if original.AllowedCallers != nil {
+		copyTool.AllowedCallers = append([]string(nil), original.AllowedCallers...)
+	}
+	if original.InputExamples != nil {
+		copyTool.InputExamples = make([]ChatToolInputExample, len(original.InputExamples))
+		for i, ex := range original.InputExamples {
+			copyEx := ChatToolInputExample{}
+			if ex.Input != nil {
+				copyEx.Input = append(json.RawMessage(nil), ex.Input...)
+			}
+			if ex.Description != nil {
+				d := *ex.Description
+				copyEx.Description = &d
+			}
+			copyTool.InputExamples[i] = copyEx
+		}
+	}
+	if original.EagerInputStreaming != nil {
+		v := *original.EagerInputStreaming
+		copyTool.EagerInputStreaming = &v
+	}
+
+	// web_search_* and web_fetch_* variant fields.
+	if original.MaxUses != nil {
+		v := *original.MaxUses
+		copyTool.MaxUses = &v
+	}
+	if original.AllowedDomains != nil {
+		copyTool.AllowedDomains = append([]string(nil), original.AllowedDomains...)
+	}
+	if original.BlockedDomains != nil {
+		copyTool.BlockedDomains = append([]string(nil), original.BlockedDomains...)
+	}
+	if original.UserLocation != nil {
+		copyLoc := &ChatToolUserLocation{}
+		if original.UserLocation.Type != nil {
+			v := *original.UserLocation.Type
+			copyLoc.Type = &v
+		}
+		if original.UserLocation.City != nil {
+			v := *original.UserLocation.City
+			copyLoc.City = &v
+		}
+		if original.UserLocation.Region != nil {
+			v := *original.UserLocation.Region
+			copyLoc.Region = &v
+		}
+		if original.UserLocation.Country != nil {
+			v := *original.UserLocation.Country
+			copyLoc.Country = &v
+		}
+		if original.UserLocation.Timezone != nil {
+			v := *original.UserLocation.Timezone
+			copyLoc.Timezone = &v
+		}
+		copyTool.UserLocation = copyLoc
+	}
+
+	// web_fetch_* only.
+	if original.MaxContentTokens != nil {
+		v := *original.MaxContentTokens
+		copyTool.MaxContentTokens = &v
+	}
+	if original.Citations != nil {
+		copyCitations := &ChatToolCitationsConfig{}
+		if original.Citations.Enabled != nil {
+			v := *original.Citations.Enabled
+			copyCitations.Enabled = &v
+		}
+		copyTool.Citations = copyCitations
+	}
+	if original.UseCache != nil {
+		v := *original.UseCache
+		copyTool.UseCache = &v
+	}
+
+	// computer_* variant fields.
+	if original.DisplayWidthPx != nil {
+		v := *original.DisplayWidthPx
+		copyTool.DisplayWidthPx = &v
+	}
+	if original.DisplayHeightPx != nil {
+		v := *original.DisplayHeightPx
+		copyTool.DisplayHeightPx = &v
+	}
+	if original.DisplayNumber != nil {
+		v := *original.DisplayNumber
+		copyTool.DisplayNumber = &v
+	}
+	if original.EnableZoom != nil {
+		v := *original.EnableZoom
+		copyTool.EnableZoom = &v
+	}
+
+	// text_editor_* variant field.
+	if original.MaxCharacters != nil {
+		v := *original.MaxCharacters
+		copyTool.MaxCharacters = &v
+	}
+
+	// mcp_toolset variant fields (MCPServerName is copied in the literal above).
+	if original.DefaultConfig != nil {
+		copyTool.DefaultConfig = deepCopyChatMCPToolsetConfig(original.DefaultConfig)
+	}
+	if original.Configs != nil {
+		copyTool.Configs = make(map[string]*ChatMCPToolsetConfig, len(original.Configs))
+		for k, v := range original.Configs {
+			copyTool.Configs[k] = deepCopyChatMCPToolsetConfig(v)
+		}
+	}
+
 	return copyTool
+}
+
+// deepCopyChatMCPToolsetConfig creates a deep copy of a ChatMCPToolsetConfig
+// (mcp_toolset default/per-server config), or returns nil if the input is nil.
+func deepCopyChatMCPToolsetConfig(original *ChatMCPToolsetConfig) *ChatMCPToolsetConfig {
+	if original == nil {
+		return nil
+	}
+	copyConfig := &ChatMCPToolsetConfig{}
+	if original.Enabled != nil {
+		v := *original.Enabled
+		copyConfig.Enabled = &v
+	}
+	if original.DeferLoading != nil {
+		v := *original.DeferLoading
+		copyConfig.DeferLoading = &v
+	}
+	return copyConfig
+}
+
+// DeepCopyToolFunctionParameters creates a deep copy of ToolFunctionParameters,
+// preserving all JSON Schema fields so references and validation metadata are
+// not dropped during tool cloning.
+func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunctionParameters {
+	if original == nil {
+		return nil
+	}
+
+	copyParams := &ToolFunctionParameters{
+		Type:                original.Type,
+		keyOrder:            JSONKeyOrder{keys: append([]string(nil), original.keyOrder.keys...)},
+		explicitEmptyObject: original.explicitEmptyObject,
+	}
+
+	if original.Description != nil {
+		copyParamDesc := *original.Description
+		copyParams.Description = &copyParamDesc
+	}
+	if original.Required != nil {
+		copyParams.Required = append([]string(nil), original.Required...)
+	}
+	if original.Properties != nil {
+		copyParams.Properties = deepCopyOrderedMap(original.Properties)
+	}
+	if original.AdditionalProperties != nil {
+		copyAdditionalProps := AdditionalPropertiesStruct{}
+		if original.AdditionalProperties.AdditionalPropertiesBool != nil {
+			b := *original.AdditionalProperties.AdditionalPropertiesBool
+			copyAdditionalProps.AdditionalPropertiesBool = &b
+		}
+		if original.AdditionalProperties.AdditionalPropertiesMap != nil {
+			copyAdditionalProps.AdditionalPropertiesMap = deepCopyOrderedMap(original.AdditionalProperties.AdditionalPropertiesMap)
+		}
+		copyParams.AdditionalProperties = &copyAdditionalProps
+	}
+	if original.Enum != nil {
+		copyParams.Enum = append([]string(nil), original.Enum...)
+	}
+	if original.Defs != nil {
+		copyParams.Defs = deepCopyOrderedMap(original.Defs)
+	}
+	if original.Definitions != nil {
+		copyParams.Definitions = deepCopyOrderedMap(original.Definitions)
+	}
+	if original.Ref != nil {
+		ref := *original.Ref
+		copyParams.Ref = &ref
+	}
+	if original.Items != nil {
+		copyParams.Items = deepCopyOrderedMap(original.Items)
+	}
+	if original.MinItems != nil {
+		minItems := *original.MinItems
+		copyParams.MinItems = &minItems
+	}
+	if original.MaxItems != nil {
+		maxItems := *original.MaxItems
+		copyParams.MaxItems = &maxItems
+	}
+	copyParams.AnyOf = deepCopyOrderedMapSlice(original.AnyOf)
+	copyParams.OneOf = deepCopyOrderedMapSlice(original.OneOf)
+	copyParams.AllOf = deepCopyOrderedMapSlice(original.AllOf)
+	if original.Format != nil {
+		format := *original.Format
+		copyParams.Format = &format
+	}
+	if original.Pattern != nil {
+		pattern := *original.Pattern
+		copyParams.Pattern = &pattern
+	}
+	if original.MinLength != nil {
+		minLength := *original.MinLength
+		copyParams.MinLength = &minLength
+	}
+	if original.MaxLength != nil {
+		maxLength := *original.MaxLength
+		copyParams.MaxLength = &maxLength
+	}
+	if original.Minimum != nil {
+		minimum := *original.Minimum
+		copyParams.Minimum = &minimum
+	}
+	if original.Maximum != nil {
+		maximum := *original.Maximum
+		copyParams.Maximum = &maximum
+	}
+	if original.Title != nil {
+		title := *original.Title
+		copyParams.Title = &title
+	}
+	copyParams.Default = DeepCopy(original.Default)
+	if original.Nullable != nil {
+		nullable := *original.Nullable
+		copyParams.Nullable = &nullable
+	}
+
+	return copyParams
+}
+
+func deepCopyOrderedMap(original *OrderedMap) *OrderedMap {
+	if original == nil {
+		return nil
+	}
+	copyMap := NewOrderedMapWithCapacity(original.Len())
+	original.Range(func(k string, v interface{}) bool {
+		copyMap.Set(k, deepCopySchemaValue(v))
+		return true
+	})
+	return copyMap
+}
+
+func deepCopyOrderedMapSlice(original []OrderedMap) []OrderedMap {
+	if original == nil {
+		return nil
+	}
+	copied := make([]OrderedMap, len(original))
+	for i := range original {
+		if copyMap := deepCopyOrderedMap(&original[i]); copyMap != nil {
+			copied[i] = *copyMap
+		}
+	}
+	return copied
+}
+
+func deepCopySchemaValue(original interface{}) interface{} {
+	switch v := original.(type) {
+	case *OrderedMap:
+		return deepCopyOrderedMap(v)
+	case OrderedMap:
+		return deepCopyOrderedMap(&v)
+	case map[string]interface{}:
+		copied := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			copied[key] = deepCopySchemaValue(value)
+		}
+		return copied
+	case []interface{}:
+		copied := make([]interface{}, len(v))
+		for i, value := range v {
+			copied[i] = deepCopySchemaValue(value)
+		}
+		return copied
+	default:
+		return DeepCopy(v)
+	}
 }
 
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
@@ -1030,6 +1317,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			if original.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
 				copy.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction = &copyAction
+			}
+
+			if original.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction
+				copy.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction = &copyAction
 			}
 
 			if original.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction != nil {
@@ -1233,14 +1525,43 @@ func IsNovaModel(model string) bool {
 	return strings.Contains(model, "nova")
 }
 
+func IsNova2Model(model string) bool {
+	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
+// BedrockModelSupportsCachePoints reports whether the Bedrock model supports
+// explicit prompt-caching cache points in the Converse API request.
+func BedrockModelSupportsCachePoints(model string) bool {
+	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
+// BedrockModelSupportsExtendedCacheTTL reports whether the Bedrock model supports
+// the 1h (extended) prompt-caching TTL. This is Anthropic-only; other cache-point
+// models (e.g. Nova) support caching but only the default 5m TTL and 400 with
+// "Extended TTL prompt caching is only supported for Anthropic models".
+func BedrockModelSupportsExtendedCacheTTL(model string) bool {
+	return IsAnthropicModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+// IsLlamaModel checks if the model is a Meta Llama model.
+//
+// Used by the Bedrock provider to gate tool_choice handling: Bedrock Converse
+// rejects toolConfig.toolChoice.tool on Meta Llama variants with HTTP 400
+// ("This model doesn't support the toolConfig.toolChoice.tool field"). See
+// AWS docs for the per-model tool_choice support matrix:
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+func IsLlamaModel(model string) bool {
+	return strings.Contains(model, "llama")
 }
 
 func IsGeminiModel(model string) bool {
@@ -1251,9 +1572,26 @@ func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
 }
 
+func IsGemmaModel(model string) bool {
+	return strings.Contains(model, "gemma")
+}
+
 // IsImagenModel checks if the model is an Imagen model.
 func IsImagenModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "imagen")
+}
+
+// IsCohereModel checks if the model is a Cohere model. Matches the Bedrock
+// identifier prefix ("cohere.embed-*", "cohere.command-*") which is the wire
+// shape that flows through alias resolution.
+func IsCohereModel(model string) bool {
+	return strings.Contains(model, "cohere")
+}
+
+// IsTitanModel checks if the model is an Amazon Titan model. Matches the
+// Bedrock identifier prefix ("amazon.titan-*").
+func IsTitanModel(model string) bool {
+	return strings.Contains(model, "titan")
 }
 
 // List of grok reasoning models

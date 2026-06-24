@@ -1,13 +1,20 @@
-"use client";
-
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { HistogramBucket, LogsHistogramResponse } from "@/lib/types/logs";
+import type { HistogramBucket, LogsHistogramResponse, MCPHistogramResponse } from "@/lib/types/logs";
+import { getUnixRangeForPeriod } from "@/lib/utils/timeRange";
 import { ChevronDown, RotateCcw } from "lucide-react";
-import { Component, type ErrorInfo, type ReactNode, useCallback, useMemo, useState } from "react";
+import { Component, type ErrorInfo, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+
+const requestFormatter = new Intl.NumberFormat("en-US", {
+	notation: "compact",
+	maximumFractionDigits: 1,
+});
+
+function formatRequest(requests: number): string {
+	return requestFormatter.format(requests);
+}
 
 // Empty chart placeholder when data fails to render
 function EmptyChart() {
@@ -59,7 +66,7 @@ class ChartErrorBoundary extends Component<{ children: ReactNode; resetKey?: str
 }
 
 interface LogsVolumeChartProps {
-	data: LogsHistogramResponse | null;
+	data: LogsHistogramResponse | MCPHistogramResponse | null;
 	loading?: boolean;
 	onTimeRangeChange: (startTime: number, endTime: number) => void;
 	onResetZoom?: () => void;
@@ -67,6 +74,7 @@ interface LogsVolumeChartProps {
 	startTime: number; // Unix timestamp in seconds
 	endTime: number; // Unix timestamp in seconds
 	isOpen: boolean;
+	period?: string;
 	onOpenChange: (open: boolean) => void;
 }
 
@@ -79,10 +87,18 @@ function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
 		return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 	} else if (bucketSizeSeconds >= 3600) {
 		// Hourly buckets: "10:00"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString("en-US", {
+			hour: "2-digit",
+			minute: "2-digit",
+			hour12: false,
+		});
 	} else {
 		// Sub-hourly: "10:15"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString("en-US", {
+			hour: "2-digit",
+			minute: "2-digit",
+			hour12: false,
+		});
 	}
 }
 
@@ -98,11 +114,23 @@ function formatFullTimestamp(timestamp: string): string {
 	});
 }
 
+type LogVolumeDataPoint = HistogramBucket & {
+	formattedTime: string;
+	index?: number;
+};
+
+interface CustomTooltipProps {
+	active?: boolean;
+	payload?: Array<{ payload?: LogVolumeDataPoint }>;
+}
+
+type ChartMouseEvent = { activeTooltipIndex?: number | string | null };
+
 // Custom tooltip component
-function CustomTooltip({ active, payload, label }: any) {
+function CustomTooltip({ active, payload }: CustomTooltipProps) {
 	if (!active || !payload || !payload.length) return null;
 
-	const data = payload[0]?.payload as HistogramBucket & { formattedTime: string };
+	const data = payload[0]?.payload;
 	if (!data) return null;
 
 	return (
@@ -144,25 +172,43 @@ export function LogsVolumeChart({
 	startTime,
 	endTime,
 	isOpen,
+	period,
 	onOpenChange,
 }: LogsVolumeChartProps) {
 	// State for drag selection
 	const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
 	const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
 	const [isSelecting, setIsSelecting] = useState(false);
+	// Suppress the Bar onClick that fires immediately after a drag-select mouseUp,
+	// otherwise Recharts overwrites the dragged range with a single-bucket zoom.
+	const suppressNextBarClickRef = useRef(false);
+
+	const effectingTimeRange = useMemo(() => {
+		if (period) {
+			const { start, end } = getUnixRangeForPeriod(period);
+			return { startTime: start, endTime: end };
+		}
+
+		return { startTime, endTime };
+	}, [period, startTime, endTime]);
 
 	// Transform data for chart, filling in empty buckets for the full time range
 	const chartData = useMemo(() => {
 		// Need bucket_size_seconds and valid time range
-		if (!data?.bucket_size_seconds || !startTime || !endTime || startTime >= endTime) {
+		if (
+			!data?.bucket_size_seconds ||
+			!effectingTimeRange.startTime ||
+			!effectingTimeRange.endTime ||
+			effectingTimeRange.startTime >= effectingTimeRange.endTime
+		) {
 			return [];
 		}
 
 		const bucketSizeMs = data.bucket_size_seconds * 1000;
 
 		// Align start time to bucket boundary
-		const minTime = Math.floor((startTime * 1000) / bucketSizeMs) * bucketSizeMs;
-		const maxTime = endTime * 1000;
+		const minTime = Math.floor((effectingTimeRange.startTime * 1000) / bucketSizeMs) * bucketSizeMs;
+		const maxTime = effectingTimeRange.endTime * 1000;
 
 		// Safety: limit maximum number of buckets to prevent performance issues
 		const maxBuckets = 500;
@@ -192,7 +238,7 @@ export function LogsVolumeChart({
 
 		// First, create all empty buckets for the time range
 		const filledBuckets: Array<HistogramBucket & { formattedTime: string; index: number }> = [];
-		for (let time = minTime, idx = 0; time <= maxTime; time += bucketSizeMs, idx++) {
+		for (let time = minTime, idx = 0; time < maxTime; time += bucketSizeMs, idx++) {
 			const timestamp = new Date(time).toISOString();
 			filledBuckets.push({
 				timestamp,
@@ -234,11 +280,11 @@ export function LogsVolumeChart({
 		}
 
 		return filledBuckets;
-	}, [data, startTime, endTime]);
+	}, [data, effectingTimeRange.startTime, effectingTimeRange.endTime]);
 
 	// Handle mouse down on chart (start selection)
-	const handleMouseDown = useCallback((e: any) => {
-		if (e?.activeTooltipIndex !== undefined) {
+	const handleMouseDown = useCallback((e: ChartMouseEvent) => {
+		if (typeof e?.activeTooltipIndex === "number") {
 			setRefAreaLeft(e.activeTooltipIndex);
 			setIsSelecting(true);
 		}
@@ -246,8 +292,8 @@ export function LogsVolumeChart({
 
 	// Handle mouse move on chart (during selection)
 	const handleMouseMove = useCallback(
-		(e: any) => {
-			if (isSelecting && e?.activeTooltipIndex !== undefined) {
+		(e: ChartMouseEvent) => {
+			if (isSelecting && typeof e?.activeTooltipIndex === "number") {
 				setRefAreaRight(e.activeTooltipIndex);
 			}
 		},
@@ -269,14 +315,17 @@ export function LogsVolumeChart({
 
 		if (leftBucket && rightBucket) {
 			const leftTime = new Date(leftBucket.timestamp).getTime() / 1000;
-			const rightTime = new Date(rightBucket.timestamp).getTime() / 1000 + data.bucket_size_seconds;
+			const rightTime = new Date(rightBucket.timestamp).getTime() / 1000;
 
-			// Ensure left < right
+			// Ensure left < right; the end edge is one bucket past the later timestamp
 			const selectionStart = Math.min(leftTime, rightTime);
-			const selectionEnd = Math.max(leftTime, rightTime);
+			const selectionEnd = Math.max(leftTime, rightTime) + data.bucket_size_seconds;
 
-			// Only trigger if selection spans at least one bucket
-			if (selectionEnd - selectionStart >= data.bucket_size_seconds) {
+			// Only trigger a range change for real drags (more than one bucket).
+			// For single-bucket gestures, let the trailing Bar onClick own the zoom
+			// so we don't fire onTimeRangeChange twice with the same range.
+			if (refAreaLeft !== refAreaRight && selectionEnd - selectionStart >= data.bucket_size_seconds) {
+				suppressNextBarClickRef.current = true;
 				onTimeRangeChange(selectionStart, selectionEnd);
 			}
 		}
@@ -288,11 +337,14 @@ export function LogsVolumeChart({
 
 	// Handle click on a bar (zoom into that bucket)
 	const handleBarClick = useCallback(
-		(barData: any) => {
+		(barData: LogVolumeDataPoint | undefined) => {
+			if (suppressNextBarClickRef.current) {
+				suppressNextBarClickRef.current = false;
+				return;
+			}
 			if (!data || !barData?.timestamp) return;
 
-			const bucket = barData as HistogramBucket;
-			const startTime = new Date(bucket.timestamp).getTime() / 1000;
+			const startTime = new Date(barData.timestamp).getTime() / 1000;
 			const endTime = startTime + data.bucket_size_seconds;
 
 			onTimeRangeChange(startTime, endTime);
@@ -300,47 +352,16 @@ export function LogsVolumeChart({
 		[data, onTimeRangeChange],
 	);
 
-	if (loading) {
-		return (
-			<Card className="gap-0 rounded-sm px-2 py-2 shadow-none">
-				<div className="flex items-center justify-between">
-					<div className="flex items-center gap-2">
-						<ChevronDown className="text-muted-foreground h-4 w-4" />
-						<span className="text-muted-foreground text-sm font-medium">Request Volume</span>
-					</div>
-					<div className="mr-2 flex items-center gap-4">
-						<div className="flex items-center gap-3 text-xs">
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full bg-emerald-500" />
-								<span className="text-muted-foreground">Success</span>
-							</span>
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full bg-red-500" />
-								<span className="text-muted-foreground">Error</span>
-							</span>
-						</div>
-					</div>
-				</div>
-				<div className="" style={{ height: "131px", marginTop: 4 }}>
-					<Skeleton className="h-full w-full" />
-				</div>
-			</Card>
-		);
-	}
-
 	// Check if we have valid data for the chart
-	const hasValidData = data && startTime && endTime && chartData.length >= 2;
+	const hasValidData = data && effectingTimeRange.startTime && effectingTimeRange.endTime && chartData.length >= 2;
 
 	return (
 		<Card className="rounded-sm px-2 py-2 shadow-none">
 			<Collapsible open={isOpen} onOpenChange={onOpenChange}>
 				<div className="flex items-center justify-between">
-					<CollapsibleTrigger className="flex items-center gap-2 hover:opacity-80">
+					<CollapsibleTrigger data-testid="logs-volume-chart-trigger" className="flex items-center gap-2 hover:opacity-80">
 						<ChevronDown className={`text-muted-foreground h-4 w-4 transition-transform duration-200 ${isOpen ? "" : "-rotate-90"}`} />
 						<span className="text-muted-foreground text-sm font-medium">Request Volume</span>
-						<Badge variant="secondary" className="text-xs">
-							BETA
-						</Badge>
 					</CollapsibleTrigger>
 					<div className="mr-2 flex items-center gap-4">
 						{isOpen && (
@@ -357,6 +378,7 @@ export function LogsVolumeChart({
 						)}
 						{isZoomed && onResetZoom && (
 							<button
+								data-testid="logs-volume-chart-reset-zoom"
 								onClick={onResetZoom}
 								className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs transition-colors"
 							>
@@ -368,11 +390,14 @@ export function LogsVolumeChart({
 				</div>
 				<CollapsibleContent className="data-[state=closed]:animate-collapse-up data-[state=open]:animate-collapse-down overflow-hidden">
 					<div className="mt-2 h-32 select-none">
-						{hasValidData ? (
-							<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
+						{loading ? (
+							<Skeleton className="h-full w-full" />
+						) : hasValidData ? (
+							<ChartErrorBoundary resetKey={`${effectingTimeRange.startTime}-${effectingTimeRange.endTime}-${chartData.length}`}>
 								<ResponsiveContainer width="100%" height="100%">
 									<BarChart
 										data={chartData}
+										margin={{ top: 6, right: 4, left: 12, bottom: 0 }}
 										onMouseDown={handleMouseDown}
 										onMouseMove={handleMouseMove}
 										onMouseUp={handleMouseUp}
@@ -384,18 +409,18 @@ export function LogsVolumeChart({
 											dataKey="index"
 											type="number"
 											domain={[-0.5, chartData.length - 0.5]}
-											tick={{ fontSize: 13, className: "fill-zinc-500", dy: 5 }}
+											tick={{ fontSize: 11, className: "fill-zinc-500", dy: 5 }}
 											tickLine={true}
 											axisLine={false}
 											tickFormatter={(idx) => chartData[Math.round(idx)]?.formattedTime || ""}
 											interval="preserveStartEnd"
 										/>
 										<YAxis
-											tick={{ fontSize: 13, className: "fill-zinc-500" }}
+											tick={{ fontSize: 11, className: "fill-zinc-500" }}
 											tickLine={false}
 											axisLine={false}
 											width={40}
-											tickFormatter={(v) => v.toLocaleString()}
+											tickFormatter={(v) => formatRequest(v)}
 											domain={[0, (dataMax: number) => Math.max(dataMax, 5)]}
 											allowDataOverflow={false}
 										/>
@@ -408,7 +433,7 @@ export function LogsVolumeChart({
 											fillOpacity={0.7}
 											radius={[0, 0, 0, 0]}
 											cursor="pointer"
-											onClick={(data: any) => handleBarClick(data)}
+											onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
 										/>
 										<Bar
 											dataKey="error"
@@ -418,7 +443,7 @@ export function LogsVolumeChart({
 											fillOpacity={0.7}
 											radius={[2, 2, 0, 0]}
 											cursor="pointer"
-											onClick={(data: any) => handleBarClick(data)}
+											onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
 										/>
 										{refAreaLeft !== null && refAreaRight !== null && chartData[refAreaLeft] && chartData[refAreaRight] && (
 											<ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#6366f1" fillOpacity={0.2} />

@@ -36,10 +36,19 @@ spec:
                 secretKeyRef:
                   name: {{ include "bifrost.fullname" . }}-redis
                   key: password
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bifrost.fullname" . }}-redis
+                  key: password
             {{- end }}
           {{- if .Values.vectorStore.redis.auth.enabled }}
           command:
+            {{- if contains "redis-stack" .Values.vectorStore.redis.image.repository }}
+            - redis-stack-server
+            {{- else }}
             - redis-server
+            {{- end }}
             - --requirepass
             - $(REDIS_PASSWORD)
           {{- end }}
@@ -48,12 +57,7 @@ spec:
               command:
                 - sh
                 - -c
-                - |
-                  {{- if .Values.vectorStore.redis.auth.enabled }}
-                  redis-cli -a "$REDIS_PASSWORD" ping
-                  {{- else }}
-                  redis-cli ping
-                  {{- end }}
+                - redis-cli ping
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
@@ -63,12 +67,7 @@ spec:
               command:
                 - sh
                 - -c
-                - |
-                  {{- if .Values.vectorStore.redis.auth.enabled }}
-                  redis-cli -a "$REDIS_PASSWORD" ping
-                  {{- else }}
-                  redis-cli ping
-                  {{- end }}
+                - redis-cli ping
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5

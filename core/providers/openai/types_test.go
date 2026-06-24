@@ -25,6 +25,7 @@ func TestOpenAIChatRequest_UnmarshalJSON_BaseFieldsPreserved(t *testing.T) {
 				],
 				"stream": true,
 				"max_tokens": 100,
+				"prompt_cache_isolation_key": "cache-key-1",
 				"fallbacks": ["gpt-3.5-turbo"],
 				"temperature": 0.7,
 				"top_p": 0.9
@@ -54,6 +55,10 @@ func TestOpenAIChatRequest_UnmarshalJSON_BaseFieldsPreserved(t *testing.T) {
 
 				if req.MaxTokens == nil || *req.MaxTokens != 100 {
 					t.Errorf("Expected MaxTokens to be 100, got %v", req.MaxTokens)
+				}
+
+				if req.PromptCacheIsolationKey == nil || *req.PromptCacheIsolationKey != "cache-key-1" {
+					t.Errorf("Expected PromptCacheIsolationKey to be %q, got %v", "cache-key-1", req.PromptCacheIsolationKey)
 				}
 
 				if len(req.Fallbacks) != 1 || req.Fallbacks[0] != "gpt-3.5-turbo" {

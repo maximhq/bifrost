@@ -66,6 +66,11 @@ execute-tool:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - BearerAuth: []
+      - BasicAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
 
 clients:
   get:
@@ -74,6 +79,8 @@ clients:
     description: Returns a list of all configured MCP clients with their tools and connection state.
     tags:
       - MCP
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -101,6 +108,8 @@ client:
         application/json:
           schema:
             $ref: '../../schemas/management/mcp.yaml#/MCPClientCreateRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client added successfully
@@ -120,6 +129,8 @@ client-by-id:
     description: |
       Updates an existing MCP client's configuration.
       Unlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.
+      Optionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.
+      Set disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.
     tags:
       - MCP
     parameters:
@@ -135,6 +146,8 @@ client-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/mcp.yaml#/MCPClientUpdateRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client updated successfully
@@ -160,6 +173,8 @@ client-by-id:
         description: MCP client ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client removed successfully
@@ -186,6 +201,8 @@ client-reconnect:
         description: MCP client ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client reconnected successfully
@@ -217,6 +234,8 @@ client-complete-oauth:
         description: MCP client ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client connected successfully with OAuth
@@ -229,6 +248,238 @@ client-complete-oauth:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
         description: MCP client not found in pending OAuth clients or OAuth config not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ─── MCP Sessions (per-user credentials + pending flows) ─────────────────────
+
+sessions:
+  get:
+    summary: List MCP sessions
+    description: |
+      Returns every per-user MCP authentication artifact visible to the caller —
+      OAuth tokens, header credentials, and pending submission / consent flows.
+
+      Row visibility is scoped to the caller's identity (Virtual Key, signed-in
+      user, or asserted session ID). Server-level `headers` / `oauth` clients
+      are not surfaced here; their credentials live on the MCP client config.
+
+      When both a credential and a pending flow exist for the same
+      `(identity, mcp_client)` binding, the credential is returned and the
+      flow is suppressed to avoid duplicate entries.
+    operationId: listMcpSessions
+    tags: [MCP]
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Sessions visible to the caller
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPSessionsListResponse'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+session-by-id:
+  delete:
+    summary: Revoke an MCP session
+    description: |
+      Revokes a session by primary key. Accepts these row kinds:
+      - OAuth token rows → hard-deletes the token plus any pending OAuth flow
+        for the same binding (so an in-flight callback can't undo the revoke)
+      - Header credential rows → hard-deletes the credential plus any pending
+        header submission flow for the same binding
+      - Pending per-user-headers flow rows → hard-deletes just the flow
+
+      Note: pending per-user OAuth flow rows are **not** revocable by this
+      endpoint — they expire naturally or are cleared when the bound token
+      row is revoked. To cancel a pending OAuth flow, revoke its parent token
+      (if one exists) or wait for expiry.
+
+      Bifrost does **not** call the upstream provider's revoke endpoint —
+      revocation is local. Per-user-headers credentials never call upstream.
+    operationId: revokeMcpSession
+    tags: [MCP]
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Session / credential / flow row ID
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '204':
+        description: Revoked
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+session-reauth:
+  post:
+    summary: Re-authenticate or edit an MCP session
+    description: |
+      Mints a fresh authentication flow against the same MCP client and identity
+      as the existing row. Two branches based on row type:
+
+      - **OAuth token** (any non-`orphaned` row, typically `needs_reauth` —
+        but `active` is also accepted) — opens a fresh upstream OAuth consent
+        flow. Caller is expected to follow `authorize_url` to the provider;
+        on callback the credential is replaced in place.
+      - **Header credential** (`active` or `needs_update`) — opens a fresh
+        per-user-headers submission flow. Caller follows the same URL field
+        to the Bifrost submission form; on submit the credential is replaced
+        in place. `kind: "headers"` is set on the response.
+
+      Refused with 403 if the row is `orphaned` — a fresh credential wouldn't
+      help; the issue is the identity has lost access to the MCP, which the
+      admin must fix.
+    operationId: reauthMcpSession
+    tags: [MCP]
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Session row ID (OAuth token or header credential)
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Fresh flow opened
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPSessionReauthResponse'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '403':
+        description: Row is orphaned — re-auth would not restore access
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ─── Per-User Headers submission flow ────────────────────────────────────────
+
+per-user-headers-flow:
+  get:
+    summary: Get per-user-headers submission flow
+    description: |
+      Returns the pending submission flow row plus the live MCP client's schema
+      (required header names + optional admin header names). Used by the
+      `/workspace/mcp-sessions/auth?flow=<id>&kind=headers` landing page to
+      render the values form.
+
+      Requires management API authentication via `Authorization: Bearer <API key>`.
+    operationId: getPerUserHeadersFlow
+    tags: [MCP]
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Flow row ID
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Flow detail
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPHeadersFlowDetail'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  put:
+    summary: Submit per-user-headers values
+    description: |
+      Consumes a pending submission flow row: verifies the caller's values
+      against the upstream MCP server, upserts the credential keyed by the flow
+      row's (mode, identity), then deletes the flow row and the bound temp
+      token. Mirrors the OAuth callback's "complete the flow" semantics.
+
+      Values for any key not in the live `per_user_header_keys` schema are
+      dropped server-side so a stale UI can't persist deprecated keys.
+    operationId: submitPerUserHeadersFlow
+    tags: [MCP]
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Flow row ID
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/MCPHeadersSubmitRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Credential persisted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPHeadersSubmitResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '410':
+        description: Flow expired
+      '422':
+        description: Upstream verification failed with the supplied values
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+per-user-headers-credential:
+  delete:
+    summary: Revoke a per-user-headers credential
+    description: |
+      Hard-deletes a per-user-headers credential row by primary key. Authorization
+      scoping is enforced server-side — callers may only delete credentials
+      visible to their identity.
+
+      The unified DELETE /api/mcp/sessions/{id} is the more convenient entry
+      point; this typed endpoint exists for callers that already know they're
+      acting on a header credential row.
+    operationId: revokePerUserHeadersCredential
+    tags: [MCP]
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Credential row primary key
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '204':
+        description: Revoked
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -1,0 +1,60 @@
+# Enterprise overlay: customer budgets and rate limits.
+# Note: Helm merges arrays by replacement, so this file includes
+# baseline org IDs plus customer-specific entries for composability.
+bifrost:
+  governance:
+    # Budget definitions used by customers in this overlay.
+    budgets:
+      - id: "budget-org-global"
+        max_limit: 5000
+        reset_duration: "1M"
+      - id: "budget-bu-platform"
+        max_limit: 2000
+        reset_duration: "1M"
+      - id: "budget-bu-security"
+        max_limit: 1500
+        reset_duration: "1M"
+      - id: "budget-customer-gold"
+        max_limit: 10000
+        reset_duration: "1M"
+      - id: "budget-customer-silver"
+        max_limit: 4000
+        reset_duration: "1M"
+
+    # Rate limit definitions used by customers in this overlay.
+    rateLimits:
+      - id: "rl-org-default"
+        token_max_limit: 1000000
+        token_reset_duration: "1d"
+        request_max_limit: 50000
+        request_reset_duration: "1h"
+      - id: "rl-power-users"
+        token_max_limit: 300000
+        token_reset_duration: "1d"
+        request_max_limit: 15000
+        request_reset_duration: "1h"
+      - id: "rl-customer-gold"
+        token_max_limit: 1500000
+        token_reset_duration: "1d"
+        request_max_limit: 70000
+        request_reset_duration: "1h"
+      - id: "rl-customer-silver"
+        token_max_limit: 600000
+        token_reset_duration: "1d"
+        request_max_limit: 30000
+        request_reset_duration: "1h"
+
+    # Customer records and their linked budget/rate-limit policies.
+    customers:
+      - id: "customer-enterprise-org"
+        name: "Enterprise Org"
+        budget_id: "budget-org-global"
+        rate_limit_id: "rl-org-default"
+      - id: "customer-gold-acme"
+        name: "Acme Gold"
+        budget_id: "budget-customer-gold"
+        rate_limit_id: "rl-customer-gold"
+      - id: "customer-silver-beta"
+        name: "Beta Silver"
+        budget_id: "budget-customer-silver"
+        rate_limit_id: "rl-customer-silver"

@@ -28,7 +28,7 @@ const (
 
 func GetProviderDefaultFormat(provider schemas.ModelProvider) string {
 	switch provider {
-	case schemas.Gemini:
+	case schemas.Gemini, schemas.Groq:
 		return "wav"
 	default:
 		return "mp3"
@@ -60,6 +60,17 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "achernar"
 		}
+	case schemas.Groq:
+		switch voiceType {
+		case "primary":
+			return "troy"
+		case "secondary":
+			return "autumn"
+		case "tertiary":
+			return "diana"
+		default:
+			return "troy"
+		}
 	case schemas.Elevenlabs:
 		switch voiceType {
 		case "primary":
@@ -89,11 +100,11 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 type SampleToolType string
 
 const (
-	SampleToolTypeWeather              SampleToolType = "weather"
-	SampleToolTypeCalculate            SampleToolType = "calculate"
-	SampleToolTypeTime                 SampleToolType = "time"
-	SampleToolTypePingWithEmpty        SampleToolType = "ping_empty"
-	SampleToolTypePingWithNil          SampleToolType = "ping_nil"
+	SampleToolTypeWeather       SampleToolType = "weather"
+	SampleToolTypeCalculate     SampleToolType = "calculate"
+	SampleToolTypeTime          SampleToolType = "time"
+	SampleToolTypePingWithEmpty SampleToolType = "ping_empty"
+	SampleToolTypePingWithNil   SampleToolType = "ping_nil"
 )
 
 var SampleToolFunctions = map[SampleToolType]*schemas.ChatToolFunction{
@@ -336,7 +347,8 @@ func CreateImageResponsesMessage(text, imageURL string) schemas.ResponsesMessage
 		Content: &schemas.ResponsesMessageContent{
 			ContentBlocks: []schemas.ResponsesMessageContentBlock{
 				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: bifrost.Ptr(text)},
-				{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 						ImageURL: bifrost.Ptr(imageURL),
 					},
@@ -396,6 +408,7 @@ type ToolCallInfo struct {
 	Name      string
 	Arguments string
 	ID        string
+	Index     int // OpenAI tool_calls index (0, 1, 2, ...); -1 when not available
 }
 
 // GetChatContent returns the string content from a BifrostChatResponse
@@ -450,7 +463,59 @@ func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
 		return ""
 	}
 
+	// Prefer assistant text output over echoed user/system input items.
 	for _, output := range response.Output {
+		if output.Role == nil || *output.Role != schemas.ResponsesInputMessageRoleAssistant {
+			continue
+		}
+		if output.Type != nil && *output.Type != schemas.ResponsesMessageTypeMessage {
+			continue
+		}
+		if output.Content != nil {
+			if output.Content.ContentStr != nil && *output.Content.ContentStr != "" {
+				return *output.Content.ContentStr
+			} else if output.Content.ContentBlocks != nil {
+				var builder strings.Builder
+				for _, block := range output.Content.ContentBlocks {
+					if block.Text != nil {
+						builder.WriteString(*block.Text)
+					}
+				}
+				content := builder.String()
+				if content != "" {
+					return content
+				}
+			}
+		}
+	}
+
+	for _, output := range response.Output {
+		if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeReasoning {
+			if output.ResponsesReasoning != nil && output.ResponsesReasoning.Summary != nil {
+				var builder strings.Builder
+				for _, summaryBlock := range output.ResponsesReasoning.Summary {
+					if summaryBlock.Text != "" {
+						if builder.Len() > 0 {
+							builder.WriteString("\n\n")
+						}
+						builder.WriteString(summaryBlock.Text)
+					}
+				}
+				content := builder.String()
+				if content != "" {
+					return content
+				}
+			}
+		}
+
+		// Skip echoed user/system/developer input items
+		if output.Role != nil {
+			switch *output.Role {
+			case schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper:
+				continue
+			}
+		}
+
 		// Check for regular content first
 		if output.Content != nil {
 			if output.Content.ContentStr != nil && *output.Content.ContentStr != "" {
@@ -469,24 +534,6 @@ func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
 			}
 		}
 
-		// Check for reasoning content in summary field
-		if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeReasoning {
-			if output.ResponsesReasoning != nil && output.ResponsesReasoning.Summary != nil {
-				var builder strings.Builder
-				for _, summaryBlock := range output.ResponsesReasoning.Summary {
-					if summaryBlock.Text != "" {
-						if builder.Len() > 0 {
-							builder.WriteString("\n\n")
-						}
-						builder.WriteString(summaryBlock.Text)
-					}
-				}
-				content := builder.String()
-				if content != "" {
-					return content
-				}
-			}
-		}
 	}
 
 	return ""
@@ -503,8 +550,9 @@ func ExtractChatToolCalls(response *schemas.BifrostChatResponse) []ToolCallInfo 
 	for _, choice := range response.Choices {
 		if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
 			for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
-				info := ToolCallInfo{
-					ID: *toolCall.ID,
+				info := ToolCallInfo{}
+				if toolCall.ID != nil {
+					info.ID = *toolCall.ID
 				}
 				if toolCall.Function.Name != nil {
 					info.Name = *toolCall.Function.Name
@@ -573,9 +621,8 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 	return []ToolCallInfo{}
 }
 
-// getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
-func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float32, error) {
-
+// getEmbeddingVector extracts the float64 vector from a BifrostEmbeddingResponse.
+func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float64, error) {
 	if embedding.Embedding.EmbeddingArray != nil {
 		return embedding.Embedding.EmbeddingArray, nil
 	}

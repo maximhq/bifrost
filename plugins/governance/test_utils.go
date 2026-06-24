@@ -15,7 +15,6 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // MockLogger implements schemas.Logger for testing
@@ -83,15 +82,19 @@ func buildVirtualKey(id, value, name string, isActive bool) *configstoreTables.T
 		ID:       id,
 		Value:    value,
 		Name:     name,
-		IsActive: isActive,
+		IsActive: &isActive,
 	}
 }
 
 func buildVirtualKeyWithBudget(id, value, name string, budget *configstoreTables.TableBudget) *configstoreTables.TableVirtualKey {
 	vk := buildVirtualKey(id, value, name, true)
-	vk.Budget = budget
-	budgetID := budget.ID
-	vk.BudgetID = &budgetID
+	vkID := id
+	budget.VirtualKeyID = &vkID
+	vk.Budgets = []configstoreTables.TableBudget{*budget}
+	// Add a default provider config so the resolver doesn't block at provider check
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 	return vk
 }
 
@@ -100,6 +103,10 @@ func buildVirtualKeyWithRateLimit(id, value, name string, rateLimit *configstore
 	vk.RateLimit = rateLimit
 	rateLimitID := rateLimit.ID
 	vk.RateLimitID = &rateLimitID
+	// Add a default provider config so the resolver doesn't block at provider check
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 	return vk
 }
 
@@ -165,8 +172,8 @@ func buildTeam(id, name string, budget *configstoreTables.TableBudget) *configst
 		Name: name,
 	}
 	if budget != nil {
-		team.Budget = budget
-		team.BudgetID = &budget.ID
+		budget.TeamID = &team.ID
+		team.Budgets = []configstoreTables.TableBudget{*budget}
 	}
 	return team
 }
@@ -177,8 +184,8 @@ func buildCustomer(id, name string, budget *configstoreTables.TableBudget) *conf
 		Name: name,
 	}
 	if budget != nil {
-		customer.Budget = budget
-		customer.BudgetID = &budget.ID
+		budget.CustomerID = &customer.ID
+		customer.Budgets = []configstoreTables.TableBudget{*budget}
 	}
 	return customer
 }
@@ -189,9 +196,24 @@ func buildProviderConfig(provider string, allowedModels []string) configstoreTab
 		AllowedModels: allowedModels,
 		Weight:        bifrost.Ptr(1.0),
 		RateLimit:     nil,
-		Budget:        nil,
 		Keys:          []configstoreTables.TableKey{},
 	}
+}
+
+func buildProviderConfigWithBudgets(provider string, allowedModels []string, budgets []configstoreTables.TableBudget) configstoreTables.TableVirtualKeyProviderConfig {
+	pc := buildProviderConfig(provider, allowedModels)
+	pc.Budgets = budgets
+	return pc
+}
+
+func buildVirtualKeyWithMultiBudgets(id, value, name string, budgets []configstoreTables.TableBudget) *configstoreTables.TableVirtualKey {
+	vk := buildVirtualKey(id, value, name, true)
+	for i := range budgets {
+		vkID := id
+		budgets[i].VirtualKeyID = &vkID
+	}
+	vk.Budgets = budgets
+	return vk
 }
 
 func buildProviderConfigWithRateLimit(provider string, allowedModels []string, rateLimit *configstoreTables.TableRateLimit) configstoreTables.TableVirtualKeyProviderConfig {
@@ -221,15 +243,6 @@ func assertRateLimitInfo(t *testing.T, result *EvaluationResult) {
 	assert.NotNil(t, result.RateLimitInfo, "RateLimitInfo should be present in result")
 }
 
-func requireNoError(t *testing.T, err error, msg string) {
-	t.Helper()
-	require.NoError(t, err, msg)
-}
-
-func requireError(t *testing.T, err error, msg string) {
-	t.Helper()
-	require.Error(t, err, msg)
-}
 
 func buildModelConfig(id, modelName string, provider *string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
 	mc := &configstoreTables.TableModelConfig{
@@ -240,13 +253,22 @@ func buildModelConfig(id, modelName string, provider *string, budget *configstor
 		UpdatedAt: time.Now(),
 	}
 	if budget != nil {
-		mc.Budget = budget
-		mc.BudgetID = &budget.ID
+		// Model configs now own budgets via TableBudget.ModelConfigID (multi-budget).
+		budget.ModelConfigID = &mc.ID
+		mc.Budgets = []configstoreTables.TableBudget{*budget}
 	}
 	if rateLimit != nil {
 		mc.RateLimit = rateLimit
 		mc.RateLimitID = &rateLimit.ID
 	}
+	return mc
+}
+
+// buildVKScopedModelConfig builds a model config scoped to a specific virtual key.
+func buildVKScopedModelConfig(id, modelName string, provider *string, vkID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
+	mc := buildModelConfig(id, modelName, provider, budget, rateLimit)
+	mc.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	mc.ScopeID = &vkID
 	return mc
 }
 

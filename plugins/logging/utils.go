@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -26,6 +27,12 @@ type LogManager interface {
 
 	// Search searches for log entries based on filters and pagination
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
+
+	// GetSessionLogs returns paginated logs for a single parent_request_id session.
+	GetSessionLogs(ctx context.Context, sessionID string, pagination *logstore.PaginationOptions) (*logstore.SessionDetailResult, error)
+
+	// GetSessionSummary returns aggregate totals for a single parent_request_id session.
+	GetSessionSummary(ctx context.Context, sessionID string) (*logstore.SessionSummaryResult, error)
 
 	// GetStats calculates statistics for logs matching the given filters
 	GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error)
@@ -54,23 +61,59 @@ type LogManager interface {
 	// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
 	GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error)
 
+	// GetModelRankings returns models ranked by usage with trend comparison
+	GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error)
+
+	// GetDimensionRankings returns entities ranked by usage grouped by the given dimension
+	GetDimensionRankings(ctx context.Context, filters *logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error)
+
 	// Get the number of dropped requests
 	GetDroppedRequests(ctx context.Context) int64
 
 	// GetAvailableModels returns all unique models from logs
-	GetAvailableModels(ctx context.Context) []string
+	GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error)
+
+	// GetAvailableAliases returns all unique alias values from logs
+	GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableSelectedKeys returns all unique selected key ID-Name pairs from logs
-	GetAvailableSelectedKeys(ctx context.Context) []KeyPair
+	GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableVirtualKeys returns all unique virtual key ID-Name pairs from logs
-	GetAvailableVirtualKeys(ctx context.Context) []KeyPair
+	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
-	GetAvailableRoutingRules(ctx context.Context) []KeyPair
+	GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
-	GetAvailableRoutingEngines(ctx context.Context) []string
+	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
+
+	// GetAvailableStopReasons returns all unique stop reason values from logs
+	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
+
+	// GetAvailableTeams returns all unique team ID-Name pairs from logs
+	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableCustomers returns all unique customer ID-Name pairs from logs
+	GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableUsers returns all unique user IDs from logs
+	GetAvailableUsers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs
+	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
+	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
+
+	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension
+	GetDimensionCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error)
+
+	// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension
+	GetDimensionTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionTokenHistogramResult, error)
+
+	// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension
+	GetDimensionLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionLatencyHistogramResult, error)
 
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
@@ -82,6 +125,9 @@ type LogManager interface {
 	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
 
 	// MCP Tool Log methods
+	// GetMCPToolLog retrieves a single MCP tool log entry by ID.
+	GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error)
+
 	// SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
 	SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error)
 
@@ -89,13 +135,22 @@ type LogManager interface {
 	GetMCPToolLogStats(ctx context.Context, filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error)
 
 	// GetAvailableToolNames returns all unique tool names from MCP tool logs
-	GetAvailableToolNames(ctx context.Context) ([]string, error)
+	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableServerLabels returns all unique server labels from MCP tool logs
-	GetAvailableServerLabels(ctx context.Context) ([]string, error)
+	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
-	GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair
+	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetMCPHistogram returns time-bucketed MCP tool call volume
+	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
+
+	// GetMCPCostHistogram returns time-bucketed MCP cost data
+	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
+
+	// GetMCPTopTools returns the top N MCP tools by call count
+	GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error)
 
 	// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
@@ -115,6 +170,23 @@ func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchF
 		return nil, fmt.Errorf("filters and pagination cannot be nil")
 	}
 	return p.plugin.SearchLogs(ctx, *filters, *pagination)
+}
+
+func (p *PluginLogManager) GetSessionLogs(ctx context.Context, sessionID string, pagination *logstore.PaginationOptions) (*logstore.SessionDetailResult, error) {
+	if pagination == nil {
+		return nil, fmt.Errorf("pagination cannot be nil")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionID cannot be empty")
+	}
+	return p.plugin.GetSessionLogs(ctx, sessionID, *pagination)
+}
+
+func (p *PluginLogManager) GetSessionSummary(ctx context.Context, sessionID string) (*logstore.SessionSummaryResult, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionID cannot be empty")
+	}
+	return p.plugin.GetSessionSummary(ctx, sessionID)
 }
 
 func (p *PluginLogManager) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
@@ -180,33 +252,98 @@ func (p *PluginLogManager) GetProviderLatencyHistogram(ctx context.Context, filt
 	return p.plugin.GetProviderLatencyHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
+func (p *PluginLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetModelRankings(ctx, *filters)
+}
+
+func (p *PluginLogManager) GetDimensionRankings(ctx context.Context, filters *logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetDimensionRankings(ctx, *filters, dimension)
+}
+
 func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 	return p.plugin.droppedRequests.Load()
 }
 
 // GetAvailableModels returns all unique models from logs
-func (p *PluginLogManager) GetAvailableModels(ctx context.Context) []string {
-	return p.plugin.GetAvailableModels(ctx)
+func (p *PluginLogManager) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableModels(ctx, limit, query)
 }
 
-// GetAvailableSelectedKeys returns all unique selected key ID-Name pairs from logs
-func (p *PluginLogManager) GetAvailableSelectedKeys(ctx context.Context) []KeyPair {
-	return p.plugin.GetAvailableSelectedKeys(ctx)
+func (p *PluginLogManager) GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableAliases(ctx, limit, query)
 }
 
-// GetAvailableVirtualKeys returns all unique virtual key ID-Name pairs from logs
-func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context) []KeyPair {
-	return p.plugin.GetAvailableVirtualKeys(ctx)
+func (p *PluginLogManager) GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableSelectedKeys(ctx, limit, query)
 }
 
-// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
-func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
-	return p.plugin.GetAvailableRoutingRules(ctx)
+func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableVirtualKeys(ctx, limit, query)
 }
 
-// GetAvailableRoutingEngines returns all unique routing engine types from logs
-func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
-	return p.plugin.GetAvailableRoutingEngines(ctx)
+func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableRoutingRules(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableRoutingEngines(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableStopReasons(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableTeams(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableCustomers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableUsers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableBusinessUnits(ctx, limit, query)
+}
+
+// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
+func (p *PluginLogManager) GetDimensionCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetDimensionCostHistogram(ctx, *filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
+func (p *PluginLogManager) GetDimensionTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionTokenHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetDimensionTokenHistogram(ctx, *filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
+func (p *PluginLogManager) GetDimensionLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionLatencyHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetDimensionLatencyHistogram(ctx, *filters, bucketSizeSeconds, dimension)
+}
+
+func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return map[string][]string{}, nil
+	}
+	return p.plugin.store.GetDistinctMetadataKeys(ctx, limit, query)
 }
 
 // DeleteLog deletes a log from the log store
@@ -232,6 +369,17 @@ func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logsto
 	return p.plugin.RecalculateCosts(ctx, *filters, limit)
 }
 
+// GetMCPToolLog retrieves a single MCP tool log entry by ID.
+func (p *PluginLogManager) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id cannot be empty")
+	}
+	return p.plugin.GetMCPToolLog(ctx, id)
+}
+
 // SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
 func (p *PluginLogManager) SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error) {
 	if filters == nil || pagination == nil {
@@ -249,27 +397,49 @@ func (p *PluginLogManager) GetMCPToolLogStats(ctx context.Context, filters *logs
 }
 
 // GetAvailableToolNames returns all unique tool names from MCP tool logs
-func (p *PluginLogManager) GetAvailableToolNames(ctx context.Context) ([]string, error) {
+func (p *PluginLogManager) GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error) {
 	if p == nil || p.plugin == nil || p.plugin.store == nil {
 		return []string{}, nil
 	}
-	return p.plugin.store.GetAvailableToolNames(ctx)
+	return p.plugin.store.GetAvailableToolNames(ctx, limit, query)
 }
 
-// GetAvailableServerLabels returns all unique server labels from MCP tool logs
-func (p *PluginLogManager) GetAvailableServerLabels(ctx context.Context) ([]string, error) {
+func (p *PluginLogManager) GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error) {
 	if p == nil || p.plugin == nil || p.plugin.store == nil {
 		return []string{}, nil
 	}
-	return p.plugin.store.GetAvailableServerLabels(ctx)
+	return p.plugin.store.GetAvailableServerLabels(ctx, limit, query)
 }
 
-// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
-func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair {
+func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	if p == nil || p.plugin == nil {
-		return []KeyPair{}
+		return []KeyPair{}, nil
 	}
-	return p.plugin.GetAvailableMCPVirtualKeys(ctx)
+	return p.plugin.GetAvailableMCPVirtualKeys(ctx, limit, query)
+}
+
+// GetMCPHistogram returns time-bucketed MCP tool call volume
+func (p *PluginLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPCostHistogram returns time-bucketed MCP cost data
+func (p *PluginLogManager) GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPCostHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPCostHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPTopTools returns the top N MCP tools by call count
+func (p *PluginLogManager) GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPTopToolsResult{}, nil
+	}
+	return p.plugin.store.GetMCPTopTools(ctx, filters, limit)
 }
 
 // DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
@@ -324,6 +494,9 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]schemas.ChatMessage, []schemas.ResponsesMessage) {
 	if request.ChatRequest != nil {
 		return request.ChatRequest.Input, []schemas.ResponsesMessage{}
+	}
+	if request.RequestType == schemas.RealtimeRequest && request.ResponsesRequest != nil {
+		return extractRealtimeInputHistory(request.ResponsesRequest.Input), []schemas.ResponsesMessage{}
 	}
 	if request.ResponsesRequest != nil && len(request.ResponsesRequest.Input) > 0 {
 		return []schemas.ChatMessage{}, request.ResponsesRequest.Input
@@ -395,7 +568,100 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	if request.CountTokensRequest != nil && len(request.CountTokensRequest.Input) > 0 {
 		return []schemas.ChatMessage{}, request.CountTokensRequest.Input
 	}
+	if request.CompactionRequest != nil && len(request.CompactionRequest.Input) > 0 {
+		return []schemas.ChatMessage{}, request.CompactionRequest.Input
+	}
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+}
+
+func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.ChatMessage {
+	messages := make([]schemas.ChatMessage, 0, len(input))
+	for _, item := range input {
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeMessage:
+			if item.Role == nil || item.Content == nil {
+				continue
+			}
+			content := extractRealtimeResponsesContent(item.Content)
+			if content == "" {
+				continue
+			}
+			messages = append(messages, schemas.ChatMessage{
+				Role: mapRealtimeResponsesRole(*item.Role),
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr(content),
+				},
+			})
+		case schemas.ResponsesMessageTypeFunctionCallOutput,
+			schemas.ResponsesMessageTypeCustomToolCallOutput,
+			schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeComputerCallOutput:
+			content := extractRealtimeToolOutputContent(item.ResponsesToolMessage)
+			if content == "" {
+				continue
+			}
+			messages = append(messages, schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleTool,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr(content),
+				},
+				ChatToolMessage: &schemas.ChatToolMessage{
+					ToolCallID: item.ResponsesToolMessage.CallID,
+				},
+			})
+		}
+	}
+	return messages
+}
+
+func mapRealtimeResponsesRole(role schemas.ResponsesMessageRoleType) schemas.ChatMessageRole {
+	switch role {
+	case schemas.ResponsesInputMessageRoleAssistant:
+		return schemas.ChatMessageRoleAssistant
+	case schemas.ResponsesInputMessageRoleSystem:
+		return schemas.ChatMessageRoleSystem
+	case schemas.ResponsesInputMessageRoleDeveloper:
+		return schemas.ChatMessageRoleDeveloper
+	default:
+		return schemas.ChatMessageRoleUser
+	}
+}
+
+func extractRealtimeResponsesContent(content *schemas.ResponsesMessageContent) string {
+	if content == nil {
+		return ""
+	}
+	if content.ContentStr != nil {
+		return strings.TrimSpace(*content.ContentStr)
+	}
+	parts := make([]string, 0, len(content.ContentBlocks))
+	for _, block := range content.ContentBlocks {
+		switch {
+		case block.Text != nil && strings.TrimSpace(*block.Text) != "":
+			parts = append(parts, strings.TrimSpace(*block.Text))
+		case block.ResponsesOutputMessageContentRefusal != nil && strings.TrimSpace(block.Refusal) != "":
+			parts = append(parts, strings.TrimSpace(block.Refusal))
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func extractRealtimeToolOutputContent(toolMessage *schemas.ResponsesToolMessage) string {
+	if toolMessage == nil || toolMessage.Output == nil {
+		return ""
+	}
+	switch {
+	case toolMessage.Output.ResponsesToolCallOutputStr != nil:
+		return strings.TrimSpace(*toolMessage.Output.ResponsesToolCallOutputStr)
+	case len(toolMessage.Output.ResponsesFunctionToolCallOutputBlocks) > 0:
+		content := &schemas.ResponsesMessageContent{ContentBlocks: toolMessage.Output.ResponsesFunctionToolCallOutputBlocks}
+		return extractRealtimeResponsesContent(content)
+	default:
+		return ""
+	}
 }
 
 // convertToProcessedStreamResponse converts a StreamAccumulatorResult to ProcessedStreamResponse
@@ -412,7 +678,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeText
 	case schemas.ChatCompletionStreamRequest:
 		streamType = streaming.StreamTypeChat
-	case schemas.ResponsesStreamRequest:
+	case schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		streamType = streaming.StreamTypeResponses
 	case schemas.SpeechStreamRequest:
 		streamType = streaming.StreamTypeAudio
@@ -420,6 +686,8 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeTranscription
 	case schemas.ImageGenerationStreamRequest:
 		streamType = streaming.StreamTypeImage
+	case schemas.PassthroughStreamRequest:
+		streamType = streaming.StreamTypePassthrough
 	default:
 		streamType = streaming.StreamTypeChat
 	}
@@ -427,7 +695,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 	// Build accumulated data
 	data := &streaming.AccumulatedData{
 		RequestID:             result.RequestID,
-		Model:                 result.Model,
+		Model:                 result.RequestedModel,
 		Status:                result.Status,
 		Stream:                true,
 		Latency:               result.Latency,
@@ -436,10 +704,12 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		OutputMessages:        result.OutputMessages,
 		ErrorDetails:          result.ErrorDetails,
 		TokenUsage:            result.TokenUsage,
+		CacheDebug:            result.CacheDebug,
 		Cost:                  result.Cost,
 		AudioOutput:           result.AudioOutput,
 		TranscriptionOutput:   result.TranscriptionOutput,
 		ImageGenerationOutput: result.ImageGenerationOutput,
+		PassthroughOutput:     result.PassthroughOutput,
 		FinishReason:          result.FinishReason,
 		RawResponse:           result.RawResponse,
 	}
@@ -450,11 +720,12 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 	}
 
 	resp := &streaming.ProcessedStreamResponse{
-		RequestID:  result.RequestID,
-		StreamType: streamType,
-		Provider:   result.Provider,
-		Model:      result.Model,
-		Data:       data,
+		RequestID:      result.RequestID,
+		StreamType:     streamType,
+		Provider:       result.Provider,
+		RequestedModel: result.RequestedModel,
+		ResolvedModel:  result.ResolvedModel,
+		Data:           data,
 	}
 
 	if result.RawRequest != nil {
@@ -463,6 +734,34 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 	}
 
 	return resp
+}
+
+func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	set := func(key string, ctxKey schemas.BifrostContextKey) {
+		if value := bifrost.GetStringFromContext(ctx, ctxKey); value != "" {
+			if metadata == nil {
+				metadata = make(map[string]interface{})
+			}
+			metadata[key] = value
+		}
+	}
+
+	set("realtime_session_id", schemas.BifrostContextKeyRealtimeSessionID)
+	set("provider_session_id", schemas.BifrostContextKeyRealtimeProviderSessionID)
+	set("realtime_source", schemas.BifrostContextKeyRealtimeSource)
+	set("realtime_event_type", schemas.BifrostContextKeyRealtimeEventType)
+	set("realtime_transport", schemas.BifrostContextKeyRealtimeTransport)
+	set("realtime_voice", schemas.BifrostContextKeyRealtimeVoice)
+	if bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID) != "" {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["realtime"] = true
+	}
+	return metadata
 }
 
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.

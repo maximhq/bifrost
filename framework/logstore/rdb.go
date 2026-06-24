@@ -6,20 +6,49 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
+// validMetadataKeyRegex allows alphanumeric, hyphens, underscores, and dots in metadata keys.
+var validMetadataKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// isValidMetadataKey validates a metadata key to prevent SQL injection.
+func isValidMetadataKey(key string) bool {
+	return key != "" && len(key) <= 256 && validMetadataKeyRegex.MatchString(key)
+}
+
+const bulkUpdateCostChunkSize = 500
+const sessionLogPageLimit = 50
+
+const (
+	// defaultMaxQueryLimit is a safety cap for unbounded queries (FindAll, FindAllDistinct).
+	defaultMaxQueryLimit = 10000
+	// defaultMaxSearchLimit is the maximum number of rows returned by SearchLogs / SearchMCPToolLogs.
+	defaultMaxSearchLimit = 1000
+	// defaultMaxRankingsLimit caps the number of model+provider groups returned by GetModelRankings.
+	defaultMaxRankingsLimit = 100
+	// defaultFilterDataCutoffDays limits GetDistinct* filter-data queries to recent data.
+	defaultFilterDataCutoffDays = 30
+)
+
 // RDBLogStore represents a log store that uses a SQLite database.
 type RDBLogStore struct {
-	db     *gorm.DB
-	logger schemas.Logger
+	db            *gorm.DB
+	logger        schemas.Logger
+	matViewsReady atomic.Bool
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.
@@ -44,7 +73,80 @@ func generateBucketTimestamps(startTime, endTime *time.Time, bucketSizeSeconds i
 	return timestamps
 }
 
-// applyFilters applies search filters to a GORM query
+// ScopedDB returns the underlying DB bound to ctx with any QueryScope
+// on ctx pre-applied. Use this in read paths that should respect
+// caller-driven row visibility; use s.db.WithContext(ctx) for writes
+// and internal lookups that must bypass scoping.
+func (s *RDBLogStore) ScopedDB(ctx context.Context) *gorm.DB {
+	db := s.db.WithContext(ctx)
+	if scope := queryscope.FromContext(ctx); scope != nil {
+		db = scope(db)
+	}
+	return db
+}
+
+// multiValueDimensionFilterSQL builds a Postgres predicate matching logs by a
+// dimension that is single-valued on the scalar column (the primary, set by the
+// VK path / pre-migration rows) and multi-valued on the JSON-array column (the
+// full set, set by the enterprise user/AP path). It ORs the scalar `IN` (btree
+// index) with array containment per id (partial jsonb_path_ops GIN index). The
+// `IS NOT NULL AND IS JSON ARRAY` guard matches the partial index predicate so
+// the planner uses the GIN. Returns the parenthesised SQL and its args.
+func multiValueDimensionFilterSQL(scalarCol, arrayCol string, ids []string) (string, []interface{}) {
+	arrConds := make([]string, len(ids))
+	args := []interface{}{ids}
+	for i, id := range ids {
+		arrConds[i] = arrayCol + "::jsonb @> ?::jsonb"
+		frag, _ := sonic.Marshal([]string{id})
+		args = append(args, string(frag))
+	}
+	sql := fmt.Sprintf("(%s IN ? OR (%s IS NOT NULL AND %s IS JSON ARRAY AND (%s)))",
+		scalarCol, arrayCol, arrayCol, strings.Join(arrConds, " OR "))
+	return sql, args
+}
+
+// teamOrBUFanoutFrom returns a Postgres FROM subquery (aliased AS logs) that fans
+// each log row out to one row per associated team / business unit, exposing
+// derived `dim_id` and `dim_name` columns alongside all original log columns
+// (l.*) so DAC scope and filters still resolve. Rows with the JSON-array column
+// set are unnested (id+name aligned by ordinality); rows without it (pre-upgrade
+// or VK-team logs) fall back to the scalar id/name — so historical logs keep
+// contributing. The two branches are mutually exclusive, so no row is counted
+// twice for the same dimension value. Returns ("", false) for non-fan-out
+// dimensions. idCol is the scalar id column ("team_id" / "business_unit_id"),
+// which both the ranking and histogram dimensions resolve to. No bind args: all
+// identifiers are internal constants.
+func teamOrBUFanoutFrom(idCol string) (string, bool) {
+	var arrIDs, arrNames, scalarName string
+	switch idCol {
+	case "team_id":
+		arrIDs, arrNames, scalarName = "team_ids", "team_names", "team_name"
+	case "business_unit_id":
+		arrIDs, arrNames, scalarName = "business_unit_ids", "business_unit_names", "business_unit_name"
+	case "customer_id":
+		arrIDs, arrNames, scalarName = "customer_ids", "customer_names", "customer_name"
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(`(
+	SELECT l.*, fan.dim_id AS dim_id, fan.dim_name AS dim_name
+	FROM logs l
+	CROSS JOIN LATERAL (
+		SELECT t.value AS dim_id, COALESCE(n.value, '') AS dim_name
+		FROM jsonb_array_elements_text(l.%[1]s::jsonb) WITH ORDINALITY AS t(value, ord)
+		LEFT JOIN jsonb_array_elements_text(l.%[2]s::jsonb) WITH ORDINALITY AS n(value, ord) ON n.ord = t.ord
+		WHERE l.%[1]s IS NOT NULL AND l.%[1]s IS JSON ARRAY
+		UNION ALL
+		SELECT l.%[3]s, COALESCE(l.%[4]s, '')
+		WHERE l.%[1]s IS NULL OR l.%[1]s IS NOT JSON ARRAY
+	) AS fan
+) AS logs`, arrIDs, arrNames, idCol, scalarName), true
+}
+
+// applyFilters applies search filters to a GORM query. Callers are
+// responsible for starting from ScopedDB(ctx) when row visibility
+// should be respected; this helper only adds the per-call filter
+// predicates.
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
 	if len(filters.Providers) > 0 {
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
@@ -52,11 +154,20 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.Models) > 0 {
 		baseQuery = baseQuery.Where("model IN ?", filters.Models)
 	}
+	if len(filters.Aliases) > 0 {
+		baseQuery = baseQuery.Where("alias IN ?", filters.Aliases)
+	}
 	if len(filters.Status) > 0 {
 		baseQuery = baseQuery.Where("status IN ?", filters.Status)
 	}
+	if len(filters.StopReasons) > 0 {
+		baseQuery = baseQuery.Where("stop_reason IN ?", filters.StopReasons)
+	}
 	if len(filters.Objects) > 0 {
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
+	}
+	if filters.ParentRequestID != "" {
+		baseQuery = baseQuery.Where("parent_request_id = ?", filters.ParentRequestID)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
@@ -67,36 +178,77 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.RoutingRuleIDs) > 0 {
 		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
+	if len(filters.TeamIDs) > 0 {
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("team_id", "team_ids", filters.TeamIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+		}
+	}
+	if len(filters.CustomerIDs) > 0 {
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("customer_id", "customer_ids", filters.CustomerIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		}
+	}
+	if len(filters.UserIDs) > 0 {
+		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
+	}
+	if len(filters.BusinessUnitIDs) > 0 {
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+		}
+	}
 	if len(filters.RoutingEngineUsed) > 0 {
 		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
-		// Use delimiter-aware matching to avoid partial token matches
-		var engineConditions []string
-		var engineArgs []interface{}
-
-		// Use dialect-aware concatenation expression
 		dialect := s.db.Dialector.Name()
-		var concatExpr string
-		switch dialect {
-		case "sqlite":
-			// SQLite: use || operator for string concatenation
-			concatExpr = "',' || routing_engines_used || ','"
-		default:
-			// MySQL, Postgres, and others: use CONCAT function
-			concatExpr = "CONCAT(',', routing_engines_used, ',')"
-		}
 
+		// Collect non-empty engine values
+		var engines []string
 		for _, engine := range filters.RoutingEngineUsed {
 			engine = strings.TrimSpace(engine)
-			if engine == "" {
-				continue // Skip empty engine filters
+			if engine != "" {
+				engines = append(engines, engine)
 			}
-			// Match whole comma-separated tokens: expr LIKE '%,engine,%'
-			engineConditions = append(engineConditions, concatExpr+" LIKE ?")
-			engineArgs = append(engineArgs, "%,"+engine+",%")
 		}
-		// Build OR condition: (expr LIKE ? OR expr LIKE ? ...)
-		if len(engineConditions) > 0 {
-			baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
+
+		if len(engines) > 0 {
+			switch dialect {
+			case "postgres":
+				// Use array overlap operator which can leverage the GIN index on
+				// string_to_array(routing_engines_used, ',').
+				placeholders := make([]string, len(engines))
+				args := make([]interface{}, len(engines))
+				for i, e := range engines {
+					placeholders[i] = "?"
+					args[i] = e
+				}
+				baseQuery = baseQuery.Where(
+					"string_to_array(routing_engines_used, ',') && ARRAY["+strings.Join(placeholders, ",")+"]::text[]",
+					args...,
+				)
+			default:
+				// SQLite and others: use delimiter-aware LIKE matching
+				var engineConditions []string
+				var engineArgs []interface{}
+				var concatExpr string
+				if dialect == "sqlite" {
+					concatExpr = "',' || routing_engines_used || ','"
+				} else {
+					concatExpr = "CONCAT(',', routing_engines_used, ',')"
+				}
+				for _, engine := range engines {
+					engineConditions = append(engineConditions, concatExpr+" LIKE ?")
+					engineArgs = append(engineArgs, "%,"+engine+",%")
+				}
+				baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
+			}
 		}
 	}
 	if filters.StartTime != nil {
@@ -127,21 +279,100 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// cost is null and status is not error
 		baseQuery = baseQuery.Where("(cost IS NULL OR cost <= 0) AND status NOT IN ('error')")
 	}
+	if len(filters.CacheHitTypes) > 0 {
+		// Only keep allowed values to avoid passing arbitrary input into the JSON path expression.
+		valid := make([]string, 0, len(filters.CacheHitTypes))
+		for _, t := range filters.CacheHitTypes {
+			if t == "direct" || t == "semantic" {
+				valid = append(valid, t)
+			}
+		}
+		if len(valid) > 0 {
+			if s.db.Dialector.Name() == "postgres" {
+				// Match the same loose-JSON guard used by aggregateCacheHits so the regex extract is safe.
+				baseQuery = baseQuery.Where(
+					"cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$' AND substring(cache_debug from '\"hit_type\"[[:space:]]*:[[:space:]]*\"([^\"]+)\"') IN ?",
+					valid,
+				)
+			} else {
+				baseQuery = baseQuery.Where(
+					"cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug) AND json_extract(cache_debug, '$.hit_type') IN ?",
+					valid,
+				)
+			}
+		}
+	}
 	if filters.ContentSearch != "" {
-		baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
+		dialect := s.db.Dialector.Name()
+		if dialect == "postgres" {
+			// Must match the idx_logs_content_summary_fts expression exactly (incl. the
+			// left() cap) so the planner uses the GIN expression index.
+			baseQuery = baseQuery.Where(fmt.Sprintf("to_tsvector('simple', left(content_summary, %d)) @@ plainto_tsquery('simple', ?)", ftsInputCharLimit), filters.ContentSearch)
+		} else {
+			baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
+		}
+	}
+	if len(filters.MetadataFilters) > 0 {
+		dialect := s.db.Dialector.Name()
+		// Guard must match the partial-index predicate so the planner uses the GIN index.
+		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
+		if dialect == "postgres" {
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
+		} else {
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
+		}
+		for key, value := range filters.MetadataFilters {
+			if !isValidMetadataKey(key) {
+				continue
+			}
+			switch dialect {
+			case "postgres":
+				// Use @> containment operator to leverage GIN index on metadata::jsonb.
+				// Metadata values always originate from HTTP headers and are stored as JSON
+				// strings — always match as a string to avoid type mismatch with jsonb.
+				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
+				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+			default:
+				// SQLite: quote the member name so dots/hyphens stay part of the key
+				path := `$."` + key + `"`
+				if value == "true" {
+					// json_extract returns 1 for true, but json_type returns 'true'
+					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'true'", path)
+				} else if value == "false" {
+					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'false'", path)
+				} else {
+					// Numeric and string values: compare both as-is and as text
+					baseQuery = baseQuery.Where("json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?", path, value, path, value)
+				}
+			}
+		}
 	}
 	return baseQuery
 }
 
 // Create inserts a new log entry into the database.
 func (s *RDBLogStore) Create(ctx context.Context, entry *Log) error {
-	return s.db.WithContext(ctx).Create(entry).Error
+	if entry == nil {
+		return fmt.Errorf("log entry is nil")
+	}
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Create(entry).Error
 }
 
 // CreateIfNotExists inserts a new log entry only if it doesn't already exist.
 // Uses ON CONFLICT DO NOTHING to handle duplicate key errors gracefully.
 func (s *RDBLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if entry == nil {
+		return fmt.Errorf("log entry is nil")
+	}
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(entry).Error
@@ -153,7 +384,11 @@ func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log
 	if len(entries) == 0 {
 		return nil
 	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(&entries).Error
@@ -166,7 +401,12 @@ func (s *RDBLogStore) Ping(ctx context.Context) error {
 
 // Update updates a log entry in the database.
 func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
-	tx := s.db.WithContext(ctx).Model(&Log{}).Where("id = ?", id).Updates(entry)
+	serializedEntry, err := serializeLogUpdateEntry(entry)
+	if err != nil {
+		return err
+	}
+
+	tx := s.db.WithContext(ctx).Model(&Log{}).Where("id = ?", id).Updates(serializedEntry)
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -176,9 +416,15 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 	return nil
 }
 
+// BulkUpdateCost updates log costs in bulk, using a PostgreSQL-specific batched
+// VALUES update when available and per-row updates for other dialects.
 func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
 	if len(updates) == 0 {
 		return nil
+	}
+
+	if s.db.Dialector.Name() == "postgres" {
+		return s.bulkUpdateCostPostgres(ctx, updates)
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -192,21 +438,176 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 	})
 }
 
-// SearchLogs searches for logs in the database without calculating statistics.
-func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
-	var err error
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+// GetNodeUsageAfter returns per-budget cost and per-rate-limit request/token usage
+// for a specific cluster node after a stable cursor. The first scan uses the
+// timestamp/log-id lower bound for the ghost's detection point. Once DB-assigned
+// inc_number values are observed, subsequent scans use inc_number so rows flushed
+// late by the async log writer are not skipped.
+func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
+	type logRow struct {
+		ID           string    `gorm:"column:id"`
+		Timestamp    time.Time `gorm:"column:timestamp"`
+		IncNumber    *int64    `gorm:"column:inc_number"`
+		Cost         float64   `gorm:"column:cost"`
+		TotalTokens  int64     `gorm:"column:total_tokens"`
+		BudgetIDs    *string   `gorm:"column:budget_ids"`
+		RateLimitIDs *string   `gorm:"column:rate_limit_ids"`
+	}
+	var rows []logRow
 
-	// Apply filters efficiently
-	baseQuery = s.applyFilters(baseQuery, filters)
-
-	// Get total count for pagination
-	var totalCount int64
-	if err := baseQuery.Count(&totalCount).Error; err != nil {
-		return nil, err
+	query := s.db.WithContext(ctx).Model(&Log{}).
+		Where("cluster_node_id = ?", nodeID).
+		Where("status = ?", "success")
+	orderBy := "timestamp ASC, id ASC"
+	if cursor.IncNumber != nil {
+		query = query.Where("inc_number > ?", *cursor.IncNumber)
+		orderBy = "inc_number ASC"
+	} else if cursor.LogID != "" {
+		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", cursor.Timestamp, cursor.Timestamp, cursor.LogID)
+	} else {
+		query = query.Where("timestamp > ?", cursor.Timestamp)
 	}
 
-	// Build order clause
+	err := query.
+		Select("id, timestamp, inc_number, COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
+		Order(orderBy).
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node usage aggregate: %w", err)
+	}
+
+	budgetCosts := make(map[string]float64)
+	rateLimitRequests := make(map[string]int64)
+	rateLimitTokens := make(map[string]int64)
+
+	maxCursor := cursor // preserve incoming cursor so zero rows don't rewind
+	for i := range rows {
+		row := &rows[i]
+		if row.Timestamp.After(maxCursor.Timestamp) || (row.Timestamp.Equal(maxCursor.Timestamp) && row.ID > maxCursor.LogID) {
+			maxCursor.Timestamp = row.Timestamp
+			maxCursor.LogID = row.ID
+		}
+		if row.IncNumber != nil && (maxCursor.IncNumber == nil || *row.IncNumber > *maxCursor.IncNumber) {
+			incNumber := *row.IncNumber
+			maxCursor.IncNumber = &incNumber
+		}
+
+		// Attribute cost to each budget that governed this request.
+		if row.BudgetIDs != nil && *row.BudgetIDs != "" {
+			var budgetIDs []string
+			if err := sonic.Unmarshal([]byte(*row.BudgetIDs), &budgetIDs); err != nil {
+				s.logger.Warn(fmt.Sprintf("logstore: skipping malformed budget_ids JSON in node usage aggregate: %s", err))
+			} else {
+				// Deduplicate IDs so a row with ["b1","b1"] doesn't double-count cost.
+				seen := make(map[string]struct{}, len(budgetIDs))
+				for _, id := range budgetIDs {
+					if _, dup := seen[id]; !dup {
+						seen[id] = struct{}{}
+						budgetCosts[id] += row.Cost
+					}
+				}
+			}
+		}
+
+		// Attribute request count and tokens to each rate limit that governed this request.
+		if row.RateLimitIDs != nil && *row.RateLimitIDs != "" {
+			var rateLimitIDs []string
+			if err := sonic.Unmarshal([]byte(*row.RateLimitIDs), &rateLimitIDs); err != nil {
+				s.logger.Warn(fmt.Sprintf("logstore: skipping malformed rate_limit_ids JSON in node usage aggregate: %s", err))
+			} else {
+				// Deduplicate IDs so a row with ["r1","r1"] doesn't double-count.
+				seen := make(map[string]struct{}, len(rateLimitIDs))
+				for _, id := range rateLimitIDs {
+					if _, dup := seen[id]; !dup {
+						seen[id] = struct{}{}
+						rateLimitRequests[id]++
+						rateLimitTokens[id] += row.TotalTokens
+					}
+				}
+			}
+		}
+	}
+
+	return &NodeUsageAggregate{
+		BudgetCosts:       budgetCosts,
+		RateLimitRequests: rateLimitRequests,
+		RateLimitTokens:   rateLimitTokens,
+		RowCount:          len(rows),
+		MaxTimestamp:      maxCursor.Timestamp,
+		MaxLogID:          maxCursor.LogID,
+		NextCursor:        maxCursor,
+	}, nil
+}
+
+// serializeLogUpdateEntry serializes parsed Log fields before passing the
+// update payload to GORM. Non-Log payloads are returned unchanged.
+func serializeLogUpdateEntry(entry any) (any, error) {
+	switch v := entry.(type) {
+	case *Log:
+		if err := v.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case Log:
+		copyEntry := v
+		if err := copyEntry.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return copyEntry, nil
+	default:
+		return entry, nil
+	}
+}
+
+// buildBulkUpdateCostPostgresSQL builds a deterministic UPDATE ... FROM
+// (VALUES ...) statement and argument list for a chunk of PostgreSQL log cost
+// updates.
+func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]float64) (string, []interface{}) {
+	var sqlBuilder strings.Builder
+	args := make([]interface{}, 0, len(ids)*2)
+
+	sqlBuilder.WriteString("UPDATE logs SET cost = v.cost FROM (VALUES ")
+	for i, id := range ids {
+		if i > 0 {
+			sqlBuilder.WriteString(",")
+		}
+		argOffset := i * 2
+		sqlBuilder.WriteString("($")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 1))
+		sqlBuilder.WriteString("::text,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 2))
+		sqlBuilder.WriteString("::float8)")
+		args = append(args, id, updates[id])
+	}
+	sqlBuilder.WriteString(") AS v(id, cost) WHERE logs.id = v.id")
+
+	return sqlBuilder.String(), args
+}
+
+// bulkUpdateCostPostgres applies chunked PostgreSQL bulk cost updates to avoid
+// issuing one UPDATE per log row.
+func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[string]float64) error {
+	ids := make([]string, 0, len(updates))
+	for id := range updates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for start := 0; start < len(ids); start += bulkUpdateCostChunkSize {
+			end := min(start+bulkUpdateCostChunkSize, len(ids))
+			query, args := buildBulkUpdateCostPostgresSQL(ids[start:end], updates)
+			if err := tx.Exec(query, args...).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// SearchLogs searches for logs in the database without calculating statistics.
+func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
+	// Build order clause up front (needed by the data goroutine).
 	direction := "DESC"
 	if pagination.Order == "asc" {
 		direction = "ASC"
@@ -226,41 +627,64 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 		orderClause = "timestamp " + direction
 	}
 
-	// Execute main query with sorting and pagination.
-	// Omit large raw_request/raw_response blobs from the list — they are only
-	// needed when a user opens the detail view for a single log entry, where
-	// they are fetched via the dedicated GET /api/logs/:id endpoint.
+	limit := pagination.Limit
+	if limit <= 0 || limit > defaultMaxSearchLimit {
+		limit = defaultMaxSearchLimit
+	}
+	pagination.Limit = limit
+
+	// Run COUNT and data fetch concurrently — the COUNT on large tables is the
+	// bottleneck, so overlapping it with the (fast) data query halves wall time.
+	// Each goroutine builds its own *gorm.DB because Count() mutates the session.
+	var totalCount int64
 	var logs []Log
-	mainQuery := baseQuery.Order(orderClause).Omit("raw_request", "raw_response")
 
-	if pagination.Limit > 0 {
-		mainQuery = mainQuery.Limit(pagination.Limit)
-	}
-	if pagination.Offset > 0 {
-		mainQuery = mainQuery.Offset(pagination.Offset)
-	}
+	g, gCtx := errgroup.WithContext(ctx)
 
-	if err = mainQuery.Find(&logs).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &SearchResult{
-				Logs:       logs,
-				Pagination: pagination,
-				Stats: SearchStats{
-					TotalRequests: totalCount,
-				},
-			}, nil
+	g.Go(func() error {
+		// Pagination total count uses the same time-window hybrid as
+		// /api/logs/stats: short windows go raw so the count stays consistent
+		// with the (always-raw) row list rendered alongside it. Long windows
+		// keep the matview win because raw COUNT over multi-day ranges is the
+		// expensive path.
+		if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+			var err error
+			totalCount, err = s.getCountFromMatView(gCtx, filters)
+			return err
 		}
+		countQuery := s.ScopedDB(gCtx).Model(&Log{})
+		countQuery = s.applyFilters(countQuery, filters)
+		return countQuery.Count(&totalCount).Error
+	})
+
+	g.Go(func() error {
+		dataQuery := s.ScopedDB(gCtx).Model(&Log{})
+		dataQuery = s.applyFilters(dataQuery, filters)
+		dataQuery = dataQuery.Order(orderClause).Select(s.listSelectColumns()).Limit(limit)
+		if pagination.Offset > 0 {
+			dataQuery = dataQuery.Offset(pagination.Offset)
+		}
+		err := dataQuery.Find(&logs).Error
+		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 
 	hasLogs := len(logs) > 0
 	if !hasLogs {
+		var err error
 		hasLogs, err = s.HasLogs(ctx)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	pagination.TotalCount = totalCount
 	return &SearchResult{
 		Logs:       logs,
 		Pagination: pagination,
@@ -271,64 +695,275 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	}, nil
 }
 
+// GetSessionLogs returns paginated logs for a single parent_request_id session.
+func (s *RDBLogStore) GetSessionLogs(ctx context.Context, sessionID string, pagination PaginationOptions) (*SessionDetailResult, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionID cannot be empty")
+	}
+
+	limit := pagination.Limit
+	if limit <= 0 || limit > sessionLogPageLimit {
+		limit = sessionLogPageLimit
+	}
+	pagination.Limit = limit
+	if pagination.Offset < 0 {
+		pagination.Offset = 0
+	}
+
+	pagination.SortBy = "timestamp"
+	orderDir := "ASC"
+	if pagination.Order == "desc" {
+		orderDir = "DESC"
+	}
+	orderClause := "timestamp " + orderDir + ", id " + orderDir
+
+	baseQuery := s.ScopedDB(ctx).Model(&Log{}).Where("parent_request_id = ?", sessionID)
+
+	var (
+		totalCount int64
+		logs       []Log
+	)
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return s.ScopedDB(gCtx).Model(&Log{}).Where("parent_request_id = ?", sessionID).Count(&totalCount).Error
+	})
+
+	g.Go(func() error {
+		dataQuery := baseQuery.Session(&gorm.Session{}).
+			WithContext(gCtx).
+			Order(orderClause).
+			Select(s.listSelectColumns()).
+			Limit(limit)
+		if pagination.Offset > 0 {
+			dataQuery = dataQuery.Offset(pagination.Offset)
+		}
+		err := dataQuery.Find(&logs).Error
+		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	pagination.TotalCount = totalCount
+	returnedCount := len(logs)
+	return &SessionDetailResult{
+		SessionID:     sessionID,
+		Logs:          logs,
+		Pagination:    pagination,
+		Count:         totalCount,
+		ReturnedCount: returnedCount,
+		HasMore:       int64(pagination.Offset+returnedCount) < totalCount,
+	}, nil
+}
+
+// GetSessionSummary returns aggregate totals for a single parent_request_id session.
+func (s *RDBLogStore) GetSessionSummary(ctx context.Context, sessionID string) (*SessionSummaryResult, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionID cannot be empty")
+	}
+
+	var (
+		count       int64
+		totalCost   float64
+		totalTokens int64
+		startedAt   string
+		latestAt    string
+		startedRaw  any
+		latestRaw   any
+	)
+
+	// Single aggregate select keeps Count/SUM/MIN/MAX consistent against the same row snapshot
+	// and halves the round trips compared to running Count and the aggregate row in parallel.
+	row := s.ScopedDB(ctx).Model(&Log{}).
+		Where("parent_request_id = ?", sessionID).
+		Select("COUNT(*) AS count, COALESCE(SUM(cost), 0) AS total_cost, COALESCE(SUM(total_tokens), 0) AS total_tokens, MIN(timestamp) AS started_at, MAX(timestamp) AS latest_at").
+		Row()
+
+	if err := row.Scan(&count, &totalCost, &totalTokens, &startedRaw, &latestRaw); err != nil {
+		return nil, err
+	}
+
+	startedAt = normalizeAggregateTimestamp(startedRaw)
+	latestAt = normalizeAggregateTimestamp(latestRaw)
+
+	durationMs := int64(0)
+	if startedAt != "" && latestAt != "" {
+		if startedTime, err := time.Parse(time.RFC3339Nano, startedAt); err == nil {
+			if latestTime, err := time.Parse(time.RFC3339Nano, latestAt); err == nil {
+				durationMs = latestTime.Sub(startedTime).Milliseconds()
+				if durationMs < 0 {
+					durationMs = 0
+				}
+			}
+		}
+	}
+
+	return &SessionSummaryResult{
+		SessionID:   sessionID,
+		Count:       count,
+		TotalCost:   totalCost,
+		TotalTokens: totalTokens,
+		StartedAt:   startedAt,
+		LatestAt:    latestAt,
+		DurationMs:  durationMs,
+	}, nil
+}
+
+func normalizeAggregateTimestamp(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case time.Time:
+		return v.UTC().Format(time.RFC3339Nano)
+	case []byte:
+		return normalizeAggregateTimestamp(string(v))
+	case string:
+		raw := strings.TrimSpace(v)
+		if raw == "" {
+			return ""
+		}
+		layouts := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05.999999999Z07:00",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05.999999999",
+			"2006-01-02T15:04:05",
+		}
+		for _, layout := range layouts {
+			if parsed, err := time.Parse(layout, raw); err == nil {
+				return parsed.UTC().Format(time.RFC3339Nano)
+			}
+		}
+		return raw
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+// listSelectColumns returns a SELECT clause for list queries that omits large
+// output/detail TEXT columns and uses SQL JSON functions to extract only the
+// last element from input_history and responses_input_history arrays.
+//
+// Realtime turn rows are kept intact because the logs table renders them as a
+// combined Tool/User/Assistant summary and needs the full turn context.
+func (s *RDBLogStore) listSelectColumns() string {
+	baseCols := strings.Join([]string{
+		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
+		"canonical_model_name", "alias_model_family",
+		"number_of_retries", "fallback_index",
+		"selected_key_id", "selected_key_name",
+		"virtual_key_id", "virtual_key_name",
+		"routing_engines_used", "routing_rule_id", "routing_rule_name",
+		"user_id", "team_id", "team_name", "customer_id", "customer_name",
+		"business_unit_id", "business_unit_name",
+		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
+		"latency", "token_usage", "cost", "status", "error_details", "stream",
+		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
+		"metadata", "cache_debug",
+		"is_large_payload_request", "is_large_payload_response",
+		"prompt_tokens", "completion_tokens", "total_tokens",
+		"created_at",
+	}, ", ")
+
+	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
+	switch s.db.Dialector.Name() {
+	case "postgres":
+		// Postgres jsonb rejects malformed JSON (22P02), \u0000 escapes
+		// (22P05), and unpaired UTF-16 surrogates (22P05). A single bad row
+		// would otherwise abort the whole list query. bifrost_safe_jsonb
+		// wraps the cast in an EXCEPTION block and returns the raw TEXT on
+		// any parse failure; see migrationAddSafeJsonbFunction.
+		inputHistoryExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN input_history
+			ELSE bifrost_safe_jsonb(input_history)
+			END AS input_history`
+		responsesInputExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN responses_input_history
+			ELSE bifrost_safe_jsonb(responses_input_history)
+			END AS responses_input_history`
+		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
+	default: // sqlite
+		inputHistoryExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN input_history
+			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+			     AND json_valid(input_history) = 1
+			     AND json_type(input_history) = 'array'
+			     AND json_array_length(input_history) > 0
+			THEN json_array(json_extract(input_history, '$[' || (json_array_length(input_history) - 1) || ']'))
+			ELSE input_history END AS input_history`
+		responsesInputExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN responses_input_history
+			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+			     AND json_valid(responses_input_history) = 1
+			     AND json_type(responses_input_history) = 'array'
+			     AND json_array_length(responses_input_history) > 0
+			THEN json_array(json_extract(responses_input_history, '$[' || (json_array_length(responses_input_history) - 1) || ']'))
+			ELSE responses_input_history END AS responses_input_history`
+		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
+	}
+
+	return baseCols + ", " + inputHistoryExpr + ", " + responsesInputExpr + ", " + outputMessageExpr
+}
+
 // GetStats calculates statistics for logs matching the given filters.
 func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
-
-	// Apply filters
+	// Stats has a stricter matview gate than other paths: short windows go to
+	// the raw table even if matview-eligible, so /api/logs/stats stays
+	// consistent with the real-time /api/logs row list. See
+	// canUseMatViewForFreshAggregate.
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+		return s.getStatsFromMatView(ctx, filters)
+	}
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 
-	// Get total count
+	// Get total count (includes processing status)
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {
 		return nil, err
 	}
 
-	// Initialize stats
 	stats := &SearchStats{
 		TotalRequests: totalCount,
 	}
 
-	// Calculate statistics only if we have data
 	if totalCount > 0 {
-		// Build a completed query (success + error, excluding processing)
-		completedQuery := s.db.WithContext(ctx).Model(&Log{})
-		completedQuery = s.applyFilters(completedQuery, filters)
-		completedQuery = completedQuery.Where("status IN ?", []string{"success", "error"})
+		// Single query for all completed-request stats: counts, latency, tokens, cost
+		var result struct {
+			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
+			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
+			AvgLatency     sql.NullFloat64 `gorm:"column:avg_latency"`
+			TotalTokens    sql.NullInt64   `gorm:"column:total_tokens"`
+			TotalCost      sql.NullFloat64 `gorm:"column:total_cost"`
+		}
 
-		// Get completed requests count
-		var completedCount int64
-		if err := completedQuery.Count(&completedCount).Error; err != nil {
+		statsQuery := s.ScopedDB(ctx).Model(&Log{})
+		statsQuery = s.applyFilters(statsQuery, filters)
+		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+
+		if err := statsQuery.Select(`
+			COUNT(*) as completed_count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+			AVG(latency) as avg_latency,
+			SUM(total_tokens) as total_tokens,
+			SUM(cost) as total_cost
+		`).Scan(&result).Error; err != nil {
 			return nil, err
 		}
 
+		completedCount := result.CompletedCount.Int64
+		stats.CacheHitRateTotalRequests = &completedCount
 		if completedCount > 0 {
-			// Calculate success rate based on completed requests only
-			successQuery := s.db.WithContext(ctx).Model(&Log{})
-			successQuery = s.applyFilters(successQuery, filters)
-			successQuery = successQuery.Where("status = ?", "success")
-
-			var successCount int64
-			if err := successQuery.Count(&successCount).Error; err != nil {
-				return nil, err
-			}
-			stats.SuccessRate = float64(successCount) / float64(completedCount) * 100
-
-			// Calculate average latency and total tokens in a single query for better performance
-			var result struct {
-				AvgLatency  sql.NullFloat64 `json:"avg_latency"`
-				TotalTokens sql.NullInt64   `json:"total_tokens"`
-				TotalCost   sql.NullFloat64 `json:"total_cost"`
-			}
-
-			statsQuery := s.db.WithContext(ctx).Model(&Log{})
-			statsQuery = s.applyFilters(statsQuery, filters)
-			statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
-
-			if err := statsQuery.Select("AVG(latency) as avg_latency, SUM(total_tokens) as total_tokens, SUM(cost) as total_cost").Scan(&result).Error; err != nil {
-				return nil, err
-			}
-
+			stats.SuccessRate = float64(result.SuccessCount.Int64) / float64(completedCount) * 100
 			if result.AvgLatency.Valid {
 				stats.AverageLatency = result.AvgLatency.Float64
 			}
@@ -339,9 +974,105 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 				stats.TotalCost = result.TotalCost.Float64
 			}
 		}
+
+		// User-facing success rate: count each fallback chain as one user request.
+		// A chain is identified by the original request (fallback_index=0); any successful
+		// attempt (original or fallback) makes the whole chain a success.
+		// When scoped to a specific parent request, root rows are excluded by definition
+		// (they have parent_request_id = NULL), so fall back to the per-attempt success rate.
+		if filters.ParentRequestID != "" {
+			stats.UserFacingSuccessRate = stats.SuccessRate
+		} else {
+			var userFacingResult struct {
+				TotalUserRequests      sql.NullInt64 `gorm:"column:total_user_requests"`
+				SuccessfulUserRequests sql.NullInt64 `gorm:"column:successful_user_requests"`
+			}
+			userFacingQuery := s.ScopedDB(ctx).Model(&Log{})
+			userFacingQuery = s.applyFilters(userFacingQuery, filters)
+			// Scope to root rows only so denominator and numerator are drawn from the same population.
+			// A chain is successful if the root itself succeeded or any of its fallbacks succeeded.
+			userFacingQuery = userFacingQuery.Where("fallback_index = ?", 0).Where("status IN ?", []string{"success", "error"})
+			// Use a LEFT JOIN instead of a correlated EXISTS subquery: the inner set is computed
+			// once and hash-joined, reducing complexity from O(N×M) to O(N+M).
+			// The inner subquery is bounded by the same time window as the outer query for
+			// performance — an unbounded scan of the full logs table is too expensive.
+			// Known tradeoff: fallbacks that complete outside the time window boundary will be
+			// missed, slightly under-counting success at the edges.
+			innerJoin := `LEFT JOIN (
+				SELECT DISTINCT parent_request_id
+				FROM logs
+				WHERE status = 'success' AND parent_request_id IS NOT NULL`
+			var innerArgs []interface{}
+			if filters.StartTime != nil {
+				innerJoin += " AND timestamp >= ?"
+				innerArgs = append(innerArgs, *filters.StartTime)
+			}
+			if filters.EndTime != nil {
+				innerJoin += " AND timestamp <= ?"
+				innerArgs = append(innerArgs, *filters.EndTime)
+			}
+			innerJoin += `) fallback_success ON fallback_success.parent_request_id = logs.id`
+			userFacingQuery = userFacingQuery.Joins(innerJoin, innerArgs...)
+			if err := userFacingQuery.Select(`
+				COUNT(DISTINCT logs.id) as total_user_requests,
+				COUNT(DISTINCT CASE
+					WHEN logs.status = 'success' OR fallback_success.parent_request_id IS NOT NULL THEN logs.id
+					ELSE NULL
+				END) as successful_user_requests
+			`).Scan(&userFacingResult).Error; err != nil {
+				return nil, err
+			}
+			stats.UserFacingTotalRequests = userFacingResult.TotalUserRequests.Int64
+			if userFacingResult.TotalUserRequests.Int64 > 0 {
+				stats.UserFacingSuccessRate = float64(userFacingResult.SuccessfulUserRequests.Int64) / float64(userFacingResult.TotalUserRequests.Int64) * 100
+			}
+		}
+	}
+
+	// Count cache hits by hit_type from cache_debug JSON
+	cacheBase := s.ScopedDB(ctx).Model(&Log{}).Where("status IN ?", []string{"success", "error"})
+	direct, semantic, err := s.aggregateCacheHits(ctx, cacheBase, filters)
+	if err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: failed to aggregate cache-hit stats, skipping: %s", err))
+	} else if direct != nil || semantic != nil {
+		stats.DirectCacheHits = direct
+		stats.SemanticCacheHits = semantic
 	}
 
 	return stats, nil
+}
+
+// aggregateCacheHits counts direct and semantic cache hits from the cache_debug JSON column.
+// It applies the given base query (already scoped to the right table) plus filters.
+func (s *RDBLogStore) aggregateCacheHits(ctx context.Context, base *gorm.DB, filters SearchFilters) (*int64, *int64, error) {
+	var result struct {
+		DirectHits   sql.NullInt64 `gorm:"column:direct_hits"`
+		SemanticHits sql.NullInt64 `gorm:"column:semantic_hits"`
+	}
+	q := s.applyFilters(base, filters)
+	if s.db.Dialector.Name() == "postgres" {
+		q = q.Where("cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$'")
+		if err := q.Select(
+			`SUM(CASE WHEN substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
+				`SUM(CASE WHEN substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"') = 'semantic' THEN 1 ELSE 0 END) AS semantic_hits`,
+		).Scan(&result).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
+		}
+	} else {
+		q = q.Where("cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug)")
+		if err := q.Select(
+			`SUM(CASE WHEN json_extract(cache_debug, '$.hit_type') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
+				`SUM(CASE WHEN json_extract(cache_debug, '$.hit_type') = 'semantic' THEN 1 ELSE 0 END) AS semantic_hits`,
+		).Scan(&result).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
+		}
+	}
+	if !result.DirectHits.Valid && !result.SemanticHits.Valid {
+		return nil, nil, nil
+	}
+	direct := result.DirectHits.Int64
+	semantic := result.SemanticHits.Int64
+	return &direct, &semantic, nil
 }
 
 // GetHistogram returns time-bucketed request counts for the given filters.
@@ -349,12 +1080,15 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	// Determine database type for SQL syntax
 	dialect := s.db.Dialector.Name()
 
 	// Build query with filters
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 
@@ -472,10 +1206,13 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	dialect := s.db.Dialector.Name()
 
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	// Only count completed requests for token stats
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
@@ -485,6 +1222,7 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 		PromptTokens     int64 `gorm:"column:prompt_tokens"`
 		CompletionTokens int64 `gorm:"column:completion_tokens"`
 		TotalTokens      int64 `gorm:"column:total_tokens"`
+		CachedReadTokens int64 `gorm:"column:cached_read_tokens"`
 	}
 
 	var selectClause string
@@ -494,21 +1232,24 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
 			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens
+			COALESCE(SUM(total_tokens), 0) as total_tokens,
+			COALESCE(SUM(cached_read_tokens), 0) as cached_read_tokens
 		`, bucketSizeSeconds, bucketSizeSeconds)
 	case "mysql":
 		selectClause = fmt.Sprintf(`
 			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
 			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens
+			COALESCE(SUM(total_tokens), 0) as total_tokens,
+			COALESCE(SUM(cached_read_tokens), 0) as cached_read_tokens
 		`, bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		selectClause = fmt.Sprintf(`
 			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
 			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens
+			COALESCE(SUM(total_tokens), 0) as total_tokens,
+			COALESCE(SUM(cached_read_tokens), 0) as cached_read_tokens
 		`, bucketSizeSeconds, bucketSizeSeconds)
 	}
 
@@ -525,16 +1266,19 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 		PromptTokens     int64
 		CompletionTokens int64
 		TotalTokens      int64
+		CachedReadTokens int64
 	})
 	for _, r := range results {
 		resultMap[r.BucketTimestamp] = struct {
 			PromptTokens     int64
 			CompletionTokens int64
 			TotalTokens      int64
+			CachedReadTokens int64
 		}{
 			PromptTokens:     r.PromptTokens,
 			CompletionTokens: r.CompletionTokens,
 			TotalTokens:      r.TotalTokens,
+			CachedReadTokens: r.CachedReadTokens,
 		}
 	}
 
@@ -550,6 +1294,7 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 				PromptTokens:     r.PromptTokens,
 				CompletionTokens: r.CompletionTokens,
 				TotalTokens:      r.TotalTokens,
+				CachedReadTokens: r.CachedReadTokens,
 			}
 		}
 		return &TokenHistogramResult{
@@ -567,13 +1312,11 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 				PromptTokens:     data.PromptTokens,
 				CompletionTokens: data.CompletionTokens,
 				TotalTokens:      data.TotalTokens,
+				CachedReadTokens: data.CachedReadTokens,
 			}
 		} else {
 			buckets[i] = TokenHistogramBucket{
-				Timestamp:        time.Unix(ts, 0).UTC(),
-				PromptTokens:     0,
-				CompletionTokens: 0,
-				TotalTokens:      0,
+				Timestamp: time.Unix(ts, 0).UTC(),
 			}
 		}
 	}
@@ -589,10 +1332,13 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getCostHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	dialect := s.db.Dialector.Name()
 
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	// Only count completed requests with cost
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
@@ -708,10 +1454,13 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getModelHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	dialect := s.db.Dialector.Name()
 
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 
@@ -854,41 +1603,91 @@ func computePercentile(sorted []float64, p float64) float64 {
 }
 
 // GetLatencyHistogram returns time-bucketed latency percentiles (avg, p90, p95, p99) for the given filters.
+// PostgreSQL uses database-level percentile_cont aggregation (returns 1 row per bucket).
+// MySQL and SQLite fall back to Go-based percentile computation (loads individual latency values).
 func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	dialect := s.db.Dialector.Name()
 
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
+	switch dialect {
+	case "sqlite":
+		return s.getLatencyHistogramSQLite(ctx, baseQuery, filters, bucketSizeSeconds)
+	case "mysql":
+		return s.getLatencyHistogramMySQL(ctx, baseQuery, filters, bucketSizeSeconds)
+	default:
+		return s.getLatencyHistogramPercentileCont(ctx, baseQuery, filters, bucketSizeSeconds)
+	}
+}
+
+// getLatencyHistogramPercentileCont uses database-level percentile_cont for PostgreSQL.
+// Returns 1 aggregated row per bucket instead of loading all individual latency values.
+func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		AvgLatency      sql.NullFloat64 `gorm:"column:avg_latency"`
+		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
+		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
+		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		TotalRequests   int64           `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+		AVG(latency) as avg_latency,
+		percentile_cont(0.90) WITHIN GROUP (ORDER BY latency) as p90_latency,
+		percentile_cont(0.95) WITHIN GROUP (ORDER BY latency) as p95_latency,
+		percentile_cont(0.99) WITHIN GROUP (ORDER BY latency) as p99_latency,
+		COUNT(*) as total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
+	}
+
+	computedBuckets := make(map[int64]LatencyHistogramBucket, len(results))
+	var orderedKeys []int64
+	for _, r := range results {
+		orderedKeys = append(orderedKeys, r.BucketTimestamp)
+		computedBuckets[r.BucketTimestamp] = LatencyHistogramBucket{
+			Timestamp:     time.Unix(r.BucketTimestamp, 0).UTC(),
+			AvgLatency:    r.AvgLatency.Float64,
+			P90Latency:    r.P90Latency.Float64,
+			P95Latency:    r.P95Latency.Float64,
+			P99Latency:    r.P99Latency.Float64,
+			TotalRequests: r.TotalRequests,
+		}
+	}
+
+	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
+}
+
+// getLatencyHistogramSQLite uses Go-based percentile computation for SQLite
+// which lacks percentile_cont.
+func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
 		Latency         float64 `gorm:"column:latency"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(
-			`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency`,
-			bucketSizeSeconds, bucketSizeSeconds,
-		)
-	case "mysql":
-		selectClause = fmt.Sprintf(
-			`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency`,
-			bucketSizeSeconds, bucketSizeSeconds,
-		)
-	default:
-		selectClause = fmt.Sprintf(
-			`CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp, latency`,
-			bucketSizeSeconds, bucketSizeSeconds,
-		)
-	}
+	selectClause := fmt.Sprintf(
+		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency`,
+		bucketSizeSeconds, bucketSizeSeconds,
+	)
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -897,7 +1696,6 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
 	}
 
-	// Group latency values by bucket (already sorted by latency due to ORDER BY)
 	type bucketData struct {
 		latencies []float64
 	}
@@ -914,7 +1712,6 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 		bd.latencies = append(bd.latencies, r.Latency)
 	}
 
-	// Compute stats per bucket
 	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
 	for ts, bd := range bucketMap {
 		var sum float64
@@ -931,11 +1728,69 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 		}
 	}
 
-	// Generate all bucket timestamps for the time range
+	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
+}
+
+// getLatencyHistogramMySQL uses Go-based percentile computation for MySQL
+// which lacks percentile_cont.
+func (s *RDBLogStore) getLatencyHistogramMySQL(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		Latency         float64 `gorm:"column:latency"`
+	}
+
+	selectClause := fmt.Sprintf(
+		`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency`,
+		bucketSizeSeconds, bucketSizeSeconds,
+	)
+
+	if err := baseQuery.
+		Select(selectClause).
+		Order("bucket_timestamp ASC, latency ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
+	}
+
+	type bucketData struct {
+		latencies []float64
+	}
+	bucketMap := make(map[int64]*bucketData)
+	var orderedKeys []int64
+
+	for _, r := range results {
+		bd, exists := bucketMap[r.BucketTimestamp]
+		if !exists {
+			bd = &bucketData{}
+			bucketMap[r.BucketTimestamp] = bd
+			orderedKeys = append(orderedKeys, r.BucketTimestamp)
+		}
+		bd.latencies = append(bd.latencies, r.Latency)
+	}
+
+	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
+	for ts, bd := range bucketMap {
+		var sum float64
+		for _, v := range bd.latencies {
+			sum += v
+		}
+		computedBuckets[ts] = LatencyHistogramBucket{
+			Timestamp:     time.Unix(ts, 0).UTC(),
+			AvgLatency:    sum / float64(len(bd.latencies)),
+			P90Latency:    computePercentile(bd.latencies, 0.90),
+			P95Latency:    computePercentile(bd.latencies, 0.95),
+			P99Latency:    computePercentile(bd.latencies, 0.99),
+			TotalRequests: int64(len(bd.latencies)),
+		}
+	}
+
+	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
+}
+
+// buildLatencyHistogramResult fills in bucket timestamps for the time range and returns the result.
+func (s *RDBLogStore) buildLatencyHistogramResult(computedBuckets map[int64]LatencyHistogramBucket, orderedKeys []int64, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
 
 	if len(allTimestamps) == 0 {
-		// No time range: return what we have sorted by timestamp
 		buckets := make([]LatencyHistogramBucket, 0, len(computedBuckets))
 		for _, ts := range orderedKeys {
 			buckets = append(buckets, computedBuckets[ts])
@@ -946,7 +1801,6 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 		}, nil
 	}
 
-	// Fill in all buckets, using zeros for missing timestamps
 	buckets := make([]LatencyHistogramBucket, len(allTimestamps))
 	for i, ts := range allTimestamps {
 		if bucket, exists := computedBuckets[ts]; exists {
@@ -964,15 +1818,467 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 	}, nil
 }
 
+// GetModelRankings returns models ranked by usage with trend comparison to the previous period.
+// Uses the same fresh-aggregate matview gate as GetStats: short windows go to
+// the raw table because mv_logs_hourly rounds the window out to full hour
+// buckets, which visibly inflates rankings against the raw-path stats and
+// cost-histogram totals shown on the same dashboard.
+func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+		return s.getModelRankingsFromMatView(ctx, filters)
+	}
+	selectClause := `
+		model,
+		provider,
+		COUNT(*) as total_requests,
+		SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+		SUM(total_tokens) as total_tokens,
+		COALESCE(SUM(cost), 0) as total_cost,
+		AVG(latency) as avg_latency
+	`
+
+	// Query current period
+	currentQuery := s.ScopedDB(ctx).Model(&Log{})
+	currentQuery = s.applyFilters(currentQuery, filters)
+	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where("model IS NOT NULL AND model != ''")
+
+	var currentResults []struct {
+		Model         string          `gorm:"column:model"`
+		Provider      string          `gorm:"column:provider"`
+		TotalRequests int64           `gorm:"column:total_requests"`
+		SuccessCount  int64           `gorm:"column:success_count"`
+		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+		AvgLatency    sql.NullFloat64 `gorm:"column:avg_latency"`
+	}
+
+	if err := currentQuery.
+		Select(selectClause).
+		Group("model, provider").
+		Order("total_requests DESC").
+		Limit(defaultMaxRankingsLimit).
+		Find(&currentResults).Error; err != nil {
+		return nil, fmt.Errorf("failed to get model rankings: %w", err)
+	}
+
+	// Query previous period for trend comparison
+	type modelProviderKey struct {
+		provider string
+		model    string
+	}
+	prevMap := make(map[modelProviderKey]ModelRankingEntry)
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+
+		prevQuery := s.ScopedDB(ctx).Model(&Log{})
+		prevQuery = s.applyFilters(prevQuery, prevFilters)
+		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where("model IS NOT NULL AND model != ''")
+
+		// Only fetch previous-period data for (model, provider) pairs that
+		// appear in the current ranking so trend computation is accurate even
+		// when the previous period has more groups than the limit.
+		if len(currentResults) > 0 {
+			pairConditions := make([]string, len(currentResults))
+			pairArgs := make([]interface{}, 0, len(currentResults)*2)
+			for i, r := range currentResults {
+				pairConditions[i] = "(model = ? AND provider = ?)"
+				pairArgs = append(pairArgs, r.Model, r.Provider)
+			}
+			prevQuery = prevQuery.Where(strings.Join(pairConditions, " OR "), pairArgs...)
+		}
+
+		var prevResults []struct {
+			Model         string          `gorm:"column:model"`
+			Provider      string          `gorm:"column:provider"`
+			TotalRequests int64           `gorm:"column:total_requests"`
+			SuccessCount  int64           `gorm:"column:success_count"`
+			TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+			TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+			AvgLatency    sql.NullFloat64 `gorm:"column:avg_latency"`
+		}
+
+		if err := prevQuery.
+			Select(selectClause).
+			Group("model, provider").
+			Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period model rankings: %w", err)
+		}
+
+		for _, r := range prevResults {
+			key := modelProviderKey{provider: r.Provider, model: r.Model}
+			prevMap[key] = ModelRankingEntry{
+				Model:         r.Model,
+				Provider:      r.Provider,
+				TotalRequests: r.TotalRequests,
+				TotalTokens:   r.TotalTokens.Int64,
+				TotalCost:     r.TotalCost.Float64,
+				AvgLatency:    r.AvgLatency.Float64,
+			}
+		}
+	}
+
+	// Build results with trends
+	rankings := make([]ModelRankingWithTrend, len(currentResults))
+	for i, r := range currentResults {
+		entry := ModelRankingEntry{
+			Model:         r.Model,
+			Provider:      r.Provider,
+			TotalRequests: r.TotalRequests,
+			SuccessCount:  r.SuccessCount,
+			TotalTokens:   r.TotalTokens.Int64,
+			TotalCost:     r.TotalCost.Float64,
+			AvgLatency:    r.AvgLatency.Float64,
+		}
+		if r.TotalRequests > 0 {
+			entry.SuccessRate = float64(r.SuccessCount) / float64(r.TotalRequests) * 100
+		}
+
+		var trend ModelRankingTrend
+		key := modelProviderKey{provider: r.Provider, model: r.Model}
+		if prev, ok := prevMap[key]; ok && prev.TotalRequests > 0 {
+			trend.HasPreviousPeriod = true
+			trend.RequestsTrend = pctChange(float64(prev.TotalRequests), float64(r.TotalRequests))
+			trend.TokensTrend = pctChange(float64(prev.TotalTokens), float64(r.TotalTokens.Int64))
+			trend.CostTrend = pctChange(prev.TotalCost, r.TotalCost.Float64)
+			if prev.AvgLatency > 0 {
+				trend.LatencyTrend = pctChange(prev.AvgLatency, r.AvgLatency.Float64)
+			}
+		}
+
+		rankings[i] = ModelRankingWithTrend{
+			ModelRankingEntry: entry,
+			Trend:             trend,
+		}
+	}
+
+	return &ModelRankingResult{Rankings: rankings}, nil
+}
+
+// GetUserRankings returns users ranked by usage with trend comparison to the previous period.
+// Uses the same fresh-aggregate matview gate as GetStats: short windows go to
+// the raw table because mv_logs_hourly rounds the window out to full hour
+// buckets, which visibly inflates rankings against the raw-path stats and
+// cost-histogram totals shown on the same dashboard.
+func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+		return s.getUserRankingsFromMatView(ctx, filters)
+	}
+	selectClause := `
+		user_id,
+		COUNT(*) as total_requests,
+		SUM(total_tokens) as total_tokens,
+		COALESCE(SUM(cost), 0) as total_cost
+	`
+
+	// Query current period
+	currentQuery := s.ScopedDB(ctx).Model(&Log{})
+	currentQuery = s.applyFilters(currentQuery, filters)
+	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where("user_id IS NOT NULL AND user_id != ''")
+
+	var currentResults []struct {
+		UserID        string          `gorm:"column:user_id"`
+		TotalRequests int64           `gorm:"column:total_requests"`
+		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+	}
+
+	if err := currentQuery.
+		Select(selectClause).
+		Group("user_id").
+		Order("total_requests DESC").
+		Limit(defaultMaxRankingsLimit).
+		Find(&currentResults).Error; err != nil {
+		return nil, fmt.Errorf("failed to get user rankings: %w", err)
+	}
+
+	// Query previous period for trend comparison
+	prevMap := make(map[string]UserRankingEntry)
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+
+		prevQuery := s.ScopedDB(ctx).Model(&Log{})
+		prevQuery = s.applyFilters(prevQuery, prevFilters)
+		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where("user_id IS NOT NULL AND user_id != ''")
+
+		if len(currentResults) > 0 {
+			userIDs := make([]string, len(currentResults))
+			for i, r := range currentResults {
+				userIDs[i] = r.UserID
+			}
+			prevQuery = prevQuery.Where("user_id IN ?", userIDs)
+		}
+
+		var prevResults []struct {
+			UserID        string          `gorm:"column:user_id"`
+			TotalRequests int64           `gorm:"column:total_requests"`
+			TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+			TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+		}
+
+		if err := prevQuery.
+			Select(selectClause).
+			Group("user_id").
+			Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period user rankings: %w", err)
+		}
+
+		for _, r := range prevResults {
+			prevMap[r.UserID] = UserRankingEntry{
+				UserID:        r.UserID,
+				TotalRequests: r.TotalRequests,
+				TotalTokens:   r.TotalTokens.Int64,
+				TotalCost:     r.TotalCost.Float64,
+			}
+		}
+	}
+
+	// Build results with trends
+	rankings := make([]UserRankingWithTrend, len(currentResults))
+	for i, r := range currentResults {
+		entry := UserRankingEntry{
+			UserID:        r.UserID,
+			TotalRequests: r.TotalRequests,
+			TotalTokens:   r.TotalTokens.Int64,
+			TotalCost:     r.TotalCost.Float64,
+		}
+
+		var trend UserRankingTrend
+		if prev, ok := prevMap[r.UserID]; ok && prev.TotalRequests > 0 {
+			trend.HasPreviousPeriod = true
+			trend.RequestsTrend = pctChange(float64(prev.TotalRequests), float64(r.TotalRequests))
+			trend.TokensTrend = pctChange(float64(prev.TotalTokens), float64(r.TotalTokens.Int64))
+			trend.CostTrend = pctChange(prev.TotalCost, r.TotalCost.Float64)
+		}
+
+		rankings[i] = UserRankingWithTrend{
+			UserRankingEntry: entry,
+			Trend:            trend,
+		}
+	}
+
+	return &UserRankingResult{Rankings: rankings}, nil
+}
+
+// GetDimensionRankings returns entities ranked by usage with trend comparison, grouped by the given dimension.
+func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+	idCol, nameCol, ok := DimensionColumnDef(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
+	}
+
+	// Multi-valued team / business-unit dimensions fan out over the JSON array
+	// (with scalar fallback for old / VK-team logs) so a request credits every
+	// team/BU it touches. Postgres-only; this forces the live path — the
+	// matview-accelerated equivalent is deferred to the partitioning work.
+	fanoutFrom := ""
+	if s.db.Dialector.Name() == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(idCol); isFanout {
+			fanoutFrom = f
+			idCol, nameCol = "dim_id", "dim_name"
+		}
+	}
+	baseTable := func(q *gorm.DB) *gorm.DB {
+		if fanoutFrom != "" {
+			return q.Table(fanoutFrom)
+		}
+		return q.Model(&Log{})
+	}
+
+	// Fresh-aggregate gate (not bare canUseMatView): short windows go to the
+	// raw table because mv_logs_hourly rounds the window out to full hour
+	// buckets, which visibly inflates rankings against the raw-path stats and
+	// cost-histogram totals shown on the same dashboard.
+	if fanoutFrom == "" && s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+		return s.getDimensionRankingsFromMatView(ctx, filters, dimension)
+	}
+
+	var nameExpr string
+	if nameCol != "" {
+		nameExpr = fmt.Sprintf("MAX(%s) as name", nameCol)
+	} else {
+		nameExpr = "'' as name"
+	}
+
+	selectClause := fmt.Sprintf(`
+		%s as id,
+		%s,
+		COUNT(*) as total_requests,
+		SUM(total_tokens) as total_tokens,
+		COALESCE(SUM(cost), 0) as total_cost
+	`, idCol, nameExpr)
+
+	currentQuery := baseTable(s.ScopedDB(ctx))
+	currentQuery = s.applyFilters(currentQuery, filters)
+	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+
+	var currentResults []struct {
+		ID            string          `gorm:"column:id"`
+		Name          string          `gorm:"column:name"`
+		TotalRequests int64           `gorm:"column:total_requests"`
+		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+	}
+
+	if err := currentQuery.
+		Select(selectClause).
+		Group(idCol).
+		Order("total_requests DESC").
+		Limit(defaultMaxRankingsLimit).
+		Find(&currentResults).Error; err != nil {
+		return nil, fmt.Errorf("failed to get dimension rankings for %s: %w", dimension, err)
+	}
+
+	if len(currentResults) == 0 {
+		return &DimensionRankingResult{
+			Rankings:  []DimensionRankingWithTrend{},
+			Dimension: dimension,
+		}, nil
+	}
+
+	// For fan-out dimensions the per-row counts credit a request to every
+	// dimension value it touches, so their sum overstates real traffic. Compute
+	// both requestCounts in one pass over the same fanned population (identical
+	// predicate chain) so actual <= attributed always holds — summing the
+	// (limit-capped) rankings client-side could undercount attributed below it.
+	var requestCounts struct {
+		ActualRequests     int64 `gorm:"column:actual_requests"`
+		AttributedRequests int64 `gorm:"column:attributed_requests"`
+	}
+	if fanoutFrom != "" {
+		requestsCountsQuery := baseTable(s.ScopedDB(ctx))
+		requestsCountsQuery = s.applyFilters(requestsCountsQuery, filters)
+		requestsCountsQuery = requestsCountsQuery.Where("status IN ?", []string{"success", "error"})
+		requestsCountsQuery = requestsCountsQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+		if err := requestsCountsQuery.
+			Select("COUNT(DISTINCT id) as actual_requests, COUNT(*) as attributed_requests").
+			Scan(&requestCounts).Error; err != nil {
+			return nil, fmt.Errorf("failed to get dimension ranking totals for %s: %w", dimension, err)
+		}
+	}
+
+	prevMap := make(map[string]DimensionRankingEntry)
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+
+		prevQuery := baseTable(s.ScopedDB(ctx))
+		prevQuery = s.applyFilters(prevQuery, prevFilters)
+		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+
+		if len(currentResults) > 0 {
+			ids := make([]string, len(currentResults))
+			for i, r := range currentResults {
+				ids[i] = r.ID
+			}
+			prevQuery = prevQuery.Where(fmt.Sprintf("%s IN ?", idCol), ids)
+		}
+
+		var prevResults []struct {
+			ID            string          `gorm:"column:id"`
+			TotalRequests int64           `gorm:"column:total_requests"`
+			TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+			TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+		}
+
+		prevSelect := fmt.Sprintf(`
+			%s as id,
+			COUNT(*) as total_requests,
+			SUM(total_tokens) as total_tokens,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, idCol)
+
+		if err := prevQuery.
+			Select(prevSelect).
+			Group(idCol).
+			Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		}
+
+		for _, r := range prevResults {
+			prevMap[r.ID] = DimensionRankingEntry{
+				ID:            r.ID,
+				TotalRequests: r.TotalRequests,
+				TotalTokens:   r.TotalTokens.Int64,
+				TotalCost:     r.TotalCost.Float64,
+			}
+		}
+	}
+
+	rankings := make([]DimensionRankingWithTrend, len(currentResults))
+	for i, r := range currentResults {
+		entry := DimensionRankingEntry{
+			ID:            r.ID,
+			Name:          r.Name,
+			TotalRequests: r.TotalRequests,
+			TotalTokens:   r.TotalTokens.Int64,
+			TotalCost:     r.TotalCost.Float64,
+		}
+
+		var trend DimensionRankingTrend
+		if prev, exists := prevMap[r.ID]; exists && prev.TotalRequests > 0 {
+			trend.HasPreviousPeriod = true
+			trend.RequestsTrend = pctChange(float64(prev.TotalRequests), float64(r.TotalRequests))
+			trend.TokensTrend = pctChange(float64(prev.TotalTokens), float64(r.TotalTokens.Int64))
+			trend.CostTrend = pctChange(prev.TotalCost, r.TotalCost.Float64)
+		}
+
+		rankings[i] = DimensionRankingWithTrend{
+			DimensionRankingEntry: entry,
+			Trend:                 trend,
+		}
+	}
+
+	return &DimensionRankingResult{
+		Rankings:                rankings,
+		Dimension:               dimension,
+		TotalActualRequests:     requestCounts.ActualRequests,
+		TotalAttributedRequests: requestCounts.AttributedRequests,
+	}, nil
+}
+
+// pctChange computes the percentage change from old to new.
+func pctChange(old, new float64) float64 {
+	if old == 0 {
+		return 0
+	}
+	return (new - old) / old * 100
+}
+
 // GetProviderCostHistogram returns time-bucketed cost data with provider breakdown for the given filters.
 func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getProviderCostHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	dialect := s.db.Dialector.Name()
 
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
@@ -1077,10 +2383,13 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getProviderTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	dialect := s.db.Dialector.Name()
 
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 
@@ -1195,42 +2504,113 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 }
 
 // GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters.
+// PostgreSQL uses database-level percentile_cont aggregation.
+// MySQL and SQLite fall back to Go-based percentile computation.
 func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getProviderLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 
 	dialect := s.db.Dialector.Name()
 
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
+	switch dialect {
+	case "sqlite":
+		return s.getProviderLatencyHistogramSQLite(ctx, baseQuery, filters, bucketSizeSeconds)
+	case "mysql":
+		return s.getProviderLatencyHistogramMySQL(ctx, baseQuery, filters, bucketSizeSeconds)
+	default:
+		return s.getProviderLatencyHistogramPercentileCont(ctx, baseQuery, filters, bucketSizeSeconds)
+	}
+}
+
+// getProviderLatencyHistogramPercentileCont uses database-level percentile_cont for PostgreSQL.
+// Returns 1 aggregated row per (bucket, provider) instead of loading all individual latency values.
+func (s *RDBLogStore) getProviderLatencyHistogramPercentileCont(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		Provider        string          `gorm:"column:provider"`
+		AvgLatency      sql.NullFloat64 `gorm:"column:avg_latency"`
+		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
+		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
+		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		TotalRequests   int64           `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+		provider,
+		AVG(latency) as avg_latency,
+		percentile_cont(0.90) WITHIN GROUP (ORDER BY latency) as p90_latency,
+		percentile_cont(0.95) WITHIN GROUP (ORDER BY latency) as p95_latency,
+		percentile_cont(0.99) WITHIN GROUP (ORDER BY latency) as p99_latency,
+		COUNT(*) as total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC, provider ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
+	}
+
+	providersSet := make(map[string]bool)
+	computedBuckets := make(map[int64]*ProviderLatencyHistogramBucket)
+	var orderedBuckets []int64
+	seenBuckets := make(map[int64]bool)
+
+	for _, r := range results {
+		providersSet[r.Provider] = true
+		if !seenBuckets[r.BucketTimestamp] {
+			seenBuckets[r.BucketTimestamp] = true
+			orderedBuckets = append(orderedBuckets, r.BucketTimestamp)
+		}
+		stats := ProviderLatencyStats{
+			AvgLatency:    r.AvgLatency.Float64,
+			P90Latency:    r.P90Latency.Float64,
+			P95Latency:    r.P95Latency.Float64,
+			P99Latency:    r.P99Latency.Float64,
+			TotalRequests: r.TotalRequests,
+		}
+		if bucket, exists := computedBuckets[r.BucketTimestamp]; exists {
+			bucket.ByProvider[r.Provider] = stats
+		} else {
+			computedBuckets[r.BucketTimestamp] = &ProviderLatencyHistogramBucket{
+				Timestamp:  time.Unix(r.BucketTimestamp, 0).UTC(),
+				ByProvider: map[string]ProviderLatencyStats{r.Provider: stats},
+			}
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+
+	return s.buildProviderLatencyHistogramResult(computedBuckets, orderedBuckets, providers, filters, bucketSizeSeconds)
+}
+
+// getProviderLatencyHistogramSQLite uses Go-based percentile computation for SQLite
+// which lacks percentile_cont.
+func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
 		Provider        string  `gorm:"column:provider"`
 		Latency         float64 `gorm:"column:latency"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(
-			`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, provider, latency`,
-			bucketSizeSeconds, bucketSizeSeconds,
-		)
-	case "mysql":
-		selectClause = fmt.Sprintf(
-			`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, provider, latency`,
-			bucketSizeSeconds, bucketSizeSeconds,
-		)
-	default:
-		selectClause = fmt.Sprintf(
-			`CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp, provider, latency`,
-			bucketSizeSeconds, bucketSizeSeconds,
-		)
-	}
+	selectClause := fmt.Sprintf(
+		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, provider, latency`,
+		bucketSizeSeconds, bucketSizeSeconds,
+	)
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -1239,7 +2619,6 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
 	}
 
-	// Group latency values by (bucket, provider)
 	type providerBucketKey struct {
 		BucketTimestamp int64
 		Provider        string
@@ -1264,7 +2643,6 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 		providers = append(providers, provider)
 	}
 
-	// Compute stats per (bucket, provider)
 	computedBuckets := make(map[int64]*ProviderLatencyHistogramBucket)
 	for key, latencies := range latencyMap {
 		var sum float64
@@ -1288,6 +2666,82 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 		}
 	}
 
+	return s.buildProviderLatencyHistogramResult(computedBuckets, orderedBuckets, providers, filters, bucketSizeSeconds)
+}
+
+// getProviderLatencyHistogramMySQL uses Go-based percentile computation for MySQL
+// which lacks percentile_cont.
+func (s *RDBLogStore) getProviderLatencyHistogramMySQL(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		Provider        string  `gorm:"column:provider"`
+		Latency         float64 `gorm:"column:latency"`
+	}
+
+	selectClause := fmt.Sprintf(
+		`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, provider, latency`,
+		bucketSizeSeconds, bucketSizeSeconds,
+	)
+
+	if err := baseQuery.
+		Select(selectClause).
+		Order("bucket_timestamp ASC, provider ASC, latency ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
+	}
+
+	type bucketProviderKey struct {
+		BucketTimestamp int64
+		Provider        string
+	}
+	latencyMap := make(map[bucketProviderKey][]float64)
+	providersSet := make(map[string]bool)
+	var orderedBuckets []int64
+	seenBuckets := make(map[int64]bool)
+
+	for _, r := range results {
+		key := bucketProviderKey{r.BucketTimestamp, r.Provider}
+		latencyMap[key] = append(latencyMap[key], r.Latency)
+		providersSet[r.Provider] = true
+		if !seenBuckets[r.BucketTimestamp] {
+			seenBuckets[r.BucketTimestamp] = true
+			orderedBuckets = append(orderedBuckets, r.BucketTimestamp)
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+
+	computedBuckets := make(map[int64]*ProviderLatencyHistogramBucket)
+	for key, latencies := range latencyMap {
+		var sum float64
+		for _, v := range latencies {
+			sum += v
+		}
+		stats := ProviderLatencyStats{
+			AvgLatency:    sum / float64(len(latencies)),
+			P90Latency:    computePercentile(latencies, 0.90),
+			P95Latency:    computePercentile(latencies, 0.95),
+			P99Latency:    computePercentile(latencies, 0.99),
+			TotalRequests: int64(len(latencies)),
+		}
+		if bucket, exists := computedBuckets[key.BucketTimestamp]; exists {
+			bucket.ByProvider[key.Provider] = stats
+		} else {
+			computedBuckets[key.BucketTimestamp] = &ProviderLatencyHistogramBucket{
+				Timestamp:  time.Unix(key.BucketTimestamp, 0).UTC(),
+				ByProvider: map[string]ProviderLatencyStats{key.Provider: stats},
+			}
+		}
+	}
+
+	return s.buildProviderLatencyHistogramResult(computedBuckets, orderedBuckets, providers, filters, bucketSizeSeconds)
+}
+
+// buildProviderLatencyHistogramResult fills in bucket timestamps and returns the result.
+func (s *RDBLogStore) buildProviderLatencyHistogramResult(computedBuckets map[int64]*ProviderLatencyHistogramBucket, orderedBuckets []int64, providers []string, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
 
 	if len(allTimestamps) == 0 {
@@ -1323,6 +2777,348 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 	}, nil
 }
 
+// ---------------------------------------------------------------------------
+// Generic dimension histogram methods
+// ---------------------------------------------------------------------------
+
+// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
+// Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
+func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
+	if !ValidHistogramDimensions[dimension] {
+		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
+	}
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	dimCol := string(dimension)
+	dialect := s.db.Dialector.Name()
+	// Team / business-unit dimensions fan out over the JSON array (scalar
+	// fallback for old / VK-team logs). Postgres-only; forces the live path.
+	// NOTE: under fan-out the per-bucket *total* cost is the attributed total
+	// (≥ real, since a shared request counts toward each of its teams/BUs); the
+	// per-dimension breakdown is exact. Surface it as "attributed" in the UI.
+	fanoutFrom := ""
+	if dialect == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(dimCol); isFanout {
+			fanoutFrom = f
+			dimCol = "dim_id"
+		}
+	}
+	if fanoutFrom == "" && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
+	}
+	baseQuery := s.ScopedDB(ctx)
+	if fanoutFrom != "" {
+		baseQuery = baseQuery.Table(fanoutFrom)
+	} else {
+		baseQuery = baseQuery.Model(&Log{})
+	}
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
+
+	var bucketExpr string
+	switch dialect {
+	case "sqlite":
+		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		DimValue        string  `gorm:"column:dim_value"`
+		Cost            float64 `gorm:"column:cost"`
+	}
+	if err := baseQuery.Select(fmt.Sprintf(`
+		%s AS bucket_timestamp,
+		COALESCE(%s, '') AS dim_value,
+		SUM(cost) AS cost
+	`, bucketExpr, dimCol)).
+		Group(fmt.Sprintf("bucket_timestamp, %s", dimCol)).
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type bucketAgg struct {
+		totalCost   float64
+		byDimension map[string]float64
+	}
+	grouped := make(map[int64]*bucketAgg)
+	dimSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byDimension: make(map[string]float64)}
+			grouped[r.BucketTimestamp] = a
+		}
+		a.totalCost += r.Cost
+		a.byDimension[r.DimValue] += r.Cost
+		dimSet[r.DimValue] = struct{}{}
+	}
+
+	dimValues := sortedStringKeys(dimSet)
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	// If no time range specified, build buckets directly from query results
+	if len(allTimestamps) == 0 {
+		keys := make([]int64, 0, len(grouped))
+		for ts := range grouped {
+			keys = append(keys, ts)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		buckets := make([]DimensionCostHistogramBucket, 0, len(keys))
+		for _, ts := range keys {
+			a := grouped[ts]
+			buckets = append(buckets, DimensionCostHistogramBucket{
+				Timestamp:   time.Unix(ts, 0).UTC(),
+				TotalCost:   a.totalCost,
+				ByDimension: a.byDimension,
+			})
+		}
+		return &DimensionCostHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+	}
+
+	buckets := make([]DimensionCostHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := DimensionCostHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByDimension: make(map[string]float64)}
+		if a, ok := grouped[ts]; ok {
+			b.TotalCost = a.totalCost
+			b.ByDimension = a.byDimension
+		}
+		buckets = append(buckets, b)
+	}
+
+	return &DimensionCostHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+}
+
+// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
+// Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
+func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
+	if !ValidHistogramDimensions[dimension] {
+		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
+	}
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	dimCol := string(dimension)
+	dialect := s.db.Dialector.Name()
+	// Team / business-unit dimensions fan out over the JSON array (scalar
+	// fallback for old / VK-team logs). Postgres-only; forces the live path.
+	fanoutFrom := ""
+	if dialect == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(dimCol); isFanout {
+			fanoutFrom = f
+			dimCol = "dim_id"
+		}
+	}
+	if fanoutFrom == "" && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
+	}
+	baseQuery := s.ScopedDB(ctx)
+	if fanoutFrom != "" {
+		baseQuery = baseQuery.Table(fanoutFrom)
+	} else {
+		baseQuery = baseQuery.Model(&Log{})
+	}
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+
+	var bucketExpr string
+	switch dialect {
+	case "sqlite":
+		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	var results []struct {
+		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
+		DimValue         string `gorm:"column:dim_value"`
+		PromptTokens     int64  `gorm:"column:prompt_tokens"`
+		CompletionTokens int64  `gorm:"column:completion_tokens"`
+		TotalTokens      int64  `gorm:"column:total_tkns"`
+	}
+	if err := baseQuery.Select(fmt.Sprintf(`
+		%s AS bucket_timestamp,
+		COALESCE(%s, '') AS dim_value,
+		COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+		COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(total_tokens), 0) AS total_tkns
+	`, bucketExpr, dimCol)).
+		Group(fmt.Sprintf("bucket_timestamp, %s", dimCol)).
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type dimAgg struct {
+		prompt, completion, total int64
+	}
+	type bucketAgg struct {
+		byDimension map[string]*dimAgg
+	}
+	grouped := make(map[int64]*bucketAgg)
+	dimSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byDimension: make(map[string]*dimAgg)}
+			grouped[r.BucketTimestamp] = a
+		}
+		da, ok := a.byDimension[r.DimValue]
+		if !ok {
+			da = &dimAgg{}
+			a.byDimension[r.DimValue] = da
+		}
+		da.prompt += r.PromptTokens
+		da.completion += r.CompletionTokens
+		da.total += r.TotalTokens
+		dimSet[r.DimValue] = struct{}{}
+	}
+
+	dimValues := sortedStringKeys(dimSet)
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	// If no time range specified, build buckets directly from query results
+	if len(allTimestamps) == 0 {
+		keys := make([]int64, 0, len(grouped))
+		for ts := range grouped {
+			keys = append(keys, ts)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		buckets := make([]DimensionTokenHistogramBucket, 0, len(keys))
+		for _, ts := range keys {
+			a := grouped[ts]
+			b := DimensionTokenHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByDimension: make(map[string]DimensionTokenStats)}
+			for dim, da := range a.byDimension {
+				b.ByDimension[dim] = DimensionTokenStats{
+					PromptTokens:     da.prompt,
+					CompletionTokens: da.completion,
+					TotalTokens:      da.total,
+				}
+			}
+			buckets = append(buckets, b)
+		}
+		return &DimensionTokenHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+	}
+
+	buckets := make([]DimensionTokenHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := DimensionTokenHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByDimension: make(map[string]DimensionTokenStats)}
+		if a, ok := grouped[ts]; ok {
+			for dim, da := range a.byDimension {
+				b.ByDimension[dim] = DimensionTokenStats{
+					PromptTokens:     da.prompt,
+					CompletionTokens: da.completion,
+					TotalTokens:      da.total,
+				}
+			}
+		}
+		buckets = append(buckets, b)
+	}
+
+	return &DimensionTokenHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+}
+
+// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
+// Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
+// The fallback path computes AVG latency only (no percentiles) since percentile_cont is Postgres-specific.
+func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
+	if !ValidHistogramDimensions[dimension] {
+		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
+	}
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getDimensionLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
+	}
+	dimCol := string(dimension)
+	dialect := s.db.Dialector.Name()
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("latency IS NOT NULL")
+
+	var bucketExpr string
+	switch dialect {
+	case "sqlite":
+		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		DimValue        string  `gorm:"column:dim_value"`
+		AvgLatency      float64 `gorm:"column:avg_lat"`
+		TotalRequests   int64   `gorm:"column:total_requests"`
+	}
+	if err := baseQuery.Select(fmt.Sprintf(`
+		%s AS bucket_timestamp,
+		COALESCE(%s, '') AS dim_value,
+		COALESCE(AVG(latency), 0) AS avg_lat,
+		COUNT(*) AS total_requests
+	`, bucketExpr, dimCol)).
+		Group(fmt.Sprintf("bucket_timestamp, %s", dimCol)).
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type bucketAgg struct {
+		byDimension map[string]DimensionLatencyStats
+	}
+	grouped := make(map[int64]*bucketAgg)
+	dimSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byDimension: make(map[string]DimensionLatencyStats)}
+			grouped[r.BucketTimestamp] = a
+		}
+		a.byDimension[r.DimValue] = DimensionLatencyStats{
+			AvgLatency:    r.AvgLatency,
+			TotalRequests: r.TotalRequests,
+		}
+		dimSet[r.DimValue] = struct{}{}
+	}
+
+	dimValues := sortedStringKeys(dimSet)
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	// If no time range specified, build buckets directly from query results
+	if len(allTimestamps) == 0 {
+		keys := make([]int64, 0, len(grouped))
+		for ts := range grouped {
+			keys = append(keys, ts)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		buckets := make([]DimensionLatencyHistogramBucket, 0, len(keys))
+		for _, ts := range keys {
+			a := grouped[ts]
+			buckets = append(buckets, DimensionLatencyHistogramBucket{
+				Timestamp:   time.Unix(ts, 0).UTC(),
+				ByDimension: a.byDimension,
+			})
+		}
+		return &DimensionLatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+	}
+
+	buckets := make([]DimensionLatencyHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := DimensionLatencyHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByDimension: make(map[string]DimensionLatencyStats)}
+		if a, ok := grouped[ts]; ok {
+			b.ByDimension = a.byDimension
+		}
+		buckets = append(buckets, b)
+	}
+
+	return &DimensionLatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+}
+
 // HasLogs checks if there are any logs in the database.
 func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 	var log Log
@@ -1348,6 +3144,20 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	return &log, nil
 }
 
+// IsLogEntryPresent checks if a log entry is present in the database.
+// Here we dont load entire log entry in memory - just check if it exists.
+func (s *RDBLogStore) IsLogEntryPresent(ctx context.Context, id string) (bool, error) {
+	var log Log
+	err := s.db.WithContext(ctx).Select("id").Where("id = ?", id).First(&log).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // FindFirst gets a log entry from the database.
 func (s *RDBLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
 	var log Log
@@ -1369,56 +3179,127 @@ func (s *RDBLogStore) Flush(ctx context.Context, since time.Time) error {
 	return nil
 }
 
+func (s *RDBLogStore) applyLikeFilter(q *gorm.DB, column, search string) *gorm.DB {
+	pattern := "%" + search + "%"
+	if s.db.Dialector.Name() == "postgres" {
+		return q.Where(fmt.Sprintf("%s ILIKE ?", column), pattern)
+	}
+	return q.Where(fmt.Sprintf("%s LIKE ?", column), pattern)
+}
+
 // GetDistinctModels returns all unique non-empty model values using SELECT DISTINCT.
-func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
+// Scoped to recent data to avoid full table scans.
+func (s *RDBLogStore) GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctModelsFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var models []string
-	err := s.db.WithContext(ctx).Model(&Log{}).
-		Where("model IS NOT NULL AND model != ''").
-		Distinct("model").Pluck("model", &models).Error
-	if err != nil {
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("model IS NOT NULL AND model != '' AND timestamp >= ?", cutoff).
+		Distinct("model")
+	if query != "" {
+		q = s.applyLikeFilter(q, "model", query)
+	}
+	if err := q.Order("model ASC").Limit(limit).Pluck("model", &models).Error; err != nil {
 		return nil, fmt.Errorf("failed to get distinct models: %w", err)
 	}
 	return models, nil
 }
 
+// GetDistinctAliases returns all unique non-empty alias values using SELECT DISTINCT.
+// Scoped to recent data to avoid full table scans. Matview path is
+// DAC-aware (see GetDistinctModels).
+// Scoped to recent data to avoid full table scans.
+func (s *RDBLogStore) GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctAliasesFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var aliases []string
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("alias IS NOT NULL AND alias != '' AND timestamp >= ?", cutoff).
+		Distinct("alias")
+	if query != "" {
+		q = s.applyLikeFilter(q, "alias", query)
+	}
+	if err := q.Limit(limit).Pluck("alias", &aliases).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct aliases: %w", err)
+	}
+	return aliases, nil
+}
+
 // allowedKeyPairColumns is a whitelist of column names that can be used in GetDistinctKeyPairs
 // to prevent SQL injection from interpolated column names.
 var allowedKeyPairColumns = map[string]struct{}{
-	"selected_key_id":   {},
-	"selected_key_name": {},
-	"virtual_key_id":    {},
-	"virtual_key_name":  {},
-	"routing_rule_id":   {},
-	"routing_rule_name": {},
+	"selected_key_id":    {},
+	"selected_key_name":  {},
+	"virtual_key_id":     {},
+	"virtual_key_name":   {},
+	"routing_rule_id":    {},
+	"routing_rule_name":  {},
+	"team_id":            {},
+	"team_name":          {},
+	"customer_id":        {},
+	"customer_name":      {},
+	"user_id":            {},
+	"user_name":          {},
+	"business_unit_id":   {},
+	"business_unit_name": {},
 }
 
 // GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
 // idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
-func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
+//
+// Matview path is DAC-aware: each per-dimension matview carries the
+// visibility columns (user_id, team_id, virtual_key_id), so a
+// QueryScope on ctx applies on the matview directly. Until
+// matViewsReady the raw-table fallback (also ScopedDB-aware) serves
+// requests.
+func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		results, served, err := s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol, limit, query)
+		if served {
+			return results, err
+		}
+	}
 	if _, ok := allowedKeyPairColumns[idCol]; !ok {
 		return nil, fmt.Errorf("invalid id column: %s", idCol)
 	}
 	if _, ok := allowedKeyPairColumns[nameCol]; !ok {
 		return nil, fmt.Errorf("invalid name column: %s", nameCol)
 	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var results []KeyPairResult
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	q := s.ScopedDB(ctx).Model(&Log{}).
 		Select(fmt.Sprintf("DISTINCT %s as id, %s as name", idCol, nameCol)).
-		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != ''", idCol, idCol, nameCol, nameCol)).
-		Find(&results).Error
-	if err != nil {
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != '' AND timestamp >= ?", idCol, idCol, nameCol, nameCol), cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, nameCol, query)
+	}
+	if err := q.Order("name ASC").Limit(limit).Find(&results).Error; err != nil {
 		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
 	}
 	return results, nil
 }
 
 // GetDistinctRoutingEngines returns all unique routing engine values from the comma-separated column.
-func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, error) {
+// Scoped to recent data to avoid full table scans. Matview path is
+// DAC-aware (see GetDistinctModels).
+// Scoped to recent data to avoid full table scans.
+func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctRoutingEnginesFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var rawValues []string
-	err := s.db.WithContext(ctx).Model(&Log{}).
-		Where("routing_engines_used IS NOT NULL AND routing_engines_used != ''").
-		Distinct("routing_engines_used").Pluck("routing_engines_used", &rawValues).Error
-	if err != nil {
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("routing_engines_used IS NOT NULL AND routing_engines_used != '' AND timestamp >= ?", cutoff).
+		Distinct("routing_engines_used")
+	if query != "" {
+		q = s.applyLikeFilter(q, "routing_engines_used", query)
+	}
+	if err := q.Pluck("routing_engines_used", &rawValues).Error; err != nil {
 		return nil, fmt.Errorf("failed to get distinct routing engines: %w", err)
 	}
 	// Each row may contain comma-separated values; deduplicate across all rows
@@ -1435,13 +3316,152 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 	for engine := range uniqueEngines {
 		engines = append(engines, engine)
 	}
+	sort.Strings(engines)
+	if len(engines) > limit {
+		engines = engines[:limit]
+	}
 	return engines, nil
+}
+
+// GetDistinctStopReasons returns all unique non-empty stop_reason values using SELECT DISTINCT.
+// Scoped to recent data to avoid full table scans. Matview path is
+// DAC-aware (see GetDistinctModels).
+// Scoped to recent data to avoid full table scans.
+func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctStopReasonsFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var stopReasons []string
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("stop_reason IS NOT NULL AND stop_reason != '' AND timestamp >= ?", cutoff).
+		Distinct("stop_reason")
+	if query != "" {
+		q = s.applyLikeFilter(q, "stop_reason", query)
+	}
+	if err := q.Order("stop_reason ASC").Limit(limit).Pluck("stop_reason", &stopReasons).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct stop reasons: %w", err)
+	}
+	return stopReasons, nil
+}
+
+// metadataSystemKeys are metadata keys added by the system that should be excluded from filter data.
+var metadataSystemKeys = map[string]struct{}{
+	"isAsyncRequest": {},
+}
+
+const (
+	// maxMetadataRows is the maximum number of recent rows to scan for metadata keys.
+	maxMetadataRows = 1000
+	// maxMetadataValuesPerKey caps the number of distinct values collected per metadata key.
+	maxMetadataValuesPerKey = 100
+)
+
+// GetDistinctMetadataKeys returns unique metadata keys and their distinct values from recent logs.
+// It scans a bounded number of recent rows to avoid memory bloat on large tables.
+func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var metadataStrings []string
+	// Guard must match the partial-index predicate so the planner uses the GIN index.
+	var metadataGuard string
+	if s.db.Dialector.Name() == "postgres" {
+		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}' AND timestamp >= ?"
+	} else {
+		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}' AND timestamp >= ?"
+	}
+	err := s.ScopedDB(ctx).Model(&Log{}).
+		Where(metadataGuard, cutoff).
+		Order("timestamp DESC").
+		Limit(maxMetadataRows).
+		Pluck("metadata", &metadataStrings).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get metadata: %w", err)
+	}
+
+	// Collect unique key-value pairs with bounded sizes
+	keyValues := make(map[string]map[string]struct{})
+	for _, raw := range metadataStrings {
+		var parsed map[string]interface{}
+		if err := sonic.UnmarshalString(raw, &parsed); err != nil {
+			continue
+		}
+		for key, val := range parsed {
+			if _, isSystem := metadataSystemKeys[key]; isSystem {
+				continue
+			}
+			if !isValidMetadataKey(key) {
+				continue
+			}
+			if _, ok := keyValues[key]; !ok {
+				keyValues[key] = make(map[string]struct{})
+			}
+			if len(keyValues[key]) >= maxMetadataValuesPerKey {
+				continue
+			}
+			var strVal string
+			switch v := val.(type) {
+			case string:
+				strVal = v
+			case float64:
+				strVal = fmt.Sprint(v)
+			case bool:
+				strVal = fmt.Sprint(v)
+			default:
+				continue
+			}
+			if strVal != "" {
+				keyValues[key][strVal] = struct{}{}
+			}
+		}
+	}
+
+	// Apply search filter on both key names and values
+	if query != "" {
+		lowerQ := strings.ToLower(query)
+		filtered := make(map[string]map[string]struct{})
+		for key, vals := range keyValues {
+			if strings.Contains(strings.ToLower(key), lowerQ) {
+				filtered[key] = vals
+			} else {
+				matchedVals := make(map[string]struct{})
+				for v := range vals {
+					if strings.Contains(strings.ToLower(v), lowerQ) {
+						matchedVals[v] = struct{}{}
+					}
+				}
+				if len(matchedVals) > 0 {
+					filtered[key] = matchedVals
+				}
+			}
+		}
+		keyValues = filtered
+	}
+
+	result := make(map[string][]string, len(keyValues))
+	keys := make([]string, 0, len(keyValues))
+	for key := range keyValues {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if limit > 0 && len(keys) > limit {
+		keys = keys[:limit]
+	}
+	for _, key := range keys {
+		vals := keyValues[key]
+		values := make([]string, 0, len(vals))
+		for v := range vals {
+			values = append(values, v)
+		}
+		sort.Strings(values)
+		result[key] = values
+	}
+	return result, nil
 }
 
 // FindAll finds all log entries from the database.
 func (s *RDBLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
-	if err := s.db.WithContext(ctx).Select(fields).Where(query).Find(&logs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select(fields).Where(query).Limit(defaultMaxQueryLimit).Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}
@@ -1480,7 +3500,7 @@ func (s *RDBLogStore) FindAllDistinct(ctx context.Context, query any, fields ...
 		}
 		db = db.Distinct(args...)
 	}
-	if err := db.Find(&logs).Error; err != nil {
+	if err := db.Limit(defaultMaxQueryLimit).Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}
@@ -1578,7 +3598,18 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	}
 	if filters.ContentSearch != "" {
 		// Search in both arguments and result fields
-		baseQuery = baseQuery.Where("(arguments LIKE ? OR result LIKE ?)", "%"+filters.ContentSearch+"%", "%"+filters.ContentSearch+"%")
+		dialect := s.db.Dialector.Name()
+		if dialect == "postgres" {
+			// Must match idx_mcp_logs_arguments_fts / idx_mcp_logs_result_fts expressions
+			// exactly (incl. the left() cap) so the planner uses the GIN expression indexes.
+			baseQuery = baseQuery.Where(
+				fmt.Sprintf("(to_tsvector('simple', left(arguments, %d)) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', left(result, %d)) @@ plainto_tsquery('simple', ?))", ftsInputCharLimit, ftsInputCharLimit),
+				filters.ContentSearch, filters.ContentSearch,
+			)
+		} else {
+			search := "%" + filters.ContentSearch + "%"
+			baseQuery = baseQuery.Where("(arguments LIKE ? OR result LIKE ?)", search, search)
+		}
 	}
 	return baseQuery
 }
@@ -1586,6 +3617,18 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 // CreateMCPToolLog inserts a new MCP tool log entry into the database.
 func (s *RDBLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error {
 	return s.db.WithContext(ctx).Create(entry).Error
+}
+
+// BatchCreateMCPToolLogsIfNotExists inserts multiple MCP tool log entries in a single transaction.
+// Uses ON CONFLICT DO NOTHING for idempotency.
+func (s *RDBLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(&entries).Error
 }
 
 // FindMCPToolLog retrieves a single MCP tool log entry by its ID.
@@ -1602,7 +3645,12 @@ func (s *RDBLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToolLo
 
 // UpdateMCPToolLog updates an MCP tool log entry in the database.
 func (s *RDBLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
-	tx := s.db.WithContext(ctx).Model(&MCPToolLog{}).Where("id = ?", id).Updates(entry)
+	serializedEntry, err := serializeMCPToolLogUpdateEntry(entry)
+	if err != nil {
+		return err
+	}
+
+	tx := s.db.WithContext(ctx).Model(&MCPToolLog{}).Where("id = ?", id).Updates(serializedEntry)
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -1612,10 +3660,30 @@ func (s *RDBLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any
 	return nil
 }
 
+// serializeMCPToolLogUpdateEntry serializes parsed MCP tool log fields before
+// passing the update payload to GORM. Non-MCPToolLog payloads are returned unchanged.
+func serializeMCPToolLogUpdateEntry(entry any) (any, error) {
+	switch v := entry.(type) {
+	case *MCPToolLog:
+		if err := v.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case MCPToolLog:
+		copyEntry := v
+		if err := copyEntry.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return copyEntry, nil
+	default:
+		return entry, nil
+	}
+}
+
 // SearchMCPToolLogs searches for MCP tool logs in the database.
 func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogSearchFilters, pagination PaginationOptions) (*MCPToolLogSearchResult, error) {
 	var err error
-	baseQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
+	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 
 	// Apply filters
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
@@ -1648,9 +3716,12 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 	var logs []MCPToolLog
 	mainQuery := baseQuery.Order(orderClause)
 
-	if pagination.Limit > 0 {
-		mainQuery = mainQuery.Limit(pagination.Limit)
+	limit := pagination.Limit
+	if limit <= 0 || limit > defaultMaxSearchLimit {
+		limit = defaultMaxSearchLimit
 	}
+	pagination.Limit = limit
+	mainQuery = mainQuery.Limit(limit)
 	if pagination.Offset > 0 {
 		mainQuery = mainQuery.Offset(pagination.Offset)
 	}
@@ -1661,9 +3732,6 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 			return &MCPToolLogSearchResult{
 				Logs:       logs,
 				Pagination: pagination,
-				Stats: MCPToolLogStats{
-					TotalExecutions: totalCount,
-				},
 			}, nil
 		}
 		return nil, err
@@ -1691,70 +3759,50 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 	return &MCPToolLogSearchResult{
 		Logs:       logs,
 		Pagination: pagination,
-		Stats: MCPToolLogStats{
-			TotalExecutions: totalCount,
-		},
-		HasLogs: hasLogs,
+		HasLogs:    hasLogs,
 	}, nil
 }
 
 // GetMCPToolLogStats calculates statistics for MCP tool logs matching the given filters.
 func (s *RDBLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error) {
-	baseQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
-
-	// Apply filters
+	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
 
-	// Get total count
+	// Get total count (includes processing status)
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {
 		return nil, err
 	}
 
-	// Initialize stats
 	stats := &MCPToolLogStats{
 		TotalExecutions: totalCount,
 	}
 
-	// Calculate statistics only if we have data
 	if totalCount > 0 {
-		// Build a completed query (success + error, excluding processing)
-		completedQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
-		completedQuery = s.applyMCPFilters(completedQuery, filters)
-		completedQuery = completedQuery.Where("status IN ?", []string{"success", "error"})
+		// Single query for all completed-execution stats
+		var result struct {
+			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
+			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
+			AvgLatency     sql.NullFloat64 `gorm:"column:avg_latency"`
+			TotalCost      sql.NullFloat64 `gorm:"column:total_cost"`
+		}
 
-		// Get completed executions count
-		var completedCount int64
-		if err := completedQuery.Count(&completedCount).Error; err != nil {
+		statsQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
+		statsQuery = s.applyMCPFilters(statsQuery, filters)
+		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+
+		if err := statsQuery.Select(`
+			COUNT(*) as completed_count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+			AVG(latency) as avg_latency,
+			SUM(cost) as total_cost
+		`).Scan(&result).Error; err != nil {
 			return nil, err
 		}
 
+		completedCount := result.CompletedCount.Int64
 		if completedCount > 0 {
-			// Calculate success rate based on completed executions only
-			successQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
-			successQuery = s.applyMCPFilters(successQuery, filters)
-			successQuery = successQuery.Where("status = ?", "success")
-
-			var successCount int64
-			if err := successQuery.Count(&successCount).Error; err != nil {
-				return nil, err
-			}
-			stats.SuccessRate = float64(successCount) / float64(completedCount) * 100
-
-			// Calculate average latency and total cost
-			var result struct {
-				AvgLatency sql.NullFloat64 `json:"avg_latency"`
-				TotalCost  sql.NullFloat64 `json:"total_cost"`
-			}
-
-			statsQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
-			statsQuery = s.applyMCPFilters(statsQuery, filters)
-			statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
-
-			if err := statsQuery.Select("AVG(latency) as avg_latency, SUM(cost) as total_cost").Scan(&result).Error; err != nil {
-				return nil, err
-			}
-
+			stats.SuccessRate = float64(result.SuccessCount.Int64) / float64(completedCount) * 100
 			if result.AvgLatency.Valid {
 				stats.AverageLatency = result.AvgLatency.Float64
 			}
@@ -1801,37 +3849,263 @@ func (s *RDBLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) err
 }
 
 // GetAvailableToolNames returns all unique tool names from the MCP tool logs.
-func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context) ([]string, error) {
+// Scoped to recent data to avoid full table scans.
+func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var toolNames []string
-	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).Distinct("tool_name").Pluck("tool_name", &toolNames)
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{}).
+		Where("tool_name IS NOT NULL AND tool_name != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "tool_name", query)
+	}
+	result := q.Distinct("tool_name").Limit(limit).Pluck("tool_name", &toolNames)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available tool names: %w", result.Error)
 	}
 	return toolNames, nil
 }
 
-// GetAvailableServerLabels returns all unique server labels from the MCP tool logs.
-func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var serverLabels []string
-	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).Distinct("server_label").Where("server_label != ''").Pluck("server_label", &serverLabels)
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{}).
+		Where("server_label IS NOT NULL AND server_label != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "server_label", query)
+	}
+	result := q.Distinct("server_label").Limit(limit).Pluck("server_label", &serverLabels)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available server labels: %w", result.Error)
 	}
 	return serverLabels, nil
 }
 
-// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs.
-func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error) {
+func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var logs []MCPToolLog
-	result := s.db.WithContext(ctx).
+	q := s.ScopedDB(ctx).
 		Model(&MCPToolLog{}).
 		Select("DISTINCT virtual_key_id, virtual_key_name").
-		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != ''").
-		Find(&logs)
+		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "virtual_key_name", query)
+	}
+	result := q.Limit(limit).Find(&logs)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available virtual keys from MCP logs: %w", result.Error)
 	}
 	return logs, nil
+}
+
+// GetMCPHistogram returns time-bucketed MCP tool call volume for the given filters.
+func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
+	baseQuery = s.applyMCPFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+
+	var results []struct {
+		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
+		Count           int64 `gorm:"column:count"`
+		Success         int64 `gorm:"column:success"`
+		Error           int64 `gorm:"column:error"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			COUNT(*) as count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			COUNT(*) as count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			COUNT(*) as count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get mcp histogram: %w", err)
+	}
+
+	resultMap := make(map[int64]struct {
+		Count   int64
+		Success int64
+		Error   int64
+	})
+	for _, r := range results {
+		resultMap[r.BucketTimestamp] = struct {
+			Count   int64
+			Success int64
+			Error   int64
+		}{Count: r.Count, Success: r.Success, Error: r.Error}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	if len(allTimestamps) == 0 {
+		buckets := make([]MCPHistogramBucket, len(results))
+		for i, r := range results {
+			buckets[i] = MCPHistogramBucket{
+				Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
+				Count:     r.Count,
+				Success:   r.Success,
+				Error:     r.Error,
+			}
+		}
+		return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+	}
+
+	buckets := make([]MCPHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if data, exists := resultMap[ts]; exists {
+			buckets[i] = MCPHistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+				Count:     data.Count,
+				Success:   data.Success,
+				Error:     data.Error,
+			}
+		} else {
+			buckets[i] = MCPHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
+		}
+	}
+
+	return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// GetMCPCostHistogram returns time-bucketed MCP cost data for the given filters.
+func (s *RDBLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
+	baseQuery = s.applyMCPFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		TotalCost       float64 `gorm:"column:total_cost"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get mcp cost histogram: %w", err)
+	}
+
+	resultMap := make(map[int64]float64)
+	for _, r := range results {
+		resultMap[r.BucketTimestamp] = r.TotalCost
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	if len(allTimestamps) == 0 {
+		buckets := make([]MCPCostHistogramBucket, len(results))
+		for i, r := range results {
+			buckets[i] = MCPCostHistogramBucket{
+				Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
+				TotalCost: r.TotalCost,
+			}
+		}
+		return &MCPCostHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+	}
+
+	buckets := make([]MCPCostHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if cost, exists := resultMap[ts]; exists {
+			buckets[i] = MCPCostHistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+				TotalCost: cost,
+			}
+		} else {
+			buckets[i] = MCPCostHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
+		}
+	}
+
+	return &MCPCostHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// GetMCPTopTools returns the top N MCP tools by call count for the given filters.
+func (s *RDBLogStore) GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
+	baseQuery = s.applyMCPFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+
+	var results []struct {
+		ToolName string  `gorm:"column:tool_name"`
+		Count    int64   `gorm:"column:count"`
+		Cost     float64 `gorm:"column:cost"`
+	}
+
+	if err := baseQuery.
+		Select("tool_name, COUNT(*) as count, COALESCE(SUM(cost), 0) as cost").
+		Group("tool_name").
+		Order("count DESC").
+		Limit(limit).
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get mcp top tools: %w", err)
+	}
+
+	tools := make([]MCPTopToolResult, len(results))
+	for i, r := range results {
+		tools[i] = MCPTopToolResult{
+			ToolName: r.ToolName,
+			Count:    r.Count,
+			Cost:     r.Cost,
+		}
+	}
+
+	return &MCPTopToolsResult{Tools: tools}, nil
 }
 
 // CreateAsyncJob creates a new async job record in the database.
@@ -1859,11 +4133,27 @@ func (s *RDBLogStore) UpdateAsyncJob(ctx context.Context, id string, updates map
 
 // DeleteExpiredAsyncJobs deletes async jobs whose expires_at has passed.
 // Only deletes jobs that have a non-null expires_at (i.e., completed or failed jobs).
+// Deletes in batches to avoid long-running transactions that hold row locks.
 func (s *RDBLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, error) {
-	result := s.db.WithContext(ctx).
-		Where("expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC()).
-		Delete(&AsyncJob{})
-	return result.RowsAffected, result.Error
+	now := time.Now().UTC()
+	const batchLimit = 100
+	var totalDeleted int64
+	for {
+		result := s.db.WithContext(ctx).
+			Where("id IN (?)",
+				s.db.Model(&AsyncJob{}).Select("id").
+					Where("expires_at IS NOT NULL AND expires_at < ?", now).
+					Limit(batchLimit),
+			).Delete(&AsyncJob{})
+		if result.Error != nil {
+			return totalDeleted, result.Error
+		}
+		totalDeleted += result.RowsAffected
+		if result.RowsAffected < batchLimit {
+			break
+		}
+	}
+	return totalDeleted, nil
 }
 
 // DeleteStaleAsyncJobs deletes async jobs stuck in "processing" status since before the given time.

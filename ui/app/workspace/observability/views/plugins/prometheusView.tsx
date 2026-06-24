@@ -1,23 +1,24 @@
-"use client";
-
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
-import { PrometheusFormSchema } from "@/lib/types/schemas";
+import { type EnvVar, PrometheusFormSchema } from "@/lib/types/schemas";
+import { toOptionalEnvVarPayload } from "@/lib/utils/envVarForm";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { PrometheusFormFragment } from "../../fragments/prometheusFormFragment";
 
 interface PushGatewayConfig {
-	push_gateway_url?: string;
+	enabled?: boolean;
+	push_gateway_url?: string | EnvVar;
 	job_name?: string;
 	instance_id?: string;
 	push_interval?: number;
 	basic_auth?: {
-		username?: string;
-		password?: string;
+		username?: string | EnvVar;
+		password?: string | EnvVar;
 	};
 }
 
 interface TelemetryConfig {
+	metrics_enabled?: boolean;
 	push_gateway?: PushGatewayConfig;
 }
 
@@ -31,9 +32,11 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 	const currentConfig = useMemo(() => {
 		const telemetryConfig = (selectedPlugin?.config as TelemetryConfig) ?? {};
 		const pushGateway = telemetryConfig.push_gateway ?? {};
+		const metricsEnabled = telemetryConfig.metrics_enabled ?? true;
 		return {
 			...pushGateway,
-			enabled: selectedPlugin?.enabled,
+			metrics_enabled: metricsEnabled,
+			push_gateway_enabled: pushGateway.enabled ?? false,
 		};
 	}, [selectedPlugin]);
 
@@ -43,27 +46,28 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 
 	const handlePrometheusConfigSave = (config: PrometheusFormSchema): Promise<void> => {
 		return new Promise((resolve, reject) => {
-			// Transform the form data to the telemetry plugin's push_gateway config format
 			const pushGatewayConfig: PushGatewayConfig = {
+				enabled: config.push_gateway_enabled,
 				push_gateway_url: config.prometheus_config.push_gateway_url,
 				job_name: config.prometheus_config.job_name,
 				instance_id: config.prometheus_config.instance_id || undefined,
 				push_interval: config.prometheus_config.push_interval,
 			};
 
-			// Add basic auth if both username and password are provided
-			if (config.prometheus_config.basic_auth_username?.trim() && config.prometheus_config.basic_auth_password?.trim()) {
-				pushGatewayConfig.basic_auth = {
-					username: config.prometheus_config.basic_auth_username,
-					password: config.prometheus_config.basic_auth_password,
-				};
+			const username = toOptionalEnvVarPayload(config.prometheus_config.basic_auth_username);
+			const password = toOptionalEnvVarPayload(config.prometheus_config.basic_auth_password);
+			if (username && password) {
+				pushGatewayConfig.basic_auth = { username, password };
 			}
 
+			// Plugin stays loaded as long as the connector exists; the two inner
+			// toggles independently control the /metrics endpoint and push gateway.
 			updatePlugin({
 				name: "telemetry",
 				data: {
-					enabled: config.enabled,
+					enabled: true,
 					config: {
+						metrics_enabled: config.metrics_enabled,
 						push_gateway: pushGatewayConfig,
 					},
 				},
@@ -85,7 +89,13 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<div className="flex w-full flex-col gap-3">
-				<PrometheusFormFragment onSave={handlePrometheusConfigSave} currentConfig={currentConfig} metricsEndpoint={metricsEndpoint} onDelete={onDelete} isDeleting={isDeleting} />
+				<PrometheusFormFragment
+					onSave={handlePrometheusConfigSave}
+					currentConfig={currentConfig}
+					metricsEndpoint={metricsEndpoint}
+					onDelete={onDelete}
+					isDeleting={isDeleting}
+				/>
 			</div>
 		</div>
 	);

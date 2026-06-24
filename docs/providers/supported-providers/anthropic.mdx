@@ -32,6 +32,91 @@ Anthropic has significant structural differences from OpenAI's format. Bifrost p
 **Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, and Image Generation are not supported by the upstream Anthropic API. These return `UnsupportedOperationError`.
 </Note>
 
+## Setup & Configuration
+
+Configure Anthropic as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Anthropic provider dashboard](../../media/provider-dashboard-anthropic.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Anthropic** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Anthropic**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.ANTHROPIC_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-key-1",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Anthropic:
+    return []schemas.Key{{
+        Name:   "anthropic-key-1",
+        Value:  *schemas.NewEnvVar("env.ANTHROPIC_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Use `network_config.beta_header_overrides` when you need to override the default Anthropic beta-header support matrix for a provider.
+
+## Beta Headers
+
+Bifrost automatically manages Anthropic beta headers - detecting required headers from request features and injecting them. Headers are validated per provider to prevent unsupported headers from reaching the upstream API.
+
+| Beta Header | Anthropic | Azure | Vertex | Bedrock | Auto-Injected |
+|---|---|---|---|---|---|
+| `computer-use-2025-01-24` / `computer-use-2025-11-24` | ✅ | ✅ | ✅ | ✅ | ✅ (tool type detection) |
+| `structured-outputs-2025-11-13` | ✅ | ✅ | ❌ | ✅ | ✅ (strict/output_format) |
+| `advanced-tool-use-2025-11-20` | ✅ | ✅ | ❌ | ❌ | ✅ (defer_loading/input_examples/allowed_callers) |
+| `mcp-client-2025-11-20` | ✅ | ✅ | ❌ | ❌ | ✅ (mcp_servers detection) |
+| `prompt-caching-scope-2026-01-05` | ✅ | ✅ | ❌ | ❌ | ✅ (cache_control.scope) |
+| `compact-2026-01-12` | ✅ | ✅ | ✅ | ✅ | ✅ (compaction edit) |
+| `context-management-2025-06-27` | ✅ | ✅ | ✅ | ✅ | ✅ (clear edits) |
+| `files-api-2025-04-14` | ✅ | ✅ | ❌ | ❌ | ✅ (files endpoint) |
+| `interleaved-thinking-2025-05-14` | ✅ | ✅ | ✅ | ✅ | ✅ (thinking enabled/adaptive) |
+| `skills-2025-10-02` | ✅ | ✅ | ❌ | ❌ | Passthrough |
+| `context-1m-2025-08-07` | ✅ | ✅ | ✅ | ✅ | Passthrough |
+| `fast-mode-2026-02-01` | ✅ | ❌ | ❌ | ❌ | ✅ (speed=fast) |
+| `redact-thinking-2026-02-12` | ✅ | ✅ | ❌ | ❌ | Passthrough |
+
+<Note>
+**Passthrough headers** are not auto-injected but are validated and forwarded when set manually via the `anthropic-beta` request header. Unknown headers are forwarded to Anthropic only; for other providers (Vertex, Bedrock, Azure), unknown headers are silently dropped by default to prevent upstream errors.
+
+**Beta header overrides**: You can override the default support per provider via the Beta Headers tab in provider configuration, or by setting `beta_header_overrides` in the provider's `network_config`. See [Beta Header Overrides](/quickstart/gateway/provider-configuration#beta-header-overrides) for details.
+</Note>
+
 ---
 
 # 1. Chat Completions
@@ -139,7 +224,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
         {
             Role: schemas.ChatMessageRoleUser,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("This is cached context"),
                         CacheControl: &schemas.CacheControl{
@@ -154,7 +239,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
         {
             Role: schemas.ChatMessageRoleSystem,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("You are a helpful assistant"),
                         CacheControl: &schemas.CacheControl{
@@ -377,7 +462,7 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
         {
             Role: schemas.ChatMessageRoleUser,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("Answer this question"),
                         CacheControl: &schemas.CacheControl{

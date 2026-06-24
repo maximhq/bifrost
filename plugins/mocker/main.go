@@ -123,9 +123,11 @@ type ErrorResponse struct {
 
 // Latency defines latency simulation settings
 type Latency struct {
-	Min  time.Duration `json:"min"`  // Minimum latency as time.Duration (e.g., 100*time.Millisecond, NOT raw int)
-	Max  time.Duration `json:"max"`  // Maximum latency as time.Duration (e.g., 500*time.Millisecond, NOT raw int)
-	Type string        `json:"type"` // Latency type: "fixed" or "uniform"
+	// Min and Max accept Go duration strings (e.g. "100ms", "1s") or integer
+	// nanosecond values for backward compatibility.
+	Min  schemas.Duration `json:"min"`  // Minimum latency
+	Max  schemas.Duration `json:"max"`  // Maximum latency
+	Type string           `json:"type"` // Latency type: "fixed" or "uniform"
 }
 
 // SizeRange defines request size constraints in bytes
@@ -360,13 +362,13 @@ func validateLatency(latency Latency) error {
 	}
 
 	// Min latency should be non-negative
-	if latency.Min < 0 {
+	if latency.Min.D() < 0 {
 		return fmt.Errorf("minimum latency cannot be negative")
 	}
 
 	// For uniform type, max should be >= min
 	if latency.Type == LatencyTypeUniform {
-		if latency.Max < latency.Min {
+		if latency.Max.D() < latency.Min.D() {
 			return fmt.Errorf("maximum latency (%v) cannot be less than minimum latency (%v)", latency.Max, latency.Min)
 		}
 	}
@@ -491,6 +493,11 @@ func (p *MockerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *MockerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
+}
+
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *MockerPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
 }
 
 // PreLLMHook intercepts requests and applies mocking rules based on configuration
@@ -851,10 +858,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-				Latency:        int64(time.Since(startTime).Milliseconds()),
+				RequestType:            req.RequestType,
+				Provider:               provider,
+				OriginalModelRequested: model,
+				Latency:                int64(time.Since(startTime).Milliseconds()),
 			},
 		}
 	} else if req.RequestType == schemas.ResponsesRequest {
@@ -875,10 +882,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				TotalTokens:  usage.TotalTokens,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesRequest,
-				Provider:       provider,
-				ModelRequested: model,
-				Latency:        int64(time.Since(startTime).Milliseconds()),
+				RequestType:            schemas.ResponsesRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
+				Latency:                int64(time.Since(startTime).Milliseconds()),
 			},
 		}
 	} else if req.RequestType == schemas.ResponsesStreamRequest {
@@ -903,10 +910,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesStreamRequest,
-				Provider:       provider,
-				ModelRequested: model,
-				Latency:        int64(time.Since(startTime).Milliseconds()),
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
+				Latency:                int64(time.Since(startTime).Milliseconds()),
 			},
 		}
 	}
@@ -957,9 +964,9 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 		},
 		AllowFallbacks: allowFallbacks,
 		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
+			RequestType:            req.RequestType,
+			Provider:               provider,
+			OriginalModelRequested: model,
 		},
 	}
 
@@ -1028,17 +1035,17 @@ func (p *MockerPlugin) getLatency(rule *MockRule) *Latency {
 func (p *MockerPlugin) calculateLatency(latency *Latency) time.Duration {
 	switch latency.Type {
 	case LatencyTypeFixed:
-		return latency.Min
+		return latency.Min.D()
 	case LatencyTypeUniform:
-		if latency.Max <= latency.Min {
-			return latency.Min
+		if latency.Max.D() <= latency.Min.D() {
+			return latency.Min.D()
 		}
 		// Calculate random duration between Min and Max
-		diff := latency.Max - latency.Min
-		return latency.Min + time.Duration(rand.Float64()*float64(diff))
+		diff := latency.Max.D() - latency.Min.D()
+		return latency.Min.D() + time.Duration(rand.Float64()*float64(diff))
 	default:
 		// Default to fixed latency
-		return latency.Min
+		return latency.Min.D()
 	}
 }
 
@@ -1081,9 +1088,9 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 						},
 					},
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.ChatCompletionRequest,
-						Provider:       provider,
-						ModelRequested: model,
+						RequestType:            schemas.ChatCompletionRequest,
+						Provider:               provider,
+						OriginalModelRequested: model,
 					},
 				},
 			},

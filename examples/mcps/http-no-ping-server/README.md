@@ -15,7 +15,7 @@ Many MCP servers may not implement the optional `ping` method from the MCP speci
 ### Prerequisites
 
 ```bash
-go 1.21+
+go 1.26.1+
 ```
 
 ### Start the Server

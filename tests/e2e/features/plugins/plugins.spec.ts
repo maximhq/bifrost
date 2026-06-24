@@ -30,6 +30,17 @@ test.describe('Plugins', () => {
 
   test.describe('Plugin Display', () => {
     test('should display plugins table', async ({ pluginsPage }) => {
+      // Ensure at least one plugin exists so the table (sidebar) is shown
+      const count = await pluginsPage.getPluginCount()
+      if (count === 0) {
+        const pluginData = createPluginData({ name: `e2e-display-table-${Date.now()}` })
+        const created = await pluginsPage.createPlugin(pluginData)
+        if (!created) {
+          test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+          return
+        }
+        createdPlugins.push(pluginData.name)
+      }
       // Plugins page has a sidebar (aliased as table), not a traditional table
       await expect(pluginsPage.table).toBeVisible()
     })
@@ -40,8 +51,8 @@ test.describe('Plugins', () => {
 
     test('should show empty state or plugin list', async ({ pluginsPage }) => {
       const count = await pluginsPage.getPluginCount()
-      const emptyMessage = pluginsPage.page.getByText(/No plugins/i)
-      const isEmptyStateVisible = await emptyMessage.isVisible().catch(() => false)
+      const emptyState = pluginsPage.page.getByTestId('plugins-empty-state')
+      const isEmptyStateVisible = await emptyState.isVisible().catch(() => false)
 
       if (count === 0) {
         expect(isEmptyStateVisible).toBe(true)
@@ -237,16 +248,18 @@ test.describe('Plugins', () => {
       await sheetPathInput.fill(ensureTestPluginExists()) // Path is required; use same path as build
       await pluginsPage.saveBtn.click()
 
-      // Either sheet stays open with error OR error toast appears
-      const sheetVisible = await pluginsPage.sheet.isVisible()
-      const hasError = await pluginsPage.page.locator('[role="alert"], .text-destructive, [data-sonner-toast]').count() > 0
+      // Duplicate creation should be rejected: either sheet stays open with error OR error toast appears
+      const inlineError = pluginsPage.sheet.locator('[role="alert"], .text-destructive').first()
+      const errorToast = pluginsPage.page.locator('[data-sonner-toast][data-type="error"]').first()
+      await inlineError.or(errorToast).waitFor({ state: 'visible', timeout: 10000 })
+      const hasInlineError = await inlineError.isVisible().catch(() => false)
 
-      // At least one of these should be true
-      expect(sheetVisible || hasError).toBe(true)
-
-      // Cancel if sheet is still open
-      if (sheetVisible) {
+      if (hasInlineError) {
+        await expect(pluginsPage.sheet).toBeVisible()
+        await expect(inlineError).toBeVisible()
         await pluginsPage.cancelPlugin()
+      } else {
+        await expect(errorToast).toBeVisible()
       }
     })
   })
@@ -336,15 +349,18 @@ test.describe('Plugins', () => {
       // Wait for response
       await pluginsPage.page.waitForTimeout(1000)
 
-      // Sheet may close with error toast or stay open with error
-      const sheetVisible = await pluginsPage.sheet.isVisible()
-      const hasErrorToast = await pluginsPage.page.locator('[data-sonner-toast][data-type="error"]').count() > 0
+      // Invalid path: sheet may close with error toast or stay open with error
+      const inlineError = pluginsPage.sheet.locator('[role="alert"], .text-destructive').first()
+      const errorToast = pluginsPage.page.locator('[data-sonner-toast][data-type="error"]').first()
+      await inlineError.or(errorToast).waitFor({ state: 'visible', timeout: 10000 })
+      const hasInlineError = await inlineError.isVisible().catch(() => false)
 
-      // Expect either the sheet to remain open OR an error toast
-      expect(sheetVisible || hasErrorToast).toBe(true)
-
-      if (sheetVisible) {
+      if (hasInlineError) {
+        await expect(pluginsPage.sheet).toBeVisible()
+        await expect(inlineError).toBeVisible()
         await pluginsPage.cancelPlugin()
+      } else {
+        await expect(errorToast).toBeVisible()
       }
     })
   })
