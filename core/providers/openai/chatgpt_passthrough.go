@@ -18,6 +18,7 @@ const (
 
 // ParseChatGPTJWT parses a raw bearer token, checks for the ChatGPT subscription
 // JWT claim, and returns the chatgpt_account_id. No signature verification is
+// performed — the token is used only as a routing hint.
 // Returns ("", false) for any non-ChatGPT or malformed token.
 func ParseChatGPTJWT(token string) (accountID string, ok bool) {
 	parts := strings.Split(token, ".")
