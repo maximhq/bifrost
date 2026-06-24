@@ -28,7 +28,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSetsActiveVKProviders(t *testing
 	h := &CompletionHandler{
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
-				Value:    *schemas.NewSecretVar("sk-bf-active"),
+				Value:    "sk-bf-active",
 				IsActive: new(true),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},
@@ -124,7 +124,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSkipsInactiveVK(t *testing.T) {
 	h := &CompletionHandler{
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
-				Value:    *schemas.NewSecretVar("sk-bf-inactive"),
+				Value:    "sk-bf-inactive",
 				IsActive: new(false),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},

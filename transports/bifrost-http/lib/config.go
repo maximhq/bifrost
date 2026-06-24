@@ -2248,25 +2248,26 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if forceFileSync || existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
-					// This is added for backward compatibility with existing configs.
-					// The VK value is a SecretVar, so "env.X"/"vault.X" references are resolved on
-					// unmarshal/scan; GetValue() returns the resolved value here.
-					if !configData.Governance.VirtualKeys[i].Value.IsSet() && existingVirtualKey.Value.IsSet() {
+					// This is added for backward compatibility with existing configs
+					if configData.Governance.VirtualKeys[i].Value == "" && existingVirtualKey.Value != "" {
 						configData.Governance.VirtualKeys[i].Value = existingVirtualKey.Value
 					}
-					// If the value is an env/vault reference that is currently unresolved, leave the
-					// existing DB entry untouched rather than silently generating a new literal key.
-					vkVal := &configData.Governance.VirtualKeys[i].Value
-					if vkVal.IsFromSecret() && vkVal.GetValue() == "" {
-						logger.Warn("virtual key %s has an unresolved env/vault reference, skipping update to preserve existing credential", newVirtualKey.ID)
-						break
+					// Process environment variable for virtual key value
+					if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
+						// Resolving the environment variable value
+						envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
+						if err != nil {
+							logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
+							continue
+						}
+						configData.Governance.VirtualKeys[i].Value = envValue
 					}
 					// If the virtual key value is not a valid virtual key, we will generate a new one
-					if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value.GetValue(), governance.VirtualKeyPrefix) {
-						if configData.Governance.VirtualKeys[i].Value.IsSet() {
+					if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
+						if configData.Governance.VirtualKeys[i].Value != "" {
 							logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
 						}
-						configData.Governance.VirtualKeys[i].Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+						configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
 					}
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
@@ -2284,19 +2285,22 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			if configData.Governance.VirtualKeys[i].ID == "" {
 				configData.Governance.VirtualKeys[i].ID = uuid.NewString()
 			}
-			// If the value is an env/vault reference that is currently unresolved, skip creating
-			// the entry. It will be created on the next sync once the reference resolves.
-			newVKVal := &configData.Governance.VirtualKeys[i].Value
-			if newVKVal.IsFromSecret() && newVKVal.GetValue() == "" {
-				logger.Warn("virtual key %s has an unresolved env/vault reference, skipping creation until reference resolves", newVirtualKey.ID)
-				continue
+			// if the virtual key value is env.VIRTUAL_KEY_VALUE, then we will need to resolve the environment variable
+			// Process environment variable for virtual key value
+			if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
+				// Resolving the environment variable value
+				envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
+				if err != nil {
+					logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
+					continue
+				}
+				configData.Governance.VirtualKeys[i].Value = envValue
 			}
-			// The VK value is a SecretVar; "env.X"/"vault.X" references are resolved on unmarshal/scan.
-			if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value.GetValue(), governance.VirtualKeyPrefix) {
-				if configData.Governance.VirtualKeys[i].Value.IsSet() {
+			if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
+				if configData.Governance.VirtualKeys[i].Value != "" {
 					logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
 				}
-				configData.Governance.VirtualKeys[i].Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+				configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
 			}
 			// Resolve MCP client names to IDs for config file mcp_configs
 			configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(

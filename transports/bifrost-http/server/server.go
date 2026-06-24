@@ -401,8 +401,8 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	}
 	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
 		for _, existingVK := range governanceData.VirtualKeys {
-			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value.GetValue() != "" && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
-				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
+			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value != "" && existingVK.Value != virtualKey.Value {
+				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value)
 				break
 			}
 		}
@@ -446,7 +446,7 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
-	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value.GetValue())
+	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value)
 	return nil
 }
 

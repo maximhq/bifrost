@@ -32,7 +32,7 @@ import {
 	useLazyGetVirtualKeysQuery,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
-import { Customer, resolveVirtualKeyValue, Team, VirtualKey } from "@/lib/types/governance";
+import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -882,7 +882,7 @@ export default function VirtualKeysTable({
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center gap-2">
 													<code className="cursor-default py-1 font-mono text-sm" data-testid="vk-key-value">
-														{maskKey(resolveVirtualKeyValue(vk.value), isRevealed)}
+														{maskKey(vk.value, isRevealed)}
 													</code>
 													<div className="flex items-center">
 														<Button
@@ -896,7 +896,7 @@ export default function VirtualKeysTable({
 														<Button
 															variant="ghost"
 															size="sm"
-															onClick={() => copyToClipboard(resolveVirtualKeyValue(vk.value))}
+															onClick={() => copyToClipboard(vk.value)}
 															data-testid={`vk-copy-btn-${vk.name}`}
 														>
 															<Copy className="h-4 w-4" />
