@@ -28,7 +28,7 @@ func TestCerebras(t *testing.T) {
 		ChatModel: "gpt-oss-120b",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Cerebras, Model: "gpt-oss-120b"},
-			{Provider: schemas.Cerebras, Model: "gpt-oss-120b"},
+			{Provider: schemas.Cerebras, Model: "zai-glm-4.7"},
 		},
 		TextModel:      "gpt-oss-120b",
 		EmbeddingModel: "", // Cerebras doesn't support embedding
