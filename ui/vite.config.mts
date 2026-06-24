@@ -63,9 +63,6 @@ export default defineConfig({
     "process.env.BIFROST_DISABLE_PROFILER": JSON.stringify(
       process.env.BIFROST_DISABLE_PROFILER ?? "",
     ),
-    "process.env.BIFROST_ENTERPRISE_TRIAL_EXPIRY": JSON.stringify(
-      process.env.ENTERPRISE_TRIAL_EXPIRY ?? "",
-    ),
     "process.env.BIFROST_PORT": JSON.stringify(process.env.BIFROST_PORT ?? ""),
   },
   server: {

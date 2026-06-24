@@ -963,6 +963,13 @@ export default function AppSidebar() {
 						description: "Toggle feature flags",
 						hasAccess: hasFeatureFlagsAccess,
 					},
+					{
+						title: "License",
+						url: "/workspace/config/license",
+						icon: ShieldCheck,
+						description: "License management",
+						hasAccess: hasSettingsAccess,
+					},
 				],
 			},
 		],
