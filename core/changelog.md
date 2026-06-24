@@ -1,3 +1,4 @@
+- fix: finalize GigaChat response streams through stream gate [@krakenalt](https://github.com/krakenalt)
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
 - fix: recover from idle-timeout timer-goroutine panic that could crash the process
