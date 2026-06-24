@@ -4926,6 +4926,152 @@ func TestDocumentFormatResponseMapping(t *testing.T) {
 	}
 }
 
+// TestDocumentFormatResponsesRequestMapping verifies the Responses-path outbound
+// mapping (Bifrost file MIME type -> Bedrock document format). Regression test for
+// Office document types (xlsx/xls/doc/docx) being silently rewritten to "pdf".
+func TestDocumentFormatResponsesRequestMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		fileType       string
+		expectedFormat string
+	}{
+		{"PDF_MimeType", "application/pdf", "pdf"},
+		{"PDF_Short", "pdf", "pdf"},
+		{"TXT_MimeType", "text/plain", "txt"},
+		{"TXT_Short", "txt", "txt"},
+		{"Markdown_MimeType", "text/markdown", "md"},
+		{"Markdown_Short", "md", "md"},
+		{"HTML_MimeType", "text/html", "html"},
+		{"HTML_Short", "html", "html"},
+		{"CSV_MimeType", "text/csv", "csv"},
+		{"CSV_Short", "csv", "csv"},
+		{"DOC_MimeType", "application/msword", "doc"},
+		{"DOC_Short", "doc", "doc"},
+		{"DOCX_MimeType", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"},
+		{"DOCX_Short", "docx", "docx"},
+		{"XLS_MimeType", "application/vnd.ms-excel", "xls"},
+		{"XLS_Short", "xls", "xls"},
+		{"XLSX_MimeType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"},
+		{"XLSX_Short", "xlsx", "xlsx"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fileData := "SGVsbG8=" // arbitrary payload; format derives from FileType
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input: []schemas.ResponsesMessage{{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+							Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+							ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+								Filename: schemas.Ptr("testfile"),
+								FileType: &tt.fileType,
+								FileData: &fileData,
+							},
+						}},
+					},
+				}},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			require.Len(t, result.Messages, 1)
+
+			var doc *bedrock.BedrockDocumentSource
+			for _, block := range result.Messages[0].Content {
+				if block.Document != nil {
+					doc = block.Document
+					break
+				}
+			}
+			require.NotNil(t, doc, "expected a document content block")
+			assert.Equal(t, tt.expectedFormat, doc.Format,
+				"MIME type %q should map to Bedrock format %q", tt.fileType, tt.expectedFormat)
+		})
+	}
+}
+
+// TestDocumentFormatResponsesResponseMapping verifies the Responses-path inbound
+// mapping (Bedrock document format -> Bifrost file MIME type). Regression test for
+// Office document types (xlsx/xls/doc/docx) falling through to "application/pdf".
+func TestDocumentFormatResponsesResponseMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		bedrockFormat    string
+		expectedMimeType string
+	}{
+		{"PDF", "pdf", "application/pdf"},
+		{"TXT", "txt", "text/plain"},
+		{"Markdown", "md", "text/markdown"},
+		{"HTML", "html", "text/html"},
+		{"CSV", "csv", "text/csv"},
+		{"DOC", "doc", "application/msword"},
+		{"DOCX", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{"XLS", "xls", "application/vnd.ms-excel"},
+		{"XLSX", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"Unknown", "xyz", "application/pdf"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			docBytes := "SGVsbG8=" // base64 "Hello"
+			response := &bedrock.BedrockConverseResponse{
+				Output: &bedrock.BedrockConverseOutput{
+					Message: &bedrock.BedrockMessage{
+						Role: bedrock.BedrockMessageRoleAssistant,
+						Content: []bedrock.BedrockContentBlock{{
+							Document: &bedrock.BedrockDocumentSource{
+								Format: tt.bedrockFormat,
+								Name:   "testdoc",
+								Source: &bedrock.BedrockDocumentSourceData{
+									Bytes: &docBytes,
+								},
+							},
+						}},
+					},
+				},
+				StopReason: "end_turn",
+				Usage: &bedrock.BedrockTokenUsage{
+					InputTokens:  10,
+					OutputTokens: 5,
+					TotalTokens:  15,
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostResp, err := response.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp)
+
+			var file *schemas.ResponsesInputMessageContentBlockFile
+			for _, msg := range bifrostResp.Output {
+				if msg.Content == nil {
+					continue
+				}
+				for _, block := range msg.Content.ContentBlocks {
+					if block.ResponsesInputMessageContentBlockFile != nil {
+						file = block.ResponsesInputMessageContentBlockFile
+						break
+					}
+				}
+			}
+			require.NotNil(t, file, "expected a file content block")
+			require.NotNil(t, file.FileType)
+			assert.Equal(t, tt.expectedMimeType, *file.FileType,
+				"Bedrock format %q should map to MIME type %q", tt.bedrockFormat, tt.expectedMimeType)
+		})
+	}
+}
+
 // TestBedrockToolInputKeyOrderPreservation verifies that multiple parallel tool calls
 // preserve the client's original key ordering after conversion to Bedrock format.
 func TestBedrockToolInputKeyOrderPreservation(t *testing.T) {

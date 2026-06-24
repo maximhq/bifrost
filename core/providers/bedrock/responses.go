@@ -4198,8 +4198,22 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				switch block.Document.Format {
 				case "pdf":
 					fileType = "application/pdf"
-				case "txt", "md", "html", "csv":
+				case "txt":
 					fileType = "text/plain"
+				case "md":
+					fileType = "text/markdown"
+				case "html":
+					fileType = "text/html"
+				case "csv":
+					fileType = "text/csv"
+				case "doc":
+					fileType = "application/msword"
+				case "docx":
+					fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+				case "xls":
+					fileType = "application/vnd.ms-excel"
+				case "xlsx":
+					fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 				default:
 					fileType = "application/pdf" // Default to PDF
 				}
@@ -4439,17 +4453,32 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						doc.Name = normalizeBedrockFilename(*block.ResponsesInputMessageContentBlockFile.Filename)
 					}
 
-					// Determine format: text or PDF based on FileType
+					// Determine Bedrock format from FileType (mirrors the chat path mapping)
 					isTextFile := false
 					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
 						fileType := *block.ResponsesInputMessageContentBlockFile.FileType
-						// Check if it's a text type
-						if strings.HasPrefix(fileType, "text/") ||
-							fileType == "txt" || fileType == "md" ||
-							fileType == "html" {
+						switch {
+						case fileType == "text/plain" || fileType == "txt":
 							doc.Format = "txt"
 							isTextFile = true
-						} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
+						case fileType == "text/markdown" || fileType == "md":
+							doc.Format = "md"
+							isTextFile = true
+						case fileType == "text/html" || fileType == "html":
+							doc.Format = "html"
+							isTextFile = true
+						case fileType == "text/csv" || fileType == "csv":
+							doc.Format = "csv"
+							isTextFile = true
+						case fileType == "application/msword" || fileType == "doc":
+							doc.Format = "doc"
+						case strings.Contains(fileType, "wordprocessingml") || fileType == "docx":
+							doc.Format = "docx"
+						case fileType == "application/vnd.ms-excel" || fileType == "xls":
+							doc.Format = "xls"
+						case strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx":
+							doc.Format = "xlsx"
+						case strings.Contains(fileType, "pdf") || fileType == "pdf":
 							doc.Format = "pdf"
 						}
 					}
