@@ -378,11 +378,11 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return true, fmt.Errorf("failed to store upload session: %w", err)
 			}
 
-			scheme := "http"
-			if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-				scheme = "https"
+			baseURL := lib.BuildBaseURL(ctx, "")
+			if baseURL == "" {
+				return true, errors.New("cannot determine base URL for upload (empty Host)")
 			}
-			uploadURL := scheme + "://" + string(ctx.Host()) + pathPrefix + "/upload/v1beta/files?upload_id=" + uploadID
+			uploadURL := baseURL + pathPrefix + "/upload/v1beta/files?upload_id=" + uploadID
 
 			ctx.SetStatusCode(fasthttp.StatusOK)
 			ctx.Response.Header.Set("X-Goog-Upload-URL", uploadURL)
