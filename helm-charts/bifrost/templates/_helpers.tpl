@@ -1275,6 +1275,9 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $otelConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
+{{- if hasKey $inputConfig "disable_root_span_content" }}
+{{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
