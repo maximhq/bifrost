@@ -25,6 +25,12 @@ func isValidJSON(s string) bool {
 // calling addColumnIfNotExists(tx, ...) directly.
 var addColumnIfNotExists = migrator.AddColumnIfNotExists
 
+// dropColumnIfExists is the drop counterpart to addColumnIfNotExists: a
+// package-local alias for migrator.DropColumnIfExists, the idempotent
+// column-drop helper shared with configstore. Declared at package scope for the
+// same reason as above so call sites can use dropColumnIfExists(tx, ...).
+var dropColumnIfExists = migrator.DropColumnIfExists
+
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes.
@@ -478,9 +484,7 @@ func migrationAddParentRequestIDColumn(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[logstore] %s: dropping column parent_request_id from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "parent_request_id"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "parent_request_id"); err != nil {
 				return err
 			}
 			return nil
@@ -524,25 +528,19 @@ func migrationAddResponsesOutputColumn(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[logstore] %s: dropping column responses_output from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "responses_output"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "responses_output"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column input_history from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "input_history"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "input_history"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column output_message from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "output_message"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "output_message"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column embedding_output from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "embedding_output"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "embedding_output"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column raw_response from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "raw_response"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "raw_response"); err != nil {
 				return err
 			}
 			return nil
@@ -576,13 +574,10 @@ func migrationAddCostAndCacheDebugColumn(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[logstore] %s: dropping column cost from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "cost"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "cost"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column cache_debug from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "cache_debug"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "cache_debug"); err != nil {
 				return err
 			}
 			return nil
@@ -613,9 +608,7 @@ func migrationAddResponsesInputHistoryColumn(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[logstore] %s: dropping column responses_input_history from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "responses_input_history"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "responses_input_history"); err != nil {
 				return err
 			}
 			return nil
@@ -662,29 +655,22 @@ func migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColum
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[logstore] %s: dropping column number_of_retries from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "number_of_retries"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "number_of_retries"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column fallback_index from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "fallback_index"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "fallback_index"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column selected_key_id from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "selected_key_id"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "selected_key_id"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column selected_key_name from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "selected_key_name"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "selected_key_name"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column virtual_key_id from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "virtual_key_id"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "virtual_key_id"); err != nil {
 				return err
 			}
-			logger.Info("[logstore] %s: dropping column virtual_key_name from Log", migrationName)
-			if err := migrator.DropColumn(&Log{}, "virtual_key_name"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &Log{}, "virtual_key_name"); err != nil {
 				return err
 			}
 			return nil
@@ -989,12 +975,8 @@ func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB, logger schem
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "raw_request") {
-				logger.Info("[logstore] %s: dropping column raw_request from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "raw_request"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "raw_request"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1123,11 +1105,8 @@ func migrationAddCostColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, logge
 			}
 
 			// Drop column
-			if migrator.HasColumn(&MCPToolLog{}, "cost") {
-				logger.Info("[logstore] %s: dropping column cost from MCPToolLog", migrationName)
-				if err := migrator.DropColumn(&MCPToolLog{}, "cost"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, "cost"); err != nil {
+				return err
 			}
 
 			return nil
@@ -1158,12 +1137,8 @@ func migrationAddImageGenerationOutputColumn(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "image_generation_output") {
-				logger.Info("[logstore] %s: dropping column image_generation_output from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "image_generation_output"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "image_generation_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1193,12 +1168,8 @@ func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB, lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "image_generation_input") {
-				logger.Info("[logstore] %s: dropping column image_generation_input from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "image_generation_input"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "image_generation_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1231,18 +1202,11 @@ func migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx context.Context, db 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "routing_rule_id") {
-				logger.Info("[logstore] %s: dropping column routing_rule_id from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "routing_rule_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "routing_rule_id"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&Log{}, "routing_rule_name") {
-				logger.Info("[logstore] %s: dropping column routing_rule_name from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "routing_rule_name"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "routing_rule_name"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1300,19 +1264,13 @@ func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB
 			}
 
 			// Drop virtual_key_name column
-			if migrator.HasColumn(&MCPToolLog{}, "virtual_key_name") {
-				logger.Info("[logstore] %s: dropping column virtual_key_name from MCPToolLog", migrationName)
-				if err := migrator.DropColumn(&MCPToolLog{}, "virtual_key_name"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, "virtual_key_name"); err != nil {
+				return err
 			}
 
 			// Drop virtual_key_id column
-			if migrator.HasColumn(&MCPToolLog{}, "virtual_key_id") {
-				logger.Info("[logstore] %s: dropping column virtual_key_id from MCPToolLog", migrationName)
-				if err := migrator.DropColumn(&MCPToolLog{}, "virtual_key_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, "virtual_key_id"); err != nil {
+				return err
 			}
 
 			return nil
@@ -1348,12 +1306,8 @@ func migrationAddRoutingEngineUsedColumn(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "routing_engine_used") {
-				logger.Info("[logstore] %s: dropping column routing_engine_used from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "routing_engine_used"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "routing_engine_used"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1388,8 +1342,7 @@ func migrationAddRoutingEnginesUsedColumn(ctx context.Context, db *gorm.DB, logg
 				}
 			} else if hasOldColumn && hasNewColumn {
 				// Both columns exist - drop the old one (new column is already in use)
-				logger.Info("[logstore] %s: dropping column routing_engine_used from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "routing_engine_used"); err != nil {
+				if err := dropColumnIfExists(tx, logger, &Log{}, "routing_engine_used"); err != nil {
 					return fmt.Errorf("failed to drop old routing_engine_used column: %w", err)
 				}
 			}
@@ -1437,12 +1390,8 @@ func migrationAddListModelsOutputColumn(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "list_models_output") {
-				logger.Info("[logstore] %s: dropping column list_models_output from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "list_models_output"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "list_models_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1472,12 +1421,8 @@ func migrationAddRerankOutputColumn(ctx context.Context, db *gorm.DB, logger sch
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "rerank_output") {
-				logger.Info("[logstore] %s: dropping column rerank_output from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "rerank_output"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "rerank_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1507,12 +1452,8 @@ func migrationAddRoutingEngineLogsColumn(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "routing_engine_logs") {
-				logger.Info("[logstore] %s: dropping column routing_engine_logs from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "routing_engine_logs"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "routing_engine_logs"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1545,18 +1486,11 @@ func migrationAddLargePayloadColumns(ctx context.Context, db *gorm.DB, logger sc
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "is_large_payload_request") {
-				logger.Info("[logstore] %s: dropping column is_large_payload_request from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "is_large_payload_request"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "is_large_payload_request"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&Log{}, "is_large_payload_response") {
-				logger.Info("[logstore] %s: dropping column is_large_payload_response from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "is_large_payload_response"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "is_large_payload_response"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1640,12 +1574,8 @@ func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "metadata") {
-				logger.Info("[logstore] %s: dropping column metadata from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "metadata"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "metadata"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1675,12 +1605,8 @@ func migrationAddMetadataColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&MCPToolLog{}, "metadata") {
-				logger.Info("[logstore] %s: dropping column metadata from MCPToolLog", migrationName)
-				if err := migrator.DropColumn(&MCPToolLog{}, "metadata"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, "metadata"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1749,11 +1675,8 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 					return err
 				}
 			}
-			if migrator.HasColumn(&MCPToolLog{}, "request_id") {
-				logger.Info("[logstore] %s: dropping column request_id from MCPToolLog", migrationName)
-				if err := migrator.DropColumn(&MCPToolLog{}, "request_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, "request_id"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1877,7 +1800,6 @@ func migrationAddVideoColumns(ctx context.Context, db *gorm.DB, logger schemas.L
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
 
 			videoColumns := []string{
 				"video_generation_input",
@@ -1889,11 +1811,8 @@ func migrationAddVideoColumns(ctx context.Context, db *gorm.DB, logger schemas.L
 			}
 
 			for _, column := range videoColumns {
-				if migrator.HasColumn(&Log{}, column) {
-					logger.Info("[logstore] %s: dropping column %s from Log", migrationName, column)
-					if err := migrator.DropColumn(&Log{}, column); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
 				}
 			}
 
@@ -1958,12 +1877,8 @@ func migrationAddPassthroughRequestBodyColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "passthrough_request_body") {
-				logger.Info("[logstore] %s: dropping column passthrough_request_body from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "passthrough_request_body"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "passthrough_request_body"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -1993,12 +1908,8 @@ func migrationAddPassthroughResponseBodyColumn(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "passthrough_response_body") {
-				logger.Info("[logstore] %s: dropping column passthrough_response_body from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "passthrough_response_body"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "passthrough_response_body"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2240,11 +2151,9 @@ func migrationAddDashboardEnhancements(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			dbMigrator := tx.Migrator()
 
-			if dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
-				logger.Info("[logstore] %s: dropping column cached_read_tokens from Log", migrationName)
-				_ = dbMigrator.DropColumn(&Log{}, "cached_read_tokens")
+			if err := dropColumnIfExists(tx, logger, &Log{}, "cached_read_tokens"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2713,12 +2622,8 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "image_edit_input") {
-				logger.Info("[logstore] %s: dropping column image_edit_input from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "image_edit_input"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "image_edit_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2748,12 +2653,8 @@ func migrationAddPluginLogsColumn(ctx context.Context, db *gorm.DB, logger schem
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "plugin_logs") {
-				logger.Info("[logstore] %s: dropping column plugin_logs from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "plugin_logs"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "plugin_logs"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2787,12 +2688,8 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&Log{}, "alias") {
-				logger.Info("[logstore] %s: dropping column alias from Log", migrationName)
-				if err := mig.DropColumn(&Log{}, "alias"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "alias"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2828,12 +2725,9 @@ func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, column := range []string{"canonical_model_name", "alias_model_family"} {
-				if mig.HasColumn(&Log{}, column) {
-					if err := mig.DropColumn(&Log{}, column); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -2864,12 +2758,8 @@ func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB, logger schema
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mgr := tx.Migrator()
-			if mgr.HasColumn(&Log{}, "has_object") {
-				logger.Info("[logstore] %s: dropping column has_object from Log", migrationName)
-				if err := mgr.DropColumn(&Log{}, "has_object"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "has_object"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2900,12 +2790,8 @@ func migrationAddHasObjectColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mgr := tx.Migrator()
-			if mgr.HasColumn(&MCPToolLog{}, "has_object") {
-				logger.Info("[logstore] %s: dropping column has_object from MCPToolLog", migrationName)
-				if err := mgr.DropColumn(&MCPToolLog{}, "has_object"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, "has_object"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2935,12 +2821,8 @@ func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "image_variation_input") {
-				logger.Info("[logstore] %s: dropping column image_variation_input from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "image_variation_input"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "image_variation_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -2971,12 +2853,8 @@ func migrationAddUserNameColumn(ctx context.Context, db *gorm.DB, logger schemas
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&Log{}, "user_name") {
-				logger.Info("[logstore] %s: dropping column user_name from Log", migrationName)
-				if err := mig.DropColumn(&Log{}, "user_name"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "user_name"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3011,13 +2889,9 @@ func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: dropping column %s from Log", migrationName, col)
-					if err := mig.DropColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -3056,13 +2930,9 @@ func migrationAddMultiTeamBusinessUnitColumns(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: dropping column %s from Log", migrationName, col)
-					if err := mig.DropColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -3166,12 +3036,8 @@ func migrationAddOCROutputColumn(ctx context.Context, db *gorm.DB, logger schema
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "ocr_output") {
-				logger.Info("[logstore] %s: dropping column ocr_output from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "ocr_output"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "ocr_output"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3203,12 +3069,8 @@ func migrationAddAttemptTrailColumn(ctx context.Context, db *gorm.DB, logger sch
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "attempt_trail") {
-				logger.Info("[logstore] %s: dropping column attempt_trail from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "attempt_trail"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "attempt_trail"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3243,13 +3105,9 @@ func migrationAddSelectedPromptColumns(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: dropping column %s from Log", migrationName, col)
-					if err := mig.DropColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -3280,12 +3138,8 @@ func migrationAddOCRInputColumn(ctx context.Context, db *gorm.DB, logger schemas
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&Log{}, "ocr_input") {
-				logger.Info("[logstore] %s: dropping column ocr_input from Log", migrationName)
-				if err := mig.DropColumn(&Log{}, "ocr_input"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "ocr_input"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3315,12 +3169,8 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB, logger schem
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&Log{}, "stop_reason") {
-				logger.Info("[logstore] %s: dropping column stop_reason from Log", migrationName)
-				if err := mig.DropColumn(&Log{}, "stop_reason"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "stop_reason"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3424,13 +3274,9 @@ func migrationAddDACColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 			for _, col := range []string{"business_unit_id", "customer_id", "team_id", "user_id"} {
-				if mg.HasColumn(&MCPToolLog{}, col) {
-					logger.Info("[logstore] %s: dropping column %s from MCPToolLog", migrationName, col)
-					if err := mg.DropColumn(&MCPToolLog{}, col); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -3467,24 +3313,14 @@ func migrationAddClusterGovernanceColumns(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "cluster_node_id") {
-				logger.Info("[logstore] %s: dropping column cluster_node_id from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "cluster_node_id"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "cluster_node_id"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&Log{}, "budget_ids") {
-				logger.Info("[logstore] %s: dropping column budget_ids from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "budget_ids"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "budget_ids"); err != nil {
+				return err
 			}
-			if migrator.HasColumn(&Log{}, "rate_limit_ids") {
-				logger.Info("[logstore] %s: dropping column rate_limit_ids from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "rate_limit_ids"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "rate_limit_ids"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3538,12 +3374,8 @@ func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB, logger sch
 					return fmt.Errorf("failed to drop logs_inc_number_seq: %w", err)
 				}
 			}
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "inc_number") {
-				logger.Info("[logstore] %s: dropping column IncNumber from Log", migrationName)
-				if err := migrator.DropColumn(&Log{}, "IncNumber"); err != nil {
-					return err
-				}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "IncNumber"); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -3651,13 +3483,9 @@ func migrationAddCustomerArrayColumns(ctx context.Context, db *gorm.DB, logger s
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			for _, col := range columns {
-				if mig.HasColumn(&Log{}, col) {
-					logger.Info("[logstore] %s: dropping column %s from Log", migrationName, col)
-					if err := mig.DropColumn(&Log{}, col); err != nil {
-						return err
-					}
+				if err := dropColumnIfExists(tx, logger, &Log{}, col); err != nil {
+					return err
 				}
 			}
 			return nil
