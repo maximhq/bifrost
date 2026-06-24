@@ -1246,6 +1246,14 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					tracer.EndSpan(rootHandle, schemas.SpanStatusOk, "")
 				}
 				tracer.CompleteAndFlushTrace(traceID)
+				// Guaranteed end-of-stream backstop: force-reap the stream accumulator
+				// now that the stream has fully drained and the trace is flushed. This
+				// covers streams that ended without a clean terminal chunk (client abort,
+				// broken SSE write, or a multi-plugin refcount imbalance), which would
+				// otherwise leak their accumulated (deep-copied) chunks until the TTL
+				// sweep. Safe after CompleteAndFlushTrace: span completion reads the
+				// separately stored accumulated response, not the live accumulator.
+				tracer.ForceCleanupStreamAccumulator(traceID)
 			})
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)

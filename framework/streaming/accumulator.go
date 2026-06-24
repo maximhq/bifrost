@@ -530,6 +530,29 @@ func (a *Accumulator) CleanupStreamAccumulator(requestID string) error {
 	return nil
 }
 
+// ForceCleanupStreamAccumulator reaps a stream accumulator regardless of its
+// reference counter. It is the guaranteed end-of-stream backstop: callers invoke
+// it from the stream's terminal lifecycle hook (the provider goroutine's
+// finalizer), at which point the stream has stopped delivering chunks and the
+// per-plugin refcount handshake may be incomplete (e.g. a client abort that
+// never produced a terminal chunk, or multiple plugins that each Create but not
+// all Cleanup). Force-reaping here mirrors the TTL sweep (cleanupOldAccumulators),
+// which already deletes with forceEndGate=true. Idempotent and safe to call after
+// CleanupStreamAccumulator has already freed the entry.
+func (a *Accumulator) ForceCleanupStreamAccumulator(requestID string) {
+	acc, exists := a.streamAccumulators.Load(requestID)
+	if !exists {
+		return
+	}
+	accumulator, ok := acc.(*StreamAccumulator)
+	if !ok {
+		return
+	}
+	accumulator.mu.Lock()
+	defer accumulator.mu.Unlock()
+	a.cleanupStreamAccumulator(requestID, true) // stream is over — force-end the gate and reap
+}
+
 // cleanupOldAccumulators removes old accumulators
 func (a *Accumulator) cleanupOldAccumulators() {
 	count := 0

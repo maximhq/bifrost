@@ -540,6 +540,18 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 	}
 }
 
+// ForceCleanupStreamAccumulator reaps the stream accumulator for the given trace
+// ID regardless of its reference counter. It is the guaranteed end-of-stream
+// backstop, called from the transport's trace completer once the stream has fully
+// drained, so an aborted or otherwise non-cleanly-terminated stream (or a
+// multi-plugin refcount imbalance) cannot leak its accumulator.
+func (t *Tracer) ForceCleanupStreamAccumulator(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.ForceCleanupStreamAccumulator(traceID)
+}
+
 // ProcessStreamingChunk processes a streaming chunk and accumulates it.
 // Returns the accumulated result when isFinalChunk is true and the stream is complete;
 // returns nil for non-final chunks.
