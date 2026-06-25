@@ -3270,6 +3270,101 @@
             }
           },
           "additionalProperties": false
+        },
+        "circuitBreakerConfig": {
+          "type": "object",
+          "description": "Circuit breaker configuration for automatic failover when a provider endpoint degrades",
+          "properties": {
+            "policies": {
+              "type": "array",
+              "description": "List of circuit breaker policies",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Unique name for this policy"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Whether this policy is active"
+                  },
+                  "primary_provider": {
+                    "type": "string",
+                    "description": "Provider to monitor (e.g. 'azure', 'openai')"
+                  },
+                  "primary_model": {
+                    "type": "string",
+                    "description": "Model to monitor as it appears in requests"
+                  },
+                  "primary_key_ids": {
+                    "type": "array",
+                    "description": "Optional key UUIDs to monitor individually; empty uses a single shared circuit",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "fallback_provider": {
+                    "type": "string",
+                    "description": "Provider to route to when the circuit is open"
+                  },
+                  "fallback_model": {
+                    "type": "string",
+                    "description": "Model to request from the fallback provider"
+                  },
+                  "condition": {
+                    "type": "object",
+                    "description": "Response signals that trigger the circuit to open",
+                    "properties": {
+                      "operator": {
+                        "type": "string",
+                        "enum": ["OR", "AND"],
+                        "default": "OR"
+                      },
+                      "signals": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "source": {
+                              "type": "string",
+                              "enum": ["response_header"]
+                            },
+                            "header_name": {
+                              "type": "string"
+                            },
+                            "header_value": {
+                              "type": "string"
+                            },
+                            "header_contains": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["source", "header_name"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["signals"],
+                    "additionalProperties": false
+                  },
+                  "default_cooldown": {
+                    "type": "string",
+                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "description": "How long to keep the circuit open when no header-based cooldown is available (Go duration, e.g. '30s')"
+                  },
+                  "cooldown_header": {
+                    "type": "string",
+                    "description": "Response header whose value (in ms) overrides default_cooldown"
+                  }
+                },
+                "required": ["name", "primary_provider", "primary_model", "fallback_provider", "fallback_model", "condition"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
         }
       }
     },
