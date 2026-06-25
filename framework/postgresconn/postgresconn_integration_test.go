@@ -26,11 +26,11 @@ func TestPasswordCommandOpensRealPostgresConnections(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o700))
 
 	cfg := &Config{
-		Host:            schemas.NewEnvVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_HOST", "localhost")),
-		Port:            schemas.NewEnvVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_PORT", "5432")),
-		User:            schemas.NewEnvVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_USER", "bifrost")),
-		DBName:          schemas.NewEnvVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_DB", "bifrost")),
-		SSLMode:         schemas.NewEnvVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_SSLMODE", "disable")),
+		Host:            schemas.NewSecretVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_HOST", "localhost")),
+		Port:            schemas.NewSecretVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_PORT", "5432")),
+		User:            schemas.NewSecretVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_USER", "bifrost")),
+		DBName:          schemas.NewSecretVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_DB", "bifrost")),
+		SSLMode:         schemas.NewSecretVar(getenvDefault("BIFROST_POSTGRES_PASSWORD_COMMAND_TEST_SSLMODE", "disable")),
 		PasswordCommand: &PasswordCommandConfig{Command: scriptPath, Timeout: "5s"},
 	}
 

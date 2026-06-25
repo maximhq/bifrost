@@ -89,9 +89,9 @@ func newTestProviderWithServer(t *testing.T, ts *httptest.Server) *BedrockProvid
 // testBedrockKey returns a minimal Key with a bearer value so makeStreamingRequest
 // skips IAM signing and proceeds to the HTTP call.
 func testBedrockKey() schemas.Key {
-	region := schemas.NewEnvVar("us-east-1")
+	region := schemas.NewSecretVar("us-east-1")
 	return schemas.Key{
-		Value: *schemas.NewEnvVar("test-api-key"),
+		Value: *schemas.NewSecretVar("test-api-key"),
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			Region: region,
 		},
@@ -637,7 +637,7 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			DefaultRequestTimeoutInSeconds: 300,
-			CACertPEM:                      schemas.NewEnvVar(testCACert),
+			CACertPEM:                      schemas.NewSecretVar(testCACert),
 			EnforceHTTP2:                   true,
 		},
 	}

@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPConnectionType, MCPStdioConfig, MCPTLSConfig } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, SecretVar, MCPAuthType, MCPConnectionType, MCPStdioConfig, MCPTLSConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
@@ -33,13 +33,13 @@ const emptyStdioConfig: MCPStdioConfig = {
 	envs: [],
 };
 
-const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
+const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 /** Strips empty TLS config so we don't send `{}` to the server. */
 function buildTLSConfigPayload(tls: MCPTLSConfig | undefined): MCPTLSConfig | undefined {
 	if (!tls) return undefined;
 	const hasSkipVerify = tls.insecure_skip_verify === true;
-	const hasCACert = tls.ca_cert_pem?.value || tls.ca_cert_pem?.from_env;
+	const hasCACert = tls.ca_cert_pem?.value || tls.ca_cert_pem?.type === "env" || tls.ca_cert_pem?.type === "vault";
 	if (!hasSkipVerify && !hasCACert) return undefined;
 	return { insecure_skip_verify: tls.insecure_skip_verify, ca_cert_pem: hasCACert ? tls.ca_cert_pem : undefined };
 }
@@ -49,7 +49,7 @@ const emptyForm: CreateMCPClientRequest = {
 	is_code_mode_client: false,
 	is_ping_available: true,
 	connection_type: "http",
-	connection_string: emptyEnvVar,
+	connection_string: emptySecretVar,
 	stdio_config: emptyStdioConfig,
 	auth_type: "none",
 };
@@ -133,13 +133,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	// opens MCPHeadersAuthorizer with an invalid config the server has to
 	// reject.
 	let headersValidationError: string | null = null;
-	if (
-		(connectionType === "http" || connectionType === "sse") &&
-		(authType === "headers" || authType === "per_user_headers") &&
-		headers
-	) {
-		for (const [key, envVar] of Object.entries(headers)) {
-			if (!envVar.value && !envVar.env_var) {
+	if ((connectionType === "http" || connectionType === "sse") && (authType === "headers" || authType === "per_user_headers") && headers) {
+		for (const [key, secretVar] of Object.entries(headers)) {
+			if (!secretVar.value && !secretVar.ref) {
 				headersValidationError = `Header "${key}" must have a value`;
 				break;
 			}
@@ -166,13 +162,15 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		let hasErrors = false;
 
 		if (connectionType === "http" || connectionType === "sse") {
-			const connVal = data.connection_string?.value || "";
-			if (!connVal.trim()) {
+			const connVal = data.connection_string?.value?.trim() || "";
+			const connRef = data.connection_string?.ref?.trim() || "";
+			const isSecret = data.connection_string?.type === "env" || data.connection_string?.type === "vault";
+			if (!connVal && !connRef) {
 				setError("connection_string", { message: "Connection URL is required" });
 				hasErrors = true;
-			} else if (!/^((https?:\/\/.+)|(env\.[A-Z_]+))$/.test(connVal)) {
+			} else if (!isSecret && connVal && !/^https?:\/\/.+/.test(connVal)) {
 				setError("connection_string", {
-					message: "Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
+					message: "Connection URL must start with http:// or https://",
 				});
 				hasErrors = true;
 			}
@@ -224,36 +222,35 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			stdio_config:
 				connectionType === "stdio"
 					? {
-						command: data.stdio_config?.command || "",
-						args: parseArrayFromText(argsText),
-						// Each row becomes KEY=value, or a bare KEY when no value is given
-						// (read from Bifrost's host environment). Rows without a name are skipped.
-						envs: Object.entries(envVars)
-							.filter(([name]) => name.trim() !== "")
-							.map(([name, value]) => {
-								const v = value.trim();
-								return v ? `${name}=${v}` : name;
-							}),
-					}
+							command: data.stdio_config?.command || "",
+							args: parseArrayFromText(argsText),
+							// Each row becomes KEY=value, or a bare KEY when no value is given
+							// (read from Bifrost's host environment). Rows without a name are skipped.
+							envs: Object.entries(envVars)
+								.filter(([name]) => name.trim() !== "")
+								.map(([name, value]) => {
+									const v = value.trim();
+									return v ? `${name}=${v}` : name;
+								}),
+						}
 					: undefined,
-			tls_config:
-				connectionType === "http" || connectionType === "sse"
-					? buildTLSConfigPayload(data.tls_config)
-					: undefined,
+			tls_config: connectionType === "http" || connectionType === "sse" ? buildTLSConfigPayload(data.tls_config) : undefined,
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-						client_id: data.oauth_config?.client_id ?? emptyEnvVar,
-						client_secret:
-							data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env
-								? data.oauth_config.client_secret
-								: undefined,
-						authorize_url: data.oauth_config?.authorize_url || undefined,
-						token_url: data.oauth_config?.token_url || undefined,
-						registration_url: data.oauth_config?.registration_url || undefined,
-						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-						server_url: data.connection_string?.value || undefined,
-					}
+							client_id: data.oauth_config?.client_id ?? emptySecretVar,
+							client_secret:
+								data.oauth_config?.client_secret?.value ||
+								data.oauth_config?.client_secret?.type === "env" ||
+								data.oauth_config?.client_secret?.type === "vault"
+									? data.oauth_config.client_secret
+									: undefined,
+							authorize_url: data.oauth_config?.authorize_url || undefined,
+							token_url: data.oauth_config?.token_url || undefined,
+							registration_url: data.oauth_config?.registration_url || undefined,
+							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+							server_url: data.connection_string?.value || undefined,
+						}
 					: undefined,
 			// "headers" and "per_user_headers" both can carry static admin
 			// headers on data.headers (per-user values are submitted
@@ -455,7 +452,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 										render={({ field }) => (
 											<FormItem>
 												<FormLabel>Connection URL</FormLabel>
-												<EnvVarInput
+												<SecretVarInput
 													value={field.value}
 													onChange={(value) => {
 														field.onChange(value);
@@ -526,7 +523,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														keyPlaceholder="Header name"
 														valuePlaceholder="Header value"
 														label="Headers"
-														useEnvVarInput
+														useSecretVarInput
 													/>
 													{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
 													<FormMessage />
@@ -544,9 +541,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											    tool use via the inline auth landing page. */}
 											<div className="space-y-1">
 												<div className="space-y-0.5">
-													<div className="text-sm font-medium">
-														Required Headers
-													</div>
+													<div className="text-sm font-medium">Required Headers</div>
 													<p className="text-muted-foreground text-sm">
 														Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
 														<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user - never stored on this server config.
@@ -577,7 +572,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 															keyPlaceholder="Header name"
 															valuePlaceholder="Header value"
 															label="Static Headers (optional, applied alongside user values)"
-															useEnvVarInput
+															useSecretVarInput
 														/>
 														{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
 														<FormMessage />
@@ -622,7 +617,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 																	</TooltipProvider>
 																</div>
 																<FormControl>
-																	<EnvVarInput
+																	<SecretVarInput
 																		value={field.value}
 																		onChange={field.onChange}
 																		placeholder="your-client-id (auto-generated if empty)"
@@ -645,7 +640,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 															<FormItem>
 																<FormLabel>OAuth Client Secret (optional for PKCE)</FormLabel>
 																<FormControl>
-																	<EnvVarInput
+																	<SecretVarInput
 																		value={field.value}
 																		onChange={field.onChange}
 																		placeholder="your-client-secret"
@@ -735,7 +730,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 													{/* Scopes (local state, not RHF field) */}
 													<div className="space-y-2">
 														<Label>Scopes (optional, comma-separated)</Label>
-														<Input value={scopesText} onChange={(e) => setScopesText(e.target.value)} placeholder="read, write, admin" data-testid="mcp-oauth-scopes-input" />
+														<Input
+															value={scopesText}
+															onChange={(e) => setScopesText(e.target.value)}
+															placeholder="read, write, admin"
+															data-testid="mcp-oauth-scopes-input"
+														/>
 													</div>
 												</AccordionContent>
 											</AccordionItem>
@@ -757,7 +757,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 															<div className="space-y-0.5">
 																<FormLabel>Skip TLS verification</FormLabel>
 																<p className="text-muted-foreground text-sm">
-																	Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA certificate.
+																	Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA
+																	certificate.
 																</p>
 															</div>
 															<FormControl>
@@ -777,7 +778,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														<FormItem>
 															<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 															<FormControl>
-																<EnvVarInput
+																<SecretVarInput
 																	variant="textarea"
 																	placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
 																	className="font-mono text-xs"
@@ -863,7 +864,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 													</TooltipTrigger>
 													<TooltipContent className="max-w-xs">
-														<p>Add a value for each variable, or leave it blank to read the value from the environment where Bifrost runs.</p>
+														<p>
+															Add a value for each variable, or leave it blank to read the value from the environment where Bifrost runs.
+														</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>

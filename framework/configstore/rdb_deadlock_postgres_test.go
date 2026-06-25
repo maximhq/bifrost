@@ -101,8 +101,8 @@ func TestPostgresProviderGraphConcurrentMutationsDoNotDeadlock(t *testing.T) {
 			defer wg.Done()
 			<-start
 			errs <- store.UpdateProvider(ctx, "openai", ProviderConfig{Keys: []schemas.Key{
-				{ID: "pg-key-a", Name: "pg-openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
-				{ID: fmt.Sprintf("pg-key-new-%d", iter), Name: fmt.Sprintf("pg-openai-key-new-%d", iter), Value: *schemas.NewEnvVar("sk-new"), Weight: 1.0},
+				{ID: "pg-key-a", Name: "pg-openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
+				{ID: fmt.Sprintf("pg-key-new-%d", iter), Name: fmt.Sprintf("pg-openai-key-new-%d", iter), Value: *schemas.NewSecretVar("sk-new"), Weight: 1.0},
 			}})
 		}(i)
 		go func() {
@@ -237,8 +237,8 @@ func seedProviderGraph(ctx context.Context, store *RDBConfigStore) error {
 	if err := store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "pg-key-a", Name: "pg-openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
-				{ID: "pg-key-b", Name: "pg-openai-key-b", Value: *schemas.NewEnvVar("sk-b"), Weight: 1.0},
+				{ID: "pg-key-a", Name: "pg-openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
+				{ID: "pg-key-b", Name: "pg-openai-key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1.0},
 			},
 		},
 	}); err != nil {

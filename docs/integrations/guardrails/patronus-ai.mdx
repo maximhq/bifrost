@@ -23,6 +23,10 @@ You'll need a Patronus API key to authenticate with their Evaluate API - grab on
 
 The Patronus evaluator flow supported here is text-based: Bifrost sends selected request or response text as the evaluation input.
 
+<Note>
+  **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
+</Note>
+
 ## Capabilities
 
 - **PII Detection**: Identify personally identifiable information using Patronus evaluators

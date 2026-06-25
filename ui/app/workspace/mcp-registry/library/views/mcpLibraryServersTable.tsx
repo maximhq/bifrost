@@ -20,7 +20,13 @@ interface MCPLibraryServersTableProps {
 	onInstall: (server: MCPLibraryEntry) => void;
 }
 
-export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreateMCPClient, canDelete, onInstall }: MCPLibraryServersTableProps) {
+export function MCPLibraryServersTable({
+	servers,
+	installedServerSlugs,
+	canCreateMCPClient,
+	canDelete,
+	onInstall,
+}: MCPLibraryServersTableProps) {
 	const [deleteEntry, { isLoading: isDeleting }] = useDeleteMCPLibraryEntryMutation();
 	const [serverToDelete, setServerToDelete] = useState<MCPLibraryEntry | null>(null);
 
@@ -36,9 +42,9 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 	};
 
 	return (
-		<div className="overflow-y-auto rounded-md border mb-2" data-testid="mcp-library-table-view">
+		<div className="mb-2 overflow-y-auto rounded-md border" data-testid="mcp-library-table-view">
 			<Table containerClassName="overflow-x-clip">
-				<TableHeader className="sticky top-0 z-10 bg-muted">
+				<TableHeader className="bg-muted sticky top-0 z-10">
 					<TableRow>
 						<TableHead className="w-16">Icon</TableHead>
 						<TableHead>Server</TableHead>
@@ -64,11 +70,7 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 												}}
 											/>
 										) : (
-											<img
-												src={"/images/mcp.svg"}
-												alt=""
-												className="h-full w-full object-contain p-1.5"
-											/>
+											<img src={"/images/mcp.svg"} alt="" className="h-full w-full object-contain p-1.5" />
 										)}
 									</div>
 								</TableCell>
@@ -83,7 +85,6 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 												</Badge>
 											)}
 											{server.source === "custom" && <Badge variant="outline">Custom</Badge>}
-
 										</div>
 										<p className="text-muted-foreground line-clamp-1 max-w-4xl text-sm leading-5">
 											{server.description || "No description available."}
@@ -188,9 +189,9 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 /** Skeleton placeholder mirroring the table layout while the library catalog loads. */
 export function MCPLibraryServersTableSkeleton({ rows = 8 }: { rows?: number }) {
 	return (
-		<div className="overflow-y-auto rounded-md border mb-2" data-testid="mcp-library-table-skeleton">
+		<div className="mb-2 overflow-y-auto rounded-md border" data-testid="mcp-library-table-skeleton">
 			<Table containerClassName="overflow-x-clip">
-				<TableHeader className="sticky top-0 z-10 bg-muted">
+				<TableHeader className="bg-muted sticky top-0 z-10">
 					<TableRow>
 						<TableHead className="w-16">Icon</TableHead>
 						<TableHead>Server</TableHead>

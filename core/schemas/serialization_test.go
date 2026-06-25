@@ -1115,7 +1115,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 		DefaultRequestTimeoutInSeconds: 60,
 		MaxRetries:                     3,
 		InsecureSkipVerify:             true,
-		CACertPEM:                      NewEnvVar("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"),
+		CACertPEM:                      NewSecretVar("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"),
 	}
 
 	data, err := json.Marshal(nc)
