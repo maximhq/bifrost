@@ -914,7 +914,31 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = []string{}
 	}
 
+	// Hybrid log store offloads token_usage to object storage but keeps denormalized
+	// prompt/completion/total columns in the DB for analytics. Rebuild the virtual
+	// field so list APIs and the UI can render tokens without hydrating from S3 —
+	// same role content_summary plays for message previews.
+	l.reconstructTokenUsageFromDenormalizedFields()
+
 	return nil
+}
+
+// reconstructTokenUsageFromDenormalizedFields populates TokenUsageParsed from the
+// denormalized token columns when the serialized token_usage payload is absent
+// (e.g. hybrid storage offloaded it to object storage).
+func (l *Log) reconstructTokenUsageFromDenormalizedFields() {
+	if l.TokenUsageParsed != nil {
+		return
+	}
+	if l.PromptTokens == 0 && l.CompletionTokens == 0 && l.TotalTokens == 0 {
+		return
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     l.PromptTokens,
+		CompletionTokens: l.CompletionTokens,
+		TotalTokens:      l.TotalTokens,
+	}
+	l.TokenUsageParsed = usage
 }
 
 // MCPToolLog represents a log entry for MCP tool executions
