@@ -2742,12 +2742,31 @@
         },
         "loadBalancer": {
           "type": "object",
+          "description": "Load balancer configuration for intelligent request routing",
           "properties": {
             "enabled": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Whether load balancing is enabled"
+            },
+            "directionSelectionEnabled": {
+              "type": "boolean",
+              "description": "Enable adaptive provider (direction) selection. Defaults to true; omit to leave on."
+            },
+            "routeSelectionEnabled": {
+              "type": "boolean",
+              "description": "Enable adaptive per-key (route) selection. Defaults to true; omit to leave on."
+            },
+            "rerouteFailedDirections": {
+              "type": "boolean",
+              "description": "When a pinned provider's direction is unhealthy, re-route the request to a healthy provider. Defaults to false."
+            },
+            "pruneFailedFallbacks": {
+              "type": "boolean",
+              "description": "Drop unhealthy directions from a request's configured fallbacks. Defaults to false."
             },
             "trackerConfig": {
-              "type": "object"
+              "type": "object",
+              "description": "Configuration for tracking route metrics and performance"
             },
             "bootstrap": {
               "type": "object"
