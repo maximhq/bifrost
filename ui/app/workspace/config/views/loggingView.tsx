@@ -235,8 +235,9 @@ export default function LoggingView() {
 						</label>
 						<p className="text-muted-foreground text-sm">
 							Comma-separated list of request headers to capture in log metadata. Supports exact names and wildcard patterns (e.g.{" "}
-							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs
-							all headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are extracted from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
+							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs all
+							headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are
+							extracted from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
 							<code className="text-xs">x-bf-lh-</code> prefix are always captured automatically.
 						</p>
 						<Textarea

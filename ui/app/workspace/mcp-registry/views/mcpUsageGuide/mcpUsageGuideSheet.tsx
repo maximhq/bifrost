@@ -124,12 +124,7 @@ export function MCPUsageGuideSheet() {
 	// ── Render ───────────────────────────────────────────────────────────
 	return (
 		<>
-			<Button type="button"
-				onClick={() => setOpen(true)}
-				data-testid="mcp-usage-guide-trigger"
-				variant="outline"
-				className="h-8"
-			>
+			<Button type="button" onClick={() => setOpen(true)} data-testid="mcp-usage-guide-trigger" variant="outline" className="h-8">
 				<SquareTerminal />
 				<span className="hidden sm:inline">Connect agent</span>
 			</Button>

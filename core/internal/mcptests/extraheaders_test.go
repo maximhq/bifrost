@@ -205,7 +205,7 @@ func httpExtraHeaderConfig(clientName, serverURL string) *schemas.MCPClientConfi
 		ID:                  clientName + "-id",
 		Name:                clientName,
 		ConnectionType:      schemas.MCPConnectionTypeHTTP,
-		ConnectionString:    schemas.NewEnvVar(serverURL),
+		ConnectionString:    schemas.NewSecretVar(serverURL),
 		ToolsToExecute:      []string{"*"},
 		AllowedExtraHeaders: schemas.WhiteList{allowedExtraHeader},
 	}
@@ -219,7 +219,7 @@ func sseExtraHeaderConfig(clientName, serverURL string) *schemas.MCPClientConfig
 		ID:                  clientName + "-id",
 		Name:                clientName,
 		ConnectionType:      schemas.MCPConnectionTypeSSE,
-		ConnectionString:    schemas.NewEnvVar(serverURL + "/sse"),
+		ConnectionString:    schemas.NewSecretVar(serverURL + "/sse"),
 		ToolsToExecute:      []string{"*"},
 		AllowedExtraHeaders: schemas.WhiteList{allowedExtraHeader},
 	}

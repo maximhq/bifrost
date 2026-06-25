@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -214,7 +215,15 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 	// Track tool names to prevent duplicates
 	seenToolNames := make(map[string]bool)
 
-	for clientName, clientTools := range availableToolsPerClient {
+	// Sort client names for deterministic tool ordering
+	sortedClients := make([]string, 0, len(availableToolsPerClient))
+	for clientName := range availableToolsPerClient {
+		sortedClients = append(sortedClients, clientName)
+	}
+	slices.Sort(sortedClients)
+
+	for _, clientName := range sortedClients {
+		clientTools := availableToolsPerClient[clientName]
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
 			m.logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)

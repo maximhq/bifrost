@@ -421,7 +421,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 										className={cn(
 											"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
 											RoutingEngineUsedColors[scope as keyof typeof RoutingEngineUsedColors] ??
-											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+												"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
 										)}
 									>
 										{RoutingEngineUsedLabels[scope as keyof typeof RoutingEngineUsedLabels] ?? scope}
@@ -542,18 +542,18 @@ export function LogDetailView({
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const passthroughParams = isPassthrough
 		? (log.params as {
-			method?: string;
-			path?: string;
-			raw_query?: string;
-			status_code?: number;
-		})
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+			})
 		: null;
 
 	let toolsParameter = null;
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch { }
+		} catch {}
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -570,7 +570,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch { }
+		} catch {}
 		return 0;
 	})();
 
@@ -663,10 +663,7 @@ export function LogDetailView({
 									search={{ routing_rule_ids: [log.routing_rule.id] }}
 									data-testid="logdetails-header-routing-rule-link"
 								>
-									<Badge
-										variant="outline"
-										className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline"
-									>
+									<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline">
 										rule: {log.routing_rule.name}
 									</Badge>
 								</Link>
@@ -793,10 +790,11 @@ export function LogDetailView({
 						}
 						sub={
 							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-									: ""
-								}`
+								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
+										log.token_usage.completion_tokens_details?.reasoning_tokens
+											? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+											: ""
+									}`
 								: "—"
 						}
 						hasRightBorder
@@ -1098,7 +1096,10 @@ export function LogDetailView({
 											{log.routing_engines_used.map((engine) => (
 												<Badge
 													key={engine}
-													className={cn("border-0 py-1 uppercase", RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800")}
+													className={cn(
+														"border-0 py-1 uppercase",
+														RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800",
+													)}
 												>
 													<div className="flex items-center gap-2">
 														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.({ className: "h-3.5 w-3.5" })}
@@ -1732,11 +1733,11 @@ export function LogDetailView({
 							<div className="bg-card rounded-sm border p-5">
 								{(visibleRoles.size < allRoles.length
 									? log.input_history?.filter((m) => {
-										if (!m) return false;
-										const mainRole = ((m.role as string) || "user") as MessageRole;
-										const hasReasoning = !!extractChatReasoning(m);
-										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-									})
+											if (!m) return false;
+											const mainRole = ((m.role as string) || "user") as MessageRole;
+											const hasReasoning = !!extractChatReasoning(m);
+											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+										})
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;

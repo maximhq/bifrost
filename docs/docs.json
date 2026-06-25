@@ -150,6 +150,7 @@
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
                   "providers/supported-providers/replicate",
+                  "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
@@ -324,6 +325,7 @@
               "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
           },

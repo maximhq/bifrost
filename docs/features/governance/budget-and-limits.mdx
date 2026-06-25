@@ -172,6 +172,67 @@ Calendar alignment applies to budgets on **customers**, **teams**, **virtual key
 
 ---
 
+## Customer-scoped requests
+
+<Note>
+Customer scoping is a **Bifrost Enterprise** feature. It applies to requests made with a **team-attached virtual key** when that team is linked to more than one customer.
+</Note>
+
+In Enterprise deployments a team can be attached to multiple customers. By default, a request through a team's virtual key charges and enforces **every** customer the team belongs to. To attribute a single request to **one** specific customer, send a customer-scope header:
+
+| Header | Description |
+|--------|-------------|
+| `x-bf-customer-id` | The customer's ID. |
+| `x-bf-customer-name` | The customer's display name (must be globally unique). |
+
+When a scope header is present, only the named customer is charged, rate-limited, and recorded in that request's usage logs — the team's other customers are left untouched. The team's own budget, the virtual key budget, and provider-config limits are always enforced regardless of scope.
+
+**Resolution rules:**
+- `x-bf-customer-id` takes precedence over `x-bf-customer-name` when both are sent.
+- Surrounding whitespace is trimmed, and the header name is **case-insensitive** (like all Bifrost headers).
+- Send no customer-scope header to charge and enforce all of the team's customers (the default).
+
+### Examples
+
+Scope a chat request to a customer by ID:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: <your-virtual-key>" \
+  -H "x-bf-customer-id: cust_acme" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Or scope by name instead:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: <your-virtual-key>" \
+  -H "x-bf-customer-name: Acme Corp" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+### Validation
+
+The customer scope is validated **before** the request reaches a provider, and it **fails closed**: an invalid scope is rejected even when budget and rate-limit enforcement is otherwise skipped. A request is rejected with **400 Bad Request** when the scope header is:
+
+- present but empty or whitespace-only,
+- an ID or name that does not match any customer, or
+- a customer that exists but is **not** attached to the virtual key's team.
+
+**Example error response:**
+```json
+{
+  "error": {
+    "message": "customer \"Acme Corp\" is not attached to this team"
+  }
+}
+```
+
+---
+
 ## Configuration Guide
 
 Configure provider-level budgets and rate limits using any of these methods:

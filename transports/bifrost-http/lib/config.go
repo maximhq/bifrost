@@ -164,7 +164,7 @@ type ConfigData struct {
 	Server        *ServerConfig             `json:"server,omitempty"`
 	SourceOfTruth string                    `json:"source_of_truth,omitempty"`
 	Client        *configstore.ClientConfig `json:"client"`
-	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
+	EncryptionKey *schemas.SecretVar        `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -378,7 +378,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Server            *ServerConfig                         `json:"server,omitempty"`
 		Client            *configstore.ClientConfig             `json:"client"`
-		EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
+		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -3639,19 +3639,20 @@ func isBcryptHash(s string) bool {
 		strings.HasPrefix(s, "$2y$")
 }
 
-// preserveEnvVar returns a new EnvVar with the given value but preserving
-// env var metadata (EnvVar reference and FromEnv flag) from the source.
+// preserveSecretVar returns a new SecretVar with the given value but preserving
+// env var metadata (SecretVar reference and FromEnv flag) from the source.
 // This allows the hashed password to be used as the value while retaining
 // the original env var reference for display in the UI.
-func preserveEnvVar(source *schemas.EnvVar, value string) *schemas.EnvVar {
+func preserveSecretVar(source *schemas.SecretVar, value string) *schemas.SecretVar {
 	if source == nil {
-		return schemas.NewEnvVar(value)
+		return schemas.NewSecretVar(value)
 	}
-	return &schemas.EnvVar{
-		Val:     value,
-		EnvVar:  source.EnvVar,
-		FromEnv: source.FromEnv,
+	if source.IsFromSecret() {
+		sv := *source
+		sv.Val = value
+		return &sv
 	}
+	return &schemas.SecretVar{Val: value}
 }
 
 // loadAuthConfig loads auth config from file.
@@ -3694,12 +3695,12 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	if authConfig == nil {
 		return
 	}
-	// File config present: warn about empty env vars but continue processing
-	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromEnv() {
-		logger.Warn("username set with env var but value is empty: %s", authConfig.AdminUserName.EnvVar)
+	// Fail-closed: if env/vault reference is unresolved, don't persist empty credentials.
+	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromSecret() {
+		logger.Warn("username set with external reference but value is empty: %s", authConfig.AdminUserName.GetRawRef())
 	}
-	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromEnv() {
-		logger.Warn("password set with env var but value is empty: %s", authConfig.AdminPassword.EnvVar)
+	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromSecret() {
+		logger.Warn("password set with external reference but value is empty: %s", authConfig.AdminPassword.GetRawRef())
 	}
 	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
 		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")
@@ -3722,7 +3723,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 			// DB matches file -- use DB hash but preserve file env var references
 			config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
 				AdminUserName: authConfig.AdminUserName,
-				AdminPassword: preserveEnvVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
+				AdminPassword: preserveSecretVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
 				IsEnabled:     authConfig.IsEnabled,
 			}
 			return
@@ -3751,7 +3752,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	// Build auth config with hashed password but preserve env var references
 	config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
 		AdminUserName: authConfig.AdminUserName,
-		AdminPassword: preserveEnvVar(authConfig.AdminPassword, hashedPassword),
+		AdminPassword: preserveSecretVar(authConfig.AdminPassword, hashedPassword),
 		IsEnabled:     authConfig.IsEnabled,
 	}
 	// Persist to config store
@@ -4414,7 +4415,7 @@ func initEncryption(configData *ConfigData) error {
 	if configData.EncryptionKey == nil || configData.EncryptionKey.GetValue() == "" {
 		// Checking if BIFROST_ENCRYPTION_KEY environment variable is set
 		if os.Getenv("BIFROST_ENCRYPTION_KEY") != "" {
-			configData.EncryptionKey = schemas.NewEnvVar("env.BIFROST_ENCRYPTION_KEY")
+			configData.EncryptionKey = schemas.NewSecretVar("env.BIFROST_ENCRYPTION_KEY")
 		}
 	}
 	// Checking if encryption key is set
@@ -4531,6 +4532,8 @@ func reconcileVirtualKeyAssociations(
 			// Update existing provider config from file
 			existing.Weight = newPC.Weight
 			existing.AllowedModels = newPC.AllowedModels
+			existing.BlacklistedModels = newPC.BlacklistedModels
+			existing.AllowAllKeys = newPC.AllowAllKeys
 			existing.RateLimitID = newPC.RateLimitID
 			existing.Keys = newPC.Keys
 			if err := store.UpdateVirtualKeyProviderConfig(ctx, &existing, tx); err != nil {
@@ -5641,6 +5644,21 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 			}
 			return fmt.Errorf("failed to create provider key in store: %w", err)
 		}
+		// The vault store callback rewrites the secret into a vault reference
+		// during the DB write, but only on the store-side row copy. Re-read so the
+		// in-memory key (and API responses) carry FromVault/VaultRef instead of the
+		// original plaintext.
+		storedKey, err := c.ConfigStore.GetProviderKey(ctx, provider, key.ID)
+		if err != nil {
+			// The DB write succeeded but we could not re-read the vault-rewritten
+			// key. Failing here avoids committing the original plaintext into
+			// c.Providers (and serving it via the keys API) on vault deployments.
+			logger.Error("failed to re-read stored key %s for provider %s after create: %v", key.ID, provider, err)
+			return fmt.Errorf("failed to re-read provider key after create: %w", err)
+		}
+		if idx := slices.IndexFunc(updatedConfig.Keys, func(k schemas.Key) bool { return k.ID == key.ID }); idx != -1 {
+			updatedConfig.Keys[idx] = *storedKey
+		}
 	}
 
 	c.Providers[provider] = updatedConfig
@@ -5698,6 +5716,19 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 			}
 			return fmt.Errorf("failed to update provider key in store: %w", err)
 		}
+		// The vault store callback rewrites the secret into a vault reference
+		// during the DB write, but only on the store-side row copy. Re-read so the
+		// in-memory key (and API responses) carry FromVault/VaultRef instead of the
+		// original plaintext.
+		storedKey, err := c.ConfigStore.GetProviderKey(ctx, provider, keyID)
+		if err != nil {
+			// The DB write succeeded but we could not re-read the vault-rewritten
+			// key. Failing here avoids committing the original plaintext into
+			// c.Providers (and serving it via the keys API) on vault deployments.
+			logger.Error("failed to re-read stored key %s for provider %s after update: %v", keyID, provider, err)
+			return fmt.Errorf("failed to re-read provider key after update: %w", err)
+		}
+		updatedConfig.Keys[index] = *storedKey
 	}
 
 	c.Providers[provider] = updatedConfig
@@ -6242,7 +6273,7 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 
 	// Redact Header values if present
 	if config.Headers != nil {
-		configCopy.Headers = make(map[string]schemas.EnvVar, len(config.Headers))
+		configCopy.Headers = make(map[string]schemas.SecretVar, len(config.Headers))
 		for header, value := range config.Headers {
 			configCopy.Headers[header] = *value.Redacted()
 		}
@@ -6302,7 +6333,7 @@ func (c *Config) autoDetectProviders(ctx context.Context) {
 						{
 							ID:     keyID,
 							Name:   fmt.Sprintf("%s_auto_detected", envVar),
-							Value:  *schemas.NewEnvVar(apiKey),
+							Value:  *schemas.NewSecretVar(apiKey),
 							Models: schemas.WhiteList{"*"},
 							Weight: 1.0,
 						},

@@ -39,7 +39,7 @@ func TestChatStreamingFinalChunkNoDeadlock(t *testing.T) {
 				TotalTokens:      150,
 			}
 		}
-		err := accumulator.addChatStreamChunk(requestID, chunk, i == 9)
+		err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, chunk, i == 9)
 		if err != nil {
 			t.Fatalf("Failed to add chunk %d: %v", i, err)
 		}
@@ -192,7 +192,7 @@ func TestConcurrentChunkAddition(t *testing.T) {
 						Content: bifrost.Ptr(fmt.Sprintf("g%d-c%d", goroutineID, i)),
 					},
 				}
-				err := accumulator.addChatStreamChunk(requestID, chunk, false)
+				err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, chunk, false)
 				if err != nil {
 					errors <- err
 					return
@@ -245,7 +245,7 @@ func TestGetLastChunkMethodsSafe(t *testing.T) {
 			TotalTokens:      150,
 		},
 	}
-	err := accumulator.addChatStreamChunk(requestID, chunk, false)
+	err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, chunk, false)
 	if err != nil {
 		t.Fatalf("Failed to add chunk: %v", err)
 	}

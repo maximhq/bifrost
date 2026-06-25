@@ -156,6 +156,7 @@ type BifrostHTTPServer struct {
 	IntegrationHandler *handlers.IntegrationHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
+	CORSMiddleware       *handlers.CorsMiddleware
 	TracingMiddleware    *handlers.TracingMiddleware
 	WSTicketStore        *handlers.WSTicketStore
 	TempTokens           *temptoken.Service
@@ -835,6 +836,12 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
 		s.AuthMiddleware.UpdateTempTokenAuthEnabled(config.MCPEnableTempTokenAuth)
+	}
+	// Refresh the CORS middleware's immutable snapshot so its requests pick up the
+	// new AllowedOrigins/AllowedHeaders/DumpErrorsInConsoleLogs without racing the
+	// in-place ClientConfig mutation above.
+	if s.CORSMiddleware != nil {
+		s.CORSMiddleware.UpdateConfig(s.Config)
 	}
 	// Reloading config in bifrost client
 	if s.Client != nil {
@@ -1705,6 +1712,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes
 	s.Router = router.New()
+	// Initialize CORS middleware
+	s.CORSMiddleware = handlers.NewCorsMiddleware(s.Config)
 	commonMiddlewares := s.PrepareCommonMiddlewares()
 	apiMiddlewares := commonMiddlewares
 	inferenceMiddlewares := commonMiddlewares
@@ -1827,7 +1836,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.SecurityHeadersMiddleware()(handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
+		Handler:            handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
