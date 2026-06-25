@@ -942,6 +942,10 @@ bifrost:
   # Load balancer configuration for intelligent request routing
   loadBalancer:
     enabled: false
+    # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
+    # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
+    # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
+    # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
     trackerConfig: {}
     bootstrap: {}
 
