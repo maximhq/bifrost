@@ -4663,6 +4663,9 @@ func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *con
 		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
+			if b.CreatedAt.After(start) {
+				start = b.CreatedAt
+			}
 			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
 				VirtualKeyIDs: []string{vk.ID},
 				StartTime:     &start,

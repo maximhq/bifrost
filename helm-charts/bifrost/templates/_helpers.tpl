@@ -1278,6 +1278,9 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $otelConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
+{{- if hasKey $inputConfig "group_traces_by_session" }}
+{{- $_ := set $otelConfig "group_traces_by_session" $inputConfig.group_traces_by_session }}
+{{- end }}
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
 {{- end }}
@@ -1336,6 +1339,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if hasKey $inputConfig "group_traces_by_session" }}
+{{- $_ := set $datadogConfig "group_traces_by_session" $inputConfig.group_traces_by_session }}
 {{- end }}
 {{- if hasKey $inputConfig "agentless" }}
 {{- $_ := set $datadogConfig "agentless" $inputConfig.agentless }}

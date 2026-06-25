@@ -2219,17 +2219,23 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 		defer close(closed)
 		select {
 		case <-ctx.Done():
-			if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+			// Atomically claim the close. Only one owner (this goroutine, the
+			// idle-timeout timer, or ReleaseStreamingResponse) may close the
+			// non-idempotent fasthttp body stream: a second CloseWithError
+			// re-runs releaseRequestStream, double-Putting the pooled
+			// requestStream so a later request aliases it concurrently and
+			// panics with a negative chunkLeft slice bound. GetAndSetValue is a
+			// single locked compare-and-swap, unlike the previous racy
+			// Value-then-SetValue check.
+			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 				return
 			}
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				if err := closer.Close(); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
 			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				if err := wce.CloseWithError(ctx.Err()); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
@@ -2243,16 +2249,16 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
 			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
 			if ctx.Err() != nil {
-				if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+				// Same atomic claim as the ctx.Done branch: skip if another
+				// owner already closed/released the stream.
+				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 					return
 				}
 				if closer, ok := bodyStream.(io.Closer); ok {
-					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
 				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
@@ -2357,10 +2363,18 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	r.timer = time.AfterFunc(timeout, func() {
 		defer r.timerDoneOnce.Do(func() { close(r.timerDone) })
 		r.once.Do(func() {
-			r.fired.Store(true)
+			// Atomically claim the close before tearing anything down. If a
+			// cancellation/release owner already closed the stream, do nothing:
+			// a second closeBodyStream re-runs releaseRequestStream and
+			// double-Puts the pooled requestStream, poisoning another request.
+			// Setting r.fired only on the winning path keeps the Read recover's
+			// idle-timeout vs closed error classification accurate.
 			if ctx != nil {
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+					return
+				}
 			}
+			r.fired.Store(true)
 			// closeBodyStream may panic: an orphaned timer can fire after the
 			// stream's connection has already been released to / reused from
 			// the fasthttp pool, so CloseWithError nil-derefs in
@@ -2416,7 +2430,6 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 				err = r.closedReadError()
 				return
 			}
-			panic(recovered)
 		}
 	}()
 
@@ -2721,8 +2734,22 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
-	// Skip drain + ReleaseResponse if the stream was already closed (e.g. by SetupStreamCancellation); fasthttp.ReleaseResponse would re-Close and nil-deref the TCP conn — leaking to GC is the intentional trade-off, so keep the defer below this check.
-	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
+	if resp == nil {
+		return
+	}
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		fasthttp.ReleaseResponse(resp)
+		return
+	}
+	// Atomically claim the close. If a cancel/timeout owner already closed the
+	// stream, skip drain + ReleaseResponse: fasthttp.ReleaseResponse would
+	// re-Close and double-release the pooled requestStream/conn (poisoning
+	// another request, or nil-derefing the TCP conn). Leaking to GC is the
+	// intentional trade-off, so keep the defer below this check. GetAndSetValue
+	// is a single locked compare-and-swap, closing the race the previous
+	// Value-only check left open against a concurrent timer/cancellation close.
+	if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 		return
 	}
 	defer func() {
@@ -2733,11 +2760,22 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
-		}
+	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 	}
+	// Close the body-stream wrapper exactly once HERE and detach it from resp
+	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close
+	// callback releases the pooled *bufio.Reader and *requestStream with NO
+	// idempotency guard (client.go: hc.ReleaseReader(br) + releaseRequestStream
+	// are bare sync.Pool.Put). Without detaching, the fasthttp.ReleaseResponse
+	// below runs Reset -> closeBodyStream and fires that callback a SECOND time,
+	// double-Putting the reader; two later requests then acquire and Reset the
+	// same *bufio.Reader and race on it, producing the
+	// "slice bounds out of range [:N] with capacity 4096" panic in
+	// mustPeekBuffered. Detaching makes ReleaseResponse's Reset a no-op
+	// (closeBodyStream short-circuits on nil). The CAS above already serializes
+	// this against the cancellation / idle-timeout closers.
+	resp.CloseBodyStream()
 	fasthttp.ReleaseResponse(resp)
 }
 

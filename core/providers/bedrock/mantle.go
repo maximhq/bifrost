@@ -14,14 +14,23 @@ import (
 )
 
 // isMantleModel reports whether a model should be routed via the Bedrock Mantle endpoint.
-// Accepts "gpt-*", "openai.gpt-*", or region-prefixed variants.
+// Accepts "gpt-*"/"gemma-4-*", "openai.gpt-*"/"google.gemma-4-*", or region-prefixed variants.
+// Gemma 3 is intentionally excluded: it only supports Chat (not Responses) on mantle, and the
+// non-mantle path serves both APIs via Converse, so forcing it to mantle would break Responses.
 func isMantleModel(model string) bool {
-	return strings.Contains(model, "gpt-")
+	return strings.Contains(model, "gpt-") || strings.Contains(model, "gemma-4")
 }
 
-// mantleURL builds the Bedrock Mantle endpoint URL for the given region and API path.
-func mantleURL(region, path string) string {
-	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/v1/%s", region, path)
+// mantleURL builds the Bedrock Mantle endpoint URL for the given region, model, and API path.
+// Pass the canonical (capability-resolved) model for correct path gating; the request body
+// still carries the wire request.Model. Frontier families (closed gpt-5.x, Gemma 4) live under
+// the "openai/v1" base path; gpt-oss uses the bare "v1" path.
+func mantleURL(region, model, path string) string {
+	base := "v1"
+	if strings.Contains(model, "gpt-5") || strings.Contains(model, "gemma-4") {
+		base = "openai/v1"
+	}
+	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s/%s", region, base, path)
 }
 
 // mantleSigV4Headers computes SigV4 auth headers for a mantle request by signing a dummy
@@ -61,7 +70,7 @@ func (provider *BedrockProvider) chatCompletionViaMantle(
 	request *schemas.BifrostChatRequest,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "chat/completions")
+	url := mantleURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 
 	// Build extraHeaders: always start with network-config headers, then overlay SigV4 if needed.
 	// Allocate explicitly so maps.Copy never writes into a nil map.
@@ -107,7 +116,7 @@ func (provider *BedrockProvider) chatCompletionStreamViaMantle(
 	request *schemas.BifrostChatRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "chat/completions")
+	url := mantleURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 
 	// Bearer: identical to Groq / any OpenAI-compatible provider.
 	if key.Value.GetValue() != "" {
@@ -163,7 +172,7 @@ func (provider *BedrockProvider) responsesViaMantle(
 	request *schemas.BifrostResponsesRequest,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "responses")
+	url := mantleURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 
 	extraHeaders := make(map[string]string, len(provider.networkConfig.ExtraHeaders))
 	maps.Copy(extraHeaders, provider.networkConfig.ExtraHeaders)
@@ -205,7 +214,7 @@ func (provider *BedrockProvider) responsesStreamViaMantle(
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "responses")
+	url := mantleURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 
 	// Bearer: identical to Groq / any OpenAI-compatible provider.
 	if key.Value.GetValue() != "" {

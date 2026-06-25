@@ -2134,7 +2134,7 @@
                   "items": {
                     "type": "string"
                   },
-                  "description": "DNS names to resolve for node discovery"
+                  "description": "DNS names to resolve for node discovery. Supports env.VAR_NAME for environment variable substitution."
                 },
                 "udpBroadcastPort": {
                   "type": "integer",
@@ -2203,7 +2203,7 @@
             },
             "provider": {
               "type": "string",
-              "enum": ["", "okta", "entra", "keycloak", "zitadel", "google"],
+              "enum": ["", "okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"],
               "description": "SCIM/SSO provider type (empty when not configured)"
             },
             "config": {
@@ -2222,7 +2222,7 @@
               "then": {
                 "properties": {
                   "provider": {
-                    "enum": ["okta", "entra", "keycloak", "zitadel", "google"]
+                    "enum": ["okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"]
                   }
                 },
                 "required": ["provider"]
@@ -2287,93 +2287,10 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {
-                        "type": "array",
-                        "description": "Ordered list of attribute -> role mappings (first match wins). Requires an Okta Custom Authorization Server; the free Org Authorization Server does not support claim expressions.",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": {
-                              "type": "string",
-                              "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
-                            },
-                            "value": {
-                              "type": "string",
-                              "description": "Claim value to match (case-insensitive)"
-                            },
-                            "role": {
-                              "type": "string",
-                              "description": "Bifrost role to assign on match"
-                            },
-                            "attributeType": {
-                              "type": "string",
-                              "enum": ["user", "group"],
-                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
-                            },
-                            "attributeValue": {
-                              "type": "string",
-                              "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
-                            }
-                          },
-                          "required": ["attribute", "value", "role"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeTeamMappings": {
-                        "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name" },
-                            "value": {
-                              "type": "string",
-                              "description": "Claim value to match, or '*' for pass-through"
-                            },
-                            "team": {
-                              "type": "string",
-                              "description": "Bifrost team slug to assign"
-                            },
-                            "attributeType": {
-                              "type": "string",
-                              "enum": ["user", "group"],
-                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
-                            },
-                            "attributeValue": {
-                              "type": "string",
-                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
-                            }
-                          },
-                          "required": ["attribute", "value", "team"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeBusinessUnitMappings": {
-                        "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name" },
-                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
-                            "business_unit": {
-                              "type": "string",
-                              "description": "Bifrost business unit slug to assign"
-                            },
-                            "attributeType": {
-                              "type": "string",
-                              "enum": ["user", "group"],
-                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
-                            },
-                            "attributeValue": {
-                              "type": "string",
-                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
-                            }
-                          },
-                          "required": ["attribute", "value"],
-                          "additionalProperties": false
-                        }
-                      }
+                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
                     "additionalProperties": false
@@ -2441,84 +2358,10 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {
-                        "type": "array",
-                        "description": "Ordered list of attribute -> role mappings (first match wins).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": {
-                              "type": "string",
-                              "description": "JWT claim name (supports dot paths)"
-                            },
-                            "value": {
-                              "type": "string",
-                              "description": "Claim value to match (case-insensitive)"
-                            },
-                            "role": {
-                              "type": "string",
-                              "description": "Bifrost role to assign on match"
-                            },
-                            "attributeType": {
-                              "type": "string",
-                              "enum": ["user", "group"],
-                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
-                            },
-                            "attributeValue": {
-                              "type": "string",
-                              "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
-                            }
-                          },
-                          "required": ["attribute", "value", "role"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeTeamMappings": {
-                        "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name" },
-                            "value": { "type": "string", "description": "Claim value to match, or '*' for pass-through" },
-                            "team": { "type": "string", "description": "Bifrost team slug to assign. In case of '*' value, leave this empty" },
-                            "attributeType": {
-                              "type": "string",
-                              "enum": ["user", "group"],
-                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
-                            },
-                            "attributeValue": {
-                              "type": "string",
-                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
-                            }
-                          },
-                          "required": ["attribute", "value", "team"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeBusinessUnitMappings": {
-                        "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name" },
-                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
-                            "business_unit": { "type": "string", "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty" },
-                            "attributeType": {
-                              "type": "string",
-                              "enum": ["user", "group"],
-                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
-                            },
-                            "attributeValue": {
-                              "type": "string",
-                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
-                            }
-                          },
-                          "required": ["attribute", "value"],
-                          "additionalProperties": false
-                        }
-                      }
+                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["tenantId", "clientId"],
                     "additionalProperties": false
@@ -2580,57 +2423,10 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {
-                        "type": "array",
-                        "description": "Ordered list of attribute -> role mappings (first match wins).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": {
-                              "type": "string",
-                              "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
-                            },
-                            "value": {
-                              "type": "string",
-                              "description": "Claim value to match (case-insensitive)"
-                            },
-                            "role": {
-                              "type": "string",
-                              "description": "Bifrost role to assign on match"
-                            }
-                          },
-                          "required": ["attribute", "value", "role"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeTeamMappings": {
-                        "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "team": { "type": "string" }
-                          },
-                          "required": ["attribute", "value", "team"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeBusinessUnitMappings": {
-                        "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
-                            "business_unit": { "type": "string" }
-                          },
-                          "required": ["attribute", "value"],
-                          "additionalProperties": false
-                        }
-                      }
+                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["serverUrl", "realm", "clientId", "clientSecret"],
                     "additionalProperties": false
@@ -2691,48 +2487,10 @@
                         "description": "JWT claim field for team/group IDs (default: 'groups')",
                         "default": "groups"
                       },
-                      "attributeRoleMappings": {
-                        "type": "array",
-                        "description": "Ordered list of attribute -> role mappings (first match wins).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "role": { "type": "string" }
-                          },
-                          "required": ["attribute", "value", "role"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeTeamMappings": {
-                        "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "team": { "type": "string" }
-                          },
-                          "required": ["attribute", "value", "team"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeBusinessUnitMappings": {
-                        "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
-                            "business_unit": { "type": "string" }
-                          },
-                          "required": ["attribute", "value"],
-                          "additionalProperties": false
-                        }
-                      }
+                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false
@@ -2803,48 +2561,10 @@
                         "description": "Claim field for team/group IDs (default: 'groups')",
                         "default": "groups"
                       },
-                      "attributeRoleMappings": {
-                        "type": "array",
-                        "description": "Ordered list of attribute -> role mappings (first match wins).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "role": { "type": "string" }
-                          },
-                          "required": ["attribute", "value", "role"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeTeamMappings": {
-                        "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "team": { "type": "string" }
-                          },
-                          "required": ["attribute", "value", "team"],
-                          "additionalProperties": false
-                        }
-                      },
-                      "attributeBusinessUnitMappings": {
-                        "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply).",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string", "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign." },
-                            "business_unit": { "type": "string" }
-                          },
-                          "required": ["attribute", "value"],
-                          "additionalProperties": false
-                        }
-                      }
+                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false,
@@ -2885,6 +2605,135 @@
                         }
                       }
                     ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "provider": { "const": "sailpoint" }
+                },
+                "required": ["enabled", "provider"]
+              },
+              "then": {
+                "properties": {
+                  "config": {
+                    "type": "object",
+                    "description": "SailPoint identity security platform configuration",
+                    "properties": {
+                      "product": {
+                        "type": "string",
+                        "enum": ["isc", "iiq"],
+                        "description": "SailPoint product type: 'isc' for Identity Security Cloud, 'iiq' for IdentityIQ"
+                      },
+                      "tenant": {
+                        "type": "string",
+                        "description": "ISC tenant identifier (required for ISC product)"
+                      },
+                      "baseUrl": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "IdentityIQ base URL (required for IIQ product)"
+                      },
+                      "username": {
+                        "type": "string",
+                        "description": "Username for IdentityIQ authentication"
+                      },
+                      "password": {
+                        "type": "string",
+                        "description": "Password for IdentityIQ authentication"
+                      },
+                      "clientId": {
+                        "type": "string",
+                        "description": "OAuth2 client ID"
+                      },
+                      "clientSecret": {
+                        "type": "string",
+                        "description": "OAuth2 client secret"
+                      },
+                      "teamIdsField": {
+                        "type": "string",
+                        "description": "JWT claim field for team IDs"
+                      },
+                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                    },
+                    "required": ["product"],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "provider": { "const": "generic" }
+                },
+                "required": ["enabled", "provider"]
+              },
+              "then": {
+                "properties": {
+                  "config": {
+                    "type": "object",
+                    "description": "Generic OIDC authentication configuration",
+                    "properties": {
+                      "issuerUrl": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "OIDC issuer URL"
+                      },
+                      "clientId": {
+                        "type": "string",
+                        "description": "OAuth2 client ID"
+                      },
+                      "clientSecret": {
+                        "type": "string",
+                        "description": "OAuth2 client secret"
+                      },
+                      "audience": {
+                        "type": "string",
+                        "description": "JWT audience for validation"
+                      },
+                      "authorizationEndpoint": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Override for the authorization endpoint"
+                      },
+                      "tokenEndpoint": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Override for the token endpoint"
+                      },
+                      "userinfoEndpoint": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Override for the userinfo endpoint"
+                      },
+                      "teamIdsField": {
+                        "type": "string",
+                        "description": "JWT claim field for team IDs"
+                      },
+                      "rolesField": {
+                        "type": "string",
+                        "description": "JWT claim field for roles"
+                      },
+                      "scopes": {
+                        "type": "array",
+                        "description": "Additional OAuth2 scopes to request",
+                        "items": { "type": "string" }
+                      },
+                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                    },
+                    "required": ["issuerUrl", "clientId"],
+                    "additionalProperties": false
                   }
                 }
               }
@@ -5632,6 +5481,95 @@
       },
       "required": ["provider"],
       "additionalProperties": false
+    },
+    "scim_attribute_role_mappings": {
+      "type": "array",
+      "description": "Ordered list of attribute -> role mappings (first match wins).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive)"
+          },
+          "role": {
+            "type": "string",
+            "description": "Bifrost role to assign on match"
+          }
+        },
+        "required": ["attribute", "value", "role"],
+        "additionalProperties": false
+      }
+    },
+    "scim_attribute_team_mappings": {
+      "type": "array",
+      "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match, or '*' for pass-through"
+          },
+          "team": {
+            "type": "string",
+            "description": "Bifrost team slug to assign. In case of '*' value, leave this empty"
+          }
+        },
+        "required": ["attribute", "value"],
+        "additionalProperties": false
+      }
+    },
+    "scim_attribute_business_unit_mappings": {
+      "type": "array",
+      "description": "Attribute -> business-unit mappings (all matches apply).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match. Wildcard '*' will use the claim as the name of the business unit to assign."
+          },
+          "business_unit": {
+            "type": "string",
+            "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty"
+          }
+        },
+        "required": ["attribute", "value"],
+        "additionalProperties": false
+      }
+    },
+    "scim_claim_attributes": {
+      "type": "object",
+      "description": "Per-claim SCIM interpretation. Maps each claim name to its SCIM source type and attribute key. Set by the UI when SCIM provisioning is configured.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "attributeType": {
+            "type": "string",
+            "enum": ["user", "group"],
+            "description": "'user' reads from SCIM User resource attributes; 'group' matches SCIM Group resource."
+          },
+          "attributeValue": {
+            "type": "string",
+            "description": "SCIM attribute key or group match field for this claim."
+          }
+        },
+        "required": ["attributeType", "attributeValue"],
+        "additionalProperties": false
+      }
     }
   }
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // ---------------------------------------------------------------------------
@@ -564,7 +565,7 @@ func TestSetupStreamCancellation_NoPanicOnCancelledContext(t *testing.T) {
 	defer close(body.allowReturn)
 
 	type readResult struct {
-		err     error
+		err      error
 		panicked any
 	}
 	resultCh := make(chan readResult, 1)
@@ -596,5 +597,139 @@ func TestSetupStreamCancellation_NoPanicOnCancelledContext(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Error("Read goroutine did not unblock after context cancellation")
+	}
+}
+
+// countingStreamCloser models fasthttp's non-idempotent streaming body handle:
+// it implements streamCloserWithError (CloseWithError) and io.Reader, counting
+// closes and reads. The whole point of the atomic-claim fix is that the
+// underlying close runs at most once across the cancellation goroutine, the
+// idle-timeout timer, and ReleaseStreamingResponse — a second close would
+// re-run fasthttp's releaseRequestStream and double-Put the pooled struct.
+type countingStreamCloser struct {
+	closeCount atomic.Int32
+	readCount  atomic.Int32
+}
+
+func (c *countingStreamCloser) Read([]byte) (int, error) {
+	c.readCount.Add(1)
+	return 0, io.EOF
+}
+
+func (c *countingStreamCloser) CloseWithError(error) error {
+	c.closeCount.Add(1)
+	return nil
+}
+
+// TestStreamClose_ExactlyOnceAcrossOwners drives the idle-timeout timer and the
+// cancellation goroutine concurrently against one shared stream + context and
+// asserts the underlying CloseWithError fires exactly once. Before the fix the
+// two owners used a racy Value-then-SetValue guard and could both close, which
+// double-released the pooled fasthttp requestStream and poisoned another
+// request (the `slice bounds out of range [:-680]` crash). Run with -race.
+func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
+	t.Parallel()
+
+	for i := 0; i < 100; i++ {
+		body := &countingStreamCloser{}
+		goCtx, cancel := context.WithCancel(context.Background())
+		ctx := schemas.NewBifrostContext(goCtx, time.Time{})
+
+		// Tiny idle timeout so the timer races the cancellation.
+		_, cleanup := NewIdleTimeoutReader(body, body, time.Millisecond, ctx)
+		stop := SetupStreamCancellation(ctx, body, getLogger())
+
+		go cancel() // fire cancellation concurrently with the idle timer
+
+		// Wait (bounded) until at least one owner has performed the close, rather
+		// than relying on a fixed sleep that can miss both close paths on slow CI.
+		deadline := time.Now().Add(2 * time.Second)
+		for body.closeCount.Load() == 0 && time.Now().Before(deadline) {
+			time.Sleep(50 * time.Microsecond)
+		}
+		stop()
+		cleanup()
+
+		if got := body.closeCount.Load(); got != 1 {
+			t.Fatalf("iteration %d: CloseWithError called %d times, want exactly 1", i, got)
+		}
+	}
+}
+
+// TestConnectionClosedClaim_SerializesOwners verifies the primitive the fix
+// relies on: GetAndSetValue on BifrostContextKeyConnectionClosed is an atomic
+// compare-and-claim, so exactly one of many concurrent owners observes the
+// prior `false` and is permitted to perform the underlying close.
+func TestConnectionClosedClaim_SerializesOwners(t *testing.T) {
+	t.Parallel()
+
+	const owners = 64
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+
+	var winners atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < owners; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); !prev {
+				winners.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := winners.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 owner to win the close claim, got %d", got)
+	}
+}
+
+// TestReleaseStreamingResponse_SkipsWhenAlreadyClaimed asserts that once a
+// cancel/timeout owner has claimed the close, ReleaseStreamingResponse neither
+// drains nor releases the body stream — preventing fasthttp.ReleaseResponse
+// from triggering a second releaseRequestStream on an already-relinquished
+// pooled struct.
+func TestReleaseStreamingResponse_SkipsWhenAlreadyClaimed(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	// A prior owner already claimed + closed the stream.
+	ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true)
+
+	body := &countingStreamCloser{}
+	resp := fasthttp.AcquireResponse()
+	resp.SetBodyStream(body, -1)
+
+	ReleaseStreamingResponse(ctx, resp)
+
+	if got := body.readCount.Load(); got != 0 {
+		t.Fatalf("ReleaseStreamingResponse drained the body despite a prior close claim (read %d times)", got)
+	}
+	if got := body.closeCount.Load(); got != 0 {
+		t.Fatalf("ReleaseStreamingResponse closed an already-claimed stream (%d times)", got)
+	}
+
+	// The claim was lost, so resp was intentionally not released (the
+	// production GC-leak trade-off). Release it here to keep the test clean.
+	fasthttp.ReleaseResponse(resp)
+}
+
+// TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection covers the
+// pre-response error path: fasthttp.Do can fail before installing a body stream.
+// Releasing that empty response must not mark the request context as
+// connection-closed, because retries/fallbacks reuse the same BifrostContext.
+func TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	resp := fasthttp.AcquireResponse()
+
+	ReleaseStreamingResponse(ctx, resp)
+
+	if closed, _ := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); closed {
+		t.Fatal("ReleaseStreamingResponse claimed connection ownership without a body stream")
 	}
 }
