@@ -4,7 +4,7 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.24
+**Latest Version:** 2.1.25
 
 ## Changelog
 
