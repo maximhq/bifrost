@@ -891,7 +891,10 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+<<<<<<< HEAD
               "changelogs/ent-v1.5.1",
+=======
+>>>>>>> 5e42852b9 (docs update)
               "changelogs/ent-v1.5.0",
               "changelogs/ent-v1.4.13",
               "changelogs/ent-v1.4.12",
