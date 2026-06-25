@@ -4,11 +4,11 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.24
+**Latest Version:** 2.1.25
 
 ## Changelog
 
-### Upcoming [2.1.25]
+### 2.1.25
 
 - Added `evaluation_mode` to guardrail rules. Accepts `bundled` (default, evaluate all turns together) or `per_turn` (evaluate each turn independently). Set under `bifrost.guardrails.rules[].evaluation_mode`.
 - Added `group_traces_by_session` to the OTEL and Datadog plugin configs. When `true`, requests sharing the same `x-bf-session-id` header are grouped into a single trace. An inbound W3C `traceparent` always takes priority. Defaults to `false`.
