@@ -1578,6 +1578,10 @@ false
 {{- $_ := set $config "feature_flags" (dict "flags" $flags) }}
 {{- end }}
 {{- end }}
+{{- /* Circuit Breaker Config */ -}}
+{{- if .Values.bifrost.circuitBreakerConfig }}
+{{- $_ := set $config "circuit_breaker_config" .Values.bifrost.circuitBreakerConfig }}
+{{- end }}
 {{- $config | toJson }}
 {{- end }}
 

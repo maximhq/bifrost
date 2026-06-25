@@ -1039,6 +1039,27 @@ bifrost:
   #     idleTimeoutSeconds: 600
   #     maxConnectionLifetimeSeconds: 7200
 
+  # Circuit breaker configuration: automatic failover when a provider endpoint degrades.
+  # Each policy monitors a primary provider+model and redirects traffic to a fallback
+  # when the circuit opens based on response header signals.
+  # circuitBreakerConfig:
+  #   policies:
+  #     - name: "azure-gpt4-ptu-failover"
+  #       enabled: true
+  #       primary_provider: "azure"
+  #       primary_model: "gpt-4-ptu"
+  #       primary_key_ids: []          # leave empty for a single shared circuit
+  #       fallback_provider: "openai"
+  #       fallback_model: "gpt-4o"
+  #       condition:
+  #         operator: "OR"             # OR (default) | AND
+  #         signals:
+  #           - source: "response_header"
+  #             header_name: "x-ms-throttle-reason"
+  #             header_value: "ModelCapacityExceeded"
+  #       default_cooldown: "30s"      # Go duration; used when no header-based cooldown
+  #       cooldown_header: "retry-after-ms"  # header whose value (ms) overrides default_cooldown
+
 # Storage configuration
 storage:
   # Default storage mode: sqlite or postgres
