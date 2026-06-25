@@ -122,7 +122,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key := &pc.Keys[i]
 
 			// Clear the actual API key value
-			key.Value = *schemas.NewEnvVar("")
+			key.Value = *schemas.NewSecretVar("")
 
 			// Clear all Azure-related sensitive fields
 			key.AzureEndpoint = nil
@@ -209,7 +209,7 @@ type TableVirtualKey struct {
 	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
 	Description     string                          `gorm:"type:text" json:"description,omitempty"`
-	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`           // The virtual key value
+	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
 	IsActive        *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
@@ -266,15 +266,9 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	// Hash must be computed before encryption (from plaintext value)
 	if vk.Value != "" {
 		vk.ValueHash = encrypt.HashSHA256(vk.Value)
+
 	}
-	if VaultIsEnabled() && vk.Value != "" {
-		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
-		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
-		if err := vaultString(tx.Statement.Context, path, &vk.Value); err != nil {
-			return fmt.Errorf("failed to vault virtual key value: %w", err)
-		}
-		vk.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() && vk.Value != "" {
+	if encrypt.IsEnabled() && vk.Value != "" {
 		if err := encryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
 		}
@@ -290,10 +284,6 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 // every VK update.
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 	switch vk.EncryptionStatus {
-	case EncryptionStatusVault:
-		if err := resolveVaultString(tx.Statement.Context, &vk.Value); err != nil {
-			return fmt.Errorf("failed to resolve vault virtual key value: %w", err)
-		}
 	case EncryptionStatusEncrypted:
 		if err := decryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
@@ -314,16 +304,5 @@ func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 			pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
 		}
 	}
-	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (vk *TableVirtualKey) AfterDelete(tx *gorm.DB) error {
-	if vk.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Value")
-	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), vk.TableName(), vk.ID, fieldName)
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }

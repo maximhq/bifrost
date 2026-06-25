@@ -389,6 +389,21 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Reject `keys` in the request body. This endpoint manages provider-level
+	// configuration only; keys are managed via the dedicated /keys endpoints
+	// (POST/PUT/DELETE /api/providers/{provider}/keys[/{key_id}]). Accepting
+	// the field silently would discard the caller's intent — the construction
+	// below ignores `payload.Keys` and reuses `oldConfigRaw.Keys`. Failing
+	// fast keeps the API contract honest.
+	if len(payload.Keys) > 0 {
+		SendError(
+			ctx,
+			fasthttp.StatusBadRequest,
+			"keys are not accepted on this endpoint; use POST/PUT /api/providers/{provider}/keys[/{key_id}] to manage keys",
+		)
+		return
+	}
+
 	// Get the raw config to access actual values for merging with redacted request values
 	oldConfigRaw, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {

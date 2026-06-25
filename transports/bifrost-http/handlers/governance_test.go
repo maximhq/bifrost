@@ -1760,7 +1760,9 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
 		ScopeID:   &scopeID,
 		Budgets: []configstoreTables.TableBudget{
-			{ID: "b-vk-e2e", MaxLimit: 100, CurrentUsage: 30, ResetDuration: "1d", LastReset: cycleStart},
+			// CreatedAt precedes LastReset (the steady-state: budget has existed for
+			// several cycles), so the window clamp keeps LastReset as the query start.
+			{ID: "b-vk-e2e", MaxLimit: 100, CurrentUsage: 30, ResetDuration: "1d", LastReset: cycleStart, CreatedAt: cycleStart.Add(-24 * time.Hour)},
 		},
 	}
 	if err := store.CreateModelConfig(ctx, vkMC); err != nil {
@@ -1863,7 +1865,8 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	if s := resp.Budgets[0].Models[0]; s.Model != "gpt-4o" || s.Provider != "openai" || s.TotalRequests != 3 || s.TotalTokens != 900 || s.TotalCost != 0.42 {
 		t.Fatalf("unexpected per_model_usage spend: %#v", s)
 	}
-	// The usage query must be scoped to this VK and windowed at the budget's last reset.
+	// The usage query must be scoped to this VK and windowed at the budget's last
+	// reset (the budget predates LastReset, so the creation-time clamp is a no-op here).
 	if len(logMgr.calls) != 1 {
 		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
 	}
@@ -1876,6 +1879,74 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	}
 	if call.EndTime == nil || call.EndTime.Before(cycleStart) {
 		t.Fatalf("expected EndTime >= StartTime, got %v", call.EndTime)
+	}
+}
+
+// TestGetVirtualKeyQuota_WindowClampedToBudgetCreation verifies that when a budget's
+// LastReset is backdated to a calendar period start that predates the budget's
+// creation (e.g. a "1d" budget created mid-day with LastReset at midnight), the
+// per_model_usage query window starts at CreatedAt rather than LastReset — so the
+// breakdown does not report spend that occurred before the budget existed and stays
+// consistent with current_usage (which only accrues from creation).
+func TestGetVirtualKeyQuota_WindowClampedToBudgetCreation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	periodStart := time.Date(2026, time.June, 24, 0, 0, 0, 0, time.UTC)  // backdated "1d" boundary (midnight)
+	createdAt := time.Date(2026, time.June, 24, 11, 56, 42, 0, time.UTC) // budget created mid-day
+
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "quota_clamp.db")},
+	}, &mockLogger{})
+	if err != nil {
+		t.Fatalf("failed to create config store: %v", err)
+	}
+
+	const vkID = "vk-clamp"
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       vkID,
+		Name:     "Clamp",
+		Value:    "sk-bf-clamp-secret",
+		IsActive: &active,
+	}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("failed to create VK: %v", err)
+	}
+
+	scopeID := vkID
+	vkMC := &configstoreTables.TableModelConfig{
+		ID:        "mc-clamp",
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:   &scopeID,
+		Budgets: []configstoreTables.TableBudget{
+			{ID: "b-clamp", MaxLimit: 6, CurrentUsage: 0, ResetDuration: "1d", LastReset: periodStart, CreatedAt: createdAt},
+		},
+	}
+	if err := store.CreateModelConfig(ctx, vkMC); err != nil {
+		t.Fatalf("failed to create model config: %v", err)
+	}
+
+	logMgr := &mockQuotaLogManager{rankings: &logstore.ModelRankingResult{}}
+	h := &GovernanceHandler{configStore: store, logManager: logMgr}
+
+	var req fasthttp.Request
+	req.Header.Set("x-bf-vk", "sk-bf-clamp-secret")
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	h.getVirtualKeyQuota(reqCtx)
+
+	if reqCtx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	}
+	if len(logMgr.calls) != 1 {
+		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
+	}
+	call := logMgr.calls[0]
+	if call.StartTime == nil || !call.StartTime.Equal(createdAt) {
+		t.Fatalf("expected StartTime=%v (budget creation, clamped above backdated last reset), got %v", createdAt, call.StartTime)
 	}
 }
 
@@ -2724,5 +2795,83 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 	}
 	if len(store.updatedBudgets) != 0 {
 		t.Errorf("expected no UpdateBudget call when calendar_aligned was already true, got %d", len(store.updatedBudgets))
+	}
+}
+
+// TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget is a
+// regression test for BF-1497: VKs provisioned via an access profile / config.json
+// carry their global budget directly (TableBudget.VirtualKeyID set, preloaded into
+// vk.Budgets) and have no VK-scoped model config. Hydration must not wipe that
+// budget when no model config matches.
+func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *testing.T) {
+	directBudget := configstoreTables.TableBudget{
+		ID:            "bud-direct",
+		MaxLimit:      2500.0,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr("vk-ap"),
+		CurrentUsage:  120.0,
+	}
+	directRL := &configstoreTables.TableRateLimit{ID: "rl-direct"}
+	// A config.json-provisioned VK can also carry directly-attached per-provider
+	// budgets (TableBudget.ProviderConfigID set), which must survive hydration too.
+	pcBudget := configstoreTables.TableBudget{
+		ID:               "bud-direct-pc",
+		MaxLimit:         500.0,
+		ResetDuration:    "1M",
+		ProviderConfigID: schemas.Ptr(uint(7)),
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID:          "vk-ap",
+		Budgets:     []configstoreTables.TableBudget{directBudget},
+		RateLimit:   directRL,
+		RateLimitID: schemas.Ptr("rl-direct"),
+		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "anthropic", Budgets: []configstoreTables.TableBudget{pcBudget}},
+		},
+	}
+
+	// No VK-scoped model config exists for this VK.
+	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{})
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-direct" {
+		t.Fatalf("directly attached budget was wiped: got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != directRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-direct" {
+		t.Errorf("directly attached rate limit was wiped: rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
+	}
+	if len(vk.ProviderConfigs[0].Budgets) != 1 || vk.ProviderConfigs[0].Budgets[0].ID != "bud-direct-pc" {
+		t.Errorf("directly attached per-provider budget was wiped: got %+v", vk.ProviderConfigs[0].Budgets)
+	}
+}
+
+// TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the
+// existing overlay path: when a VK-scoped model config owns the governance
+// (TableBudget.ModelConfigID set, not preloaded onto the VK), hydration overlays it.
+func TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance(t *testing.T) {
+	mcBudget := configstoreTables.TableBudget{
+		ID:            "bud-mc",
+		MaxLimit:      999.0,
+		ResetDuration: "1M",
+		ModelConfigID: schemas.Ptr("mc-top"),
+	}
+	mcRL := &configstoreTables.TableRateLimit{ID: "rl-mc"}
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-sheet"}
+
+	byKey := map[string]*configstoreTables.TableModelConfig{
+		vkModelConfigIndexKey("vk-sheet", nil): {
+			ID:          "mc-top",
+			Budgets:     []configstoreTables.TableBudget{mcBudget},
+			RateLimit:   mcRL,
+			RateLimitID: schemas.Ptr("rl-mc"),
+		},
+	}
+
+	applyVKGovernanceFromModelConfigs(vk, byKey)
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-mc" {
+		t.Fatalf("expected model-config budget overlaid, got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != mcRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-mc" {
+		t.Errorf("expected model-config rate limit overlaid, got rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
 	}
 }

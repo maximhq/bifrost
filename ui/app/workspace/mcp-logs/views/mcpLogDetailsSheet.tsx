@@ -126,13 +126,13 @@ export function MCPLogDetailSheet({
 						</SheetTitle>
 					</div>
 					<SheetNavigationButtons
-							hasPrev={hasPrev}
-							hasNext={hasNext}
-							onNavigate={(dir) => onNavigate?.(dir)}
-							prevKeys={prevKeys}
-							nextKeys={nextKeys}
-							entityLabel="log"
-						/>
+						hasPrev={hasPrev}
+						hasNext={hasNext}
+						onNavigate={(dir) => onNavigate?.(dir)}
+						prevKeys={prevKeys}
+						nextKeys={nextKeys}
+						entityLabel="log"
+					/>
 					<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
 						<DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
 							<DropdownMenuTrigger asChild>

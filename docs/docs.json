@@ -150,6 +150,7 @@
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
                   "providers/supported-providers/replicate",
+                  "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
@@ -320,10 +321,12 @@
                 ]
               },
               "enterprise/audit-logs",
+              "enterprise/secret-management",
               "enterprise/log-exports",
               "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
           },
@@ -449,9 +452,24 @@
             "group": "Identity Providers (SSO)",
             "icon": "id-card",
             "pages": [
-              "enterprise/setting-up-okta",
+              {
+                "group": "Okta",
+                "icon": "/media/okta-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-okta/oidc",
+                  "enterprise/setting-up-okta/scim"
+                ]
+              },
               "enterprise/setting-up-entra",
-              "enterprise/setting-up-keycloak",
+              {
+                "group": "Keycloak",
+                "icon": "/media/keycloak-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-keycloak/oidc"
+                ]
+              },
               "enterprise/setting-up-zitadel",
               "enterprise/setting-up-google-workspace"
             ]
@@ -521,6 +539,7 @@
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
                   "deployment-guides/helm/guardrails",
+                  "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
                   "deployment-guides/helm/troubleshooting"
                 ]
@@ -538,7 +557,8 @@
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
                   "deployment-guides/config-json/cluster",
-                  "deployment-guides/config-json/guardrails"
+                  "deployment-guides/config-json/guardrails",
+                  "deployment-guides/config-json/secret-management"
                 ]
               }
             ]
@@ -636,6 +656,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.0",
               "changelogs/v1.5.16",
               "changelogs/v1.5.15",
               "changelogs/v1.5.14",
@@ -820,6 +841,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.0",
               "changelogs/ent-v1.4.13",
               "changelogs/ent-v1.4.12",
               "changelogs/ent-v1.4.11",
@@ -875,6 +897,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.25",
               "changelogs/helm-v2.1.24",
               "changelogs/helm-v2.1.23",
               "changelogs/helm-v2.1.22",
@@ -1056,8 +1079,16 @@
       "destination": "/enterprise/adaptive-load-balancing"
     },
     {
+      "source": "/enterprise/setting-up-okta",
+      "destination": "/enterprise/setting-up-okta/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-keycloak",
+      "destination": "/enterprise/setting-up-keycloak/oidc"
+    },
+    {
       "source": "/enterprise/users",
-      "destination": "/enterprise/setting-up-okta"
+      "destination": "/enterprise/setting-up-okta/oidc"
     },
     {
       "source": "/enterprise/data-connectors/datadog",

@@ -85,8 +85,8 @@ func buildUpdateRequest(t *testing.T, body any) *fasthttp.RequestCtx {
 func TestRestoreRedacted_OTELProfilesHeaders(t *testing.T) {
 	realAuth := "Basic-REAL-SUPER-SECRET-VALUE"
 	realVersion := "4"
-	maskedAuth := schemas.NewEnvVar(realAuth).Redacted().GetValue()       // long -> first4 + **** + last4
-	maskedVersion := schemas.NewEnvVar(realVersion).Redacted().GetValue() // "4" -> "*"
+	maskedAuth := schemas.NewSecretVar(realAuth).Redacted().GetValue()       // long -> first4 + **** + last4
+	maskedVersion := schemas.NewSecretVar(realVersion).Redacted().GetValue() // "4" -> "*"
 
 	mkConfig := func(auth, version string) map[string]any {
 		return map[string]any{
@@ -148,9 +148,9 @@ func TestUpdatePlugin_ConfigMerge(t *testing.T) {
 		"plugins": []any{"logging", "compat"},
 	}
 	existingConfig := map[string]any{
-		"collector_url":    "localhost:4317",
-		"trace_type":       "genai_extension",
-		"protocol":         "grpc",
+		"collector_url":      "localhost:4317",
+		"trace_type":         "genai_extension",
+		"protocol":           "grpc",
 		"plugin_span_filter": spanFilter,
 	}
 

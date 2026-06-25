@@ -8,6 +8,6 @@ import MCPSessionsAuthSuccessPage from "./page";
 // normal tempTokenScoped logic wouldn't fire. This flag short-circuits all of
 // that: no chrome, no auth probe, no API calls, just a static "done" view.
 export const Route = createFileRoute("/workspace/mcp-sessions/auth-success")({
-  staticData: { publicShell: true },
-  component: MCPSessionsAuthSuccessPage,
+	staticData: { publicShell: true },
+	component: MCPSessionsAuthSuccessPage,
 });

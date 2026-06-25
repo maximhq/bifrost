@@ -32,9 +32,9 @@ func TestGemini(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Gemini,
-		ChatModel: "gemini-2.0-flash",
+		ChatModel: "gemini-2.5-flash",
 		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Gemini, Model: "gemini-2.5-flash"},
+			{Provider: schemas.Gemini, Model: "gemini-3.1-flash-lite"},
 		},
 		VisionModel:          "gemini-2.5-flash",
 		EmbeddingModel:       "gemini-embedding-001",

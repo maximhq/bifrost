@@ -8,11 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
-import {
-	ModelDetails,
-	useGetModelDetailsQuery,
-	useGetProvidersQuery,
-} from "@/lib/store";
+import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
@@ -84,10 +80,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 		setOffset(totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE);
 	}, [totalCount, offset]);
 
-	const providerOptions = useMemo(
-		() => Array.from(new Set((providersData ?? []).map((p) => p.name))).sort(),
-		[providersData],
-	);
+	const providerOptions = useMemo(() => Array.from(new Set((providersData ?? []).map((p) => p.name))).sort(), [providersData]);
 
 	// Clear the provider filter if the selected provider is no longer in the list
 	useEffect(() => {
@@ -118,9 +111,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 				<div className="mb-4 flex shrink-0 items-center justify-between">
 					<div>
 						<h2 className="text-lg font-semibold">Models</h2>
-						<p className="text-muted-foreground text-sm">
-							Attach descriptions and tags to specific models.
-						</p>
+						<p className="text-muted-foreground text-sm">Attach descriptions and tags to specific models.</p>
 					</div>
 				</div>
 
@@ -180,11 +171,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 										<TableRow key={`${m.provider}|${m.name}`} data-testid={`model-catalog-row-${testKey}`}>
 											<TableCell className="py-3">
 												<div className="flex items-center gap-2">
-													<RenderProviderIcon
-														provider={m.provider as KnownProvider}
-														size="sm"
-														className="h-4 w-4"
-													/>
+													<RenderProviderIcon provider={m.provider as KnownProvider} size="sm" className="h-4 w-4" />
 													<span className="text-sm">{ProviderLabels[m.provider as ProviderName] || m.provider}</span>
 												</div>
 											</TableCell>
@@ -225,7 +212,8 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="model-catalog-pagination">
 						<div className="text-muted-foreground">
-							{(offset + 1).toLocaleString()}–{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							{(offset + 1).toLocaleString()}–{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+							entries
 						</div>
 						<div className="flex items-center gap-2">
 							<Button

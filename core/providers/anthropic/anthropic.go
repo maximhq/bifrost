@@ -641,9 +641,23 @@ func HandleAnthropicChatCompletionStreaming(
 
 	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
 
+	// Close the connection after this streaming response instead of returning it to
+	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
+	// reader is still in a torn state (body not fully drained, or the idle-timeout/
+	// consumer goroutine still attached), corrupting the next request's RoundTrip and
+	// panicking with "slice bounds out of range" in mustPeekBuffered. Mirrors the
+	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
+	req.Header.Set("Connection", "close")
+
+	// Use a fresh streaming client per request so fasthttp's internal readerPool
+	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
+	// streaming-body close path. The cloned client preserves dialer/TLS/proxy
+	// config but starts with empty reader/writer pools.
+	requestClient := providerUtils.BuildStreamingClient(client)
+
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, requestClient, resp)
 
 	startTime := time.Now()
 	// Make the request
@@ -666,7 +680,11 @@ func HandleAnthropicChatCompletionStreaming(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// Request failed before the first response byte (server closed an idle/pooled connection,
+		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
+		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
+		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -681,7 +699,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -697,7 +715,7 @@ func HandleAnthropicChatCompletionStreaming(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
@@ -1137,9 +1155,23 @@ func HandleAnthropicResponsesStream(
 	// Set body
 	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
 
+	// Close the connection after this streaming response instead of returning it to
+	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
+	// reader is still in a torn state (body not fully drained, or the idle-timeout/
+	// consumer goroutine still attached), corrupting the next request's RoundTrip and
+	// panicking with "slice bounds out of range" in mustPeekBuffered. Mirrors the
+	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
+	req.Header.Set("Connection", "close")
+
+	// Use a fresh streaming client per request so fasthttp's internal readerPool
+	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
+	// streaming-body close path. The cloned client preserves dialer/TLS/proxy
+	// config but starts with empty reader/writer pools.
+	requestClient := providerUtils.BuildStreamingClient(client)
+
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, requestClient, resp)
 
 	startTime := time.Now()
 	// Make the request
@@ -1162,7 +1194,11 @@ func HandleAnthropicResponsesStream(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// Request failed before the first response byte (server closed an idle/pooled connection,
+		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
+		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
+		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -1177,7 +1213,7 @@ func HandleAnthropicResponsesStream(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -1193,7 +1229,7 @@ func HandleAnthropicResponsesStream(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// If body stream is nil, return an error

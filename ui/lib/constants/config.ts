@@ -50,6 +50,7 @@ export const ModelPlaceholders = {
 	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
 	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
+	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 };
 
@@ -77,6 +78,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	xai: true,
 	replicate: true,
 	runway: true,
+	runware: true,
 	vllm: false,
 	fireworks: true,
 };
@@ -88,7 +90,7 @@ export const DefaultNetworkConfig = {
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
 	insecure_skip_verify: false,
-	ca_cert_pem: { value: "", env_var: "", from_env: false },
+	ca_cert_pem: { value: "", ref: "" },
 	stream_idle_timeout_in_seconds: 120,
 	max_conns_per_host: 5000,
 	enforce_http2: false,

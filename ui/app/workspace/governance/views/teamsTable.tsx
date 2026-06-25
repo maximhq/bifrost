@@ -138,7 +138,7 @@ interface TeamsTableProps {
 	onTeamAdd: () => void;
 	onTeamSelect: (team: Team | null) => void;
 	onDialogClose: () => void;
-	isLoading?: boolean
+	isLoading?: boolean;
 }
 
 export default function TeamsTable({
@@ -156,7 +156,7 @@ export default function TeamsTable({
 	onTeamAdd,
 	onTeamSelect,
 	onDialogClose,
-	isLoading
+	isLoading,
 }: TeamsTableProps) {
 	const showTeamSheet = selectedTeamId !== null && selectedTeamId !== "";
 	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
@@ -225,8 +225,8 @@ export default function TeamsTable({
 			<TooltipProvider>
 				{showTeamSheet && <TeamSheet team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
-				<div className="flex flex-col overflow-y-auto grow">
-					<div className="flex items-center justify-between mb-4">
+				<div className="flex grow flex-col overflow-y-auto">
+					<div className="mb-4 flex items-center justify-between">
 						<div>
 							<h2 className="text-lg font-semibold">Teams</h2>
 							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>
@@ -237,7 +237,7 @@ export default function TeamsTable({
 						</Button>
 					</div>
 
-					<div className="flex items-center gap-3 mb-4">
+					<div className="mb-4 flex items-center gap-3">
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
@@ -251,9 +251,9 @@ export default function TeamsTable({
 						</div>
 					</div>
 
-					<div className="overflow-auto rounded-sm border mb-2 grow" data-testid="teams-table">
+					<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="teams-table">
 						<Table className="min-w-[1100px]" containerClassName="h-full">
-							<TableHeader className="sticky top-0 bg-background">
+							<TableHeader className="bg-background sticky top-0">
 								<TableRow>
 									<TableHead>Name</TableHead>
 									<TableHead>Customer</TableHead>
@@ -478,7 +478,8 @@ export default function TeamsTable({
 					{totalCount > 0 && (
 						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 							<div className="text-muted-foreground flex items-center gap-2">
-								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+								entries
 							</div>
 
 							<div className="flex items-center gap-2">
