@@ -581,6 +581,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/security-best-practices",
               "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
