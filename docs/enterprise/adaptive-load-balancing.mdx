@@ -22,9 +22,9 @@ This page focuses on the technical implementation and performance characteristic
 |---------|-------------|
 | **Dynamic Weight Adjustment** | Automatically adjusts key weights based on performance metrics |
 | **Real-time Performance Monitoring** | Tracks error rates, latency, and success rates per model-key combination |
-| **Cross-Node Synchronization** | Gossip protocol ensures consistent weight information across all cluster nodes |
+| **Cross-Node Coordination** | Cluster nodes share circuit-breaker signals so an overloaded key is backed off fleet-wide |
 | **Circuit Breaker Integration** | Temporarily removes poorly performing keys from rotation |
-| **Fast Recovery** | Momentum-based scoring helps routes recover quickly after transient failures |
+| **Fast Recovery** | Recovering routes are favored so they climb back quickly after transient failures |
 
 <Tip>
 **Zero-overhead design**: All route selection logic adds less than **10 microseconds** to hot path latency. Weight calculations happen asynchronously every 5 seconds, so request routing uses pre-computed weights with minimal overhead.
@@ -80,24 +80,21 @@ graph TB
 
 ## How Weight Calculation Works
 
-Every 5 seconds, the system recalculates weights for all routes based on four factors:
+Every 5 seconds, the system recalculates a weight for each route from its recent
+performance. Three signals drive the score, in priority order:
 
-| Factor | Weight | Purpose |
-|--------|--------|---------|
-| **Error Penalty** | 50% | Penalizes routes with high error rates |
-| **Latency Score** | 20% | Penalizes routes with abnormally slow responses |
-| **Utilization Score** | 5% | Prevents overloading high-performing routes |
-| **Momentum Bias** | Additive | Rewards routes that are recovering well |
+| Factor | Role | Purpose |
+|--------|------|---------|
+| **Error Penalty** | Primary | Penalizes routes with high error rates |
+| **Latency Score** | Secondary | Penalizes routes that are slow relative to their peers and to their own baseline |
+| **Utilization** | Tuning | Discourages overloading any single high-performing route |
 
-The system combines these into a single score, then converts it to a weight between 1 and 1000. Lower penalties mean higher weights, which means more traffic.
-
-$$
-Score = (P_{error} \times 0.5) + (P_{latency} \times 0.2) + (P_{util} \times 0.05) - M_{momentum}
-$$
-
-$$
-Weight = W_{min} + (1 - Score) \times (W_{max} - W_{min})
-$$
+Which signals apply depends on the route's health: healthy routes are scored mainly
+on errors and latency, while routes that are actively recovering are scored on latency
+and recovery progress so they aren't held back by stale error history. The combined
+score maps to a weight on a fixed scale — lower penalties mean higher weight, which
+means more traffic — with a floor so no route is ever fully starved while it has a
+chance to recover.
 
 ```mermaid
 flowchart LR
@@ -105,27 +102,23 @@ flowchart LR
         E["Error Rate"]
         L["Latency"]
         U["Utilization"]
-        M["Momentum"]
     end
 
-    subgraph Scoring["Score Computation"]
-        EP["Error Penalty<br/>50% weight"]
-        LP["Latency Score<br/>20% weight"]
-        US["Utilization Score<br/>5% weight"]
-        MS["Momentum Bias"]
+    subgraph Scoring["Health-aware Scoring"]
+        EP["Error Penalty<br/>primary"]
+        LP["Latency Score<br/>peer + baseline"]
+        US["Utilization<br/>balancing"]
     end
 
     subgraph Output["Final Weight"]
-        NS["Normalized Score"]
-        FW["Route Weight<br/>1 - 1000"]
+        NS["Combined Score"]
+        FW["Route Weight"]
     end
 
     E --> EP
     L --> LP
     U --> US
-    M --> MS
     EP & LP & US --> NS
-    MS --> NS
     NS --> FW
 ```
 
@@ -143,14 +136,14 @@ flowchart LR
   <img src="/media/ui-load-balancing.png" alt="Adaptive Load Balancing Dashboard" />
 </Frame>
 
-4. **Multi-Factor Scoring**: Routes are scored using 4 components - Error Penalty (50% weight, time-decayed), Latency Score (token-aware via MV-TACOS algorithm), Utilization Score (fair-share balancing), and Momentum (accelerates recovery after failures).
+4. **Multi-Factor Scoring**: Routes are scored from error rate (the primary, time-decayed signal), a token-aware latency score (comparing a route both to its peers and to its own recent baseline), and fair-share utilization. Recovering routes are scored to favor quick, safe recovery.
 
-5. **Smart Key Selection**: Uses weighted random selection with jitter (5% band) and 25% exploration probability to probe potentially recovered routes, rather than always picking the best route.
+5. **Smart Key Selection**: Traffic is distributed probabilistically — higher-weight keys get proportionally more requests, but lower-weight keys keep a small share so potentially-recovered routes are continually re-probed instead of always picking the single best route.
 
 6. **Performance Thresholds**: Specific triggers drive state transitions -&gt; 2% error rate triggers Degraded, &gt;5% error rate or TPM hit triggers Failed, &lt;2% error with 50%+ expected traffic triggers Healthy.
 
 <Tip>
-The system is designed to be self-healing: it penalizes failing routes quickly, but also enables fast recovery (90% penalty reduction in 30 seconds) once issues are fixed.
+The system is designed to be self-healing: it penalizes failing routes quickly, but also decays those penalties rapidly once issues are fixed, so a recovered route returns to full traffic within seconds.
 </Tip>
 
 ---
