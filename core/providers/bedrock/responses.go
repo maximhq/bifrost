@@ -2399,7 +2399,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(bedrockReq.ExtraParams, "stop")
-				inferenceConfig.StopSequences = stop
+				// GLM models on Bedrock reject the stopSequences field.
+				if !schemas.IsGLMModel(capModel) {
+					inferenceConfig.StopSequences = stop
+				}
 			}
 			applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
 			if len(bedrockReq.ExtraParams) == 0 {
@@ -2419,11 +2422,12 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Convert tools (using the provider-filtered keepTools set computed above).
 	if len(keepTools) > 0 {
 		var bedrockTools []BedrockTool
-		isNova2 := schemas.IsNova2Model(bifrostReq.Model)
+		isNova2 := schemas.IsNova2Model(capModel)
 		for _, tool := range keepTools {
 			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
 				if !isNova2 {
-					return nil, fmt.Errorf("tool type %q is only supported on Nova 2 models in Bedrock; got model %q", tool.Type, bifrostReq.Model)
+					// skip adding this tool
+					continue
 				}
 				var systemToolName BedrockSystemToolType
 				switch tool.Type {
@@ -2528,10 +2532,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModelFamily(ctx, bifrostReq.Model) {
 			bedrockToolChoice = nil
 		}
-		if bedrockToolChoice != nil {
-			if bedrockReq.ToolConfig == nil {
-				bedrockReq.ToolConfig = &BedrockToolConfig{}
-			}
+		// Only attach tool_choice when tools are actually present. Bedrock
+		// Converse rejects a toolConfig that carries a toolChoice with an empty
+		// tools list (e.g. the requested tools were all filtered/skipped, like
+		// web_search on GLM) with "The provided request is not valid".
+		if bedrockToolChoice != nil && bedrockReq.ToolConfig != nil && len(bedrockReq.ToolConfig.Tools) > 0 {
 			bedrockReq.ToolConfig.ToolChoice = bedrockToolChoice
 		}
 	}

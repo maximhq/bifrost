@@ -1555,6 +1555,11 @@ func IsNova2Model(model string) bool {
 	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
 }
 
+// IsGLMModel checks if the model is a Z.AI GLM model.
+func IsGLMModel(model string) bool {
+	return strings.Contains(model, "glm")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
