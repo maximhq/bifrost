@@ -1,0 +1,1 @@
+- chore: upgraded core to v1.6.0 and framework to v1.4.0

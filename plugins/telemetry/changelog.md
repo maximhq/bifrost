@@ -1,0 +1,3 @@
+- refactor: rename EnvVar to SecretVar
+- feat: add typed SecretVar env/vault reference support
+- chore: upgraded core to v1.6.0 and framework to v1.4.0
