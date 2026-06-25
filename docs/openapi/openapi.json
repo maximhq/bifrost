@@ -174,6 +174,10 @@
       "description": "Cache management endpoints"
     },
     {
+      "name": "Vault",
+      "description": "Vault secret management endpoints"
+    },
+    {
       "name": "Skills",
       "description": "Skills Repository management, marketplace, and download endpoints"
     }
@@ -60661,6 +60665,65 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vault/flush-cache": {
+      "post": {
+        "operationId": "flushVaultCache",
+        "summary": "Flush vault secret cache",
+        "description": "Clears the in-memory vault secret cache so the next resolution of every\n`vault.<path>` reference re-fetches from the configured backend (AWS Secrets\nManager, GCP Secret Manager, or HashiCorp Vault).\n\nUse this after rotating a secret when you cannot wait for the hourly\nbackground refresh. In a clustered deployment the flush is broadcast to all\npeer nodes automatically — you only need to call this on one node.\n\nReturns `400` if vault integration is not enabled.\n",
+        "tags": [
+          "Vault"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vault cache flushed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "vault cache flushed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Vault is not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "vault is not enabled"
+                    }
+                  }
                 }
               }
             }

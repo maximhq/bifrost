@@ -321,6 +321,7 @@
                 ]
               },
               "enterprise/audit-logs",
+              "enterprise/secret-management",
               "enterprise/log-exports",
               "enterprise/datadog-connector",
               "enterprise/clustering",
@@ -531,6 +532,7 @@
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
                   "deployment-guides/helm/guardrails",
+                  "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
                   "deployment-guides/helm/troubleshooting"
                 ]
@@ -548,7 +550,8 @@
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
                   "deployment-guides/config-json/cluster",
-                  "deployment-guides/config-json/guardrails"
+                  "deployment-guides/config-json/guardrails",
+                  "deployment-guides/config-json/secret-management"
                 ]
               }
             ]

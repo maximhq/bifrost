@@ -140,6 +140,8 @@ tags:
     description: Log search and management endpoints
   - name: Cache
     description: Cache management endpoints
+  - name: Vault
+    description: Vault secret management endpoints
   - name: Skills
     description: Skills Repository management, marketplace, and download endpoints
 
@@ -1047,6 +1049,10 @@ paths:
     $ref: './paths/management/cache.yaml#/clear-by-cache-id'
   /api/cache/clear-by-key/{cacheKey}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+
+  # Vault
+  /api/vault/flush-cache:
+    $ref: './paths/management/vault.yaml#/flush-cache'
 
   # Infrastructure
   /ws:
