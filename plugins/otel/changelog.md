@@ -1,4 +1,0 @@
-- feat: add group_traces_by_session support
-- feat: add root span content logging disable toggle
-- feat: add typed SecretVar env/vault reference support
-- chore: upgraded core to v1.6.0 and framework to v1.4.0
