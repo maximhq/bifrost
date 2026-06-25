@@ -39,10 +39,7 @@ export function quoteShellValue(value: string): string {
 	// Replace control characters first so they don't appear as raw bytes in the
 	// quoted string (POSIX double-quoted strings don't interpret \n etc., but
 	// downstream consumers like `claude mcp add` would see literal newlines).
-	const sanitized = value
-		.replace(/\n/g, "\\n")
-		.replace(/\r/g, "\\r")
-		.replace(/\t/g, "\\t");
+	const sanitized = value.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
 	return `"${sanitized.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 

@@ -732,7 +732,7 @@ func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
 					// Insert a provider with the old schema (no store_raw_request_response column)
 					err := db.Exec(`
 						INSERT INTO config_providers (
-							name, send_back_raw_request, send_back_raw_response, 
+							name, send_back_raw_request, send_back_raw_response,
 							config_hash, created_at, updated_at, encryption_status
 						) VALUES (?, ?, ?, ?, ?, ?, ?)
 					`, providerName, tt.sendBackRawRequest, tt.sendBackRawResponse, staleHash, now, now, "plain_text").Error
@@ -812,7 +812,7 @@ func TestMigrationAddStoreRawRequestResponseColumn_MultipleProviders(t *testing.
 			for _, p := range providers {
 				err := db.Exec(`
 					INSERT INTO config_providers (
-						name, send_back_raw_request, send_back_raw_response, 
+						name, send_back_raw_request, send_back_raw_response,
 						config_hash, created_at, updated_at, encryption_status
 					) VALUES (?, ?, ?, ?, ?, ?, ?)
 				`, p.name, p.sendBackRawRequest, p.sendBackRawResponse, "stale_hash", now, now, "plain_text").Error
@@ -858,7 +858,7 @@ func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
 			// Insert a provider
 			err := db.Exec(`
 				INSERT INTO config_providers (
-					name, send_back_raw_request, send_back_raw_response, 
+					name, send_back_raw_request, send_back_raw_response,
 					config_hash, created_at, updated_at, encryption_status
 				) VALUES (?, ?, ?, ?, ?, ?, ?)
 			`, providerName, true, false, "stale_hash", now, now, "plain_text").Error
@@ -1204,7 +1204,7 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 			{
 				ID:     "key-uuid-1",
 				Name:   "openai-primary",
-				Value:  *schemas.NewEnvVar("sk-test-secret-key-12345"),
+				Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			},
@@ -1297,7 +1297,7 @@ func TestFullMigration_MCPClientCRUD(t *testing.T) {
 		ID:               "mcp-client-001",
 		Name:             "test_mcp_server",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.example.com/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.example.com/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	}
 
@@ -1390,7 +1390,7 @@ func TestFullMigration_EncryptPlaintextRows(t *testing.T) {
 	var key tables.TableKey
 	err = db.Where("key_id = ?", "pk-1").First(&key).Error
 	require.NoError(t, err)
-	assert.Equal(t, "sk-plaintext-secret", key.Value.GetValue())
+	assert.Equal(t, "sk-plaintext-secret", key.Value.Val)
 
 	var vk tables.TableVirtualKey
 	err = db.Where("id = ?", "vk-plain-1").First(&vk).Error
@@ -1421,7 +1421,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 			Keys: []schemas.Key{{
 				ID:     p.keyID,
 				Name:   p.keyName,
-				Value:  *schemas.NewEnvVar(p.keyValue),
+				Value:  *schemas.NewSecretVar(p.keyValue),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			}},
@@ -1448,7 +1448,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		ID:               "mcp-e2e-1",
 		Name:             "e2e_mcp_client",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.e2e.test/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.e2e.test/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	})
 	require.NoError(t, err)

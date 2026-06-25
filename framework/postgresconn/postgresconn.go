@@ -30,13 +30,13 @@ type PasswordCommandConfig struct {
 
 // Config is the shared Postgres connection configuration used by framework stores.
 type Config struct {
-	Host            *schemas.EnvVar        `json:"host"`
-	Port            *schemas.EnvVar        `json:"port"`
-	User            *schemas.EnvVar        `json:"user"`
-	Password        *schemas.EnvVar        `json:"password"`
+	Host            *schemas.SecretVar        `json:"host"`
+	Port            *schemas.SecretVar        `json:"port"`
+	User            *schemas.SecretVar        `json:"user"`
+	Password        *schemas.SecretVar        `json:"password"`
 	PasswordCommand *PasswordCommandConfig `json:"password_command,omitempty"`
-	DBName          *schemas.EnvVar        `json:"db_name"`
-	SSLMode         *schemas.EnvVar        `json:"ssl_mode"`
+	DBName          *schemas.SecretVar        `json:"db_name"`
+	SSLMode         *schemas.SecretVar        `json:"ssl_mode"`
 	MaxIdleConns    int                    `json:"max_idle_conns"`
 	MaxOpenConns    int                    `json:"max_open_conns"`
 	ConnMaxLifetime string                 `json:"conn_max_lifetime,omitempty"`

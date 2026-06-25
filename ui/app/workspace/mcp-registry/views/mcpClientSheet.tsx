@@ -15,7 +15,7 @@ import { Fragment } from "react";
 
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { CodeEditor } from "@/components/ui/codeEditor";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -197,9 +197,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		},
 	});
@@ -225,9 +225,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		});
 	}, [form, mcpClient]);
@@ -285,16 +285,16 @@ export default function MCPClientSheet({
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-							client_id: oauthClientID,
-							client_secret: oauthClientSecret,
-						}
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret,
+							}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-								ca_cert_pem: data.tls_config.ca_cert_pem,
-							}
+									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+									ca_cert_pem: data.tls_config.ca_cert_pem,
+								}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -505,9 +505,9 @@ export default function MCPClientSheet({
 											<span className="font-mono break-all">
 												{mcpClient.config.connection_type === "stdio"
 													? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-													"-"
-													: mcpClient.config.connection_string?.from_env
-														? `env.${mcpClient.config.connection_string.env_var}`
+														"-"
+													: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
+														? mcpClient.config.connection_string.ref
 														: mcpClient.config.connection_string?.value || "-"}
 											</span>
 										</div>
@@ -524,7 +524,7 @@ export default function MCPClientSheet({
 															return [name, valueParts.join("=")];
 														}),
 													)}
-													onChange={() => { }}
+													onChange={() => {}}
 													fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 													valuePlaceholder="—"
 													label=""
@@ -698,7 +698,7 @@ export default function MCPClientSheet({
 															<FormItem>
 																<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 																<FormControl>
-																	<EnvVarInput
+																	<SecretVarInput
 																		variant="textarea"
 																		placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
 																		className="font-mono text-xs"
@@ -779,7 +779,7 @@ export default function MCPClientSheet({
 														keyPlaceholder="Header name"
 														valuePlaceholder="Header value"
 														label="Headers"
-														useEnvVarInput
+														useSecretVarInput
 													/>
 												</FormControl>
 												<FormMessage />
@@ -870,9 +870,9 @@ export default function MCPClientSheet({
 														onBlur={() => {
 															const parsed = allowedExtraHeadersRaw.trim()
 																? allowedExtraHeadersRaw
-																	.split(",")
-																	.map((h) => h.trim())
-																	.filter(Boolean)
+																		.split(",")
+																		.map((h) => h.trim())
+																		.filter(Boolean)
 																: [];
 															field.onChange(parsed);
 															field.onBlur();
@@ -908,7 +908,7 @@ export default function MCPClientSheet({
 													<FormItem className="flex flex-col gap-2">
 														<FormLabel>Client ID</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																data-testid="mcpclient-input-oauth-client-id"
 																placeholder="Enter new OAuth client ID"
 																disabled={isDisabled}
@@ -930,7 +930,7 @@ export default function MCPClientSheet({
 													<FormItem className="flex flex-col gap-2">
 														<FormLabel>Client Secret</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																data-testid="mcpclient-input-oauth-client-secret"
 																placeholder="Enter new OAuth client secret"
 																disabled={isDisabled}

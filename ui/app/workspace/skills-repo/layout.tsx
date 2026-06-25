@@ -4,18 +4,15 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import SkillsRepoPage from "./page";
 
 function RouteComponent() {
-  const hasSkillsRepositoryAccess = useRbac(
-    RbacResource.SkillsRepository,
-    RbacOperation.View,
-  );
+	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
 
-  if (!hasSkillsRepositoryAccess) {
-    return <NoPermissionView entity="skills repository" />;
-  }
+	if (!hasSkillsRepositoryAccess) {
+		return <NoPermissionView entity="skills repository" />;
+	}
 
-  return <SkillsRepoPage />;
+	return <SkillsRepoPage />;
 }
 
 export const Route = createFileRoute("/workspace/skills-repo")({
-  component: RouteComponent,
+	component: RouteComponent,
 });

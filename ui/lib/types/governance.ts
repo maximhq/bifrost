@@ -217,7 +217,7 @@ export interface CreateCustomerRequest {
 export interface UpdateCustomerRequest {
 	name?: string;
 	budgets?: CreateBudgetRequest[]; // nil=no change, []=remove all
-	budget?: UpdateBudgetRequest;   // deprecated: use budgets
+	budget?: UpdateBudgetRequest; // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
 }
@@ -421,7 +421,7 @@ export interface PricingOverridePatch {
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
 	input_cost_per_token_fast?: number;
-	output_cost_per_token_fast?:number;
+	output_cost_per_token_fast?: number;
 	// 128k tier
 	input_cost_per_token_above_128k_tokens?: number;
 	output_cost_per_token_above_128k_tokens?: number;

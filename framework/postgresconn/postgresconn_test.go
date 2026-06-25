@@ -11,7 +11,7 @@ import (
 
 func TestValidatePasswordCommandAllowsEmptyPassword(t *testing.T) {
 	cfg := validConfig()
-	cfg.Password = schemas.NewEnvVar("")
+	cfg.Password = schemas.NewSecretVar("")
 	cfg.PasswordCommand = &PasswordCommandConfig{Command: "printf", Args: []string{"secret"}}
 
 	require.NoError(t, Validate(cfg, true))
@@ -26,7 +26,7 @@ func TestValidatePasswordAndPasswordCommandAreExclusive(t *testing.T) {
 
 func TestValidateRequiresStaticPasswordWhenConfigured(t *testing.T) {
 	cfg := validConfig()
-	cfg.Password = schemas.NewEnvVar("")
+	cfg.Password = schemas.NewSecretVar("")
 
 	require.ErrorContains(t, Validate(cfg, true), "postgres password is required")
 }
@@ -47,9 +47,9 @@ func TestValidateRejectsNonPositiveConnMaxLifetime(t *testing.T) {
 
 func TestBuildDSNQuotesValuesForPasswordCommandParsing(t *testing.T) {
 	cfg := validConfig()
-	cfg.Host = schemas.NewEnvVar("127.0.0.1")
-	cfg.User = schemas.NewEnvVar("service-account@example-project.iam")
-	cfg.Password = schemas.NewEnvVar("")
+	cfg.Host = schemas.NewSecretVar("127.0.0.1")
+	cfg.User = schemas.NewSecretVar("service-account@example-project.iam")
+	cfg.Password = schemas.NewSecretVar("")
 	cfg.PasswordCommand = &PasswordCommandConfig{Command: "printf", Args: []string{"unused-iam-auth"}}
 
 	pgxConfig, err := pgx.ParseConfig(BuildDSN(cfg))
@@ -70,7 +70,7 @@ func TestBuildDSNQuotesSpecialCharacters(t *testing.T) {
 		{
 			name: "single quote",
 			mutate: func(cfg *Config) {
-				cfg.User = schemas.NewEnvVar("service'account")
+				cfg.User = schemas.NewSecretVar("service'account")
 			},
 			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
 				require.Equal(t, "service'account", pgxConfig.User)
@@ -79,7 +79,7 @@ func TestBuildDSNQuotesSpecialCharacters(t *testing.T) {
 		{
 			name: "backslash",
 			mutate: func(cfg *Config) {
-				cfg.Host = schemas.NewEnvVar(`C:\postgres\socket`)
+				cfg.Host = schemas.NewSecretVar(`C:\postgres\socket`)
 			},
 			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
 				require.Equal(t, `C:\postgres\socket`, pgxConfig.Host)
@@ -88,7 +88,7 @@ func TestBuildDSNQuotesSpecialCharacters(t *testing.T) {
 		{
 			name: "backslash and single quote",
 			mutate: func(cfg *Config) {
-				cfg.DBName = schemas.NewEnvVar(`bifrost\tenant's`)
+				cfg.DBName = schemas.NewSecretVar(`bifrost\tenant's`)
 			},
 			validate: func(t *testing.T, pgxConfig *pgx.ConnConfig) {
 				require.Equal(t, `bifrost\tenant's`, pgxConfig.Database)
@@ -197,11 +197,11 @@ func TestRunPasswordCommandStartErrorIsNotTimeout(t *testing.T) {
 
 func validConfig() *Config {
 	return &Config{
-		Host:     schemas.NewEnvVar("localhost"),
-		Port:     schemas.NewEnvVar("5432"),
-		User:     schemas.NewEnvVar("bifrost"),
-		Password: schemas.NewEnvVar("password"),
-		DBName:   schemas.NewEnvVar("bifrost"),
-		SSLMode:  schemas.NewEnvVar("disable"),
+		Host:     schemas.NewSecretVar("localhost"),
+		Port:     schemas.NewSecretVar("5432"),
+		User:     schemas.NewSecretVar("bifrost"),
+		Password: schemas.NewSecretVar("password"),
+		DBName:   schemas.NewSecretVar("bifrost"),
+		SSLMode:  schemas.NewSecretVar("disable"),
 	}
 }

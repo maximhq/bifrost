@@ -1,13 +1,13 @@
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
-import { proxyOnlyFormSchema, type EnvVar, type ProxyOnlyFormSchema } from "@/lib/types/schemas";
+import { proxyOnlyFormSchema, type SecretVar, type ProxyOnlyFormSchema } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
-import { toEnvVarFormValue, toOptionalEnvVarPayload } from "@/lib/utils/envVarForm";
+import { toSecretVarFormValue, toOptionalSecretVarPayload } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
@@ -30,10 +30,10 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 		defaultValues: {
 			proxy_config: {
 				type: provider.proxy_config?.type,
-				url: toEnvVarFormValue(provider.proxy_config?.url as EnvVar | string | undefined),
-				username: toEnvVarFormValue(provider.proxy_config?.username as EnvVar | string | undefined),
-				password: toEnvVarFormValue(provider.proxy_config?.password as EnvVar | string | undefined),
-				ca_cert_pem: toEnvVarFormValue(provider.proxy_config?.ca_cert_pem as EnvVar | string | undefined),
+				url: toSecretVarFormValue(provider.proxy_config?.url as SecretVar | string | undefined),
+				username: toSecretVarFormValue(provider.proxy_config?.username as SecretVar | string | undefined),
+				password: toSecretVarFormValue(provider.proxy_config?.password as SecretVar | string | undefined),
+				ca_cert_pem: toSecretVarFormValue(provider.proxy_config?.ca_cert_pem as SecretVar | string | undefined),
 			},
 		},
 	});
@@ -46,10 +46,10 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 		form.reset({
 			proxy_config: {
 				type: provider.proxy_config?.type,
-				url: toEnvVarFormValue(provider.proxy_config?.url as EnvVar | string | undefined),
-				username: toEnvVarFormValue(provider.proxy_config?.username as EnvVar | string | undefined),
-				password: toEnvVarFormValue(provider.proxy_config?.password as EnvVar | string | undefined),
-				ca_cert_pem: toEnvVarFormValue(provider.proxy_config?.ca_cert_pem as EnvVar | string | undefined),
+				url: toSecretVarFormValue(provider.proxy_config?.url as SecretVar | string | undefined),
+				username: toSecretVarFormValue(provider.proxy_config?.username as SecretVar | string | undefined),
+				password: toSecretVarFormValue(provider.proxy_config?.password as SecretVar | string | undefined),
+				ca_cert_pem: toSecretVarFormValue(provider.proxy_config?.ca_cert_pem as SecretVar | string | undefined),
 			},
 		});
 	}, [form, provider.name, provider.proxy_config]);
@@ -61,10 +61,10 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 			buildProviderUpdatePayload(provider, {
 				proxy_config: {
 					type: data.proxy_config?.type ?? "none",
-					url: toOptionalEnvVarPayload(data.proxy_config?.url),
-					username: toOptionalEnvVarPayload(data.proxy_config?.username),
-					password: toOptionalEnvVarPayload(data.proxy_config?.password),
-					ca_cert_pem: toOptionalEnvVarPayload(data.proxy_config?.ca_cert_pem),
+					url: toOptionalSecretVarPayload(data.proxy_config?.url),
+					username: toOptionalSecretVarPayload(data.proxy_config?.username),
+					password: toOptionalSecretVarPayload(data.proxy_config?.password),
+					ca_cert_pem: toOptionalSecretVarPayload(data.proxy_config?.ca_cert_pem),
 				},
 			}),
 		)
@@ -127,7 +127,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										<FormItem>
 											<FormLabel>Proxy URL</FormLabel>
 											<FormControl>
-												<EnvVarInput
+												<SecretVarInput
 													placeholder="http://proxy.example.com or env.OPENAI_PROXY_URL"
 													{...field}
 													value={field.value}
@@ -147,7 +147,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 											<FormItem>
 												<FormLabel>Username</FormLabel>
 												<FormControl>
-													<EnvVarInput
+													<SecretVarInput
 														placeholder="Proxy username or env.OPENAI_PROXY_USERNAME"
 														{...field}
 														value={field.value}
@@ -166,7 +166,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 											<FormItem>
 												<FormLabel>Password</FormLabel>
 												<FormControl>
-													<EnvVarInput
+													<SecretVarInput
 														type="password"
 														placeholder="Proxy password or env.OPENAI_PROXY_PASSWORD"
 														hideValueWhenEnv
@@ -189,7 +189,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										<FormItem>
 											<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 											<FormControl>
-												<EnvVarInput
+												<SecretVarInput
 													variant="textarea"
 													placeholder="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.OPENAI_PROXY_CA_CERT_PEM"
 													className="font-mono text-xs"

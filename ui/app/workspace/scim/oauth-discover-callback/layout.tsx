@@ -14,3 +14,4 @@ function RouteComponent() {
 export const Route = createFileRoute("/workspace/scim/oauth-discover-callback")({
 	component: RouteComponent,
 });
+

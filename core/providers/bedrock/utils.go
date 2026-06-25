@@ -227,7 +227,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// capModel is the canonical model used only for Anthropic capability gating
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	// Convert inference config
-	if inferenceConfig := convertInferenceConfig(bifrostReq.Params); inferenceConfig != nil {
+	if inferenceConfig := convertInferenceConfig(bifrostReq.Params, capModel); inferenceConfig != nil {
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
@@ -1508,7 +1508,7 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
-func convertInferenceConfig(params *schemas.ChatParameters) *BedrockInferenceConfig {
+func convertInferenceConfig(params *schemas.ChatParameters, model string) *BedrockInferenceConfig {
 	var config BedrockInferenceConfig
 	if params.MaxCompletionTokens != nil {
 		config.MaxTokens = params.MaxCompletionTokens
@@ -1522,7 +1522,8 @@ func convertInferenceConfig(params *schemas.ChatParameters) *BedrockInferenceCon
 		config.TopP = params.TopP
 	}
 
-	if params.Stop != nil {
+	// GLM models on Bedrock reject the stopSequences field.
+	if params.Stop != nil && !schemas.IsGLMModel(model) {
 		config.StopSequences = params.Stop
 	}
 

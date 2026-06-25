@@ -109,7 +109,7 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Fatal("could not find logs_store postgres port type in schema")
 		}
 		if portType != "string" {
-			t.Errorf("logs_store.config.port type = %q, want %q (Go code uses *schemas.EnvVar)", portType, "string")
+			t.Errorf("logs_store.config.port type = %q, want %q (Go code uses *schemas.SecretVar)", portType, "string")
 		}
 	})
 
@@ -119,7 +119,7 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Fatal("could not find config_store postgres port type in schema")
 		}
 		if portType != "string" {
-			t.Errorf("config_store.config.port type = %q, want %q (Go code uses *schemas.EnvVar)", portType, "string")
+			t.Errorf("config_store.config.port type = %q, want %q (Go code uses *schemas.SecretVar)", portType, "string")
 		}
 	})
 

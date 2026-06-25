@@ -920,6 +920,14 @@ paths:
   /api/mcp/tool-groups/{id}:
     $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
 
+  # Circuit Breaker
+  /api/circuit-breaker/policies:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policies'
+  /api/circuit-breaker/policies/{name}:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policy-by-name'
+  /api/circuit-breaker/state:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-state'
+
   # Governance - Complexity Analyzer Config
   /api/governance/complexity-analyzer-config:
     $ref: './paths/management/governance.yaml#/complexity'

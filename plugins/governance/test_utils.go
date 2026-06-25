@@ -243,7 +243,6 @@ func assertRateLimitInfo(t *testing.T, result *EvaluationResult) {
 	assert.NotNil(t, result.RateLimitInfo, "RateLimitInfo should be present in result")
 }
 
-
 func buildModelConfig(id, modelName string, provider *string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
 	mc := &configstoreTables.TableModelConfig{
 		ID:        id,

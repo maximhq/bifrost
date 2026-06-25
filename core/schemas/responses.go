@@ -943,6 +943,53 @@ type ResponsesMessage struct {
 	*ResponsesReasoning
 }
 
+// UnmarshalJSON normalizes function/tool-call arguments before decoding the rest
+// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
+// a JSON string, but `tool_search_call` items (emitted when the request enables
+// the `tool_search` deferred-tool-discovery tool, as Codex does) serialize
+// `arguments` as a JSON object — e.g. {} while in_progress and
+// {"query":"...","limit":10} when completed. The embedded
+// ResponsesToolMessage.Arguments field is a *string, so an object value makes a
+// plain decode fail with "Mismatch type string with value object", which
+// silently drops the item mid-stream and hangs streaming clients. We shadow
+// `arguments` as raw JSON, decode everything else as usual, then store the
+// canonical stringified form.
+func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
+	type Alias ResponsesMessage
+	aux := &struct {
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(m),
+	}
+
+	if err := Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.Arguments) > 0 && string(aux.Arguments) != "null" {
+		args := responsesToolArgumentsToString(aux.Arguments)
+		if m.ResponsesToolMessage == nil {
+			m.ResponsesToolMessage = &ResponsesToolMessage{}
+		}
+		m.Arguments = &args
+	}
+
+	return nil
+}
+
+// responsesToolArgumentsToString normalizes a function/tool-call `arguments`
+// value into the stringified-JSON form expected downstream. function_call items
+// send a JSON string; tool_search_call items send a JSON object. Both are
+// accepted, with the object preserved as its raw JSON text.
+func responsesToolArgumentsToString(raw json.RawMessage) string {
+	var str string
+	if err := Unmarshal(raw, &str); err == nil {
+		return str
+	}
+	return string(raw)
+}
+
 type ResponsesMessageRoleType string
 
 const (
@@ -2738,9 +2785,10 @@ type BifrostResponsesStreamResponse struct {
 	Annotation      *ResponsesOutputMessageContentTextAnnotation `json:"annotation,omitempty"`
 	AnnotationIndex *int                                         `json:"annotation_index,omitempty"`
 
-	Code    *string `json:"code,omitempty"`
-	Message *string `json:"message,omitempty"`
-	Param   *string `json:"param,omitempty"`
+	Error   *ResponsesResponseError `json:"error,omitempty"`
+	Code    *string                 `json:"code,omitempty"`
+	Message *string                 `json:"message,omitempty"`
+	Param   *string                 `json:"param,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 
@@ -2789,6 +2837,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.PartialImageIndex = resp.PartialImageIndex
 	result.Annotation = resp.Annotation
 	result.AnnotationIndex = resp.AnnotationIndex
+	result.Error = resp.Error
 	result.Code = resp.Code
 	result.Message = resp.Message
 	result.Param = resp.Param

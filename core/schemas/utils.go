@@ -32,13 +32,13 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
-// EnvVarAsString returns the wire form used when serializing *EnvVar as a string.
-func EnvVarAsString(e *EnvVar) string {
+// SecretVarAsString returns the wire form used when serializing *SecretVar as a string.
+func SecretVarAsString(e *SecretVar) string {
 	if e == nil {
 		return ""
 	}
-	if e.IsFromEnv() {
-		return e.EnvVar
+	if e.IsFromSecret() {
+		return e.ref
 	}
 	return e.GetValue()
 }
@@ -1258,9 +1258,24 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		copy.Status = &copyStatus
 	}
 
+	if original.Phase != nil {
+		copy.Phase = new(string)
+		*copy.Phase = *original.Phase
+	}
+
 	if original.Role != nil {
 		copyRole := *original.Role
 		copy.Role = &copyRole
+	}
+
+	// Deep copy Author and Recipient (multi-agent collab_tool_call items).
+	// json.RawMessage is a []byte slice; copy the bytes so callers don't share
+	// (and mutate) the underlying array.
+	if original.Author != nil {
+		copy.Author = append(json.RawMessage(nil), original.Author...)
+	}
+	if original.Recipient != nil {
+		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
 
 	if original.Content != nil {
@@ -1410,6 +1425,17 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	if original.Text != nil {
 		copyText := *original.Text
 		copy.Text = &copyText
+	}
+
+	// Reasoning replay fields: Signature and EncryptedContent are echoed back
+	// verbatim to the provider, so they must survive the deep copy.
+	if original.Signature != nil {
+		copy.Signature = new(string)
+		*copy.Signature = *original.Signature
+	}
+	if original.EncryptedContent != nil {
+		copy.EncryptedContent = new(string)
+		*copy.EncryptedContent = *original.EncryptedContent
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage
@@ -1562,6 +1588,11 @@ func IsNovaModel(model string) bool {
 
 func IsNova2Model(model string) bool {
 	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
+}
+
+// IsGLMModel checks if the model is a Z.AI GLM model.
+func IsGLMModel(model string) bool {
+	return strings.Contains(model, "glm")
 }
 
 // IsAnthropicModel checks if the model is an Anthropic model.
