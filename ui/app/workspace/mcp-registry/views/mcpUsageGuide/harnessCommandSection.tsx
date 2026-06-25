@@ -77,9 +77,7 @@ export function HarnessCommandSection({
 								<span>{copied ? "Copied" : "Copy"}</span>
 							</Button>
 						</TooltipTrigger>
-						<TooltipContent>
-							{canCopyCommand ? (copied ? "Copied" : `Copy ${copyLabel}`) : "Finish the selections first"}
-						</TooltipContent>
+						<TooltipContent>{canCopyCommand ? (copied ? "Copied" : `Copy ${copyLabel}`) : "Finish the selections first"}</TooltipContent>
 					</Tooltip>
 				</div>
 			</div>

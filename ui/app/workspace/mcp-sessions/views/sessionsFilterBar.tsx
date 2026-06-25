@@ -52,7 +52,7 @@ export interface SessionsFilterBarProps {
 export default function SessionsFilterBar(props: SessionsFilterBarProps) {
 	return (
 		<div className="flex shrink-0 flex-wrap items-center gap-3">
-			<div className="relative max-w-sm flex-1 min-w-[200px]">
+			<div className="relative max-w-sm min-w-[200px] flex-1">
 				<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 				<Input
 					aria-label="Search sessions"
@@ -97,13 +97,7 @@ export default function SessionsFilterBar(props: SessionsFilterBarProps) {
 				className="h-9 w-[180px]"
 			/>
 			{props.hasActiveFilters && (
-				<Button
-					variant="ghost"
-					size="sm"
-					onClick={props.onClearFilters}
-					data-testid="mcp-sessions-clear-filters-btn"
-					className="h-9"
-				>
+				<Button variant="ghost" size="sm" onClick={props.onClearFilters} data-testid="mcp-sessions-clear-filters-btn" className="h-9">
 					<X className="h-4 w-4" />
 					Clear filters
 				</Button>

@@ -94,12 +94,26 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 				<span className="text-sm font-semibold">Filters</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
-						<Button variant="outline" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={handleReset} data-testid="mcpLibraryFilterSidebar-reset-button">
+						<Button
+							variant="outline"
+							size="sm"
+							className="text-muted-foreground h-7 px-2 text-xs"
+							onClick={handleReset}
+							data-testid="mcpLibraryFilterSidebar-reset-button"
+						>
 							<RotateCcw className="size-3" />
 							Reset
 						</Button>
 					)}
-					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title="Hide filters" aria-label="Hide filters" data-testid="mcpLibraryFilterSidebar-toggle-hide">
+					<Button
+						variant="ghost"
+						size="icon"
+						className="size-7"
+						onClick={toggleCollapsed}
+						title="Hide filters"
+						aria-label="Hide filters"
+						data-testid="mcpLibraryFilterSidebar-toggle-hide"
+					>
 						<PanelLeftClose className="size-4" />
 					</Button>
 				</div>
@@ -107,10 +121,7 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				{isError ? (
-					<div
-						className="flex flex-col items-center gap-3 px-3 py-8 text-center"
-						data-testid="mcpLibraryFilterSidebar-error"
-					>
+					<div className="flex flex-col items-center gap-3 px-3 py-8 text-center" data-testid="mcpLibraryFilterSidebar-error">
 						<p className="text-muted-foreground text-sm">Failed to load filters.</p>
 						<Button variant="outline" size="sm" onClick={() => refetch()} data-testid="mcpLibraryFilterSidebar-retry-button">
 							<RotateCcw className="size-3" />
@@ -118,41 +129,41 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 						</Button>
 					</div>
 				) : (
-				<div className="flex grow flex-col gap-1">
-					<CheckboxFilterSection
-						title="Category"
-						items={filterData?.categories || []}
-						selected={filters.categories}
-						loading={isLoading}
-						defaultOpen
-						onChange={(categories) => onFiltersChange({ ...filters, categories })}
-						testIdPrefix="mcp-library-filter-category"
-					/>
-					<CheckboxFilterSection
-						title="Connection Type"
-						items={filterData?.connection_types || []}
-						selected={filters.connection_types}
-						loading={isLoading}
-						onChange={(connection_types) => onFiltersChange({ ...filters, connection_types })}
-						testIdPrefix="mcp-library-filter-connection-type"
-					/>
-					<CheckboxFilterSection
-						title="Auth Type"
-						items={filterData?.auth_types || []}
-						selected={filters.auth_types}
-						loading={isLoading}
-						onChange={(auth_types) => onFiltersChange({ ...filters, auth_types })}
-						testIdPrefix="mcp-library-filter-auth-type"
-					/>
-					<CheckboxFilterSection
-						title="Tags"
-						items={filterData?.tags || []}
-						selected={filters.tags}
-						loading={isLoading}
-						onChange={(tags) => onFiltersChange({ ...filters, tags })}
-						testIdPrefix="mcp-library-filter-tag"
-					/>
-				</div>
+					<div className="flex grow flex-col gap-1">
+						<CheckboxFilterSection
+							title="Category"
+							items={filterData?.categories || []}
+							selected={filters.categories}
+							loading={isLoading}
+							defaultOpen
+							onChange={(categories) => onFiltersChange({ ...filters, categories })}
+							testIdPrefix="mcp-library-filter-category"
+						/>
+						<CheckboxFilterSection
+							title="Connection Type"
+							items={filterData?.connection_types || []}
+							selected={filters.connection_types}
+							loading={isLoading}
+							onChange={(connection_types) => onFiltersChange({ ...filters, connection_types })}
+							testIdPrefix="mcp-library-filter-connection-type"
+						/>
+						<CheckboxFilterSection
+							title="Auth Type"
+							items={filterData?.auth_types || []}
+							selected={filters.auth_types}
+							loading={isLoading}
+							onChange={(auth_types) => onFiltersChange({ ...filters, auth_types })}
+							testIdPrefix="mcp-library-filter-auth-type"
+						/>
+						<CheckboxFilterSection
+							title="Tags"
+							items={filterData?.tags || []}
+							selected={filters.tags}
+							loading={isLoading}
+							onChange={(tags) => onFiltersChange({ ...filters, tags })}
+							testIdPrefix="mcp-library-filter-tag"
+						/>
+					</div>
 				)}
 			</ScrollArea>
 		</div>
@@ -267,7 +278,12 @@ function CheckboxFilterSection({
 	};
 
 	return (
-		<FilterSection title={title} defaultOpen={defaultOpen || hasActive} loading={loading} testId={testIdPrefix ? `${testIdPrefix}-toggle` : undefined}>
+		<FilterSection
+			title={title}
+			defaultOpen={defaultOpen || hasActive}
+			loading={loading}
+			testId={testIdPrefix ? `${testIdPrefix}-toggle` : undefined}
+		>
 			{showSearch && (
 				<div className="relative border-b">
 					<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />

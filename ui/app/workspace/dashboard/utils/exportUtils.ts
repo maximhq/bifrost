@@ -202,7 +202,17 @@ export interface DashboardData {
 	mcpTopToolsData: MCPTopToolsResponse | null;
 }
 
-export type ExportTab = "all" | "overview" | "provider-usage" | "rankings" | "team-rankings" | "customer-rankings" | "bu-rankings" | "user-rankings" | "virtual-key-rankings" | "mcp";
+export type ExportTab =
+	| "all"
+	| "overview"
+	| "provider-usage"
+	| "rankings"
+	| "team-rankings"
+	| "customer-rankings"
+	| "bu-rankings"
+	| "user-rankings"
+	| "virtual-key-rankings"
+	| "mcp";
 
 /** Return all CSV sections for the selected scope. Each entry becomes its own sheet / file section. */
 export function getCSVSections(data: DashboardData, tab: ExportTab): { name: string; csv: CSVData }[] {

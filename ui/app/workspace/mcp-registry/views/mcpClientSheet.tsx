@@ -197,9 +197,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		},
 	});
@@ -225,9 +225,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		});
 	}, [form, mcpClient]);
@@ -285,16 +285,16 @@ export default function MCPClientSheet({
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-							client_id: oauthClientID,
-							client_secret: oauthClientSecret,
-						}
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret,
+							}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-								ca_cert_pem: data.tls_config.ca_cert_pem,
-							}
+									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+									ca_cert_pem: data.tls_config.ca_cert_pem,
+								}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -505,8 +505,8 @@ export default function MCPClientSheet({
 											<span className="font-mono break-all">
 												{mcpClient.config.connection_type === "stdio"
 													? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-													"-"
-													: (mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault")
+														"-"
+													: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
 														? mcpClient.config.connection_string.ref
 														: mcpClient.config.connection_string?.value || "-"}
 											</span>
@@ -524,7 +524,7 @@ export default function MCPClientSheet({
 															return [name, valueParts.join("=")];
 														}),
 													)}
-													onChange={() => { }}
+													onChange={() => {}}
 													fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 													valuePlaceholder="—"
 													label=""
@@ -870,9 +870,9 @@ export default function MCPClientSheet({
 														onBlur={() => {
 															const parsed = allowedExtraHeadersRaw.trim()
 																? allowedExtraHeadersRaw
-																	.split(",")
-																	.map((h) => h.trim())
-																	.filter(Boolean)
+																		.split(",")
+																		.map((h) => h.trim())
+																		.filter(Boolean)
 																: [];
 															field.onChange(parsed);
 															field.onBlur();

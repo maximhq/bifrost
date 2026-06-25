@@ -65,8 +65,7 @@ export const _secretVarBase = z.object({
 
 // Extending the base schema
 export const secretVarSchema = Object.assign(_secretVarBase, {
-	required: (message: string) =>
-		_secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
+	required: (message: string) => _secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
 });
 
 // Helper to check if a secretVar field has a value or secret reference
@@ -516,7 +515,8 @@ export const proxyConfigSchema = z
 	.refine(
 		(data) =>
 			!(data.type === "http" || data.type === "socks5") ||
-			data.url?.type === "env" || data.url?.type === "vault" ||
+			data.url?.type === "env" ||
+			data.url?.type === "vault" ||
 			(data.url?.value && data.url.value.trim().length > 0),
 		{
 			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",

@@ -325,6 +325,7 @@
               "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
           },

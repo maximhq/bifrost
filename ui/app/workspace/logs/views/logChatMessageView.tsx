@@ -65,24 +65,30 @@ export function LogChatFileBlockView({ block, className }: { block: ContentBlock
 			<div className="flex items-start justify-between gap-3">
 				<div className="min-w-0 font-medium break-all">{title}</div>
 				{canDownload && (
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					className="h-7 shrink-0 gap-1 px-2 text-xs"
-					onClick={() => downloadFileData(file.file_data!, title, file.file_type)}
-					data-testid="file-block-download-btn"
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						className="h-7 shrink-0 gap-1 px-2 text-xs"
+						onClick={() => downloadFileData(file.file_data!, title, file.file_type)}
+						data-testid="file-block-download-btn"
+					>
+						<Download className="h-3.5 w-3.5" />
+						Download
+					</Button>
+				)}
+			</div>
+			{details.length > 0 && <div className="text-muted-foreground mt-1 break-all">{details.join(" · ")}</div>}
+			{file.file_url && isSafeHttpUrl(file.file_url) && (
+				<a
+					href={file.file_url}
+					target="_blank"
+					rel="noreferrer"
+					className="text-primary mt-2 inline-block hover:underline"
+					data-testid="file-block-open-link"
 				>
-					<Download className="h-3.5 w-3.5" />
-					Download
-				</Button>
-			)}
-		</div>
-		{details.length > 0 && <div className="text-muted-foreground mt-1 break-all">{details.join(" · ")}</div>}
-		{file.file_url && isSafeHttpUrl(file.file_url) && (
-			<a href={file.file_url} target="_blank" rel="noreferrer" className="text-primary mt-2 inline-block hover:underline" data-testid="file-block-open-link">
-				Open file
-			</a>
+					Open file
+				</a>
 			)}
 		</div>
 	);

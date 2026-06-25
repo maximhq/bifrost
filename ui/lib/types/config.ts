@@ -232,7 +232,6 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 	value: {
 		value: "",
 		ref: "",
-		
 	},
 	models: [],
 	blacklisted_models: [],

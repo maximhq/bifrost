@@ -120,7 +120,8 @@ export default function MCPLibraryPage() {
 				.filter((server) =>
 					clients.some((client) => {
 						const connectionString = client.config.connection_string;
-						const connectionUrl = (connectionString?.type === "env" || connectionString?.type === "vault") ? connectionString.ref : connectionString?.value;
+						const connectionUrl =
+							connectionString?.type === "env" || connectionString?.type === "vault" ? connectionString.ref : connectionString?.value;
 						return (
 							(server.connection_url && connectionUrl === server.connection_url) ||
 							client.config.name.toLowerCase() === sanitizeServerName(server.name).toLowerCase()
@@ -159,8 +160,8 @@ export default function MCPLibraryPage() {
 				<MCPLibraryFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 				{/* Main Content */}
-				<div className="bg-card w-full rounded-l-md h-full">
-					<div className="flex flex-col gap-4 p-4 pb-2 h-full">
+				<div className="bg-card h-full w-full rounded-l-md">
+					<div className="flex h-full flex-col gap-4 p-4 pb-2">
 						{/* Header */}
 						<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div className="space-y-1">
@@ -185,7 +186,7 @@ export default function MCPLibraryPage() {
 
 						{/* Search */}
 						{!isCatalogEmpty && (
-							<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between -mx-2 px-2 py-2">
+							<div className="-mx-2 flex flex-col gap-3 px-2 py-2 sm:flex-row sm:items-center sm:justify-between">
 								<div className="relative max-w-md flex-1">
 									<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 									<Input
@@ -196,10 +197,7 @@ export default function MCPLibraryPage() {
 										data-testid="mcp-library-search-input"
 									/>
 								</div>
-								<div
-									className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5"
-									aria-label="Library view mode"
-								>
+								<div className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5" aria-label="Library view mode">
 									<Button
 										type="button"
 										variant="ghost"
@@ -207,7 +205,7 @@ export default function MCPLibraryPage() {
 										className={cn(
 											"h-8 rounded-xs border border-transparent px-2.5 shadow-none",
 											viewMode === "table" &&
-											"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
+												"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
 										)}
 										onClick={() => handleViewModeChange("table")}
 										aria-pressed={viewMode === "table"}
@@ -223,7 +221,7 @@ export default function MCPLibraryPage() {
 										className={cn(
 											"h-8 rounded-xs border border-transparent px-2.5 shadow-none",
 											viewMode === "grid" &&
-											"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
+												"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
 										)}
 										onClick={() => handleViewModeChange("grid")}
 										aria-pressed={viewMode === "grid"}
@@ -235,12 +233,11 @@ export default function MCPLibraryPage() {
 								</div>
 							</div>
 						)}
-						<div className="grow overflow-hidden flex flex-col">
-
+						<div className="flex grow flex-col overflow-hidden">
 							{/* Loading skeletons */}
 							{isFetching && servers.length === 0 ? (
 								viewMode === "grid" ? (
-									<ScrollArea className="overflow-y-auto mb-2">
+									<ScrollArea className="mb-2 overflow-y-auto">
 										<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-skeleton">
 											{Array.from({ length: 6 }).map((_, i) => (
 												// biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders have no stable id
@@ -281,7 +278,7 @@ export default function MCPLibraryPage() {
 							) : (
 								<>
 									{viewMode === "grid" ? (
-										<ScrollArea className="overflow-y-auto mb-2">
+										<ScrollArea className="mb-2 overflow-y-auto">
 											<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-view">
 												{servers.map((server) => {
 													const isInstalled = installedServerSlugs.has(server.slug);

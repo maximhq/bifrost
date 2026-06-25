@@ -10,7 +10,11 @@ import { AttachmentDisplay } from "./attachmentViews";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
 const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
-const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => (
+	<Suspense fallback={null}>
+		<LazyMarkdown {...props} />
+	</Suspense>
+);
 
 /**
  * Render an interactive user message block that supports viewing and editing content, role switching, file attachments (via picker or drag-and-drop), and special handling for JSON and Jinja-variable content.

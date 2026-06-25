@@ -440,7 +440,7 @@ interface ComboboxSelectMultiProps extends ComboboxSelectBaseProps {
 	onValueChange?: (value: string[]) => void;
 }
 
-type ComboboxSelectProps = (ComboboxSelectSingleProps | ComboboxSelectMultiProps) & { noPortal?: boolean, searchPlaceholder?: string };
+type ComboboxSelectProps = (ComboboxSelectSingleProps | ComboboxSelectMultiProps) & { noPortal?: boolean; searchPlaceholder?: string };
 
 function ComboboxSelect(props: ComboboxSelectProps) {
 	const {
@@ -455,7 +455,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		creatable = false,
 		createLabel,
 		"data-testid": dataTestId,
-		searchPlaceholder
+		searchPlaceholder,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -678,15 +678,17 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 }
 
 export {
-	Combobox, ComboboxContent, ComboboxCreatable, ComboboxEmpty,
+	Combobox,
+	ComboboxContent,
+	ComboboxCreatable,
+	ComboboxEmpty,
 	ComboboxGroup,
 	ComboboxInput,
 	ComboboxItem,
 	ComboboxLabel,
 	ComboboxList,
 	ComboboxSelect,
-	ComboboxSeparator
+	ComboboxSeparator,
 };
 
 export type { ComboboxCreatableProps, ComboboxSelectOption, ComboboxSelectProps };
-
