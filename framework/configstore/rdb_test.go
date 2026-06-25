@@ -424,7 +424,7 @@ func TestUpdateProvidersConfig_CreateNew(t *testing.T) {
 				{
 					ID:     "key-uuid-1",
 					Name:   "openai-primary",
-					Value:  *schemas.NewEnvVar("sk-test-key"),
+					Value:  *schemas.NewSecretVar("sk-test-key"),
 					Weight: 1.0,
 				},
 			},
@@ -454,7 +454,7 @@ func TestUpdateProvidersConfig_UpdateExistingByKeyID(t *testing.T) {
 				{
 					ID:     "key-uuid-1",
 					Name:   "openai-primary",
-					Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+					Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 					Weight: 1.0,
 				},
 			},
@@ -469,7 +469,7 @@ func TestUpdateProvidersConfig_UpdateExistingByKeyID(t *testing.T) {
 			{
 				ID:     "key-uuid-1", // Same KeyID
 				Name:   "openai-primary",
-				Value:  *schemas.NewEnvVar("sk-test-key-v2"), // Updated value
+				Value:  *schemas.NewSecretVar("sk-test-key-v2"), // Updated value
 				Weight: 2.0,
 			},
 		},
@@ -497,7 +497,7 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 				{
 					ID:     "original-uuid",
 					Name:   "openai-primary",
-					Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+					Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 					Weight: 1.0,
 				},
 			},
@@ -512,7 +512,7 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 			{
 				ID:     "new-uuid-from-config-reload", // Different UUID!
 				Name:   "openai-primary",              // Same name
-				Value:  *schemas.NewEnvVar("sk-test-key-v2"),
+				Value:  *schemas.NewSecretVar("sk-test-key-v2"),
 				Weight: 1.5,
 			},
 		},
@@ -535,13 +535,13 @@ func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-1", Name: "openai-primary", Value: *schemas.NewEnvVar("sk-key-1"), Weight: 1.0},
-				{ID: "key-2", Name: "openai-secondary", Value: *schemas.NewEnvVar("sk-key-2"), Weight: 0.5},
+				{ID: "key-1", Name: "openai-primary", Value: *schemas.NewSecretVar("sk-key-1"), Weight: 1.0},
+				{ID: "key-2", Name: "openai-secondary", Value: *schemas.NewSecretVar("sk-key-2"), Weight: 0.5},
 			},
 		},
 		"anthropic": {
 			Keys: []schemas.Key{
-				{ID: "key-3", Name: "anthropic-main", Value: *schemas.NewEnvVar("sk-key-3"), Weight: 1.0},
+				{ID: "key-3", Name: "anthropic-main", Value: *schemas.NewSecretVar("sk-key-3"), Weight: 1.0},
 			},
 		},
 	}
@@ -572,7 +572,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	key := schemas.Key{
 		ID:     "key-uuid-1",
 		Name:   "openai-primary",
-		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 		Weight: 1.0,
 	}
 
@@ -589,7 +589,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.NotNil(t, storedKey)
 	assert.Equal(t, "sk-test-key-v1", storedKey.Value.Val)
 
-	key.Value = *schemas.NewEnvVar("sk-test-key-v2")
+	key.Value = *schemas.NewSecretVar("sk-test-key-v2")
 	key.Weight = 2.0
 
 	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
@@ -616,7 +616,7 @@ func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
 	key := schemas.Key{
 		ID:     "key-uuid-1",
 		Name:   "openai-primary",
-		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 		Weight: 1.0,
 	}
 
@@ -1203,7 +1203,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-for-pc", Name: "openai-pc-key", Value: *schemas.NewEnvVar("sk-test"), Weight: 1.0},
+				{ID: "key-for-pc", Name: "openai-pc-key", Value: *schemas.NewSecretVar("sk-test"), Weight: 1.0},
 			},
 		},
 	}
@@ -1285,8 +1285,8 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
-				{ID: "key-b", Name: "openai-key-b", Value: *schemas.NewEnvVar("sk-b"), Weight: 1.0},
+				{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
+				{ID: "key-b", Name: "openai-key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1.0},
 			},
 		},
 	}
@@ -1316,7 +1316,7 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 
 	updatedProviderConfig := ProviderConfig{
 		Keys: []schemas.Key{
-			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
 		},
 	}
 	err = store.UpdateProvider(ctx, "openai", updatedProviderConfig)
@@ -1336,7 +1336,7 @@ func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
 
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
-			Keys: []schemas.Key{{ID: "key-delete", Name: "openai-key-delete", Value: *schemas.NewEnvVar("sk-delete"), Weight: 1.0}},
+			Keys: []schemas.Key{{ID: "key-delete", Name: "openai-key-delete", Value: *schemas.NewSecretVar("sk-delete"), Weight: 1.0}},
 		},
 	}
 	err := store.UpdateProvidersConfig(ctx, providers)
@@ -1707,8 +1707,8 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-1", Name: "openai-main", Value: *schemas.NewEnvVar("sk-main"), Weight: 1.0},
-				{ID: "key-2", Name: "openai-backup", Value: *schemas.NewEnvVar("sk-backup"), Weight: 0.5},
+				{ID: "key-1", Name: "openai-main", Value: *schemas.NewSecretVar("sk-main"), Weight: 1.0},
+				{ID: "key-2", Name: "openai-backup", Value: *schemas.NewSecretVar("sk-backup"), Weight: 0.5},
 			},
 		},
 	}

@@ -580,7 +580,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/sgl/SGL/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -748,6 +748,14 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			$(ECHO) ""; \
 		fi; \
 	fi; \
+	if [ -n "$$REPORT_FILE" ] && [ -f "$$REPORT_FILE" ]; then \
+		SUMMARY_PREFIX=$$(basename "$$REPORT_FILE" .xml | sed 's/-.*//'); \
+		SUMMARY_TITLE=$$($(ECHO) "$$SUMMARY_PREFIX" | awk '{print toupper(substr($$0,1,1)) substr($$0,2)}'); \
+		$(MAKE) --no-print-directory print-test-summary \
+			SUMMARY_LABEL="$$SUMMARY_TITLE" \
+			SUMMARY_STRIP="$$SUMMARY_PREFIX-" \
+			SUMMARY_FILES="$$REPORT_FILE"; \
+	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \
 		exit 1; \
 	fi
@@ -806,6 +814,10 @@ test-plugins: install-gotestsum ## Run plugin tests
 	else \
 		$(ECHO) "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/plugin-*.xml$(NC)"; \
 	fi
+	@$(MAKE) --no-print-directory print-test-summary \
+		SUMMARY_LABEL="Plugin" \
+		SUMMARY_STRIP="plugin-" \
+		SUMMARY_FILES="$(TEST_REPORTS_DIR)/plugin-*.xml"
 
 test-framework: install-gotestsum ## Run framework tests
 	@$(EXPOSE_ENV); \
@@ -831,6 +843,50 @@ test-framework: install-gotestsum ## Run framework tests
 		$(ECHO) "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/framework-*.html$(NC)"; \
 	else \
 		$(ECHO) "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/framework-*.xml$(NC)"; \
+	fi
+	@$(MAKE) --no-print-directory print-test-summary \
+		SUMMARY_LABEL="Framework" \
+		SUMMARY_STRIP="framework-" \
+		SUMMARY_FILES="$(TEST_REPORTS_DIR)/framework-*.xml"
+
+# Internal: render a table of test reports + a final pass/fail scenario.
+# Usage: $(MAKE) print-test-summary SUMMARY_LABEL="Framework" SUMMARY_STRIP="framework-" SUMMARY_FILES="<glob or files>"
+# Each report becomes one row: tests/failures/errors come from the <testsuites> aggregate,
+# while skipped is summed from the per-<testsuite> attrs (the aggregate omits skipped).
+SUMMARY_SEP := --------------------------------------------------
+print-test-summary:
+	@$(ECHO) ""; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	$(ECHO) "$(CYAN)$(SUMMARY_LABEL) Test Report Summary$(NC)"; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	total_tests=0; total_pass=0; total_fail=0; total_err=0; total_skip=0; reports=0; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "REPORT" "TESTS" "PASS" "FAIL" "ERR" "SKIP"; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "$(SUMMARY_SEP)" "-------" "-------" "-------" "-------" "-------"; \
+	for xml in $(SUMMARY_FILES); do \
+		[ -e "$$xml" ] || continue; \
+		line=$$(grep -o '<testsuites[^>]*>' "$$xml" | head -1); \
+		t=$$(printf '%s' "$$line" | sed -n 's/.*[^a-z]tests="\([0-9]*\)".*/\1/p'); \
+		f=$$(printf '%s' "$$line" | sed -n 's/.*failures="\([0-9]*\)".*/\1/p'); \
+		e=$$(printf '%s' "$$line" | sed -n 's/.*errors="\([0-9]*\)".*/\1/p'); \
+		s=$$(grep -o '<testsuite [^>]*>' "$$xml" | grep -o 'skipped="[0-9]*"' | grep -o '[0-9]*' | awk '{x+=$$1} END{print x+0}'); \
+		t=$${t:-0}; f=$${f:-0}; e=$${e:-0}; s=$${s:-0}; \
+		p=$$((t - f - e - s)); \
+		name=$$(basename "$$xml" .xml | sed 's/^$(SUMMARY_STRIP)//'); \
+		reports=$$((reports + 1)); \
+		total_tests=$$((total_tests + t)); total_pass=$$((total_pass + p)); \
+		total_fail=$$((total_fail + f)); total_err=$$((total_err + e)); total_skip=$$((total_skip + s)); \
+		if [ $$((f + e)) -gt 0 ]; then color="$(RED)"; else color="$(GREEN)"; fi; \
+		printf "%b%-50s %7s %7s %7s %7s %7s%b\n" "$$color" "$$name" "$$t" "$$p" "$$f" "$$e" "$$s" "$(NC)"; \
+	done; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "$(SUMMARY_SEP)" "-------" "-------" "-------" "-------" "-------"; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "TOTAL ($$reports reports)" "$$total_tests" "$$total_pass" "$$total_fail" "$$total_err" "$$total_skip"; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	if [ "$$reports" -eq 0 ]; then \
+		$(ECHO) "$(YELLOW)No $(SUMMARY_LABEL) test reports found$(NC)"; \
+	elif [ $$((total_fail + total_err)) -eq 0 ]; then \
+		$(ECHO) "$(GREEN)✓ ALL $(SUMMARY_LABEL) TESTS PASSED ($$total_pass/$$total_tests passed, $$total_skip skipped)$(NC)"; \
+	else \
+		$(ECHO) "$(RED)✗ $(SUMMARY_LABEL) TESTS FAILED ($$total_fail failures, $$total_err errors out of $$total_tests tests)$(NC)"; \
 	fi
 
 test-http-transport: install-gotestsum ## Run HTTP transport tests
@@ -994,6 +1050,14 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 			$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"; \
 			$(ECHO) ""; \
 		fi; \
+	fi; \
+	if [ -n "$$REPORT_FILE" ] && [ -f "$$REPORT_FILE" ]; then \
+		SUMMARY_PREFIX=$$(basename "$$REPORT_FILE" .xml | sed 's/-.*//'); \
+		SUMMARY_TITLE=$$($(ECHO) "$$SUMMARY_PREFIX" | awk '{print toupper(substr($$0,1,1)) substr($$0,2)}'); \
+		$(MAKE) --no-print-directory print-test-summary \
+			SUMMARY_LABEL="$$SUMMARY_TITLE" \
+			SUMMARY_STRIP="$$SUMMARY_PREFIX-" \
+			SUMMARY_FILES="$$REPORT_FILE"; \
 	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \
 		exit 1; \

@@ -2,7 +2,7 @@ import { defineConfig, devices, type PlaywrightTestConfig } from '@playwright/te
 import { existsSync } from 'fs'
 import { resolve } from 'path'
 
-const enterpriseFeaturesDir = resolve(__dirname, '../../../bifrost-enterprise/e2e/features')
+const enterpriseFeaturesDir = resolve(__dirname, '../../../bifrost-enterprise/tests/e2e/features')
 const includeEnterprise = process.env.BIFROST_E2E_INCLUDE_ENTERPRISE === '1' && existsSync(enterpriseFeaturesDir)
 
 const projects: NonNullable<PlaywrightTestConfig['projects']> = [

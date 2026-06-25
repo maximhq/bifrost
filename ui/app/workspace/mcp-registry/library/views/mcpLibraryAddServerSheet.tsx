@@ -220,7 +220,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 
 						{/* Auth + category */}
 						<div className="grid grid-cols-2 gap-3">
-							<div className="space-y-2 w-full">
+							<div className="w-full space-y-2">
 								<Label>Authentication</Label>
 								<Select value={authType} onValueChange={(v) => setValue("auth_type", v as MCPAuthType)}>
 									<SelectTrigger data-testid="mcp-add-auth-type" className="w-full">

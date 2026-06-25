@@ -27,7 +27,7 @@ func TestXAI(t *testing.T) {
 		Provider:                schemas.XAI,
 		ChatModel:               "grok-4-0709",
 		ReasoningModel:          "grok-3-mini",
-		TextModel:               "grok-3",
+		TextModel:               "", // xAI dropped raw sampling (/v1/completions); all current models are reasoning models
 		VisionModel:             "grok-4-1-fast-reasoning",
 		EmbeddingModel:          "", // XAI doesn't support embedding
 		ImageGenerationModel:    "grok-imagine-image",

@@ -1,4 +1,12 @@
-import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type ToolCall, type VariableMap } from "@/lib/message";
+import {
+	extractVariablesFromMessages,
+	mergeVariables,
+	Message,
+	MessageRole,
+	MessageType,
+	type ToolCall,
+	type VariableMap,
+} from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
 import { v4 as uuidv4 } from "uuid";
@@ -731,18 +739,12 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				.filter((r): r is PromiseFulfilledResult<{ toolCallId: string; content: string }> => r.status === "fulfilled")
 				.map((r) => r.value);
 
-			const failures = settled
-				.filter((r): r is PromiseRejectedResult => r.status === "rejected")
-				.map((r) => getErrorMessage(r.reason));
+			const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => getErrorMessage(r.reason));
 
 			if (failures.length > 0) {
-				const detail = failures.length <= 3
-					? failures.join("; ")
-					: `${failures.slice(0, 2).join("; ")} and ${failures.length - 2} more`;
+				const detail = failures.length <= 3 ? failures.join("; ") : `${failures.slice(0, 2).join("; ")} and ${failures.length - 2} more`;
 				toast.error(`${failures.length} of ${toolCalls.length} tool executions failed`, {
-					description: failures.length === toolCalls.length
-						? detail
-						: `${detail}. Successful results were kept — fill the rest manually.`,
+					description: failures.length === toolCalls.length ? detail : `${detail}. Successful results were kept — fill the rest manually.`,
 				});
 			}
 

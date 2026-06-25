@@ -221,10 +221,7 @@ export class MCPAuthRequiredError extends Error {
 	}
 }
 
-export async function executeToolCall(
-	toolCall: ToolCall,
-	config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">,
-): Promise<string> {
+export async function executeToolCall(toolCall: ToolCall, config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">): Promise<string> {
 	const headers = buildHeaders(config);
 
 	const response = await fetch(`${getBaseUrl()}/v1/mcp/tool/execute`, {

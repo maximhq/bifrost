@@ -95,12 +95,7 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 								}}
 							/>
 						) : (
-							<img
-								src={"/images/mcp.svg"}
-								alt=""
-								className="h-full w-full object-contain p-1.5"
-							/>
-
+							<img src={"/images/mcp.svg"} alt="" className="h-full w-full object-contain p-1.5" />
 						)}
 					</div>
 					<div className="min-w-0 flex-1 space-y-1">
@@ -163,7 +158,7 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 				</div>
 				<div className="flex shrink-0 items-center gap-2">
 					{canDelete && (
-						<div className="hidden group-hover:block fade-in">
+						<div className="fade-in hidden group-hover:block">
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Button

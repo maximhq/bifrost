@@ -164,7 +164,7 @@ export function SkillDetailView({
 	}
 
 	return (
-		<div className="relative flex w-full min-h-0 flex-1 flex-col">
+		<div className="relative flex min-h-0 w-full flex-1 flex-col">
 			{isEditing ? (
 				<SkillEditView
 					form={form}
@@ -294,7 +294,7 @@ export function SkillDetailView({
 						}
 					/>
 
-					<div className="mt-3 min-h-0 flex-1 flex flex-col">
+					<div className="mt-3 flex min-h-0 flex-1 flex-col">
 						<SkillFormFields skill={skill} />
 					</div>
 				</>

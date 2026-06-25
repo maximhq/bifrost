@@ -171,9 +171,7 @@ export default function ToolCallMessageView({
 	const handleExecuteAll = async () => {
 		if (!onExecuteAllToolCalls) return;
 		flushAllJsonBuffers();
-		const latestCalls = pendingToolCalls.map(
-			(tc) => messageRef.current.toolCalls?.find((t) => t.id === tc.id) ?? tc,
-		);
+		const latestCalls = pendingToolCalls.map((tc) => messageRef.current.toolCalls?.find((t) => t.id === tc.id) ?? tc);
 		setAuthErrors({});
 		setIsExecutingAll(true);
 		try {
@@ -260,12 +258,12 @@ export default function ToolCallMessageView({
 	};
 
 	return (
-		<div className="group rounded-lg border border-transparent px-3 py-2 transition-colors hover:border-border/80 focus-within:border-border/80">
+		<div className="group hover:border-border/80 focus-within:border-border/80 rounded-lg border border-transparent px-3 py-2 transition-colors">
 			<div className="mb-2 flex items-center gap-1">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
 
 				{toolCalls.length > 0 && (
-					<span className="animate-in fade-in-0 zoom-in-95 duration-200 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground motion-reduce:animate-none">
+					<span className="animate-in fade-in-0 zoom-in-95 bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[10px] font-medium duration-200 motion-reduce:animate-none">
 						{toolCalls.length} tool call{toolCalls.length > 1 ? "s" : ""}
 					</span>
 				)}
@@ -277,9 +275,9 @@ export default function ToolCallMessageView({
 							aria-label="Delete message"
 							data-testid="tool-call-msg-delete"
 							onClick={onRemove}
-							className="rounded-md p-1 opacity-0 transition hover:bg-destructive/10 focus:bg-destructive/10 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+							className="hover:bg-destructive/10 focus:bg-destructive/10 rounded-md p-1 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
 						>
-							<XIcon className="size-3.5 shrink-0 cursor-pointer text-muted-foreground transition-colors hover:text-destructive" />
+							<XIcon className="text-muted-foreground hover:text-destructive size-3.5 shrink-0 cursor-pointer transition-colors" />
 						</button>
 					)}
 				</div>
@@ -309,57 +307,50 @@ export default function ToolCallMessageView({
 							key={tc.id}
 							className={cn(
 								"animate-in fade-in-0 slide-in-from-bottom-1 duration-200 fill-mode-both motion-reduce:animate-none overflow-hidden rounded-lg border bg-card transition-[border-color,box-shadow]",
-								isExecuting
-									? "border-primary/40 shadow-[0_0_0_1px_var(--color-primary)/0.1]"
-									: "hover:border-border",
+								isExecuting ? "border-primary/40 shadow-[0_0_0_1px_var(--color-primary)/0.1]" : "hover:border-border",
 							)}
 							style={{ animationDelay: `${i * 75}ms` }}
 						>
 							{/* Header */}
-							<div className="flex items-start gap-2 bg-muted/40 px-3 py-2">
-								<div className="min-w-0 flex-1 items-center flex justify-between">
+							<div className="bg-muted/40 flex items-start gap-2 px-3 py-2">
+								<div className="flex min-w-0 flex-1 items-center justify-between">
 									<div className="flex min-w-0 items-center gap-2">
-										<div className={cn(
-											"rounded-md bg-background p-1 shrink-0 transition-colors duration-150",
-											isExecuting && "bg-primary/10",
-										)}>
-											<Wrench className={cn(
-												"size-3.5 shrink-0 transition-colors duration-150",
-												isExecuting ? "text-primary" : "text-muted-foreground",
-											)} />
+										<div
+											className={cn("rounded-md bg-background p-1 shrink-0 transition-colors duration-150", isExecuting && "bg-primary/10")}
+										>
+											<Wrench
+												className={cn(
+													"size-3.5 shrink-0 transition-colors duration-150",
+													isExecuting ? "text-primary" : "text-muted-foreground",
+												)}
+											/>
 										</div>
-										<span className="truncate font-mono text-xs font-semibold text-foreground">
-											{tc.function.name}
-										</span>
+										<span className="text-foreground truncate font-mono text-xs font-semibold">{tc.function.name}</span>
 
 										{isResponded && (
-											<span className="animate-in fade-in-0 zoom-in-90 duration-200 motion-reduce:animate-none shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
+											<span className="animate-in fade-in-0 zoom-in-90 shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-600 duration-200 motion-reduce:animate-none dark:text-emerald-400">
 												Responded
 											</span>
 										)}
 										{!isResponded && isMultiple && hasResult && (
-											<span className="animate-in fade-in-0 zoom-in-90 duration-200 motion-reduce:animate-none shrink-0 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium text-blue-600 dark:text-blue-400 flex items-center gap-0.5">
+											<span className="animate-in fade-in-0 zoom-in-90 flex shrink-0 items-center gap-0.5 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium text-blue-600 duration-200 motion-reduce:animate-none dark:text-blue-400">
 												<Check className="size-2.5" />
 												Ready
 											</span>
 										)}
 									</div>
 
-									<div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
-										{tc.id}
-									</div>
+									<div className="text-muted-foreground mt-0.5 truncate font-mono text-[10px]">{tc.id}</div>
 								</div>
 							</div>
 
 							{/* Arguments */}
 							{formattedArgs && (
-								<div className="px-3 py-2 border-t">
-									<div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-										Arguments
-									</div>
+								<div className="border-t px-3 py-2">
+									<div className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wide uppercase">Arguments</div>
 
 									{argsIsJson ? (
-										<div className="overflow-hidden rounded-md border bg-background">
+										<div className="bg-background overflow-hidden rounded-md border">
 											<CodeEditor
 												wrap
 												code={formattedArgs}
@@ -378,7 +369,7 @@ export default function ToolCallMessageView({
 											/>
 										</div>
 									) : (
-										<pre className="max-h-56 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed text-muted-foreground">
+										<pre className="bg-muted/40 text-muted-foreground max-h-56 overflow-auto rounded-md border p-2 font-mono text-xs leading-relaxed">
 											{formattedArgs}
 										</pre>
 									)}
@@ -387,16 +378,16 @@ export default function ToolCallMessageView({
 
 							{/* Manual entry / executed result textarea */}
 							{!disabled && (isManualEntryOpen || isResolved) && !isResponded && (
-								<div className="animate-in fade-in-0 duration-150 motion-reduce:animate-none border-t bg-muted/20 px-3 py-2 space-y-2">
+								<div className="animate-in fade-in-0 bg-muted/20 space-y-2 border-t px-3 py-2 duration-150 motion-reduce:animate-none">
 									<div className="flex items-center gap-2">
-										<div className="text-xs font-medium text-foreground">
+										<div className="text-foreground text-xs font-medium">
 											{isResolved && !isManualEntryOpen ? "Executed result" : "Tool result"}
 										</div>
 										{isMultiple && (
 											<Button
 												variant="ghost"
 												size="sm"
-												className="ml-auto h-7 px-2 text-xs text-muted-foreground"
+												className="text-muted-foreground ml-auto h-7 px-2 text-xs"
 												onClick={() => hideManualEntry(tc.id)}
 												disabled={isBusy}
 											>
@@ -407,7 +398,7 @@ export default function ToolCallMessageView({
 											<Button
 												variant="ghost"
 												size="sm"
-												className="ml-auto h-7 px-2 text-xs text-muted-foreground"
+												className="text-muted-foreground ml-auto h-7 px-2 text-xs"
 												data-testid="tool-call-response-cancel"
 												onClick={() => hideManualEntry(tc.id)}
 												disabled={isBusy}
@@ -422,7 +413,7 @@ export default function ToolCallMessageView({
 										value={responses[tc.id] ?? ""}
 										onChange={(e) => handleResponseChange(tc.id, e.target.value)}
 										data-testid="tool-call-response-textarea"
-										className="max-h-[200px] min-h-[84px] resize-none rounded-md bg-background font-mono text-xs"
+										className="bg-background max-h-[200px] min-h-[84px] resize-none rounded-md font-mono text-xs"
 										rows={3}
 										disabled={isBusy}
 									/>
@@ -432,7 +423,7 @@ export default function ToolCallMessageView({
 											<Button
 												variant="secondary"
 												size="sm"
-												className="h-8 active:scale-[0.97] transition-transform"
+												className="h-8 transition-transform active:scale-[0.97]"
 												data-testid="tool-call-response-submit"
 												disabled={!responses[tc.id]?.trim() || isBusy}
 												onClick={() => handleSubmitResponse(tc.id)}
@@ -447,26 +438,24 @@ export default function ToolCallMessageView({
 
 							{/* Auth error inline banner */}
 							{!disabled && authErrors[tc.id] && !isResponded && (
-								<div className="animate-in fade-in-0 duration-150 motion-reduce:animate-none border-t border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+								<div className="animate-in fade-in-0 border-t border-amber-500/30 bg-amber-500/5 px-3 py-2.5 duration-150 motion-reduce:animate-none">
 									<div className="flex flex-wrap items-center gap-2">
 										<div className="flex min-w-0 items-center gap-2">
-											<div className="rounded-md bg-amber-500/10 p-1 shrink-0">
+											<div className="shrink-0 rounded-md bg-amber-500/10 p-1">
 												<ShieldAlert className="size-3.5 text-amber-600 dark:text-amber-400" />
 											</div>
 											<div className="min-w-0">
-												<div className="text-xs font-medium text-foreground">
+												<div className="text-foreground text-xs font-medium">
 													Authentication required for {authErrors[tc.id].mcpClientName}
 												</div>
-												<div className="text-[10px] text-muted-foreground">
-													Connect your account to execute this tool.
-												</div>
+												<div className="text-muted-foreground text-[10px]">Connect your account to execute this tool.</div>
 											</div>
 										</div>
 										<div className="ml-auto flex items-center gap-1.5">
 											{authErrors[tc.id].authorizeUrl && (
 												<Button
 													size="sm"
-													className="h-8 active:scale-[0.97] transition-transform bg-primary text-primary-foreground hover:bg-primary/90"
+													className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 transition-transform active:scale-[0.97]"
 													onClick={() => window.open(authErrors[tc.id].authorizeUrl, "_blank", "noopener,noreferrer")}
 												>
 													<ExternalLink className="size-3.5" />
@@ -476,7 +465,7 @@ export default function ToolCallMessageView({
 											<Button
 												variant="secondary"
 												size="sm"
-												className="h-8 active:scale-[0.97] transition-transform"
+												className="h-8 transition-transform active:scale-[0.97]"
 												onClick={() => handleRetry(tc)}
 												disabled={isBusy}
 											>
@@ -490,14 +479,12 @@ export default function ToolCallMessageView({
 
 							{/* Per-card action bar (single mode: full actions, multi mode: per-card execute/manual) */}
 							{!disabled && onSubmitToolResult && !isResponded && !hasResult && !isManualEntryOpen && !authErrors[tc.id] && (
-								<div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none border-t bg-muted/20 px-3 py-2">
+								<div className="animate-in fade-in-0 slide-in-from-bottom-1 bg-muted/20 border-t px-3 py-2 duration-150 motion-reduce:animate-none">
 									<div className="flex flex-wrap items-center gap-2">
 										{!isMultiple && (
 											<div className="min-w-0">
-												<div className="text-xs font-medium text-foreground">Awaiting tool result</div>
-												<div className="text-[10px] text-muted-foreground">
-													Execute the call or add the result manually.
-												</div>
+												<div className="text-foreground text-xs font-medium">Awaiting tool result</div>
+												<div className="text-muted-foreground text-[10px]">Execute the call or add the result manually.</div>
 											</div>
 										)}
 										<div className={cn("flex items-center gap-1.5", !isMultiple && "ml-auto")}>
@@ -505,23 +492,19 @@ export default function ToolCallMessageView({
 												<Button
 													variant="secondary"
 													size="sm"
-													className="h-8 active:scale-[0.97] transition-transform"
+													className="h-8 transition-transform active:scale-[0.97]"
 													data-testid="tool-call-execute"
 													disabled={isBusy}
-													onClick={() => isMultiple ? handleExecuteOne(tc) : handleExecuteSingle(tc)}
+													onClick={() => (isMultiple ? handleExecuteOne(tc) : handleExecuteSingle(tc))}
 												>
-													{executingIds.has(tc.id) ? (
-														<Loader2 className="size-3.5 animate-spin" />
-													) : (
-														<Play className="size-3.5" />
-													)}
+													{executingIds.has(tc.id) ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
 													{executingIds.has(tc.id) ? "Executing" : "Execute"}
 												</Button>
 											)}
 											<Button
 												variant="ghost"
 												size="sm"
-												className="h-8 active:scale-[0.97] transition-transform"
+												className="h-8 transition-transform active:scale-[0.97]"
 												data-testid="tool-call-response-add-manually"
 												disabled={isBusy}
 												onClick={() => showManualEntry(tc.id)}
@@ -540,16 +523,16 @@ export default function ToolCallMessageView({
 
 			{/* Multi-tool: unified bottom bar with progress and submit */}
 			{!disabled && onSubmitToolResult && isMultiple && pendingToolCalls.length > 0 && (
-				<div className="sticky bottom-0 py-1.5 bg-card mt-3">
-					<div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none rounded-lg border bg-muted/20 px-3 py-2.5">
+				<div className="bg-card sticky bottom-0 mt-3 py-1.5">
+					<div className="animate-in fade-in-0 slide-in-from-bottom-1 bg-muted/20 rounded-lg border px-3 py-2.5 duration-150 motion-reduce:animate-none">
 						<div className="flex flex-wrap items-center gap-2">
 							<div className="min-w-0">
-								<div className="text-xs font-medium text-foreground">
+								<div className="text-foreground text-xs font-medium">
 									{allResolved
 										? `All ${pendingToolCalls.length} results ready`
 										: `${resolvedCount} of ${pendingToolCalls.length} results collected`}
 								</div>
-								<div className="text-[10px] text-muted-foreground">
+								<div className="text-muted-foreground text-[10px]">
 									{allResolved
 										? "Submit all results to continue the conversation."
 										: "Execute or fill each tool call above, then submit together."}
@@ -559,16 +542,12 @@ export default function ToolCallMessageView({
 								{onExecuteAllToolCalls && resolvedCount === 0 && (
 									<Button
 										size="sm"
-										className="h-8 active:scale-[0.97] transition-transform bg-primary text-primary-foreground hover:bg-primary/90"
+										className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 transition-transform active:scale-[0.97]"
 										data-testid="tool-call-execute-all"
 										disabled={isBusy}
 										onClick={handleExecuteAll}
 									>
-										{isExecutingAll ? (
-											<Loader2 className="size-3.5 animate-spin" />
-										) : (
-											<Play className="size-3.5" />
-										)}
+										{isExecutingAll ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
 										{isExecutingAll ? "Executing all" : "Execute all"}
 									</Button>
 								)}
@@ -584,11 +563,7 @@ export default function ToolCallMessageView({
 									disabled={!allResolved || isBusy || isSubmittingAll}
 									onClick={handleSubmitAll}
 								>
-									{isSubmittingAll ? (
-										<Loader2 className="size-3.5 animate-spin" />
-									) : (
-										<Send className="size-3.5" />
-									)}
+									{isSubmittingAll ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
 									{isSubmittingAll ? "Submitting" : "Submit all results"}
 								</Button>
 							</div>

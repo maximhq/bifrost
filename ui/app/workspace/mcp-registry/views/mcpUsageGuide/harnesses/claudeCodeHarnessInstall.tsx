@@ -5,7 +5,13 @@ import { HarnessCommandSection } from "../harnessCommandSection";
 import type { ClaudeScope, HarnessInstallProps } from "../types";
 import { getRegistrationLabel } from "../utils";
 
-export function ClaudeCodeHarnessInstall({ canGenerateCommand, clientConfig, selectedServers, serverScope, virtualKey }: HarnessInstallProps) {
+export function ClaudeCodeHarnessInstall({
+	canGenerateCommand,
+	clientConfig,
+	selectedServers,
+	serverScope,
+	virtualKey,
+}: HarnessInstallProps) {
 	const [scope, setScope] = useState<ClaudeScope>("local");
 
 	const command = useMemo(() => {

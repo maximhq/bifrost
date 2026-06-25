@@ -367,9 +367,7 @@ export const createColumns = (
 		},
 	];
 
-	const attributionCell = (value?: string | null) => (
-		<div className="max-w-[180px] truncate font-mono text-xs">{value || "-"}</div>
-	);
+	const attributionCell = (value?: string | null) => <div className="max-w-[180px] truncate font-mono text-xs">{value || "-"}</div>;
 
 	const attributionColumns: ColumnDef<LogEntry>[] = [
 		{

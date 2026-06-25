@@ -45,7 +45,9 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
 										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : model}</span>
 									</span>
-									<span className="font-medium" style={{ color: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}>{formatCost(cost)}</span>
+									<span className="font-medium" style={{ color: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}>
+										{formatCost(cost)}
+									</span>
 								</div>
 							);
 						})}
@@ -141,7 +143,10 @@ function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: C
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+						<Tooltip
+							content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />}
+							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+						/>
 						{displayModels.map((model, idx) => (
 							<Bar
 								isAnimationActive={false}
@@ -177,7 +182,10 @@ function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: C
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+						<Tooltip
+							content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />}
+							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+						/>
 						{displayModels.map((model, idx) => {
 							const color = model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
 							return (

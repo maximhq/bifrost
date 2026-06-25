@@ -12,6 +12,10 @@ Use it when your organization already manages AI security policies in CrowdStrik
 
 CrowdStrike owns the detection policy. Bifrost owns the gateway enforcement path: it selects when to call AIDR, sends the relevant AI traffic, then blocks or rewrites the Bifrost request/response based on AIDR's verdict.
 
+<Note>
+  **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
+</Note>
+
 ## When To Use It
 
 CrowdStrike AIDR is useful for:
@@ -315,7 +319,7 @@ Blocked by CrowdStrike AIDR policy
 ```
 
 <Note>
-CrowdStrike AIDR output inspection and redaction only apply to non-streaming response bodies today. Streaming output redaction is not supported; input guardrails can still run before a streaming request is sent to the LLM.
+CrowdStrike AIDR inspects and can block streaming output after Bifrost accumulates the complete response. Streaming output transformation or redaction is not supported: if AIDR returns `transformed: true` for a streaming response, Bifrost ends the stream rather than applying `guard_output`.
 </Note>
 
 ## Useful Rule Patterns
