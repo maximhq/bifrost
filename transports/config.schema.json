@@ -4825,6 +4825,22 @@
           "type": "boolean",
           "description": "Whether load balancing is enabled"
         },
+        "direction_selection_enabled": {
+          "type": "boolean",
+          "description": "Enable adaptive provider (direction) selection. Defaults to true; omit to leave on."
+        },
+        "route_selection_enabled": {
+          "type": "boolean",
+          "description": "Enable adaptive per-key (route) selection. Defaults to true; omit to leave on."
+        },
+        "reroute_failed_directions": {
+          "type": "boolean",
+          "description": "When a pinned provider's direction is unhealthy, re-route the request to a healthy provider. Defaults to false."
+        },
+        "prune_failed_fallbacks": {
+          "type": "boolean",
+          "description": "Drop unhealthy directions from a request's configured fallbacks. Defaults to false."
+        },
         "tracker_config": {
           "type": "object",
           "description": "Configuration for tracking route metrics and performance"
