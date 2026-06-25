@@ -124,10 +124,11 @@ func (provider *RunwareProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	for i := range runwareResp.Data {
 		model := runwareResp.Data[i].Model
 		if len(runwareResp.Data[i].InputModalities) > 0 || len(runwareResp.Data[i].OutputModalities) > 0 {
-			model.Architecture = &schemas.Architecture{
-				InputModalities:  runwareResp.Data[i].InputModalities,
-				OutputModalities: runwareResp.Data[i].OutputModalities,
+			if model.Architecture == nil {
+				model.Architecture = &schemas.Architecture{}
 			}
+			model.Architecture.InputModalities = runwareResp.Data[i].InputModalities
+			model.Architecture.OutputModalities = runwareResp.Data[i].OutputModalities
 		}
 		response.Data = append(response.Data, model)
 	}
@@ -247,7 +248,7 @@ func (provider *RunwareProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/chat/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
