@@ -76,7 +76,9 @@ export function PrometheusFormFragment({
 	const hasPrometheusAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [isSaving, setIsSaving] = useState(false);
 	const { copy, copied } = useCopyToClipboard();
-	const [showBasicAuth, setShowBasicAuth] = useState(hasAuth(initialConfig?.basic_auth?.username) || hasAuth(initialConfig?.basic_auth?.password));
+	const [showBasicAuth, setShowBasicAuth] = useState(
+		hasAuth(initialConfig?.basic_auth?.username) || hasAuth(initialConfig?.basic_auth?.password),
+	);
 	const [activeTab, setActiveTab] = useState<"pull" | "push">("pull");
 
 	const form = useForm<PrometheusFormSchema, any, PrometheusFormSchema>({

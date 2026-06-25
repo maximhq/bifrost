@@ -132,8 +132,8 @@ export default function AttributeSheet({ model, onClose }: AttributeSheetProps) 
 				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>Edit Model Attributes</SheetTitle>
 					<SheetDescription>
-						Update the description and other attributes for this model. These attributes are stored on the pricing row and
-						preserved across the pricing sync.
+						Update the description and other attributes for this model. These attributes are stored on the pricing row and preserved across
+						the pricing sync.
 					</SheetDescription>
 				</SheetHeader>
 

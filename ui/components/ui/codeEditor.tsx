@@ -84,9 +84,7 @@ export function CodeEditor(props: CodeEditorProps) {
 	const { className, lang, code, onChange } = props;
 	const editorContainer = useRef<HTMLDivElement>(null);
 	const [isClient, setIsClient] = useState(false);
-	const [editorHeight, setEditorHeight] = useState<number | string>(
-		props.height || props.minHeight || 200,
-	);
+	const [editorHeight, setEditorHeight] = useState<number | string>(props.height || props.minHeight || 200);
 	const customCompletionsRef = useRef(props.customCompletions);
 
 	useEffect(() => {

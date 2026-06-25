@@ -112,7 +112,7 @@ export const SecretVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEl
 		};
 
 		// Show hint when user is typing a secret reference (reference set but no resolved value yet)
-		const showEnvHint = ((value?.type === "env" || value?.type === "vault") && value?.ref) && hasChanged.current;
+		const showEnvHint = (value?.type === "env" || value?.type === "vault") && value?.ref && hasChanged.current;
 
 		const isTextarea = variant === "textarea";
 

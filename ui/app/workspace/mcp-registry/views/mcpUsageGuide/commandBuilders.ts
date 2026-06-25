@@ -148,7 +148,7 @@ function buildVSCodeServer({
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
 	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
-	
+
 	const includeClients = getIncludeClients(selectedServers);
 	if (includeClients) {
 		headers["x-bf-mcp-include-clients"] = includeClients;
@@ -228,7 +228,7 @@ export function buildAntigravityConfig({
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
 	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
-	
+
 	const includeClients = getIncludeClients(selectedServers);
 	if (includeClients) {
 		headers["x-bf-mcp-include-clients"] = includeClients;

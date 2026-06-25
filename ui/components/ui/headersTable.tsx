@@ -101,7 +101,7 @@ export function HeadersTable<T extends HeaderValue>({
 	// In fixed-keys mode the rows are exactly the supplied keys (read-only,
 	// no trailing add-row). Otherwise always show one empty row at the bottom.
 	const rows: [string, T][] = fixedKeys
-		? fixedKeys.map((key) => [key, (value?.[key] ?? getEmptyValue())] as [string, T])
+		? fixedKeys.map((key) => [key, value?.[key] ?? getEmptyValue()] as [string, T])
 		: [...headerEntries, ["", getEmptyValue()]];
 
 	const handleKeyChange = (oldKey: string, newKey: string, currentValue: T, rowIndex: number) => {
@@ -152,7 +152,7 @@ export function HeadersTable<T extends HeaderValue>({
 				newHeaders[currentKey] = newValue as T;
 			} else {
 				// When user types, create a new SecretVar with the typed value
-				newHeaders[currentKey] = { value: newValue, ref: ""} as T;
+				newHeaders[currentKey] = { value: newValue, ref: "" } as T;
 			}
 		} else {
 			newHeaders[currentKey] = (typeof newValue === "string" ? newValue : newValue.value) as T;

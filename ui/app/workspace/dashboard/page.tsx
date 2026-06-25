@@ -116,9 +116,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedProviders.length > 0 && { providers: selectedProviders }),
 			...(selectedModels.length > 0 && { models: selectedModels }),
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
@@ -137,8 +137,8 @@ export default function DashboardPage() {
 			...(missingCostOnly && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
-				metadata_filters: metadataFilters,
-			}),
+					metadata_filters: metadataFilters,
+				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
 			...(selectedUserIds.length > 0 && { user_ids: selectedUserIds }),
 			...(selectedTeamIds.length > 0 && { team_ids: selectedTeamIds }),
@@ -175,9 +175,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedMcpToolNames.length > 0 && {
 				tool_names: selectedMcpToolNames,
 			}),
