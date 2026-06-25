@@ -1,0 +1,356 @@
+---
+title: "SSO using OIDC"
+description: "Configure Okta as your identity provider for Bifrost Enterprise using OpenID Connect."
+---
+
+## Prerequisites
+
+- An Okta account with admin access to create applications
+- Bifrost Enterprise deployed and accessible
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+
+---
+
+## Step 1: Create an OIDC App
+
+<Steps>
+
+<Step title="Open the Okta admin console">
+
+Sign in to `https://<your-tenant>-admin.okta.com`.
+
+In the left navigation, go to **Applications** → **Applications** and click **Create App Integration**.
+
+<Frame caption="Open Applications from the left nav of the Okta admin console.">
+  <img src="/media/user-provisioning/okta/okta-oidc-applications.png" alt="Okta admin console left nav with Applications → Applications highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Select the app type">
+
+In the dialog that appears, set:
+
+- **Sign-in method**: OIDC – OpenID Connect
+- **Application type**: Web Application
+
+Click **Next**.
+
+<Frame caption="Select OIDC – Web Application.">
+  <img src="/media/user-provisioning/okta/okta-oidc-create-app.png" alt="Create App Integration dialog with OIDC – OpenID Connect and Web Application selected" />
+</Frame>
+
+</Step>
+
+<Step title="Fill in the app settings">
+
+Give the app a name — e.g. `Bifrost Enterprise`.
+
+Under **Grant type**, enable **Authorization Code** only.
+
+In **Sign-in redirect URIs**, add:
+
+```
+https://<your-bifrost-domain>/login
+```
+
+Optionally, to use claim discovery during setup, also add:
+
+```
+https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback
+```
+<Frame caption="New Web App Integration settings.">
+  <img src="/media/user-provisioning/okta/okta-oidc-app-settings.png" alt="New Web App Integration form showing app name, grant type, redirect URIs, and assignment settings" />
+</Frame>
+
+Under **Assignments**, select **Skip group assignment for now**.
+
+Click **Save**.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Configure Claim Attributes
+
+<Steps>
+
+<Step title="Open the Sign On tab">
+
+In your Bifrost Enterprise app, go to the **Sign On** tab.
+
+<Frame caption="Sign On tab in the Okta app settings.">
+  <img src="/media/user-provisioning/okta/okta-app-settings-signon.png" alt="Sign On tab in the Okta app settings" />
+</Frame>
+
+Scroll down to find the token claims section. This is where you control what attributes Okta includes in the JWT token sent to Bifrost.
+
+<Frame caption="Token claims — each row is a claim Okta will include in the JWT. <br/> The Value column uses an Okta expression to pull from the user profile in the above example (e.g. user.division)">
+  <img src="/media/user-provisioning/okta/okta-token-claims.png" alt="Token claims table showing claim names, value expressions, and group filter configuration" />
+</Frame>
+
+Any attribute you add here is available in Bifrost for role, team, or business unit mappings.
+
+You can use an [Okta expression](https://help.okta.com/oie/en-us/content/topics/apps/federated-claims-overview.html) to derive or transform values:
+
+```
+user.department
+user.profileUrl != null ? user.profileUrl : "default"
+```
+
+</Step>
+
+<Step title="Add a groups claim">
+
+To sync group membership, add a groups claim under the OpenID Connect ID Token section. Set:
+
+- **Claim name**: `groups`
+- **Value type**: Groups
+- **Filter**: Matches regex `.*` (or a tighter prefix like `bifrost-.*`)
+
+Click **Save**.
+
+<Note>
+  This path works for the **Org Authorization Server** and adds the claim to ID tokens only. If you are using a **Custom Authorization Server**, expand the section below instead.
+</Note>
+
+<Accordion title="Using a Custom Authorization Server">
+
+Use this path when Bifrost is configured with a **Custom Authorization Server**. This adds the groups claim through your authorization server and supports both ID and access tokens.
+
+1. Navigate to **Security** → **API** → **Authorization Servers**
+2. Select your authorization server (e.g. `default`)
+
+<Frame caption="Authorization Servers list in the Okta Security API settings.">
+  <img src="/media/user-provisioning/okta/okta-api-custom-oauth.png" alt="Authorization Servers list under Security → API in the Okta admin console" />
+</Frame>
+
+3. Go to the **Claims** tab and click **Add Claim**
+4. Configure the claim:
+
+| Field | Value |
+| --- | --- |
+| **Name** | `groups` |
+| **Include in token type** | ID Token, Always |
+| **Value type** | Groups |
+| **Filter** | Matches regex `.*` (or a prefix like `bifrost-.*`) |
+| **Include in** | Any scope |
+
+<Frame caption="Add Claim dialog configured for the groups claim on a Custom Authorization Server.">
+  <img src="/media/user-provisioning/okta/okta-api-custom-claim-oauth.png" alt="Add Claim dialog configured for the groups claim on a Custom Authorization Server" />
+</Frame>
+
+5. Click **Create**
+
+</Accordion>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 3: Assign Users in Okta
+
+<Steps>
+
+<Step title="Open the Assignments tab">
+
+In your Bifrost Enterprise app, go to the **Assignments** tab.
+
+Click **Assign** → **Assign to People** or **Assign to Groups**.
+
+<Frame caption="Assigning users or groups to the Bifrost Enterprise application.">
+  <img src="/media/user-provisioning/okta/okta-oidc-assignments.png" alt="Assignments tab in the Bifrost Enterprise Okta app with Assign button highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Select users or groups">
+
+Select the users or groups that should have access to Bifrost and click **Done**.
+
+<Frame caption="Selecting users or groups to assign to the Bifrost Enterprise application.">
+  <img src="/media/user-provisioning/okta/okta-oidc-group-assignment.png" alt="Selecting users or groups to assign to the Bifrost Enterprise application" />
+</Frame>
+
+<Note>
+  Only users explicitly assigned to the application can authenticate via Okta.
+</Note>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 4: Copy Your Credentials
+
+<Steps>
+
+<Step title="Copy the Client ID and Secret">
+
+Open the **General** tab of your Bifrost Enterprise app.
+
+Copy the following — you will need them in Step 5:
+
+- **Client ID**
+- **Client Secret** (click to reveal)
+
+<Frame caption="Client ID and Client Secret on the General tab.">
+  <img src="/media/user-provisioning/okta/okta-oidc-credentials.png" alt="General tab of the Okta app showing Client ID and Client Secret fields" />
+</Frame>
+
+</Step>
+
+<Step title="Note your Issuer URL">
+
+Your issuer URL depends on which authorization server you use:
+
+| Authorization Server | Issuer URL |
+| --- | --- |
+| **Org** (default) | `https://<your-tenant>.okta.com` |
+| **Custom** | `https://<your-tenant>.okta.com/oauth2/<server-id>` |
+
+</Step>
+
+<Step title="Create an API token (optional)">
+
+If you want Bifrost to automatically sync users and groups from Okta every 24 hours, you need to create an API token.
+
+Go to **Security** → **API** → **Tokens** and click **Create token**. Give it a name, then copy the token value — it will only be shown once.
+
+<Frame caption="Create an API token under Security → API → Tokens.">
+  <img src="/media/user-provisioning/okta/okta-oidc-api-token.png" alt="Security → API → Tokens page in Okta with Create Token button" />
+</Frame>
+
+<Note>
+  This background sync runs every 24 hours and reconciles users, roles, and group memberships — catching anything that may have been missed if you also have SCIM set up. You can skip this if you plan to rely on SCIM push alone, but the two work well together.
+</Note>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 5: Configure Bifrost
+
+<Steps>
+
+<Step title="Open User Provisioning and choose Okta">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning**.
+
+Select **Okta** as the identity provider and click **Next**.
+
+<Frame caption="Select Okta from the list of identity providers.">
+  <img src="/media/user-provisioning/okta/bifrost-provider-selection.png" alt="Bifrost Choose Provider screen with Okta selected" />
+</Frame>
+
+</Step>
+
+<Step title="Fill in the provider configuration">
+
+Enter the credentials you copied in Step 4:
+
+- **Issuer URL**: your Okta issuer URL
+- **Authorization Server**: Org or Custom — match your Okta setup
+- **Client ID**: from the Okta app General tab
+- **Client Secret**: from the Okta app General tab
+- **Audience**: required only for Custom Authorization Server
+- **API Token**: optional — paste the token from Step 4 if you want 24-hour background sync
+
+Click **Verify & Next** to confirm the connection.
+
+<Frame caption="Provider Configuration — enter your Okta credentials and verify the connection.">
+  <img src="/media/user-provisioning/okta/bifrost-okta-provider-config.png" alt="Bifrost Provider Configuration form with Issuer URL, Authorization Server, Client ID, Client Secret, and API Token fields" />
+</Frame>
+
+</Step>
+
+<Step title="Discover claims">
+
+On the Attribute Mapping screen, click **Discover Claims**.
+
+Bifrost opens a sign-in popup — no session is created.
+
+Once you authenticate, it returns the exact claims your Okta tenant is sending in the JWT.
+
+Use this to confirm that the attributes you set up in [Step 2](#step-2-configure-claim-attributes) — such as `groups`, `department`, or `division` — are present before building your mappings.
+
+<Frame caption="Discover Claims shows the exact claims Okta is returning for your user, including groups and any custom profile attributes.">
+  <img src="/media/user-provisioning/okta/bifrost-discover-claims.png" alt="Bifrost Discover Claims screen listing all claims returned by Okta including groups, email, and custom attributes" />
+</Frame>
+
+</Step>
+
+<Step title="Set up attribute mappings">
+
+Use the sections below the claim list to map Okta claim values to Bifrost roles, teams, and business units.
+
+**Attribute-to-Role Mappings**
+
+Map a claim value to a Bifrost role.
+
+- All matching rules are evaluated — if multiple rules match, the role with the highest permissions is assigned
+- If no rule matches, the user is not assigned a role and login is denied
+
+**Attribute-to-Team Mappings**
+
+Map a claim value to a Bifrost team. All matching rules apply.
+
+- Use `*` as the value to sync the claim value directly as the team name
+- Use `${*}` to extract part of the string — e.g. `Bifrost Playground: ${*} Team` matches `Bifrost Playground: Alpha Team` and creates team **Alpha**
+
+**Attribute-to-Business Unit Mappings**
+
+Same wildcard support as team mappings.
+
+- Use `${*}` to extract a substring as the business unit name — e.g. `Bifrost Playground: ${*} BU` matches `Bifrost Playground: Alpha BU` and creates business unit **Alpha**
+- When a rule matches, the resolved business unit is assigned to all of that user's teams
+- Manually assigned teams are left unchanged
+
+<Frame caption="Attribute Mapping — configure role, team, and business unit rules based on the claims Okta sends.">
+  <img src="/media/user-provisioning/okta/bifrost-attribute-setup.png" alt="Bifrost Attribute Mapping screen showing role, team, and business unit mapping rules" />
+</Frame>
+
+Click **Next** when done.
+
+</Step>
+
+<Step title="Review and enable">
+
+Review your configuration on the final screen, then click **Enable**.
+
+<Frame caption="Review your Okta SSO configuration before enabling.">
+  <img src="/media/user-provisioning/okta/bifrost-review-oidc.png" alt="Bifrost Review and Enable screen summarising the Okta OIDC configuration before activation" />
+</Frame>
+
+<Warning>
+  Restart your Bifrost server after enabling for the changes to take effect.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+## Optional Next Steps
+
+**Sync users and groups automatically** — SSO alone provisions users on first login. To keep Bifrost in sync with Okta in real time (deactivations, group changes, new users before they log in), set up [SCIM with Okta](./scim).
+
+---
+
+## Troubleshooting
+
+**User is not redirected to Okta** — verify the provider is enabled in Bifrost and the server was restarted after saving. Check that the Issuer URL has no trailing slash and is reachable from your server.
+
+**Login fails with an invalid client error** — the Client ID or Client Secret is incorrect. Regenerate the secret in the Okta app General tab and update Bifrost.
+
+**Roles or teams are not assigned after login** — confirm the claim (e.g. `groups`) is included in the token. Verify the attribute mapping values in Bifrost match exactly what Okta sends.
+
+**Empty email after login** — the `email` scope is not included. Ensure `openid` and `email` are requested, and that the Okta user has a primary email set.
