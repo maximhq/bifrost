@@ -78,6 +78,23 @@ func resolveBedrockARN(ctx *schemas.BifrostContext, key schemas.Key) string {
 	return ""
 }
 
+// resolveBedrockUseClaudeMessagesAPI reports whether Claude (Anthropic-family)
+// models should be served via the Bedrock Mantle native-Anthropic Messages
+// endpoint instead of the default Converse API. Priority: alias-level override >
+// key-level override > false (default). Opting in trades the Converse-only
+// request features (Bedrock Guardrails, performanceConfig, promptVariables,
+// additionalModel*FieldPaths) for the native Anthropic Messages wire format and
+// the "bedrock-mantle" SigV4 signing service.
+func resolveBedrockUseClaudeMessagesAPI(ctx *schemas.BifrostContext, key schemas.Key) bool {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.BedrockAliasCfg != nil && ra.Config.BedrockAliasCfg.UseAnthropicMessagesAPI != nil {
+		return *ra.Config.BedrockAliasCfg.UseAnthropicMessagesAPI
+	}
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.UseAnthropicMessagesAPI != nil {
+		return *key.BedrockKeyConfig.UseAnthropicMessagesAPI
+	}
+	return false
+}
+
 var (
 	invalidCharRegex = regexp.MustCompile(`[^a-zA-Z0-9\s\-\(\)\[\]]`)
 	multiSpaceRegex  = regexp.MustCompile(`\s{2,}`)

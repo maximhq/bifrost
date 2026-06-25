@@ -405,6 +405,12 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
+	// capModel is the canonical (alias-resolved) model used for capability gating,
+	// matching BuildAnthropicResponsesRequestBody. Tool-version remapping and
+	// unsupported-field stripping must see the canonical id, not a routing-alias
+	// literal, so substring-based gates (e.g. SupportsFastMode) match correctly.
+	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
 		return providerUtils.EnrichError(
 			ctx,
@@ -469,7 +475,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 
 		if defaults.RemapToolVersions {
-			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, request.Model)
+			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, capModel)
 			if err != nil {
 				return nil, newErr(err.Error(), nil, jsonBody)
 			}
@@ -482,7 +488,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			}
 		}
 
-		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, request.Model)
+		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, capModel)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}

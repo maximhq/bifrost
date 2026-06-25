@@ -1142,15 +1142,16 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 }
 
 // ChatCompletion performs a chat completion request to Bedrock's API.
-// For Anthropic models, uses the Anthropic Messages API format via the InvokeModel endpoint.
-// For all other models, uses the Bedrock Converse API.
+// Claude models use the Bedrock Converse API by default, or the Bedrock Mantle native-Anthropic
+// Messages endpoint when the per-key/per-alias UseAnthropicMessagesAPI toggle is enabled.
+// gpt-* / Gemma 4 models always use the Bedrock Mantle endpoint; all other models use Converse.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.mantleChatCompletions(ctx, key, request)
 	}
 
@@ -1229,15 +1230,16 @@ func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 }
 
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
-// For Anthropic models, uses the Anthropic Messages API format via InvokeModel streaming.
-// For all other models, uses the Bedrock Converse streaming API.
+// Claude models use the Bedrock Converse streaming API by default, or the Bedrock Mantle
+// native-Anthropic Messages endpoint when the per-key/per-alias UseAnthropicMessagesAPI toggle
+// is enabled. gpt-* / Gemma 4 models always use Mantle; all other models use Converse streaming.
 // Returns a channel for streaming BifrostStreamChunk objects or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.mantleChatCompletionsStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
@@ -1563,15 +1565,16 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 }
 
 // Responses performs a responses request to Bedrock's API.
-// For Anthropic models, uses the Anthropic Messages API format via the InvokeModel endpoint.
-// For all other models, uses the Bedrock Converse API.
+// Claude models use the Bedrock Converse API by default, or the Bedrock Mantle native-Anthropic
+// Messages endpoint when the per-key/per-alias UseAnthropicMessagesAPI toggle is enabled.
+// gpt-* / Gemma 4 models always use the Bedrock Mantle endpoint; all other models use Converse.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.mantleResponses(ctx, key, request)
 	}
 
@@ -1641,7 +1644,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.mantleResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 

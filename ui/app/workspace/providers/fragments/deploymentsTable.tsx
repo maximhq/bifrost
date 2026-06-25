@@ -218,6 +218,29 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
+			<FieldRow
+				label="Claude Messages API"
+				hint="Inherit uses the key-level setting. Messages API routes Claude through the Bedrock Mantle native-Anthropic Messages endpoint; Converse forces the default Converse API for this deployment."
+			>
+				<Select
+					value={
+						config.use_anthropic_messages_api === undefined ? "__inherit__" : config.use_anthropic_messages_api ? "on" : "off"
+					}
+					onValueChange={(v) =>
+						onChange({ use_anthropic_messages_api: v === "__inherit__" ? undefined : v === "on" })
+					}
+					disabled={disabled}
+				>
+					<SelectTrigger className="w-full">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="__inherit__">Inherit (use key setting)</SelectItem>
+						<SelectItem value="on">Messages API (Mantle)</SelectItem>
+						<SelectItem value="off">Converse</SelectItem>
+					</SelectContent>
+				</Select>
+			</FieldRow>
 		</div>
 	);
 }

@@ -163,6 +163,7 @@ export const bedrockKeyConfigSchema = z
 		session_name: secretVarSchema.optional(),
 		arn: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
+		use_anthropic_messages_api: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
@@ -260,6 +261,7 @@ const aliasConfigObjectSchema = z.object({
 	project_number: secretVarSchema.optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
+	use_anthropic_messages_api: z.boolean().optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
 });

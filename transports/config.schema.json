@@ -3236,6 +3236,10 @@
                     "type": "string",
                     "description": "Per-alias Bedrock inference profile ARN (can use env. prefix)."
                   },
+                  "use_anthropic_messages_api": {
+                    "type": "boolean",
+                    "description": "Bedrock: route Claude models for this alias through the Bedrock Mantle native-Anthropic Messages endpoint instead of the default Converse API. Overrides the key-level setting. Defaults to false."
+                  },
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
@@ -3296,6 +3300,10 @@
                 "session_name": {
                   "type": "string",
                   "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
+                "use_anthropic_messages_api": {
+                  "type": "boolean",
+                  "description": "Route Claude (Anthropic-family) models for this key through the Bedrock Mantle native-Anthropic Messages endpoint instead of the default Converse API. Defaults to false. Note: the native path does not apply Converse-only features such as Bedrock Guardrails, and signs with the bedrock-mantle SigV4 service. A per-alias setting overrides this."
                 },
                 "deployments": {
                   "type": "object",

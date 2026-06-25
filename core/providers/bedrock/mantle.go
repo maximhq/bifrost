@@ -19,14 +19,38 @@ import (
 // version as an "anthropic_version" body field).
 const mantleAnthropicVersion = "2023-06-01"
 
-// isMantleModel reports whether a model should be routed via the Bedrock Mantle endpoint.
+// isMantleModel reports whether a model is servable by the Bedrock Mantle endpoint.
 // OpenAI-family (gpt-*) and Gemma 4 models use the OpenAI-compatible paths; Anthropic-family
 // (Claude) models use the native Anthropic Messages path. The per-family split is handled
 // inside each mantle* dispatcher. Gemma 3 is intentionally excluded: it only supports Chat
 // (not Responses) on mantle, and the non-mantle path serves both APIs via Converse, so
 // forcing it to mantle would break Responses.
+//
+// This reports mantle *capability* only. The actual routing decision for Claude is made by
+// shouldRouteToMantle, which gates Claude behind the per-key/per-alias toggle so the default
+// stays on the Converse API.
 func isMantleModel(ctx *schemas.BifrostContext, model string) bool {
 	return schemas.IsOpenAIModelFamily(ctx, model) || schemas.IsAnthropicModelFamily(ctx, model) || strings.Contains(model, "gemma-4")
+}
+
+// shouldRouteToMantle decides whether a request should be dispatched to the Bedrock Mantle
+// endpoint. OpenAI-family and Gemma 4 models always use Mantle (their only endpoint). Claude
+// (Anthropic-family) models use Mantle's native-Anthropic Messages path only when the
+// per-key/per-alias UseAnthropicMessagesAPI toggle is enabled; otherwise they stay on the
+// default Bedrock Converse API. Defaults to Converse so existing Claude-on-Bedrock integrations
+// keep their guardrails, IAM scope, and request shape unless explicitly opted in.
+//
+// The decision is made on the canonical (alias-resolved) model — matching the canonical id that
+// mantleOpenAIURL already uses for path gating — so the "gemma-4" substring gate in isMantleModel
+// matches the underlying model id rather than a routing-alias literal. (The family checks resolve
+// via the alias config regardless, but the substring gate needs the canonical id.) The wire
+// request still carries the original request.Model.
+func (provider *BedrockProvider) shouldRouteToMantle(ctx *schemas.BifrostContext, key schemas.Key, model string) bool {
+	capModel := schemas.ResolveCanonicalModel(ctx, model)
+	if schemas.IsAnthropicModelFamily(ctx, capModel) {
+		return resolveBedrockUseClaudeMessagesAPI(ctx, key)
+	}
+	return isMantleModel(ctx, capModel)
 }
 
 // mantleOpenAIURL builds the Bedrock Mantle OpenAI-compatible endpoint URL for the given
@@ -79,9 +103,11 @@ func (provider *BedrockProvider) mantleSigV4Headers(
 }
 
 // mantleAnthropicHeaders builds the auth and version headers for a native-Anthropic
-// mantle request. A Bedrock API key authenticates via the x-api-key header; otherwise
-// the request is SigV4-signed for the bedrock-mantle service. jsonData and accept must
-// match the bytes and Accept header actually sent, since SigV4 signs over them.
+// mantle request. A Bedrock API key authenticates via the Authorization: Bearer header —
+// the same scheme the co-located OpenAI-compatible mantle paths use on the bedrock-mantle
+// host, since the credential is an AWS Bedrock API key rather than an Anthropic x-api-key.
+// Otherwise the request is SigV4-signed for the bedrock-mantle service. jsonData and accept
+// must match the bytes and Accept header actually sent, since SigV4 signs over them.
 func (provider *BedrockProvider) mantleAnthropicHeaders(
 	ctx *schemas.BifrostContext,
 	jsonData []byte,
@@ -94,7 +120,7 @@ func (provider *BedrockProvider) mantleAnthropicHeaders(
 		"Accept":            accept,
 	}
 	if key.Value.GetValue() != "" {
-		headers["x-api-key"] = key.Value.GetValue()
+		maps.Copy(headers, openai.BearerAuthHeader(key))
 		return headers, nil
 	}
 	sigHeaders, bifrostErr := provider.mantleSigV4Headers(ctx, jsonData, requestURL, accept, key, region)

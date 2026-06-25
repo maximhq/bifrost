@@ -67,6 +67,7 @@ export interface AliasConfig {
 	project_number?: SecretVar;
 	// Bedrock overrides
 	inference_profile_arn?: SecretVar;
+	use_anthropic_messages_api?: boolean;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
 }
@@ -121,6 +122,9 @@ export interface BedrockKeyConfig {
 	region?: SecretVar;
 	arn?: SecretVar;
 	batch_s3_config?: BatchS3Config;
+	// Route Claude models through the Bedrock Mantle native-Anthropic Messages
+	// endpoint instead of the default Converse API. Defaults to false.
+	use_anthropic_messages_api?: boolean;
 }
 
 // Default BedrockKeyConfig
@@ -131,6 +135,7 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	region: { value: "us-east-1", ref: "" },
 	arn: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
+	use_anthropic_messages_api: undefined as unknown as boolean,
 } as const satisfies Required<BedrockKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig

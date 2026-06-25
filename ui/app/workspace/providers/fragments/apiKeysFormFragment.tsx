@@ -914,6 +914,25 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.use_anthropic_messages_api`}
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Use Anthropic Messages API for Claude</FormLabel>
+									<FormDescription>
+										Route Claude models through the Bedrock Mantle native-Anthropic Messages endpoint instead of
+										the default Converse API. Off by default. The native path does not apply Converse-only
+										features such as Bedrock Guardrails. A per-deployment setting overrides this.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}

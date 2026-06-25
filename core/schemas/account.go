@@ -126,7 +126,7 @@ func (bl BlackList) Validate() error {
 type Key struct {
 	ID                 string              `json:"id"`                             // The unique identifier for the key (used by bifrost to identify the key)
 	Name               string              `json:"name"`                           // The name of the key (used by users to identify the key, not used by bifrost)
-	Value              SecretVar              `json:"value"`                          // The actual API key value
+	Value              SecretVar           `json:"value"`                          // The actual API key value
 	Models             WhiteList           `json:"models"`                         // List of models this key can access
 	BlacklistedModels  BlackList           `json:"blacklisted_models"`             // List of models this key cannot access
 	Weight             float64             `json:"weight"`                         // Weight for load balancing between multiple keys
@@ -182,8 +182,8 @@ func (mf *ModelFamily) IsValid() bool {
 // AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
 // Each field, when non-nil, overrides the corresponding key-level default.
 type AzureAliasCfg struct {
-	APIVersion       *string `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
-	AnthropicVersion *string `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
+	APIVersion       *string    `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
+	AnthropicVersion *string    `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
 	Endpoint         *SecretVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
 }
 
@@ -196,6 +196,13 @@ type VertexAliasCfg struct {
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
 type BedrockAliasCfg struct {
 	InferenceProfileARN *SecretVar `json:"inference_profile_arn,omitempty"`
+
+	// UseAnthropicMessagesAPI, when true, routes Claude (Anthropic-family) models
+	// for this alias through the Bedrock Mantle native-Anthropic Messages endpoint
+	// instead of the default Converse API. Nil/false keeps the Converse path.
+	// Overrides the key-level BedrockKeyConfig.UseAnthropicMessagesAPI. See that
+	// field for the behavioural trade-offs.
+	UseAnthropicMessagesAPI *bool `json:"use_anthropic_messages_api,omitempty"`
 }
 
 // ReplicateAliasCfg holds Replicate-specific overrides that apply to a single alias.
@@ -213,7 +220,7 @@ type AliasConfig struct {
 	ModelName   *string      `json:"model_name,omitempty"`   // canonical model name used for pricing, logging, and 2nd-tier family routing
 	ModelFamily *ModelFamily `json:"model_family,omitempty"` // 1st-tier family routing enum
 	Description string       `json:"description,omitempty"`  // description of the alias for users to understand its purpose (not used by bifrost)
-	Region      *SecretVar      `json:"region,omitempty"`
+	Region      *SecretVar   `json:"region,omitempty"`
 
 	*AzureAliasCfg
 	*VertexAliasCfg
@@ -614,10 +621,10 @@ const (
 type AzureKeyConfig struct {
 	Endpoint SecretVar `json:"endpoint"` // Azure service endpoint URL
 
-	ClientID     *SecretVar  `json:"client_id,omitempty"`     // Azure client ID for authentication
-	ClientSecret *SecretVar  `json:"client_secret,omitempty"` // Azure client secret for authentication
-	TenantID     *SecretVar  `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
-	Scopes       []string `json:"scopes,omitempty"`
+	ClientID     *SecretVar `json:"client_id,omitempty"`     // Azure client ID for authentication
+	ClientSecret *SecretVar `json:"client_secret,omitempty"` // Azure client secret for authentication
+	TenantID     *SecretVar `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
+	Scopes       []string   `json:"scopes,omitempty"`
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
@@ -658,6 +665,21 @@ type BedrockKeyConfig struct {
 	RoleSessionName *SecretVar `json:"session_name,omitempty"`
 
 	BatchS3Config *BatchS3Config `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
+
+	// UseAnthropicMessagesAPI, when true, routes Claude (Anthropic-family) models
+	// for this key through the Bedrock Mantle native-Anthropic Messages endpoint
+	// (https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages) instead of
+	// the default Bedrock Converse API. Defaults to false (nil) — Claude stays on
+	// Converse unless explicitly opted in.
+	//
+	// Trade-off: the native-Anthropic path sends the unmodified Anthropic Messages
+	// wire format, but it does NOT apply Converse-only request features — Bedrock
+	// Guardrails (guardrailConfig), performanceConfig, promptVariables, and
+	// additionalModelRequest/ResponseFieldPaths are not forwarded, and it signs
+	// requests with the "bedrock-mantle" SigV4 service (IAM principals need access
+	// to it). CountTokens continues to use the Converse API regardless of this flag.
+	// A per-alias BedrockAliasCfg.UseAnthropicMessagesAPI overrides this key-level value.
+	UseAnthropicMessagesAPI *bool `json:"use_anthropic_messages_api,omitempty"`
 }
 
 // NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
@@ -668,7 +690,7 @@ type BedrockKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple vLLM instances.
 type VLLMKeyConfig struct {
 	URL       SecretVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
-	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+	ModelName string    `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
 }
 
 // ReplicateKeyConfig represents the Replicate-specific key configuration.

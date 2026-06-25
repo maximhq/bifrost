@@ -113,6 +113,7 @@ const BedrockKeyConfigSchema = z
 		session_name: z.string().optional(),
 		arn: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),
+		use_anthropic_messages_api: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
