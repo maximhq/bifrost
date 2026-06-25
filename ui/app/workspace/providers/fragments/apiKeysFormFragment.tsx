@@ -329,8 +329,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem data-testid="apikey-deployments-field">
 								<FormLabel>Deployments (Optional)</FormLabel>
 								<FormDescription>
-									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint
-									ID, etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides - these power
+									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint ID,
+									etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides - these power
 									cost/pricing logs and family-based routing.
 								</FormDescription>
 								<FormControl>

@@ -189,15 +189,12 @@ export function SkillVersionsList({
 								value={`${v.id}-${v.version}`}
 								data-testid="skill-version-option"
 								onSelect={() => onSelectVersion(v)}
-								className="flex items-center justify-between gap-2 cursor-pointer"
+								className="flex cursor-pointer items-center justify-between gap-2"
 							>
 								<span className="flex items-center gap-2">
 									<span className="text-sm font-medium">{v.version}</span>
 									{isServing && (
-										<Badge
-											variant="secondary"
-											className="bg-emerald-100 text-xs h-auto py-0 px-1.5"
-										>
+										<Badge variant="secondary" className="h-auto bg-emerald-100 px-1.5 py-0 text-xs">
 											Serving
 										</Badge>
 									)}

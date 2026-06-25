@@ -78,8 +78,7 @@ function InfoBox({
 				"border-border bg-muted/40 text-muted-foreground": variant === "default",
 				"border-green-200/60 bg-green-50/70 text-green-800 dark:border-green-800/40 dark:bg-green-950/40 dark:text-green-200":
 					variant === "success",
-				"border-red-200/60 bg-red-50/70 text-red-800 dark:border-red-800/40 dark:bg-red-950/40 dark:text-red-200":
-					variant === "danger",
+				"border-red-200/60 bg-red-50/70 text-red-800 dark:border-red-800/40 dark:bg-red-950/40 dark:text-red-200": variant === "danger",
 				"border-amber-200/60 bg-amber-50/70 text-amber-800 dark:border-amber-800/40 dark:bg-amber-950/40 dark:text-amber-200":
 					variant === "warning",
 			})}
@@ -96,10 +95,7 @@ function StepDots({ active, total }: { active: number; total: number }) {
 	return (
 		<div className="flex items-center gap-1">
 			{Array.from({ length: total }).map((_, i) => (
-				<div
-					key={i}
-					className={cn("size-1.5 rounded-full transition-colors", i < active ? "bg-blue-500" : "bg-border")}
-				/>
+				<div key={i} className={cn("size-1.5 rounded-full transition-colors", i < active ? "bg-blue-500" : "bg-border")} />
 			))}
 		</div>
 	);
@@ -226,7 +222,11 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		const height = 700;
 		const left = window.screen.width / 2 - width / 2;
 		const top = window.screen.height / 2 - height / 2;
-		const popup = window.open(authorizeUrl, "oauth_popup", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+		const popup = window.open(
+			authorizeUrl,
+			"oauth_popup",
+			`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+		);
 
 		if (!popup || popup.closed) {
 			popupRef.current = null;
@@ -302,30 +302,36 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	return (
-		<Dialog open={open} onOpenChange={(next) => { if (!next) handleCancel(); }}>
+		<Dialog
+			open={open}
+			onOpenChange={(next) => {
+				if (!next) handleCancel();
+			}}
+		>
 			<DialogContent
 				className="gap-0 overflow-hidden p-0 sm:max-w-md"
-				onPointerDownOutside={(e) => { e.preventDefault(); handleCancel(); }}
-				onEscapeKeyDown={(e) => { e.preventDefault(); handleCancel(); }}
+				onPointerDownOutside={(e) => {
+					e.preventDefault();
+					handleCancel();
+				}}
+				onEscapeKeyDown={(e) => {
+					e.preventDefault();
+					handleCancel();
+				}}
 			>
 				{/* Header */}
 				<DialogHeader className="border-b px-5 py-4 text-left">
 					<div className="flex items-start gap-3">
 						<IconWrap status={status} />
 						<div className="min-w-0 space-y-0.5">
-							<DialogTitle className="text-sm font-medium leading-snug">
-								{titles[status]}
-							</DialogTitle>
-							<DialogDescription className="text-xs leading-relaxed">
-								{subtitles[status]}
-							</DialogDescription>
+							<DialogTitle className="text-sm leading-snug font-medium">{titles[status]}</DialogTitle>
+							<DialogDescription className="text-xs leading-relaxed">{subtitles[status]}</DialogDescription>
 						</div>
 					</div>
 				</DialogHeader>
 
 				{/* Body */}
 				<div className="space-y-3 px-5 py-4">
-
 					{/* Confirm */}
 					{status === "confirm" && (
 						<>
@@ -397,9 +403,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 						<>
 							<InfoBox variant="danger" icon={<XCircle className="size-4" />}>
 								<p className="font-medium">Authorization did not complete.</p>
-								<p className="text-xs opacity-80">
-									{errorMessage ?? "Check your OAuth provider configuration or try again."}
-								</p>
+								<p className="text-xs opacity-80">{errorMessage ?? "Check your OAuth provider configuration or try again."}</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-failed-close-btn">
@@ -412,7 +416,6 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 							</div>
 						</>
 					)}
-
 				</div>
 			</DialogContent>
 		</Dialog>

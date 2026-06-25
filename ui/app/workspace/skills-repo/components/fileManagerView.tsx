@@ -1104,11 +1104,11 @@ export function FileManagerSection({
 						onKeyDown={
 							!isRenaming && onSelectFile
 								? (e) => {
-									if (e.key === "Enter" || e.key === " ") {
-										e.preventDefault();
-										onSelectFile(index);
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault();
+											onSelectFile(index);
+										}
 									}
-								}
 								: undefined
 						}
 						role={!isRenaming && onSelectFile ? "button" : undefined}
@@ -1244,8 +1244,8 @@ export function FileManagerSection({
 		const folderMoveTargets = isRoot
 			? []
 			: availableFolderPaths.filter(
-				(folderPath) => folderPath !== item.path && !folderPath.startsWith(`${item.path}/`) && folderPath !== dirname(item.path),
-			);
+					(folderPath) => folderPath !== item.path && !folderPath.startsWith(`${item.path}/`) && folderPath !== dirname(item.path),
+				);
 
 		return (
 			<div

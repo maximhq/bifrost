@@ -31,7 +31,6 @@ function DetailCard({ title, children, contentClassName }: { title: string; chil
 	);
 }
 
-
 function BudgetLineBar({ current, max, resetDuration }: { current: number; max: number; resetDuration?: string }) {
 	const pct = max > 0 ? Math.min((current / max) * 100, 100) : 0;
 	const isOver80 = pct >= 80;
@@ -83,7 +82,6 @@ function RateLimitBar({ label, current, max, resetDuration }: { label: string; c
 		</div>
 	);
 }
-
 
 //
 // OSS fallback for the enterprise CustomerDetailSheet. It renders the Info,

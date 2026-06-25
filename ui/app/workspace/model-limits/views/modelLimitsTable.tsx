@@ -236,7 +236,7 @@ export default function ModelLimitsTable({
 			</AlertDialog>
 
 			<div className="flex flex-col overflow-y-auto">
-				<div className="flex items-center justify-between mb-4">
+				<div className="mb-4 flex items-center justify-between">
 					<div>
 						<h1 className="text-lg font-semibold">Model Limits</h1>
 						<p className="text-muted-foreground text-sm">
@@ -250,7 +250,7 @@ export default function ModelLimitsTable({
 				</div>
 
 				{/* Toolbar: Search + Filters */}
-				<div className="flex flex-wrap items-center gap-3 mb-4">
+				<div className="mb-4 flex flex-wrap items-center gap-3">
 					<div className="relative min-w-[220px] flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
@@ -298,7 +298,11 @@ export default function ModelLimitsTable({
 						<Button
 							variant="ghost"
 							size="sm"
-							onClick={() => { onSearchChange(""); onScopeChange(""); onProviderChange(""); }}
+							onClick={() => {
+								onSearchChange("");
+								onScopeChange("");
+								onProviderChange("");
+							}}
 							data-testid="model-limits-filter-clear"
 						>
 							Clear filters
@@ -306,9 +310,9 @@ export default function ModelLimitsTable({
 					)}
 				</div>
 
-				<div className="rounded-sm border mb-2 overflow-hidden" data-testid="model-limits-table">
+				<div className="mb-2 overflow-hidden rounded-sm border" data-testid="model-limits-table">
 					<Table containerClassName="h-full overflow-auto">
-						<TableHeader className="sticky top-0 bg-muted z-10">
+						<TableHeader className="bg-muted sticky top-0 z-10">
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="font-medium">Model</TableHead>
 								<TableHead className="font-medium">Provider</TableHead>
@@ -539,7 +543,8 @@ export default function ModelLimitsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+							entries
 						</div>
 
 						<div className="flex items-center gap-2">

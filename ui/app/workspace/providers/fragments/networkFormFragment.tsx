@@ -418,8 +418,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									<div className="space-y-0.5">
 										<FormLabel>Allow Private Network</FormLabel>
 										<FormDescription>
-											Allow connections to private IPs (e.g. <code>10.x</code>, <code>192.168.x</code>). Required for providers on a
-											LAN, k8s pod network, or private VPC. Cloud metadata addresses (169.254.x.x) are always blocked.
+											Allow connections to private IPs (e.g. <code>10.x</code>, <code>192.168.x</code>). Required for providers on a LAN,
+											k8s pod network, or private VPC. Cloud metadata addresses (169.254.x.x) are always blocked.
 										</FormDescription>
 									</div>
 									<FormControl>

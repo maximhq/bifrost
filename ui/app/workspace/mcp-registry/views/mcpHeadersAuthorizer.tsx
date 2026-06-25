@@ -133,8 +133,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 									To set up this MCP server, we need to verify that your header configuration is correct and discover the available tools.
 								</p>
 								<p>
-									You will be asked to provide sample values for the required headers. This is a <strong>one-time test</strong> to confirm the
-									setup works. Your sample values will <strong>not</strong> be stored or used for any other purpose.
+									You will be asked to provide sample values for the required headers. This is a <strong>one-time test</strong> to confirm
+									the setup works. Your sample values will <strong>not</strong> be stored or used for any other purpose.
 								</p>
 								<p>Once verified, each user will submit their own header values when they use this MCP server.</p>
 							</div>

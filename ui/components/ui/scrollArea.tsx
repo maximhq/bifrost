@@ -9,7 +9,7 @@ function ScrollArea({
 	bidirectionalScroll,
 	children,
 	...props
-}: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & { viewportClassName?: string, bidirectionalScroll?: boolean }) {
+}: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & { viewportClassName?: string; bidirectionalScroll?: boolean }) {
 	return (
 		<ScrollAreaPrimitive.Root data-slot="scroll-area" className={cn("relative", className)} {...props}>
 			<ScrollAreaPrimitive.Viewport
@@ -21,7 +21,14 @@ function ScrollArea({
 			>
 				{children}
 			</ScrollAreaPrimitive.Viewport>
-			{bidirectionalScroll ? <><ScrollBar orientation="horizontal" /><ScrollBar orientation="vertical" /></> : <ScrollBar />}
+			{bidirectionalScroll ? (
+				<>
+					<ScrollBar orientation="horizontal" />
+					<ScrollBar orientation="vertical" />
+				</>
+			) : (
+				<ScrollBar />
+			)}
 			<ScrollAreaPrimitive.Corner />
 		</ScrollAreaPrimitive.Root>
 	);

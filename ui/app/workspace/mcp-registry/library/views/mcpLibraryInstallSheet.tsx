@@ -277,13 +277,13 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		const stdioConfig =
 			isStdio && server.stdio_config
 				? {
-					command: server.stdio_config.command,
-					args: server.stdio_config.args || [],
-					envs: (server.stdio_config.envs || []).map((name) => {
-						const val = envVars[name]?.trim();
-						return val ? `${name}=${val}` : name;
-					}),
-				}
+						command: server.stdio_config.command,
+						args: server.stdio_config.args || [],
+						envs: (server.stdio_config.envs || []).map((name) => {
+							const val = envVars[name]?.trim();
+							return val ? `${name}=${val}` : name;
+						}),
+					}
 				: undefined;
 		const payload: CreateMCPClientRequest = {
 			...data,
@@ -296,17 +296,17 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-						client_id: data.oauth_config?.client_id ?? emptySecretVar,
-						client_secret:
-							data.oauth_config?.client_secret?.value?.trim() || data.oauth_config?.client_secret?.ref?.trim()
-								? data.oauth_config.client_secret
-								: undefined,
-						authorize_url: data.oauth_config?.authorize_url || undefined,
-						token_url: data.oauth_config?.token_url || undefined,
-						registration_url: data.oauth_config?.registration_url || undefined,
-						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-						server_url: connectionUrl || undefined,
-					}
+							client_id: data.oauth_config?.client_id ?? emptySecretVar,
+							client_secret:
+								data.oauth_config?.client_secret?.value?.trim() || data.oauth_config?.client_secret?.ref?.trim()
+									? data.oauth_config.client_secret
+									: undefined,
+							authorize_url: data.oauth_config?.authorize_url || undefined,
+							token_url: data.oauth_config?.token_url || undefined,
+							registration_url: data.oauth_config?.registration_url || undefined,
+							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+							server_url: connectionUrl || undefined,
+						}
 					: undefined,
 			headers:
 				(authType === "headers" || authType === "per_user_headers") && data.headers && Object.keys(data.headers).length > 0
@@ -361,7 +361,8 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 	const isStdio = server.connection_type === "stdio";
 	const isOauth = authType === "oauth" || authType === "per_user_oauth";
 	const isPerUserHeaders = authType === "per_user_headers";
-	const displayUrl = server.connection_url || (server.stdio_config ? `${server.stdio_config.command} ${(server.stdio_config.args || []).join(" ")}` : "—");
+	const displayUrl =
+		server.connection_url || (server.stdio_config ? `${server.stdio_config.command} ${(server.stdio_config.args || []).join(" ")}` : "—");
 	const installButtonLabel = isOauth || isPerUserHeaders ? "Continue" : "Install";
 
 	return (
@@ -376,7 +377,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
 						<div className="flex-1 space-y-6 px-8 pt-5 pb-6">
 							<section className="border-b pb-5">
-								<div className="flex items-start gap-3 rounded-sm border bg-muted/10 p-3">
+								<div className="bg-muted/10 flex items-start gap-3 rounded-sm border p-3">
 									<div className="bg-background flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-sm border">
 										<img
 											src={iconUrl}
@@ -432,8 +433,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 											message: "Server name cannot exceed 50 characters",
 										},
 										validate: {
-											format: (value) =>
-												/^[a-zA-Z0-9_]+$/.test(value) || "Server name can only contain letters, numbers, and underscores",
+											format: (value) => /^[a-zA-Z0-9_]+$/.test(value) || "Server name can only contain letters, numbers, and underscores",
 											noLeadingDigit: (value) => !/^[0-9]/.test(value) || "Server name cannot start with a number",
 										},
 									}}
@@ -760,7 +760,8 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 															<div className="space-y-0.5">
 																<FormLabel>Skip TLS verification</FormLabel>
 																<p className="text-muted-foreground text-sm">
-																	Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA certificate.
+																	Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA
+																	certificate.
 																</p>
 															</div>
 															<FormControl>
