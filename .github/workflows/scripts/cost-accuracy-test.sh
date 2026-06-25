@@ -149,11 +149,16 @@ build_binaries() {
   log "building bifrost-http"
   (cd "${ROOT_DIR}/transports/bifrost-http" && go build -o "${BIFROST_BIN}" .)
 
+  # GOWORK=off: bifrost-benchmarking is its own module and in CI is checked out
+  # inside the repo root (${github.workspace}/bifrost-benchmarking), so `go build`
+  # would auto-discover the repo's go.work and reject the mocker/hitter modules
+  # ("not one of the workspace modules"). These binaries don't need local
+  # core/framework, so build them outside the workspace.
   log "building benchmark mocker"
-  (cd "${BENCHMARK_DIR}/mocker" && go build -o "${MOCKER_BIN}" .)
+  (cd "${BENCHMARK_DIR}/mocker" && GOWORK=off go build -o "${MOCKER_BIN}" .)
 
   log "building benchmark hitter"
-  (cd "${BENCHMARK_DIR}/hitter" && go build -o "${HITTER_BIN}" .)
+  (cd "${BENCHMARK_DIR}/hitter" && GOWORK=off go build -o "${HITTER_BIN}" .)
 }
 
 write_config() {
