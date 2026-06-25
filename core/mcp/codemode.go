@@ -61,20 +61,15 @@ type CodeModeDependencies struct {
 	// ClientManager provides access to MCP clients and their tools
 	ClientManager ClientManager
 
-	// PluginPipelineProvider returns a plugin pipeline for running MCP hooks
-	PluginPipelineProvider func() PluginPipeline
-
-	// ReleasePluginPipeline releases a plugin pipeline back to the pool
-	ReleasePluginPipeline func(pipeline PluginPipeline)
-
 	// FetchNewRequestIDFunc generates unique request IDs for nested tool calls
 	FetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
 
 	// LogMutex protects concurrent access to logs during code execution
 	LogMutex *sync.Mutex
 
-	// OAuth2Provider handles per-user OAuth token lookup and flow initiation
-	OAuth2Provider schemas.OAuth2Provider
+	// CredentialStore resolves per-call credentials (Bearer tokens, headers)
+	// and signals whether a client requires an ephemeral upstream connection.
+	CredentialStore schemas.MCPCredentialStore
 }
 
 // DefaultCodeModeConfig returns the default configuration for CodeMode.

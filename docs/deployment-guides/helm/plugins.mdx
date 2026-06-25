@@ -1,13 +1,13 @@
 ---
 title: "Plugins"
-description: "Configure Bifrost plugins in Helm — telemetry, logging, semantic cache, OpenTelemetry, Datadog, governance, and custom plugins"
+description: "Configure Bifrost plugins in Helm - telemetry, logging, semantic cache, OpenTelemetry, Datadog, governance, and custom plugins"
 icon: "puzzle-piece"
 ---
 
 Plugins are configured under `bifrost.plugins`. Each plugin is independently enabled/disabled. Pre-hooks run in registration order; post-hooks run in reverse order.
 
 <Note>
-**Telemetry, logging, and governance are auto-loaded built-ins** — they are always active and do not need to be explicitly enabled. Their configuration lives in `bifrost.client.*` and `bifrost.governance.*`, not in the `plugins` block.
+**Telemetry, logging, and governance are auto-loaded built-ins** - they are always active and do not need to be explicitly enabled. Their configuration lives in `bifrost.client.*` and `bifrost.governance.*`, not in the `plugins` block.
 
 The `plugins` block controls the opt-in plugins: `semanticCache`, `otel`, `datadog`, `maxim`, and custom plugins.
 </Note>
@@ -44,7 +44,7 @@ helm upgrade bifrost bifrost/bifrost \
 ### Telemetry (Prometheus)
 
 <Note>
-Telemetry is **always active** — it cannot be disabled. You do not need to set `bifrost.plugins.telemetry.enabled`.
+Telemetry is **always active** - it cannot be disabled. You do not need to set `bifrost.plugins.telemetry.enabled`.
 </Note>
 
 Exposes Prometheus metrics at `GET /metrics`. Custom labels are set via `bifrost.client.prometheusLabels`:
@@ -178,7 +178,6 @@ Two modes:
 | `bifrost.plugins.semanticCache.config.cache_by_model` | Include model name in cache key | `true` |
 | `bifrost.plugins.semanticCache.config.cache_by_provider` | Include provider name in cache key | `true` |
 | `bifrost.plugins.semanticCache.config.exclude_system_prompt` | Exclude system prompt from cache key | `false` |
-| `bifrost.plugins.semanticCache.config.cleanup_on_shutdown` | Delete cache data on pod shutdown | `false` |
 
 **Semantic mode (with OpenAI embeddings + Weaviate):**
 
@@ -333,13 +332,20 @@ Sends traces to a Datadog Agent running in the cluster.
 | `bifrost.plugins.datadog.enabled` | Enable Datadog tracing | `false` |
 | `bifrost.plugins.datadog.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.datadog.config.service_name` | Service name | `"bifrost"` |
-| `bifrost.plugins.datadog.config.agent_addr` | Datadog Agent address | `"localhost:8126"` |
+| `bifrost.plugins.datadog.config.agent_addr` | Datadog Agent address as combined `host:port`. Overridden by `agent_host` | `"localhost:8126"` |
+| `bifrost.plugins.datadog.config.agent_host` | Datadog Agent host, set separately from the port. Supports `env.VAR_NAME`. Takes precedence over `agent_addr` | `""` |
+| `bifrost.plugins.datadog.config.agent_port` | Datadog Agent port, used with `agent_host` | `"8126"` |
+| `bifrost.plugins.datadog.config.dogstatsd_addr` | DogStatsD address as combined `host:port`. Overridden by `dogstatsd_host` | `"localhost:8125"` |
+| `bifrost.plugins.datadog.config.dogstatsd_host` | DogStatsD host, set separately from the port. Supports `env.VAR_NAME`. Takes precedence over `dogstatsd_addr` | `""` |
+| `bifrost.plugins.datadog.config.dogstatsd_port` | DogStatsD port, used with `dogstatsd_host` | `"8125"` |
 | `bifrost.plugins.datadog.config.env` | Deployment environment tag | `""` |
 | `bifrost.plugins.datadog.config.version` | Version tag | `""` |
 | `bifrost.plugins.datadog.config.enable_traces` | Enable trace collection | `true` |
 | `bifrost.plugins.datadog.config.custom_tags` | Extra tags on all spans | `{}` |
 
 The Datadog Agent is typically deployed via the [Datadog Helm chart](https://docs.datadoghq.com/containers/kubernetes/installation/) as a DaemonSet, making it available at the node's hostIP.
+
+Inject the node IP via the downward API and reference it with `agent_host` / `dogstatsd_host`. The host comes from the cluster (the node IP) and the port is fixed, so the two can't be collapsed into one variable — use the separate host/port fields rather than `agent_addr`.
 
 ```yaml
 # datadog-values.yaml
@@ -352,7 +358,9 @@ bifrost:
       enabled: true
       config:
         service_name: "bifrost"
-        agent_addr: "$(HOST_IP):8126"   # uses Datadog DaemonSet pattern
+        agent_host: "env.HOST_IP"        # node-local DaemonSet agent (APM traces)
+        dogstatsd_host: "env.HOST_IP"    # node-local DaemonSet agent (metrics)
+        # agent_port / dogstatsd_port default to 8126 / 8125 — set only for non-standard ports
         env: "production"
         version: "v1.4.11"
         enable_traces: true
@@ -367,6 +375,10 @@ env:
       fieldRef:
         fieldPath: status.hostIP
 ```
+
+<Note>
+Use the `env.HOST_IP` reference (resolved by Bifrost), not `$(HOST_IP)`. Kubernetes only expands `$(VAR)` syntax in a container's `env`, `command`, and `args` — **not** inside a mounted ConfigMap file, which is where this config lands. Bifrost's own `env.` prefix resolves the variable at load time, so it works regardless of where the value is rendered.
+</Note>
 
 ```bash
 helm upgrade bifrost bifrost/bifrost --reuse-values -f datadog-values.yaml

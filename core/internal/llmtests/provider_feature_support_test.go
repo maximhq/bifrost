@@ -97,13 +97,11 @@ func TestProviderToolValidation(t *testing.T) {
 			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch}},
 		},
 
-		// ── Bedrock (no web_search, web_fetch, code_exec, MCP) ──
+		// ── Bedrock (web_search + code_interpreter supported via nova tools; web_fetch + MCP not) ──
 		{
-			name:      "Bedrock/web_search_rejected",
-			provider:  schemas.Bedrock,
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			expectErr: true,
-			errSubstr: "web_search",
+			name:     "Bedrock/web_search_allowed",
+			provider: schemas.Bedrock,
+			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
 		},
 		{
 			name:      "Bedrock/web_fetch_rejected",
@@ -113,11 +111,9 @@ func TestProviderToolValidation(t *testing.T) {
 			errSubstr: "web_fetch",
 		},
 		{
-			name:      "Bedrock/code_interpreter_rejected",
-			provider:  schemas.Bedrock,
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
-			expectErr: true,
-			errSubstr: "code_interpreter",
+			name:     "Bedrock/code_interpreter_allowed",
+			provider: schemas.Bedrock,
+			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
 		},
 		{
 			name:      "Bedrock/mcp_rejected",
@@ -856,13 +852,11 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 		},
 		// ── Bedrock: web_search rejected ──
 		{
-			name:     "Bedrock/web_search_rejected_in_pipeline",
+			name:     "Bedrock/web_search_allowed_in_pipeline",
 			provider: schemas.Bedrock,
 			tools: []schemas.ResponsesTool{
 				{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{}},
 			},
-			expectConversionErr: true,
-			errSubstr:           "web_search",
 		},
 		// ── Bedrock: computer_use with structured outputs → correct headers ──
 		{
@@ -1000,9 +994,11 @@ func TestProviderFeatureMapCompleteness(t *testing.T) {
 
 		// Bedrock specifics
 		if provider == schemas.Bedrock {
-			assert.False(t, features.WebSearch, "Bedrock should NOT support WebSearch")
+			assert.False(t, features.WebSearch, "Bedrock should NOT support WebSearch in Chat/Converse path")
+			assert.True(t, features.WebSearchNova, "Bedrock should support WebSearch via nova_grounding (Responses path)")
 			assert.False(t, features.WebFetch, "Bedrock should NOT support WebFetch")
-			assert.False(t, features.CodeExecution, "Bedrock should NOT support CodeExecution")
+			assert.False(t, features.CodeExecution, "Bedrock should NOT support CodeExecution in Chat/Converse path")
+			assert.True(t, features.CodeExecNova, "Bedrock should support CodeExecution via nova_code_interpreter (Responses path)")
 			assert.False(t, features.MCP, "Bedrock should NOT support MCP")
 			assert.True(t, features.StructuredOutputs, "Bedrock should support StructuredOutputs")
 			assert.True(t, features.Compaction, "Bedrock should support Compaction")
@@ -1256,7 +1252,8 @@ func TestRawBodyToolVersionRemapping(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := anthropic.RemapRawToolVersionsForProvider([]byte(tt.inputJSON), tt.provider)
+			model := providerUtils.GetJSONField([]byte(tt.inputJSON), "model").String()
+			result, err := anthropic.RemapRawToolVersionsForProvider([]byte(tt.inputJSON), tt.provider, model)
 
 			if tt.expectErr {
 				require.Error(t, err)

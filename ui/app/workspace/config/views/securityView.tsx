@@ -13,8 +13,7 @@ import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
-import { Link } from "@tanstack/react-router";
-import { AlertTriangle, Info, Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -25,8 +24,7 @@ export default function SecurityView() {
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
-	const showPasswordSection =
-		!IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type === "password");
+	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
@@ -44,7 +42,6 @@ export default function SecurityView() {
 		admin_username: { value: "", env_var: "", from_env: false },
 		admin_password: { value: "", env_var: "", from_env: false },
 		is_enabled: false,
-		disable_auth_on_inference: false,
 	});
 
 	useEffect(() => {
@@ -81,10 +78,7 @@ export default function SecurityView() {
 			authConfig.admin_password?.env_var !== bifrostConfig?.auth_config?.admin_password?.env_var ||
 			authConfig.admin_password?.from_env !== bifrostConfig?.auth_config?.admin_password?.from_env;
 		const authChanged = showPasswordSection
-			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
-			usernameChanged ||
-			passwordChanged ||
-			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference
+			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled || usernameChanged || passwordChanged
 			: false;
 
 		const localRequired = localConfig.required_headers?.slice().sort().join(",");
@@ -98,15 +92,7 @@ export default function SecurityView() {
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
-		return (
-			originsChanged ||
-			headersChanged ||
-			requiredChanged ||
-			whitelistedRoutesChanged ||
-			authChanged ||
-			enforceAuthOnInferenceChanged ||
-			allowDirectKeysChanged
-		);
+		return originsChanged || headersChanged || requiredChanged || whitelistedRoutesChanged || authChanged || enforceAuthOnInferenceChanged || allowDirectKeysChanged;
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
 	const needsRestart = useMemo(() => {
@@ -153,10 +139,6 @@ export default function SecurityView() {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
 
-	const handleDisableAuthOnInferenceToggle = useCallback((checked: boolean) => {
-		setAuthConfig((prev) => ({ ...prev, disable_auth_on_inference: checked }));
-	}, []);
-
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: EnvVar) => {
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
@@ -178,9 +160,8 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-						auth_config:
-							authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
-					}
+							auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+						}
 					: {}),
 			}).unwrap();
 			toast.success("Security settings updated successfully.");
@@ -197,28 +178,9 @@ export default function SecurityView() {
 			</div>
 
 			<div className="space-y-4">
-				{authConfig.is_enabled && !authConfig.disable_auth_on_inference && (
-					<Alert variant="default" className="border-blue-20">
-						<Info className="h-4 w-4 text-blue-600" />
-						<AlertDescription>
-							You will need to use Basic Auth for all your inference calls (including MCP tool execution). You can disable it below. Check{" "}
-							<Link to="/workspace/config/api-keys" className="text-md text-primary underline">
-								API Keys
-							</Link>
-						</AlertDescription>
-					</Alert>
-				)}
-				{authConfig.is_enabled && authConfig.disable_auth_on_inference && (
-					<Alert variant="default" className="border-blue-20">
-						<Info className="h-4 w-4 text-blue-600" />
-						<AlertDescription>
-							Authentication is disabled for inference calls. Only dashboard, admin API and MCP tool execution calls require authentication.
-						</AlertDescription>
-					</Alert>
-				)}
 				{/* Password Protect the Dashboard */}
 				{IS_ENTERPRISE && authTypeLoading ? (
-					<div className="flex items-center justify-center rounded-lg border p-8" data-testid="security-auth-type-loading">
+					<div className="flex items-center justify-center rounded-sm border p-8" data-testid="security-auth-type-loading">
 						<Loader2 className="text-muted-foreground h-5 w-5 animate-spin" aria-hidden />
 						<span className="sr-only">Loading authentication settings</span>
 					</div>
@@ -232,66 +194,50 @@ export default function SecurityView() {
 						</AlertDescription>
 					</Alert>
 				) : null}
-				{showPasswordSection && <div>
-					<div className="space-y-4 rounded-lg border p-4">
-						<div className="flex items-center justify-between">
-							<div className="space-y-0.5">
-								<Label htmlFor="auth-enabled" className="text-sm font-medium">
-									Password protect the dashboard <Badge variant="secondary">BETA</Badge>
-								</Label>
-								<p className="text-muted-foreground text-sm">
-									Set up authentication credentials to protect your Bifrost dashboard. Once configured, use the generated token for all
-									admin API calls.
-								</p>
-							</div>
-							<Switch id="auth-enabled" checked={authConfig.is_enabled} onCheckedChange={handleAuthToggle} />
-						</div>
-						<div className="space-y-4">
-							<div className="space-y-2">
-								<Label htmlFor="admin-username">Username</Label>
-								<EnvVarInput
-									id="admin-username"
-									type="text"
-									placeholder="Enter admin username or env.VAR_NAME"
-									value={authConfig.admin_username}
-									disabled={!authConfig.is_enabled}
-									onChange={(value) => handleAuthFieldChange("admin_username", value)}
-								/>
-							</div>
-							<div className="space-y-2">
-								<Label htmlFor="admin-password">Password</Label>
-								<EnvVarInput
-									id="admin-password"
-									type="password"
-									placeholder="Enter admin password or env.VAR_NAME"
-									value={authConfig.admin_password}
-									disabled={!authConfig.is_enabled}
-									onChange={(value) => handleAuthFieldChange("admin_password", value)}
-								/>
-							</div>
+				{showPasswordSection && (
+					<div>
+						<div className="space-y-4 rounded-sm border p-4">
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
-									<Label htmlFor="disable-auth-inference" className="text-sm font-medium">
-										Disable authentication on inference calls
+									<Label htmlFor="auth-enabled" className="text-sm font-medium">
+										Password protect the dashboard <Badge variant="secondary">BETA</Badge>
 									</Label>
 									<p className="text-muted-foreground text-sm">
-										When enabled, inference API calls (chat completions, embeddings, etc.) will not require authentication. Dashboard and
-										admin API calls will still require authentication.
+										Set up authentication credentials to protect your Bifrost dashboard. Once configured, use the generated token for all
+										admin API calls.
 									</p>
 								</div>
-								<Switch
-									id="disable-auth-inference"
-									className="ml-5"
-									checked={authConfig.disable_auth_on_inference ?? false}
-									disabled={!authConfig.is_enabled}
-									onCheckedChange={handleDisableAuthOnInferenceToggle}
-								/>
+								<Switch id="auth-enabled" checked={authConfig.is_enabled} onCheckedChange={handleAuthToggle} />
+							</div>
+							<div className="space-y-4">
+								<div className="space-y-2">
+									<Label htmlFor="admin-username">Username</Label>
+									<EnvVarInput
+										id="admin-username"
+										type="text"
+										placeholder="Enter admin username or env.VAR_NAME"
+										value={authConfig.admin_username}
+										disabled={!authConfig.is_enabled}
+										onChange={(value) => handleAuthFieldChange("admin_username", value)}
+									/>
+								</div>
+								<div className="space-y-2">
+									<Label htmlFor="admin-password">Password</Label>
+									<EnvVarInput
+										id="admin-password"
+										type="password"
+										placeholder="Enter admin password or env.VAR_NAME"
+										value={authConfig.admin_password}
+										disabled={!authConfig.is_enabled}
+										onChange={(value) => handleAuthFieldChange("admin_password", value)}
+									/>
+								</div>
 							</div>
 						</div>
 					</div>
-				</div>}
+				)}
 				{/* Enable Auth on Inference */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
 							{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
@@ -320,27 +266,29 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 					/>
 				</div>
-				{/* Allowed Origins */}
-				{needsRestart && <RestartWarning />}
 				{/* Allow Direct API Keys */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="allow-direct-keys" className="text-sm font-medium">
 							Allow Direct API Keys
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Allow API keys to be passed directly in request headers (<b>Authorization</b>, <b>x-api-key</b>, or <b>x-goog-api-key</b>).
-							Bifrost will directly use the key.
+							When enabled, callers can pass a provider API key directly in the{" "}
+							<b>Authorization</b>, <b>x-api-key</b>, or <b>x-goog-api-key</b> header alongside{" "}
+							<b>x-bf-direct-key: true</b>. Bifrost will use that key directly, bypassing the registered key pool.
 						</p>
 					</div>
 					<Switch
 						id="allow-direct-keys"
+						data-testid="security-allow-direct-keys-switch"
 						checked={localConfig.allow_direct_keys}
 						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
 					/>
 				</div>
+				{/* Allowed Origins */}
+				{needsRestart && <RestartWarning />}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-origins" className="text-sm font-medium">
 								Allowed Origins
@@ -362,7 +310,7 @@ export default function SecurityView() {
 				</div>
 				{/* Allowed Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-headers" className="text-sm font-medium">
 								Allowed Headers
@@ -380,7 +328,7 @@ export default function SecurityView() {
 				</div>
 				{/* Required Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="required-headers" className="text-sm font-medium">
 								Required Headers
@@ -402,7 +350,7 @@ export default function SecurityView() {
 				</div>
 				{/* Whitelisted Routes */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="whitelisted-routes" className="text-sm font-medium">
 								Whitelisted Routes

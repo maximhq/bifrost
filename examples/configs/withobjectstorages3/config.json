@@ -4,7 +4,7 @@
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../examples/configs/withobjectstorage/logs.db"
+      "path": "../../examples/configs/withobjectstorages3/logs.db"
     },
     "object_storage": {
       "type": "s3",

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
 // Since Anthropic always needs to have a max_tokens parameter, we set a default value if not provided.
@@ -56,6 +58,10 @@ const (
 	AnthropicRedactThinkingBetaHeader = "redact-thinking-2026-02-12"
 	// AnthropicTaskBudgetsBetaHeader is required for output_config.task_budget (Opus 4.7+).
 	AnthropicTaskBudgetsBetaHeader = "task-budgets-2026-03-13"
+	// AnthropicAdvisorBetaHeader is required for the advisor_20260301 server tool. Anthropic API only.
+	AnthropicAdvisorBetaHeader = "advisor-tool-2026-03-01"
+	// AnthropicCacheDiagnosisBetaHeader is required for cache diagnostics (diagnostics.previous_message_id). Anthropic API only.
+	AnthropicCacheDiagnosisBetaHeader = "cache-diagnosis-2026-04-07"
 	// AnthropicEagerInputStreamingBetaHeader is required for eager_input_streaming
 	// on custom tools (streams input_json_delta before full args are determined).
 	// Per Table 20: GA on Anthropic/Bedrock/Vertex, Beta on Azure.
@@ -79,11 +85,13 @@ const (
 	AnthropicSkillsBetaHeaderPrefix              = "skills-"
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
+	AnthropicCacheDiagnosisBetaHeaderPrefix      = "cache-diagnosis-"
 	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
-	AnthropicTaskBudgetsBetaHeaderPrefix            = "task-budgets-"
-	AnthropicEagerInputStreamingBetaHeaderPrefix    = "fine-grained-tool-streaming-"
-	AnthropicContextManagementBetaHeaderPrefix      = "context-management-"
-	AnthropicCompactionBetaHeaderPrefix             = "compact-"
+	AnthropicTaskBudgetsBetaHeaderPrefix         = "task-budgets-"
+	AnthropicEagerInputStreamingBetaHeaderPrefix = "fine-grained-tool-streaming-"
+	AnthropicContextManagementBetaHeaderPrefix   = "context-management-"
+	AnthropicCompactionBetaHeaderPrefix          = "compact-"
+	AnthropicAdvisorBetaHeaderPrefix             = "advisor-tool-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -102,36 +110,40 @@ const (
 //	Advisor-excl = Advisor tool Claude-API-only:
 //	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 type ProviderFeatureSupport struct {
-	WebSearch           bool // web_search server tool (cite: A)
-	WebSearchDynamic    bool // web_search_20260209 dynamic filtering (cite: A)
-	WebFetch            bool // web_fetch server tool (cite: A)
-	CodeExecution       bool // code_execution server tool (cite: A)
-	ComputerUse         bool // computer_use client tool (cite: A, B-header)
-	Bash                bool // bash client tool (cite: A, B-header)
-	Memory              bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
-	TextEditor          bool // text_editor client tool (cite: A)
-	ToolSearch          bool // tool_search server tool — tool-search-tool-2025-10-19 (cite: A, B-header)
-	MCP                 bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
-	AdvancedToolUse     bool // advanced-tool-use-2025-11-20 bundle: defer_loading + input_examples + allowed_callers (cite: A)
-	InputExamples       bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
-	StructuredOutputs   bool // strict tool validation / output_format (cite: A)
-	PromptCachingScope  bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
+	WebSearch              bool // web_search server tool (cite: A)
+	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
+	WebSearchDynamic       bool // web_search_20260209 dynamic filtering (cite: A)
+	WebFetch               bool // web_fetch server tool (cite: A)
+	CodeExecution          bool // code_execution server tool (cite: A)
+	CodeExecNova           bool // code_execution via nova_code_interpreter — Bedrock Responses path only, not Chat/Converse
+	ComputerUse            bool // computer_use client tool (cite: A, B-header)
+	Bash                   bool // bash client tool (cite: A, B-header)
+	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
+	TextEditor             bool // text_editor client tool (cite: A)
+	ToolSearch             bool // tool_search server tool — tool-search-tool-2025-10-19 (cite: A, B-header)
+	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
+	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: defer_loading + input_examples + allowed_callers (cite: A)
+	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
+	StructuredOutputs      bool // strict tool validation / output_format (cite: A)
+	PromptCachingScope     bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
 	Compaction             bool // compact_20260112 (cite: A, B-header)
 	ContextEditing         bool // clear_tool_uses / clear_thinking (cite: A, B-header)
 	ContextManagementField bool // provider accepts the context_management JSON body field at all; false → entire field dropped regardless of edit types
-	FilesAPI            bool // files-api-2025-04-14, file_id source (cite: A)
-	InterleavedThinking bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
-	Skills              bool // Agent Skills — container.skills object (cite: A)
-	ContainerBasic      bool // Bare string-form container id — universally supported (cite: A)
-	Context1M           bool // 1M context window — context-1m-2025-08-07 (cite: A)
-	FastMode            bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
-	RedactThinking      bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
-	TaskBudgets         bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
-	InferenceGeo        bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
-	EagerInputStreaming bool // fine-grained-tool-streaming-2025-05-14 (cite: A, B-header)
-	AdvisorTool         bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
-	FileSearch          bool // file_search server tool (OpenAI-only)
-	ImageGeneration     bool // image_generation server tool (OpenAI-only)
+	FilesAPI               bool // files-api-2025-04-14, file_id source (cite: A)
+	InterleavedThinking    bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
+	Skills                 bool // Agent Skills — container.skills object (cite: A)
+	ContainerBasic         bool // Bare string-form container id — universally supported (cite: A)
+	Context1M              bool // 1M context window — context-1m-2025-08-07 (cite: A)
+	FastMode               bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
+	RedactThinking         bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
+	TaskBudgets            bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
+	InferenceGeo           bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
+	EagerInputStreaming    bool // fine-grained-tool-streaming-2025-05-14 (cite: A, B-header)
+	AdvisorTool            bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
+	FileSearch             bool // file_search server tool (OpenAI-only)
+	ImageGeneration        bool // image_generation server tool (OpenAI-only)
+	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
+	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -149,37 +161,45 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
+		ServiceTier: true,
+		Diagnostics: true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
 	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool, StructuredOutputs,
-	// PromptCachingScope (400 "unexpected beta header" per LiteLLM #19984),
-	// ContextEditing (400 "unexpected beta header" per live API error),
-	// ContextManagementField (400 "Extra inputs are not permitted" per live API error
-	//     when the request body carries a context_management object).
-	// Compaction IS supported on Vertex via the compact-2026-01-12 beta header even
-	//     though Anthropic's compaction docs don't list Vertex (verified by live
-	//     testing). The header passes through FilterBetaHeadersForProvider because
-	//     Compaction: true; the body-field stripper at utils.go:460 removes any
-	//     client-side context_management payload (gated by ContextManagementField:
-	//     false) so the request still succeeds. The two flags are intentionally
-	//     independent: one controls header forwarding, the other controls body shape.
+	// PromptCachingScope (per A overview "Automatic prompt caching" row =
+	//     claudeApi + azureAiBeta only; not yet rolled out to Vertex),
 	// FilesAPI, WebFetch, CodeExecution, AdvancedToolUse, RedactThinking.
+	//
+	// Context editing (context-management-2025-06-27 beta header) and the
+	// context_management body field ARE supported on Vertex (Beta). Cite:
+	// https://platform.claude.com/docs/en/build-with-claude/overview
+	// → "Context management" → Context editing row marked
+	// `<PlatformAvailability claudeApiBeta bedrockBeta vertexAiBeta azureAiBeta />`.
+	// Re-enabled 2026-05-01; PR #3055 had disabled this after a transient 400,
+	// which the documented availability supersedes.
+	//
+	// Compaction is also documented on Vertex per the same overview table
+	// (compact-2026-01-12 beta header).
 	schemas.Vertex: {
 		WebSearch:   true, // web search GA on Vertex per A; earlier code restricted to web_search_20250305 — A doesn't qualify
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
-		ContainerBasic:      true,
-		Compaction:          true,
-		InterleavedThinking: true, // V-platform confirms; fails on non-allowlisted 4-series
-		Context1M:           true,
-		EagerInputStreaming: true, // fine-grained-tool-streaming GA per A
+		ContainerBasic:         true,
+		Compaction:             true,
+		ContextEditing:         true, // context-management-2025-06-27 supported on Vertex (Beta) — see comment above
+		ContextManagementField: true, // Vertex accepts the context_management body field
+		InterleavedThinking:    true, // V-platform confirms; fails on non-allowlisted 4-series
+		Context1M:              true,
+		EagerInputStreaming:    true, // fine-grained-tool-streaming GA per A
 	},
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
 	// Notably NOT supported per docs: MCP, Skills, FilesAPI, WebFetch,
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
 	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
 	schemas.Bedrock: {
-		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		WebSearchNova: true, // nova_grounding — Responses path only
+		CodeExecNova:  true, // nova_code_interpreter — Responses path only
+		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
 		// StructuredOutputs: kept true to match pre-existing behavior and the
 		// provider_feature_support_test.go assertion, but NEITHER B-header
@@ -187,30 +207,35 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// output_format on Bedrock. Needs live verification. If Bedrock's
 		// Converse API actually rejects `strict: true`, flip this to false
 		// and update the corresponding test assertion.
-		StructuredOutputs:   true,
-		Compaction:          true, // compact-2026-01-12 per B-header
-		ContextEditing:      true, // context-management-2025-06-27 per B-header (bundles memory)
+		StructuredOutputs:      true,
+		Compaction:             true, // compact-2026-01-12 per B-header
+		ContextEditing:         true, // context-management-2025-06-27 per B-header (bundles memory)
 		ContextManagementField: true, // Bedrock accepts context_management body field
-		InterleavedThinking: true, // per B-header; model-allowlisted
-		Context1M:           true, // Opus 4.6 / Sonnet 4.6 per A
-		EagerInputStreaming: true, // fine-grained-tool-streaming-2025-05-14 per B-header
-		InputExamples:       true, // tool-examples-2025-10-29 per B-header (standalone; Bedrock doesn't accept the full advanced-tool-use-2025-11-20 bundle — see TestFilterBetaHeadersForProvider)
+		InterleavedThinking:    true, // per B-header; model-allowlisted
+		Context1M:              true, // Opus 4.6 / Sonnet 4.6 per A
+		EagerInputStreaming:    true, // fine-grained-tool-streaming-2025-05-14 per B-header
+		InputExamples:          true, // tool-examples-2025-10-29 per B-header (standalone; Bedrock doesn't accept the full advanced-tool-use-2025-11-20 bundle — see TestFilterBetaHeadersForProvider)
 		// AdvancedToolUse intentionally OFF on Bedrock. The bundle header
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
+		ServiceTier: true, // Bedrock handles service_tier via its own typed conversion
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
 	// Az-platform: Admin API, Models API, Message Batch API (not in scope).
+	// TaskBudgets: not documented for Azure on the task-budgets feature page
+	//     or the A overview matrix; flipped to false to match Bedrock/Vertex
+	//     fail-closed treatment (override via BetaHeaderOverrides if needed).
 	schemas.Azure: {
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, InputExamples: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, ContextManagementField: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
-		RedactThinking: true, TaskBudgets: true,
+		RedactThinking:      true,
 		EagerInputStreaming: true,
-		// FastMode, InferenceGeo, AdvisorTool — not in Az-platform; leave off.
+		// FastMode, InferenceGeo, AdvisorTool, TaskBudgets — not documented on Az-platform; leave off.
+		ServiceTier: true,
 	},
 }
 
@@ -350,6 +375,7 @@ type AnthropicMessageRequest struct {
 	InferenceGeo      *string                `json:"inference_geo,omitempty"` // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	ContextManagement *ContextManagement     `json:"context_management,omitempty"`
 	Container         *AnthropicContainer    `json:"container,omitempty"` // string id OR object with skills[]; skills require skills-2025-10-02 beta
+	Diagnostics       *AnthropicDiagnostics  `json:"diagnostics,omitempty"`   // cache diagnostics opt-in; requires cache-diagnosis-2026-04-07 beta (Anthropic API only)
 
 	// Extra params for advanced use cases
 	ExtraParams map[string]interface{} `json:"-"`
@@ -373,6 +399,14 @@ func (req *AnthropicMessageRequest) GetExtraParams() map[string]interface{} {
 
 type AnthropicMetaData struct {
 	UserID *string `json:"user_id"`
+}
+
+// AnthropicDiagnostics is the request-side cache diagnostics opt-in
+// (cache-diagnosis-2026-04-07 beta). PreviousMessageID is the prior response id
+// to compare prompt prefixes against; it is sent as JSON null on the first turn
+// to opt in, so previous_message_id is never omitted.
+type AnthropicDiagnostics struct {
+	PreviousMessageID *string `json:"previous_message_id"`
 }
 
 type AnthropicThinking struct {
@@ -627,6 +661,7 @@ var anthropicMessageRequestKnownFields = map[string]bool{
 	"inference_geo":      true,
 	"context_management": true,
 	"container":          true,
+	"diagnostics":        true,
 	"extra_params":       true,
 	"fallbacks":          true,
 }
@@ -787,11 +822,12 @@ type AnthropicMessageRole string
 const (
 	AnthropicMessageRoleUser      AnthropicMessageRole = "user"
 	AnthropicMessageRoleAssistant AnthropicMessageRole = "assistant"
+	AnthropicMessageRoleSystem    AnthropicMessageRole = "system"
 )
 
 // AnthropicMessage represents a message in Anthropic format
 type AnthropicMessage struct {
-	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant"
+	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant", "system"
 	Content AnthropicContent     `json:"content"` // Array of content blocks
 }
 
@@ -799,6 +835,9 @@ type AnthropicMessage struct {
 type AnthropicContent struct {
 	ContentStr    *string
 	ContentBlocks []AnthropicContentBlock
+	// ContentObj marshals as a single bare object (not wrapped in an array).
+	// Used for fields Anthropic types as a single object, e.g. advisor_tool_result.content.
+	ContentObj *AnthropicContentBlock
 }
 
 // MarshalJSON implements custom JSON marshalling for AnthropicContent.
@@ -811,6 +850,9 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 
 	if mc.ContentStr != nil {
 		return providerUtils.MarshalSorted(*mc.ContentStr)
+	}
+	if mc.ContentObj != nil {
+		return providerUtils.MarshalSorted(mc.ContentObj)
 	}
 	if mc.ContentBlocks != nil {
 		return providerUtils.MarshalSorted(mc.ContentBlocks)
@@ -922,6 +964,7 @@ type AnthropicContentBlock struct {
 	EncryptedContent *string                   `json:"encrypted_content,omitempty"` // web_search_result, advisor_redacted_result, compaction
 	PageAge          *string                   `json:"page_age,omitempty"`          // web_search_result
 	ErrorCode        *string                   `json:"error_code,omitempty"`        // any *_tool_result_error variant
+	StopReason       *string                   `json:"stop_reason,omitempty"`       // advisor_result / advisor_redacted_result inner block; present when advisor tool max_tokens is set
 	Caller           *AnthropicToolCaller      `json:"caller,omitempty"`            // tool_use, server_tool_use, every *_tool_result block
 
 	// search_result block: the API uses the literal key "source" with a plain
@@ -1188,20 +1231,29 @@ const (
 	AnthropicToolTypeToolSearchBM2520251119  AnthropicToolType = "tool_search_tool_bm25_20251119"
 	AnthropicToolTypeToolSearchRegex         AnthropicToolType = "tool_search_tool_regex"
 	AnthropicToolTypeToolSearchRegex20251119 AnthropicToolType = "tool_search_tool_regex_20251119"
+
+	// Advisor server tool — pairs the executor model with a higher-intelligence
+	// advisor model mid-generation. Anthropic API only; requires the
+	// advisor-tool-2026-03-01 beta header.
+	AnthropicToolTypeAdvisor20260301 AnthropicToolType = "advisor_20260301"
 )
 
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer        AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch       AnthropicToolName = "web_search"
-	AnthropicToolNameWebFetch        AnthropicToolName = "web_fetch"
-	AnthropicToolNameBash            AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor      AnthropicToolName = "str_replace_based_edit_tool"
-	AnthropicToolNameCodeExecution   AnthropicToolName = "code_execution"
-	AnthropicToolNameMemory          AnthropicToolName = "memory"
-	AnthropicToolNameToolSearchBM25  AnthropicToolName = "tool_search_tool_bm25"
-	AnthropicToolNameToolSearchRegex AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameComputer   AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch  AnthropicToolName = "web_search"
+	AnthropicToolNameWebFetch   AnthropicToolName = "web_fetch"
+	AnthropicToolNameBash       AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor AnthropicToolName = "str_replace_based_edit_tool"
+	// AnthropicToolNameTextEditorLegacy is the name required for text_editor_20250124
+	// and text_editor_20250429. Newer text_editor_20250728+ use AnthropicToolNameTextEditor.
+	AnthropicToolNameTextEditorLegacy AnthropicToolName = "str_replace_editor"
+	AnthropicToolNameCodeExecution    AnthropicToolName = "code_execution"
+	AnthropicToolNameMemory           AnthropicToolName = "memory"
+	AnthropicToolNameToolSearchBM25   AnthropicToolName = "tool_search_tool_bm25"
+	AnthropicToolNameToolSearchRegex  AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameAdvisor          AnthropicToolName = "advisor"
 )
 
 type AnthropicToolComputerUse struct {
@@ -1242,6 +1294,22 @@ type AnthropicToolTextEditor struct {
 	MaxCharacters *int `json:"max_characters,omitempty"` // text_editor_20250728+ only
 }
 
+// AnthropicToolAdvisorCaching toggles advisor-side prompt caching across calls
+// within a conversation. Not a breakpoint marker — an on/off switch.
+type AnthropicToolAdvisorCaching struct {
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "5m" | "1h"
+}
+
+// AnthropicToolAdvisor holds fields specific to the advisor_20260301 server
+// tool. Anthropic API only; requires the advisor-tool-2026-03-01 beta header.
+type AnthropicToolAdvisor struct {
+	Model     string                       `json:"model,omitempty"`      // advisor model id (required by Anthropic; must form a valid executor/advisor pair)
+	MaxUses   *int                         `json:"max_uses,omitempty"`   // per-request cap on advisor calls
+	MaxTokens *int                         `json:"max_tokens,omitempty"` // caps advisor output (thinking + text) per call; minimum 1024
+	Caching   *AnthropicToolAdvisorCaching `json:"caching,omitempty"`    // advisor-side prompt caching toggle
+}
+
 // AnthropicToolInputExample represents an input example for a tool (beta feature)
 type AnthropicToolInputExample struct {
 	Input       json.RawMessage `json:"input"`
@@ -1265,6 +1333,7 @@ type AnthropicTool struct {
 	*AnthropicToolWebSearch
 	*AnthropicToolWebFetch
 	*AnthropicToolTextEditor
+	*AnthropicToolAdvisor
 
 	// MCP toolset (mcp-client-2025-11-20 format) — embedded when Type is nil and MCPToolset is set
 	MCPToolset *AnthropicMCPToolsetTool `json:"-"` // Serialized via custom MarshalJSON
@@ -1278,7 +1347,47 @@ func (t AnthropicTool) MarshalJSON() ([]byte, error) {
 	}
 	// Use an alias to avoid infinite recursion
 	type Alias AnthropicTool
-	return providerUtils.MarshalSorted((Alias)(t))
+	data, err := providerUtils.MarshalSorted((Alias)(t))
+	if err != nil {
+		return nil, err
+	}
+	// max_uses (web_search/web_fetch/advisor) and allowed_domains/blocked_domains
+	// (web_search/web_fetch) share JSON tags across the anonymously-embedded
+	// variant structs, so the encoder drops them. Re-inject from the active
+	// variant in a fixed order — deterministic, which is all the prompt-cache
+	// prefix needs (see InputSchema.Normalized()).
+	maxUses, allowed, blocked := t.sharedServerToolFields()
+	if maxUses != nil {
+		if data, err = sjson.SetBytes(data, "max_uses", *maxUses); err != nil {
+			return nil, err
+		}
+	}
+	if len(allowed) > 0 {
+		if data, err = sjson.SetBytes(data, "allowed_domains", allowed); err != nil {
+			return nil, err
+		}
+	}
+	if len(blocked) > 0 {
+		if data, err = sjson.SetBytes(data, "blocked_domains", blocked); err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
+}
+
+// sharedServerToolFields returns the max_uses/allowed_domains/blocked_domains of
+// whichever server-tool variant is active. These share JSON tags across the
+// embedded variant structs and are (un)marshaled explicitly by AnthropicTool.
+func (t AnthropicTool) sharedServerToolFields() (maxUses *int, allowed, blocked []string) {
+	switch {
+	case t.AnthropicToolWebSearch != nil:
+		return t.AnthropicToolWebSearch.MaxUses, t.AnthropicToolWebSearch.AllowedDomains, t.AnthropicToolWebSearch.BlockedDomains
+	case t.AnthropicToolWebFetch != nil:
+		return t.AnthropicToolWebFetch.MaxUses, t.AnthropicToolWebFetch.AllowedDomains, t.AnthropicToolWebFetch.BlockedDomains
+	case t.AnthropicToolAdvisor != nil:
+		return t.AnthropicToolAdvisor.MaxUses, nil, nil
+	}
+	return nil, nil, nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for AnthropicTool.
@@ -1299,7 +1408,51 @@ func (t *AnthropicTool) UnmarshalJSON(data []byte) error {
 	}
 	// Default unmarshaling for all other tool types
 	type Alias AnthropicTool
-	return sonic.Unmarshal(data, (*Alias)(t))
+	if err := sonic.Unmarshal(data, (*Alias)(t)); err != nil {
+		return err
+	}
+	// The embedded variant structs share these JSON tags, so the decoder drops
+	// them. Re-read and route them into the active variant by tool type.
+	var shared struct {
+		MaxUses        *int     `json:"max_uses"`
+		AllowedDomains []string `json:"allowed_domains"`
+		BlockedDomains []string `json:"blocked_domains"`
+	}
+	if err := sonic.Unmarshal(data, &shared); err != nil {
+		return err
+	}
+	t.applySharedServerToolFields(shared.MaxUses, shared.AllowedDomains, shared.BlockedDomains)
+	return nil
+}
+
+// applySharedServerToolFields routes the shared (collision-dropped)
+// max_uses/allowed_domains/blocked_domains into the embedded variant struct that
+// matches the tool type, allocating it if the default decode left it nil.
+func (t *AnthropicTool) applySharedServerToolFields(maxUses *int, allowed, blocked []string) {
+	if t.Type == nil || (maxUses == nil && allowed == nil && blocked == nil) {
+		return
+	}
+	switch typeStr := string(*t.Type); {
+	case strings.HasPrefix(typeStr, "web_search"):
+		if t.AnthropicToolWebSearch == nil {
+			t.AnthropicToolWebSearch = &AnthropicToolWebSearch{}
+		}
+		t.AnthropicToolWebSearch.MaxUses = maxUses
+		t.AnthropicToolWebSearch.AllowedDomains = allowed
+		t.AnthropicToolWebSearch.BlockedDomains = blocked
+	case strings.HasPrefix(typeStr, "web_fetch"):
+		if t.AnthropicToolWebFetch == nil {
+			t.AnthropicToolWebFetch = &AnthropicToolWebFetch{}
+		}
+		t.AnthropicToolWebFetch.MaxUses = maxUses
+		t.AnthropicToolWebFetch.AllowedDomains = allowed
+		t.AnthropicToolWebFetch.BlockedDomains = blocked
+	case strings.HasPrefix(typeStr, "advisor"):
+		if t.AnthropicToolAdvisor == nil {
+			t.AnthropicToolAdvisor = &AnthropicToolAdvisor{}
+		}
+		t.AnthropicToolAdvisor.MaxUses = maxUses
+	}
 }
 
 // AnthropicToolChoice represents tool choice in Anthropic format
@@ -1383,6 +1536,10 @@ type AnthropicMessageResponse struct {
 	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
+	// Diagnostics is the cache-diagnosis response payload (cache-diagnosis-2026-04-07).
+	// omitempty when absent; a present-but-null value (no divergence) is conveyed by a
+	// non-nil pointer with a nil CacheMissReason — see schemas.CacheDiagnostics.
+	Diagnostics *schemas.CacheDiagnostics `json:"diagnostics,omitempty"`
 }
 
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API
@@ -1408,6 +1565,7 @@ type AnthropicUsage struct {
 	OutputTokens             int                          `json:"output_tokens"`
 	ServerToolUse            *AnthropicServerToolUseUsage `json:"server_tool_use,omitempty"` // Server tool use statistics (e.g., web search)
 	ServiceTier              *string                      `json:"service_tier,omitempty"`    // "standard", "priority", or "batch"
+	Speed                    *string                      `json:"speed,omitempty"`           // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                      `json:"inference_geo,omitempty"`   // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage             `json:"iterations,omitempty"`      // Iterations statistics
 }

@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"strings"
 )
 
 type BifrostEmbeddingRequest struct {
@@ -23,6 +24,16 @@ type BifrostEmbeddingResponse struct {
 	Object      string                     `json:"object"` // "list"
 	Usage       *BifrostLLMUsage           `json:"usage"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BackfillParams copies request metadata into the response when the provider omitted it (e.g. model in JSON).
+func (r *BifrostEmbeddingResponse) BackfillParams(request *BifrostEmbeddingRequest) {
+	if r == nil || request == nil {
+		return
+	}
+	if strings.TrimSpace(r.Model) == "" && strings.TrimSpace(request.Model) != "" {
+		r.Model = request.Model
+	}
 }
 
 // EmbeddingInput represents the input for an embedding request.

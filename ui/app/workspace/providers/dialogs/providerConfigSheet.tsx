@@ -101,7 +101,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<div className="flex items-center">
-								<Provider provider={provider.name} size={24} />
+								<Provider provider={provider.name} size={24} className="mt-0" />
 							</div>
 							Provider configuration
 						</div>

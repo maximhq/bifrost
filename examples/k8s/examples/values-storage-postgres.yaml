@@ -6,6 +6,14 @@ storage:
   logsStore:
     enabled: true
     type: postgres
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      prefix: "bifrost/logs"
+      region: "us-east-1"
+    objectStorageExcludeFields:
+      - output_message
 
 postgresql:
   enabled: true

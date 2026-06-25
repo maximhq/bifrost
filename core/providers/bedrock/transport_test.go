@@ -350,7 +350,7 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			assert.False(t, errChunk.BifrostError.IsBifrostError,
 				"%s must be IsBifrostError:false so retry gate can retry it", tc.excType)
 			require.NotNil(t, errChunk.BifrostError.StatusCode,
-				"%s must carry a StatusCode for the retryableStatusCodes gate", tc.excType)
+				"%s must carry a StatusCode for the retry gate", tc.excType)
 			assert.Equal(t, tc.expectedStatus, *errChunk.BifrostError.StatusCode,
 				"%s must map to HTTP %d", tc.excType, tc.expectedStatus)
 		})
@@ -445,7 +445,7 @@ func assertRetryableExceptionChunk(t *testing.T, streamChan chan *schemas.Bifros
 	assert.False(t, errChunk.BifrostError.IsBifrostError,
 		"%s must be IsBifrostError:false so retry gate can retry it", excType)
 	require.NotNil(t, errChunk.BifrostError.StatusCode,
-		"%s must carry a StatusCode for the retryableStatusCodes gate", excType)
+		"%s must carry a StatusCode for the retry gate", excType)
 	assert.Equal(t, expectedStatus, *errChunk.BifrostError.StatusCode,
 		"%s must map to HTTP %d", excType, expectedStatus)
 }
@@ -547,14 +547,14 @@ func generateTestCACert(t *testing.T) string {
 func TestBedrockTransportHTTP2Config(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                5000,
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 
@@ -570,13 +570,13 @@ func TestBedrockTransportHTTP2Config(t *testing.T) {
 func TestBedrockTransportCustomMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                50,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -590,7 +590,7 @@ func TestBedrockTransportCustomMaxConns(t *testing.T) {
 func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// MaxConnsPerHost left as 0 — should default to 5000
 		},
 	}
@@ -598,7 +598,7 @@ func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 
 	assert.Equal(t, schemas.DefaultMaxConnsPerHost, config.NetworkConfig.MaxConnsPerHost)
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -612,14 +612,14 @@ func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			InsecureSkipVerify:             true,
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -636,14 +636,14 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			CACertPEM:                      schemas.NewEnvVar(testCACert),
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -657,13 +657,13 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 func TestBedrockTransportDefaultTLS(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// No TLS settings — should use system defaults
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -677,13 +677,13 @@ func TestBedrockTransportDefaultTLS(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -696,13 +696,13 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   false,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)

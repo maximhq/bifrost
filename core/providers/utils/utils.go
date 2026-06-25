@@ -3,6 +3,7 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -27,7 +28,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/network"
-	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
@@ -109,34 +110,37 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
-// MakeRequestWithContext makes a request with a context and returns the latency, error, and a
-// wait function. The wait function MUST be called (typically via defer) before releasing the
-// request or response objects. On the normal path it is a no-op. On the context-cancellation
-// path it blocks until the background client.Do goroutine finishes, preventing a data race
-// between the still-running goroutine and the caller's release of req/resp.
+// makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
+// MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
+// context cancellation, latency tracking, and error classification uniformly.
 //
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
 // context is done. The fasthttp client call will continue in its goroutine until it completes
 // or times out based on its own settings. This function merely stops *waiting* for the
 // fasthttp call and returns an error related to the context.
-func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+//
+// The wait function MUST be called (typically via defer) before releasing the request or
+// response objects. On the normal path it is a no-op. On the context-cancellation path it
+// blocks until the background goroutine finishes, preventing a data race between the
+// still-running goroutine and the caller's release of req/resp.
+func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration, *schemas.BifrostError, func()) {
 	startTime := time.Now()
 	errChan := make(chan error, 1)
 
 	go func() {
-		// client.Do is a blocking call.
+		// do is a blocking call.
 		// It will send an error (or nil for success) to errChan when it completes.
-		errChan <- client.Do(req, resp)
+		errChan <- do()
 	}()
 
 	select {
 	case <-ctx.Done():
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
-		// Calculate latency even for cancelled requests
+		// Calculate latency even for cancelled requests.
 		latency := time.Since(startTime)
 		// Return a wait function that blocks until the background goroutine finishes.
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
-		// a data race with the still-running client.Do goroutine.
+		// a data race with the still-running goroutine.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			statusCode := 504
 			errorType := schemas.RequestTimedOut
@@ -162,8 +166,8 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			},
 		}, func() { <-errChan }
 	case err := <-errChan:
-		// The fasthttp.Do call completed.
-		// Calculate latency for both successful and failed requests
+		// The do() call completed.
+		// Calculate latency for both successful and failed requests.
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -176,40 +180,43 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 					},
 				}, noop
 			}
-			// Check for timeout errors first before checking net.OpError to avoid misclassification
+			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
 			}
-			// Check if error implements net.Error and has Timeout() == true
+			// Check if error implements net.Error and has Timeout() == true.
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
 			}
-			// Check for DNS lookup and network errors after timeout checks
+			// Check for DNS lookup and network errors after timeout checks.
 			var opErr *net.OpError
 			var dnsErr *net.DNSError
 			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: schemas.ErrProviderNetworkError,
-						Error:   err,
-					},
-				}, noop
+				return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), noop
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
-			return latency, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderDoRequest,
-					Error:   err,
-				},
-			}, noop
+			return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
 		return latency, nil, noop
 	}
+}
+
+// MakeRequestWithContext makes a request with a context and returns the latency, error, and a
+// wait function. The wait function MUST be called (typically via defer) before releasing the
+// request or response objects. On the normal path it is a no-op. On the context-cancellation
+// path it blocks until the background client.Do goroutine finishes, preventing a data race
+// between the still-running goroutine and the caller's release of req/resp.
+func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+	return makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+}
+
+// MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
+// maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
+func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
+	return makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -234,7 +241,7 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 //
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
-func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
+func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -260,10 +267,53 @@ func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
 			// Preserve dial-timeout behavior
 			conn, err = existingDialTimeout(addr, client.ReadTimeout)
 		default:
-			conn, err = (&net.Dialer{
+			// resolve DNS ourselves, reject private IPs, then dial
+			// the IP literal directly — closes the DNS rebinding window that exists
+			// between ValidateExternalURL (save time) and this connection.
+			host, port, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			// Bound DNS resolution with the same timeout that governs the TCP
+			resolveCtx := context.Background()
+			if client.ReadTimeout > 0 {
+				var cancel context.CancelFunc
+				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
+				defer cancel()
+			}
+			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			dialer := &net.Dialer{
 				Timeout:         client.ReadTimeout,
 				KeepAliveConfig: keepAliveCfg,
-			}).Dial("tcp", addr)
+			}
+			var lastErr error
+			for _, ip := range ips {
+				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+				if ip.IsUnspecified() {
+					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+				}
+				if network.IsLinkLocal(ip) {
+					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
+				}
+				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
+				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
+					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
+				}
+				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					break
+				}
+				lastErr = err
+			}
+			if conn == nil {
+				if lastErr != nil {
+					return nil, lastErr
+				}
+				return nil, fmt.Errorf("no usable address resolved for %s", host)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -481,6 +531,7 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 var providerResponseFilterHeaders = map[string]bool{
 	"content-length":                   true,
 	"content-encoding":                 true,
+	"content-type":                     true,
 	"transfer-encoding":                true,
 	"connection":                       true,
 	"keep-alive":                       true,
@@ -488,6 +539,9 @@ var providerResponseFilterHeaders = map[string]bool{
 	"proxy-authenticate":               true,
 	"proxy-authorization":              true,
 	"authorization":                    true,
+	"x-goog-api-key":                   true,
+	"x-api-key":                        true,
+	"api-key":                          true,
 	"cookie":                           true,
 	"set-cookie":                       true,
 	"set-cookie2":                      true,
@@ -500,7 +554,6 @@ var providerResponseFilterHeaders = map[string]bool{
 	"server":                           true,
 	"alt-svc":                          true,
 	"strict-transport-security":        true,
-	"content-type":                     true,
 	"access-control-allow-origin":      true,
 	"access-control-allow-methods":     true,
 	"access-control-allow-headers":     true,
@@ -519,6 +572,32 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		if providerResponseFilterHeaders[strings.ToLower(k)] {
+			return
+		}
+		v := string(value)
+		if existing, ok := headers[k]; ok && existing != "" {
+			headers[k] = existing + ", " + v
+		} else {
+			headers[k] = v
+		}
+	})
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+// ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
+// fasthttp response. Transport-level headers are excluded.
+func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	resp.Header.VisitAll(func(key, value []byte) {
+		k := string(key)
+		kLower := strings.ToLower(k)
+		if providerResponseFilterHeaders[kLower] && kLower != "content-type" {
 			return
 		}
 		v := string(value)
@@ -975,21 +1054,55 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 	}
 }
 
-// DrainNonSSEStreamResponse checks if the upstream response is a Server-Sent Events stream.
-// If not SSE, drains the body to io.Discard to prevent bufio.Scanner buffer bloat on
-// non-line-delimited data. Returns true if body was drained (caller should skip scanner).
-// We intentionally do not touch valid SSE bodies here: callers must continue reading from
-// the reader returned by DecompressStreamBody, and draining SSE in this helper would consume
-// the stream before the scanner/manual event loop starts.
-func DrainNonSSEStreamResponse(resp *fasthttp.Response) bool {
+// Some OpenAI-compatible backends return valid SSE frames without Content-Type:
+// text/event-stream. In that case, peek at the first field prefix without consuming
+// it so the downstream SSE parser sees the full stream.
+func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, bool) {
 	ct := strings.ToLower(string(resp.Header.ContentType()))
 	if strings.Contains(ct, "text/event-stream") {
+		return reader, false
+	}
+	if reader == nil {
+		return nil, true
+	}
+
+	br := bufio.NewReaderSize(reader, sseInitialBufSize)
+	if hasSSEPrefix(br) {
+		return br, false
+	}
+
+	_, _ = io.Copy(io.Discard, br)
+	return nil, true
+}
+
+func hasSSEPrefix(reader *bufio.Reader) bool {
+	first, err := reader.Peek(1)
+	if err != nil || len(first) == 0 {
 		return false
 	}
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		_, _ = io.Copy(io.Discard, bodyStream)
+	switch first[0] {
+	case ':', '\n', '\r':
+		return true
+	case 'd':
+		return peekHasPrefix(reader, []byte("data:"))
+	case 'e':
+		return peekHasPrefix(reader, []byte("event:"))
+	case 'i':
+		return peekHasPrefix(reader, []byte("id:"))
+	case 'r':
+		return peekHasPrefix(reader, []byte("retry:"))
+	default:
+		return false
 	}
-	return true
+}
+
+func peekHasPrefix(reader *bufio.Reader, prefix []byte) bool {
+	n := min(reader.Buffered(), len(prefix))
+	if n == 0 {
+		return false
+	}
+	peeked, err := reader.Peek(n)
+	return err == nil && bytes.Equal(peeked, prefix[:n])
 }
 
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
@@ -1433,6 +1546,17 @@ func ParseAndSetRawRequestIfJSON(fasthttpReq *fasthttp.Request, extraFields *sch
 	}
 }
 
+// PassthroughJSONBody returns body only when the passthrough request carries a
+// JSON Content-Type. Pass the return value into HandleStreamCancellation /
+// HandleStreamTimeout so non-JSON passthrough payloads (multipart, binary, etc.)
+// are not wrapped as json.RawMessage in error responses.
+func PassthroughJSONBody(fasthttpReq *fasthttp.Request, body []byte) []byte {
+	if strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
+		return body
+	}
+	return nil
+}
+
 // NewUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
 func NewUnsupportedOperationError(requestType schemas.RequestType, providerName schemas.ModelProvider) *schemas.BifrostError {
@@ -1441,6 +1565,10 @@ func NewUnsupportedOperationError(requestType schemas.RequestType, providerName 
 		Error: &schemas.ErrorField{
 			Message: fmt.Sprintf("%s is not supported by %s provider", requestType, providerName),
 			Code:    schemas.Ptr("unsupported_operation"),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider:    providerName,
+			RequestType: requestType,
 		},
 	}
 }
@@ -1702,6 +1830,28 @@ func NewBifrostTimeoutError(message string, err error) *schemas.BifrostError {
 	}
 }
 
+// NewBifrostUpstreamConnectionError creates a standardized error for upstream
+// connectivity failures where Bifrost successfully dispatched to the provider
+// but the provider failed to return a response body (DNS lookup failure,
+// connection refused, connection reset before the first response byte, etc.).
+// Sets StatusCode to 502 (Bad Gateway) and Error.Type to ProviderConnectionFailed,
+// distinguishing these retriable upstream failures from genuine HTTP 400
+// client-side bad-request errors. Mirrors NewBifrostTimeoutError; IsBifrostError
+// is false because the upstream provider is the cause.
+func NewBifrostUpstreamConnectionError(message string, err error) *schemas.BifrostError {
+	statusCode := 502
+	errorType := schemas.ProviderConnectionFailed
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: message,
+			Type:    &errorType,
+			Error:   err,
+		},
+	}
+}
+
 // NewProviderAPIError creates a standardized error for provider API errors.
 // This helper reduces code duplication across providers that have provider API errors.
 func NewProviderAPIError(message string, err error, statusCode int, errorType *string, eventID *string) *schemas.BifrostError {
@@ -1793,6 +1943,7 @@ func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.Bifr
 		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
 		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
 		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
+		streamResponse.BifrostPassthroughResponse = processedResponse.PassthroughResponse
 		// Strip raw fields from client-facing copies without mutating the shared objects
 		// that PostLLMHook goroutines may still be reading.
 		if drop {
@@ -1855,6 +2006,16 @@ func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.Bifr
 					cp.ExtraFields.RawResponse = nil
 				}
 				streamResponse.BifrostImageGenerationStreamResponse = &cp
+			}
+			if streamResponse.BifrostPassthroughResponse != nil {
+				cp := *streamResponse.BifrostPassthroughResponse
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
+				streamResponse.BifrostPassthroughResponse = &cp
 			}
 		}
 	}
@@ -1997,7 +2158,7 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 // Returns a cleanup function that MUST be called when streaming is done to
 // prevent the goroutine from closing the stream during normal operation.
 // Works with both fasthttp's BodyStream() (io.Reader) and net/http's resp.Body (io.ReadCloser).
-func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
+func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
 	done := make(chan struct{})
 	closed := make(chan struct{})
 
@@ -2005,25 +2166,47 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 		defer close(closed)
 		select {
 		case <-ctx.Done():
+			if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+				return
+			}
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				if err := closer.Close(); err != nil {
+					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
+				}
+			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+				if err := wce.CloseWithError(ctx.Err()); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
 			}
 		case <-done:
-			// If context was also cancelled (race between done and ctx.Done),
-			// still close the body stream to unblock the drain in ReleaseStreamingResponse.
+			// Race between done and ctx.Done: the streaming goroutine has reached its defer
+			// chain (Read has returned), and ctx is also cancelled. The body may already be
+			// at EOF and fasthttp may have released the underlying conn to the idle pool.
+			// We still attempt a close to unblock any pending drain in ReleaseStreamingResponse,
+			// but we set BifrostContextKeyConnectionClosed unconditionally (matching the
+			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
+			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
 			if ctx.Err() != nil {
+				if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+					return
+				}
 				if closer, ok := bodyStream.(io.Closer); ok {
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					if err := closer.Close(); err != nil {
+						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
+					}
+				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
 				}
 			}
 		}
 	}()
-
 	return func() {
 		close(done)
 		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
@@ -2034,7 +2217,7 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 // before bifrost considers the connection stalled and closes it. This protects
 // against providers that stop sending data but keep the TCP connection open
 // (e.g., Azure TPM throttling).
-const DefaultStreamIdleTimeout = 60 * time.Second
+const DefaultStreamIdleTimeout = 120 * time.Second
 
 // SetStreamIdleTimeoutIfEmpty sets the stream idle timeout on the context from
 // the provider's network config, but only if no valid timeout is already present.
@@ -2058,49 +2241,137 @@ func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
 	return DefaultStreamIdleTimeout
 }
 
+// streamCloserWithError is implemented by fasthttp's streaming body reader.
+// Calling CloseWithError with a non-nil error closes the underlying TCP
+// connection, interrupting any blocked Read.
+type streamCloserWithError interface {
+	CloseWithError(err error) error
+}
+
+// closeBodyStream closes bodyStream using whatever interface it supports:
+// io.Closer for net/http responses, streamCloserWithError for fasthttp.
+func closeBodyStream(bodyStream io.Reader, err error) {
+	if closer, ok := bodyStream.(io.Closer); ok {
+		closer.Close()
+	} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+		wce.CloseWithError(err)
+	}
+}
+
 // idleTimeoutReader wraps an io.Reader and closes the underlying body stream
 // if no data arrives within the configured timeout. This unblocks any pending
 // Read() call on the wrapped reader.
 type idleTimeoutReader struct {
-	reader     io.Reader
-	bodyStream io.Reader // closed via type assertion to io.Closer on timeout
-	timeout    time.Duration
-	timer      *time.Timer
-	once       sync.Once
+	ctx           *schemas.BifrostContext
+	reader        io.Reader
+	bodyStream    io.Reader // closed via type assertion to io.Closer on timeout
+	timeout       time.Duration
+	timer         *time.Timer
+	once          sync.Once
+	cleanupOnce   sync.Once
+	timerDoneOnce sync.Once
+	timerDone     chan struct{}
+	fired         atomic.Bool // set true when the idle timer fires
 }
 
 // NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
 // no data for the given timeout duration, bodyStream is closed to unblock the read.
-// bodyStream must implement io.Closer for the timeout to take effect; if it does not,
-// the wrapper still functions but cannot force-close the stream.
+// Supports both io.Closer and fasthttp's CloseWithError interface — the latter
+// closes the underlying TCP connection when called with a non-nil error, which is
+// required to interrupt a blocked Read on fasthttp streaming responses.
+// When the timer fires, any subsequent error from Read is translated to
+// ErrStreamIdleTimeout so callers do not need per-handler error checks.
 // Returns the wrapped reader and a cleanup function that MUST be called (via defer)
 // when streaming is complete, to stop the timer and prevent premature closure.
-func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration) (io.Reader, func()) {
+//
+// ctx is used to set BifrostContextKeyConnectionClosed when the timer fires.
+// This prevents ReleaseStreamingResponse from calling fasthttp.ReleaseResponse a
+// second time after the idle-timeout callback already invoked closeFunc via
+// CloseWithError — a double invocation that would call hc.ReleaseConn on a
+// zeroed clientConn, placing a nil net.Conn into the HostClient pool and
+// causing a nil-pointer panic in the next request's ParseNetConn call.
+func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration, ctx *schemas.BifrostContext) (io.Reader, func()) {
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
 	}
 	r := &idleTimeoutReader{
+		ctx:        ctx,
 		reader:     reader,
 		bodyStream: bodyStream,
 		timeout:    timeout,
+		timerDone:  make(chan struct{}),
 	}
 	r.timer = time.AfterFunc(timeout, func() {
+		defer r.timerDoneOnce.Do(func() { close(r.timerDone) })
 		r.once.Do(func() {
-			if closer, ok := r.bodyStream.(io.Closer); ok {
-				closer.Close()
+			r.fired.Store(true)
+			if ctx != nil {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
+			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
 		})
 	})
-	return r, func() { r.timer.Stop() }
+	return r, r.cleanup
 }
 
-func (r *idleTimeoutReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
+func (r *idleTimeoutReader) cleanup() {
+	r.cleanupOnce.Do(func() {
+		if r.timer.Stop() {
+			r.timerDoneOnce.Do(func() { close(r.timerDone) })
+			return
+		}
+		<-r.timerDone
+	})
+}
+
+func (r *idleTimeoutReader) connectionClosed() bool {
+	if r.ctx == nil {
+		return false
+	}
+	closed, ok := r.ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool)
+	return ok && closed
+}
+
+func (r *idleTimeoutReader) closedReadError() error {
+	if r.fired.Load() {
+		return ErrStreamIdleTimeout
+	}
+	return ErrStreamClosed
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if r.fired.Load() || r.connectionClosed() {
+				n = 0
+				err = r.closedReadError()
+				return
+			}
+			panic(recovered)
+		}
+	}()
+
+	// Checking if stream is already closed
+	if r.connectionClosed() {
+		return 0, r.closedReadError()
+	}
+	n, err = r.reader.Read(p)
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
+	if err != nil && err != io.EOF && r.fired.Load() {
+		return n, ErrStreamIdleTimeout
+	}
 	return n, err
 }
+
+// ErrStreamIdleTimeout is returned when no data is received within the configured
+// stream_idle_timeout_in_seconds window.
+var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured window")
+
+// ErrStreamClosed is returned when a stream has already been closed by
+// cancellation or cleanup before the next read starts.
+var ErrStreamClosed = errors.New("stream closed")
 
 // HandleStreamCancellation should be called when a streaming goroutine exits
 // due to context cancellation. It ensures proper cleanup by:
@@ -2116,6 +2387,7 @@ func HandleStreamCancellation(
 	responseChan chan *schemas.BifrostStreamChunk,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2125,15 +2397,68 @@ func HandleStreamCancellation(
 	}
 	// Create cancellation error
 	cancelErr := &schemas.BifrostError{
-		StatusCode: schemas.Ptr(499), // Client Closed Request
+		StatusCode: new(499), // Client Closed Request
 		Error: &schemas.ErrorField{
 			Message: "Request cancelled: client disconnected",
 			Type:    schemas.Ptr(schemas.RequestCancelled),
 		},
 	}
 
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+
+	// Bill for tokens the provider already processed before the client
+	// disconnected.
+	attachBilledUsageFromContext(ctx, cancelErr)
+
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
+}
+
+// attachBilledUsageFromContext copies a streaming provider's in-place
+// accumulated usage handle (BifrostContextKeyStreamAccumulatedUsage), if any,
+// onto the error's BilledUsage so downstream post-hooks (governance billing,
+// logging cost) can charge for tokens the provider already processed before the
+// stream was cancelled or timed out. No-op when nothing measurable was
+// accumulated, so failures that consumed no tokens bill nothing.
+func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+	if ctx == nil || bifrostErr == nil {
+		return
+	}
+	usage, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
+	if !ok || usage == nil {
+		return
+	}
+	if usage.PromptTokens == 0 &&
+		usage.CompletionTokens == 0 &&
+		usage.TotalTokens == 0 &&
+		usage.PromptTokensDetails == nil &&
+		usage.CompletionTokensDetails == nil &&
+		usage.Cost == nil {
+		return
+	}
+	// Snapshot the handle so the billed usage is fully decoupled from the
+	// in-context accumulator, which may still be mutated by the provider
+	// goroutine. A shallow copy leaves nested pointers aliased, so clone them too.
+	usageCopy := *usage
+	if usage.PromptTokensDetails != nil {
+		promptDetailsCopy := *usage.PromptTokensDetails
+		if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			cachedWriteDetailsCopy := *usage.PromptTokensDetails.CachedWriteTokenDetails
+			promptDetailsCopy.CachedWriteTokenDetails = &cachedWriteDetailsCopy
+		}
+		usageCopy.PromptTokensDetails = &promptDetailsCopy
+	}
+	if usage.CompletionTokensDetails != nil {
+		completionDetailsCopy := *usage.CompletionTokensDetails
+		usageCopy.CompletionTokensDetails = &completionDetailsCopy
+	}
+	if usage.Cost != nil {
+		costCopy := *usage.Cost
+		usageCopy.Cost = &costCopy
+	}
+	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 
 // HandleStreamTimeout should be called when a streaming goroutine exits
@@ -2150,6 +2475,7 @@ func HandleStreamTimeout(
 	responseChan chan *schemas.BifrostStreamChunk,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2165,6 +2491,13 @@ func HandleStreamTimeout(
 			Type:    schemas.Ptr(schemas.RequestTimedOut),
 		},
 	}
+
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+
+	// Bill for tokens the provider already processed before the deadline.
+	attachBilledUsageFromContext(ctx, timeoutErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
@@ -2221,9 +2554,11 @@ func CreateBifrostTextCompletionChunkResponse(
 	finishReason *string,
 	currentChunkIndex int,
 	requestType schemas.RequestType,
+	model string,
 ) *schemas.BifrostTextCompletionResponse {
 	response := &schemas.BifrostTextCompletionResponse{
 		ID:     id,
+		Model:  model,
 		Object: "text_completion",
 		Usage:  usage,
 		Choices: []schemas.BifrostResponseChoice{
@@ -2300,8 +2635,8 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace:
-		// Cerebras, Perplexity, and HuggingFace don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock:
+		// Cerebras, Perplexity, HuggingFace, and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -2319,13 +2654,15 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 }
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
-func ReleaseStreamingResponse(resp *fasthttp.Response) {
+func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
+	// Skip drain + ReleaseResponse if the stream was already closed (e.g. by SetupStreamCancellation); fasthttp.ReleaseResponse would re-Close and nil-deref the TCP conn — leaking to GC is the intentional trade-off, so keep the defer below this check.
+	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
-			getLogger().Error("recovered panic in ReleaseStreamingResponse: %v", r)
+			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
-		// Always release the response to prevent leaks, even after a panic
-		fasthttp.ReleaseResponse(resp)
 	}()
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
@@ -2334,12 +2671,8 @@ func ReleaseStreamingResponse(resp *fasthttp.Response) {
 		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 		}
-		if closer, ok := bodyStream.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				getLogger().Warn("failed to close streaming response body: %v", err)
-			}
-		}
 	}
+	fasthttp.ReleaseResponse(resp)
 }
 
 // GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.
@@ -2675,6 +3008,11 @@ func GetBudgetTokensFromReasoningEffort(
 
 	budget := minBudgetTokens + int(ratio*float64(maxTokens-minBudgetTokens))
 
+	// Both Anthropic and Bedrock require budget_tokens < max_tokens (strict).
+	if budget >= maxTokens {
+		budget = maxTokens - 1
+	}
+
 	return budget, nil
 }
 
@@ -2724,7 +3062,8 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Set TTFT and chunk count attributes regardless of accumulated response availability
 	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
 	if ttftNs > 0 {
-		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)              // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstChunk, float64(ttftNs)/1e9) // spec: seconds
 	}
 	if chunkCount > 0 {
 		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
@@ -2767,32 +3106,6 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 	// Clear the deferred span from TraceStore
 	tracer.ClearDeferredSpan(traceID)
-}
-
-// CheckAndSetDefaultProvider checks if the default provider should be used based on the context.
-// It returns the default provider if it should be used, otherwise it returns an empty string.
-// Checks if the direct key is set in the context, or if key selection is skipped.
-// Or if the available providers are set in the context and the default provider is in the list.
-func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
-	if ctx != nil {
-		if ctx.Value(schemas.BifrostContextKeyDirectKey) != nil || ctx.Value(schemas.BifrostContextKeySkipKeySelection) != nil {
-			return defaultProvider
-		}
-		if ctx.Value(schemas.BifrostContextKeyAvailableProviders) != nil {
-			availableProviders, ok := ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
-			if !ok || len(availableProviders) == 0 {
-				return ""
-			}
-			getLogger().Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
-			if slices.Contains(availableProviders, defaultProvider) {
-				return defaultProvider
-			}
-			// Return the first available provider
-			return availableProviders[0]
-		}
-		return defaultProvider
-	}
-	return defaultProvider
 }
 
 // ModelMatchesDenylist reports whether any of the candidate model IDs matches

@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getErrorMessage, useIsAuthEnabledQuery, useLoginMutation } from "@/lib/store/apis";
+import { getErrorMessage, useLoginMutation } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
@@ -34,34 +34,13 @@ export default function LoginView() {
 	const [password, setPassword] = useState("");
 	const [showPassword, setShowPassword] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
-	const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 	const navigate = useNavigate();
 	const [isLoading, setIsLoading] = useState(false);
-	const { data: isAuthEnabledData, isLoading: isLoadingIsAuthEnabled, error: isAuthEnabledError } = useIsAuthEnabledQuery();
-	const isAuthEnabled = isAuthEnabledData?.is_auth_enabled || false;
-	const hasValidToken = isAuthEnabledData?.has_valid_token || false;
 	const [login, { isLoading: isLoggingIn }] = useLoginMutation();
 
 	useEffect(() => {
 		setMounted(true);
 	}, []);
-
-	// Check auth status on component mount
-	useEffect(() => {
-		if (isLoadingIsAuthEnabled) {
-			return;
-		}
-		if (isAuthEnabledError) {
-			setErrorMessage("Unable to verify authentication status. Please retry.");
-			return;
-		}
-		if (!isAuthEnabled || hasValidToken) {
-			navigate({ to: "/workspace" });
-			return;
-		}
-		// Auth is enabled but user is not logged in, show login form
-		setIsCheckingAuth(false);
-	}, [isLoadingIsAuthEnabled]);
 
 	const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
 		setIsLoading(true);
@@ -69,7 +48,6 @@ export default function LoginView() {
 		setErrorMessage("");
 		try {
 			await login({ username, password }).unwrap();
-			// Cookie is set automatically by the server response — just navigate
 			navigate({ to: "/workspace" });
 		} catch (error) {
 			const message = getErrorMessage(error);
@@ -79,26 +57,7 @@ export default function LoginView() {
 		}
 	};
 
-	// Use light logo for SSR to avoid hydration mismatch
 	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
-
-	// Show loading state while checking auth
-	if (isCheckingAuth || isLoadingIsAuthEnabled) {
-		return (
-			<div className="flex min-h-screen items-center justify-center p-4">
-				<div className="w-full max-w-md">
-					<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8">
-						<div className="flex items-center justify-center">
-							<img src={logoSrc} alt="Bifrost" width={160} height={26} className="" />
-						</div>
-						<div className="flex items-center justify-center py-8">
-							<div className="text-muted-foreground text-sm">Checking authentication...</div>
-						</div>
-					</div>
-				</div>
-			</div>
-		);
-	}
 
 	return (
 		<div className="flex min-h-screen items-center justify-center p-4">

@@ -26,7 +26,7 @@ func (provider *ElevenlabsProvider) RealtimeWebSocketURL(key schemas.Key, model 
 }
 
 // RealtimeHeaders returns the headers required for the ElevenLabs Conversational AI WebSocket.
-func (provider *ElevenlabsProvider) RealtimeHeaders(key schemas.Key) map[string]string {
+func (provider *ElevenlabsProvider) RealtimeHeaders(_ *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
 	headers := map[string]string{
 		"xi-api-key": key.Value.GetValue(),
 	}
@@ -36,7 +36,7 @@ func (provider *ElevenlabsProvider) RealtimeHeaders(key schemas.Key) map[string]
 		}
 		headers[k] = v
 	}
-	return headers
+	return headers, nil
 }
 
 // SupportsRealtimeWebRTC returns false — ElevenLabs WebRTC SDP exchange is not yet implemented.

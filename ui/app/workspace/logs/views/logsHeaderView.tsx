@@ -4,6 +4,7 @@ import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
@@ -50,6 +51,8 @@ export function LogsHeaderView({
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
 	const [recalculateCosts] = useRecalculateLogCostsMutation();
+
+	const [timezone, setTimezone] = useTimezonePreference();
 
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
 	const [endTime, setEndTime] = useState<Date | undefined>(filters.end_time ? new Date(filters.end_time) : undefined);
@@ -141,6 +144,9 @@ export function LogsHeaderView({
 				triggerTestId="filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}
+				showTimezone
+				timezone={timezone}
+				onTimezoneChange={setTimezone}
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);

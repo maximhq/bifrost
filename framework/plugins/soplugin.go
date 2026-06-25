@@ -27,12 +27,23 @@ type DynamicPlugin struct {
 	httpTransportStreamChunkHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
 
 	// LLMPlugin (optional)
-	preLLMHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
-	postLLMHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	// preRequestHook is forward-compat: new .so plugins built against LLMPlugin can export
+	// PreRequestHook to participate in the per-request routing phase. Legacy plugins predating
+	// PreRequestHook leave it nil and silently no-op for routing.
+	preRequestHook func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
+	preLLMHook     func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
+	postLLMHook    func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
 
 	// MCPPlugin (optional)
 	preMCPHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error)
 	postMCPHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
+
+	// MCPConnectionPlugin (optional, typed). Forward-compat: new .so plugins can
+	// export PreMCPConnectionHook/PostMCPConnectionHook to receive Connect events
+	// with the typed signatures. Legacy plugins (pre-MCPConnectionPlugin) leave
+	// these nil and silently no-op for Connect.
+	preMCPConnectionHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error)
+	postMCPConnectionHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error)
 
 	// ObservabilityPlugin (optional)
 	inject func(ctx context.Context, trace *schemas.Trace) error
@@ -72,6 +83,16 @@ func (dp *DynamicPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContex
 	return dp.httpTransportStreamChunkHook(ctx, req, stream)
 }
 
+// PreRequestHook is invoked once per top-level request to decide provider/model/fallbacks
+// (LLMPlugin interface). Defaults to a no-op passthrough for legacy plugins that don't
+// export PreRequestHook.
+func (dp *DynamicPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if dp.preRequestHook == nil {
+		return nil
+	}
+	return dp.preRequestHook(ctx, req)
+}
+
 // PreLLMHook is invoked before LLM provider calls (LLMPlugin interface)
 func (dp *DynamicPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if dp.preLLMHook == nil {
@@ -102,6 +123,26 @@ func (dp *DynamicPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.
 		return resp, bifrostErr, nil // No-op if not implemented
 	}
 	return dp.postMCPHook(ctx, resp, bifrostErr)
+}
+
+// PreMCPConnectionHook satisfies MCPConnectionPlugin for dynamically-loaded plugins.
+// If the .so exported PreMCPConnectionHook, dispatch to it. Otherwise default to
+// a no-op passthrough — legacy plugins predating MCPConnectionPlugin keep working
+// as MCPPlugin (via PreMCPHook/PostMCPHook) and silently skip Connect events.
+func (dp *DynamicPlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
+	if dp.preMCPConnectionHook == nil {
+		return req, nil, nil
+	}
+	return dp.preMCPConnectionHook(ctx, req)
+}
+
+// PostMCPConnectionHook satisfies MCPConnectionPlugin for dynamically-loaded plugins.
+// Same dispatch as PreMCPConnectionHook: typed symbol if exported, else no-op.
+func (dp *DynamicPlugin) PostMCPConnectionHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error) {
+	if dp.postMCPConnectionHook == nil {
+		return resp, bifrostErr, nil
+	}
+	return dp.postMCPConnectionHook(ctx, resp, bifrostErr)
 }
 
 // Inject receives completed traces for observability backends (ObservabilityPlugin interface)

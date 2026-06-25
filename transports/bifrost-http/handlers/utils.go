@@ -7,18 +7,20 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
-// resolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
+// ResolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
 // start/end time pointers computed from the current server time. Returns nil, nil for
 // unrecognised values. When used in filter parsing, period takes precedence over any explicit
 // start_time/end_time query parameters so every poll always covers the intended window.
-func resolvePeriod(period string) (start, end *time.Time) {
+func ResolvePeriod(period string) (start, end *time.Time) {
 	now := time.Now().UTC()
 	var from time.Time
 	switch period {
@@ -51,6 +53,32 @@ type badRequestError struct{ err error }
 
 func (e *badRequestError) Error() string { return e.err.Error() }
 func (e *badRequestError) Unwrap() error { return e.err }
+
+// IsUniqueConstraintError reports whether err looks like a DB unique-constraint violation.
+func IsUniqueConstraintError(err error, identifiers ...string) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	hasUniqueSignal := strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "unique index") ||
+		strings.Contains(msg, "unique_violation") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "duplicated key")
+	if !hasUniqueSignal {
+		return false
+	}
+	if len(identifiers) == 0 {
+		return true
+	}
+	for _, identifier := range identifiers {
+		if strings.Contains(msg, strings.ToLower(identifier)) {
+			return true
+		}
+	}
+	return false
+}
 
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
@@ -90,7 +118,13 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	} else if !bifrostErr.IsBifrostError {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if bifrostErr.Error != nil &&
+			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
+				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 	}
 
 	ctx.SetContentType("application/json")
@@ -171,9 +205,18 @@ func isLocalhostOrigin(origin string) bool {
 		strings.HasPrefix(origin, "https://127.0.0.1:")
 }
 
+// wildcardRegexpCache caches compiled regexps for wildcard origin patterns.
+// The set of patterns is small (typically 1-5) and append-only, making sync.Map
+// ideal: lock-free reads on the hot path, no coordination with config reloads.
+var wildcardRegexpCache sync.Map // map[string]*regexp.Regexp
+
 // matchesWildcardPattern checks if an origin matches a wildcard pattern.
 // Supports patterns like *.example.com, https://*.example.com, or http://*.example.com
 func matchesWildcardPattern(origin string, pattern string) bool {
+	if v, ok := wildcardRegexpCache.Load(pattern); ok {
+		return v.(*regexp.Regexp).MatchString(origin)
+	}
+
 	// Convert wildcard pattern to regex pattern
 	// Escape special regex characters except *
 	regexPattern := regexp.QuoteMeta(pattern)
@@ -183,13 +226,13 @@ func matchesWildcardPattern(origin string, pattern string) bool {
 	// Anchor the pattern to match the entire origin
 	regexPattern = "^" + regexPattern + "$"
 
-	// Compile and test the regex
 	re, err := regexp.Compile(regexPattern)
 	if err != nil {
 		return false
 	}
 
-	return re.MatchString(origin)
+	actual, _ := wildcardRegexpCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp).MatchString(origin)
 }
 
 // ParseModel parses a model string in the format "provider/model" or "provider/nested/model"

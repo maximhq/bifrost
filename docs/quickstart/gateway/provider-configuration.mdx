@@ -405,6 +405,63 @@ curl --location 'http://localhost:8080/api/providers' \
   standard providers, it's optional and overrides the default endpoint.
 </Note>
 
+### Private Network Access
+
+If your provider runs on a private IP address (e.g. a local vLLM or Ollama instance on `192.168.x.x` or `10.x.x.x`), set `allow_private_network: true` in `network_config`. Link-local addresses (`169.254.x.x`) remain blocked regardless of this setting.
+
+<Tabs group="private-network">
+
+<Tab title="Using API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+    "provider": "ollama-local",
+    "keys": [
+        {
+            "name": "ollama-key",
+            "value": "dummy",
+            "models": ["*"],
+            "weight": 1.0
+        }
+    ],
+    "network_config": {
+        "base_url": "http://192.168.1.195:8000",
+        "allow_private_network": true
+    }
+}'
+```
+
+</Tab>
+
+<Tab title="Using config.json">
+
+```json
+{
+  "providers": {
+    "ollama-local": {
+      "keys": [
+        {
+          "name": "ollama-key",
+          "value": "dummy",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://192.168.1.195:8000",
+        "allow_private_network": true
+      }
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
 ### Managing Retries
 
 Configure retry behavior for handling temporary failures and rate limits. This example sets up exponential backoff with up to 5 retries, starting with 1ms delay and capping at 10 seconds - ideal for handling transient network issues.
@@ -1043,7 +1100,7 @@ When enabled, the raw provider request appears in `extra_fields.raw_request`:
 
 ### Store Raw Request/Response
 
-Persist the raw provider request and response in the log record. This is orthogonal to `send_back_raw_request` and `send_back_raw_response` — enabling this does not affect whether raw data appears in the API response, and enabling send-back does not automatically store raw data in logs. Enable both to do both.
+Persist the raw provider request and response in the log record. This is orthogonal to `send_back_raw_request` and `send_back_raw_response` - enabling this does not affect whether raw data appears in the API response, and enabling send-back does not automatically store raw data in logs. Enable both to do both.
 
 <Tabs group="store-raw">
 
@@ -1101,7 +1158,7 @@ curl --location 'http://localhost:8080/api/providers' \
 </Tabs>
 
 <Note>
-`store_raw_request_response` only has effect when the logging plugin is active — raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
+`store_raw_request_response` only has effect when the logging plugin is active - raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
 
 You can override this per request using the `x-bf-store-raw-request-response` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#store-raw-requestresponse) for details.
 

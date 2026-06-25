@@ -161,7 +161,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 	}()
 
 	// Mark as processing
-	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
+	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]any{
 		"status": schemas.AsyncJobStatusProcessing,
 	}); err != nil {
 		e.logger.Warn("failed to update async job: %v", err)

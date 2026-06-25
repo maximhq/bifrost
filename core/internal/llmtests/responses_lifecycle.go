@@ -49,6 +49,12 @@ func RunResponsesLifecycleTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		t.Fatalf("expected non-empty response id")
 	}
 	rid := *created.ID
+	t.Cleanup(func() {
+		_, _ = client.ResponsesDeleteRequest(bfCtx, &schemas.BifrostResponsesDeleteRequest{
+			Provider:   testConfig.Provider,
+			ResponseID: rid,
+		})
+	})
 
 	retrieved, err := client.ResponsesRetrieveRequest(bfCtx, &schemas.BifrostResponsesRetrieveRequest{
 		Provider:   testConfig.Provider,

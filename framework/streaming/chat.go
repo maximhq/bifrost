@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -93,6 +94,10 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 				copyName := *tc.Function.Name
 				copyTc.Function.Name = &copyName
 			}
+			// Deep copy ExtraContent (json.RawMessage is a []byte)
+			if len(tc.ExtraContent) > 0 {
+				copyTc.ExtraContent = append(json.RawMessage(nil), tc.ExtraContent...)
+			}
 			copy.ToolCalls[i] = copyTc
 		}
 	}
@@ -140,10 +145,11 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 
 	// Tool call argument builders keyed by delta index
 	type tcAccum struct {
-		id   *string
-		typ  *string
-		name *string
-		args strings.Builder
+		id           *string
+		typ          *string
+		name         *string
+		args         strings.Builder
+		extraContent json.RawMessage
 	}
 	var tcAccums map[uint16]*tcAccum
 
@@ -251,6 +257,10 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			if args := deltaToolCall.Function.Arguments; args != "" {
 				acc.args.WriteString(args)
 			}
+			if len(deltaToolCall.ExtraContent) > 0 {
+				acc.extraContent = make(json.RawMessage, len(deltaToolCall.ExtraContent))
+				copy(acc.extraContent, deltaToolCall.ExtraContent)
+			}
 		}
 	}
 
@@ -333,7 +343,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0, len(tcIndices))
 		for _, idx := range tcIndices {
 			acc := tcAccums[uint16(idx)]
-			toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+			tc := schemas.ChatAssistantMessageToolCall{
 				Index: uint16(idx),
 				ID:    acc.id,
 				Type:  acc.typ,
@@ -341,7 +351,11 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 					Name:      acc.name,
 					Arguments: acc.args.String(),
 				},
-			})
+			}
+			if len(acc.extraContent) > 0 {
+				tc.ExtraContent = acc.extraContent
+			}
+			toolCalls = append(toolCalls, tc)
 		}
 		completeMessage.ChatAssistantMessage.ToolCalls = toolCalls
 	}
@@ -414,9 +428,6 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 			data.Cost = lastChunk.Cost
 		}
 		data.FinishReason = lastChunk.FinishReason
-		if lastChunk.RawRequest != nil {
-			data.RawRequest = lastChunk.RawRequest
-		}
 	}
 	// Merge LogProbs from all chunks
 	if len(accumulator.ChatStreamChunks) > 0 {
@@ -508,9 +519,6 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
-			if result.TextCompletionResponse.ExtraFields.RawRequest != nil {
-				chunk.RawRequest = bifrost.Ptr(fmt.Sprintf("%v", result.TextCompletionResponse.ExtraFields.RawRequest))
-			}
 		}
 	} else if result != nil && result.ChatResponse != nil {
 		// Extract delta and other information
@@ -537,10 +545,6 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
-			// Set RawRequest on final chunk so it's available in processAccumulatedChatStreamingChunks
-			if result.ChatResponse.ExtraFields.RawRequest != nil {
-				chunk.RawRequest = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawRequest))
-			}
 		}
 	}
 	if addErr := a.addChatStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
@@ -564,20 +568,23 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 			return nil, processErr
 		}
+		var rawRequest interface{}
+		if result != nil {
+			if result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ChatResponse.ExtraFields.RawRequest
+			} else if result.TextCompletionResponse != nil && result.TextCompletionResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.TextCompletionResponse.ExtraFields.RawRequest
+			}
+		}
 		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: streamType,
-			Provider:   provider,
+			RequestID:      requestID,
+			StreamType:     streamType,
+			Provider:       provider,
 			RequestedModel: model,
 			ResolvedModel:  resolvedModel,
-			Data:       data,
-			RawRequest: func() *interface{} {
-				if data.RawRequest == nil {
-					return nil
-				}
-				var raw any = *data.RawRequest
-				return &raw
-			}(),
+			RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
+			Data:           data,
+			RawRequest:     &rawRequest,
 		}, nil
 	}
 	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
@@ -588,6 +595,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		Provider:       provider,
 		RequestedModel: model,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
 }

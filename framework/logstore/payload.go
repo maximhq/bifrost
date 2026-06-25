@@ -9,6 +9,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const maxMCPToolInputPreviewRunes = 200
+
 // payloadFields lists the DB column names of large TEXT fields that are
 // offloaded to object storage in hybrid mode. These fields are never needed
 // for analytics queries (histograms, search, rankings) — only for individual
@@ -53,7 +55,7 @@ var payloadFields = []string{
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
 // The map keys are the DB column names.
 func ExtractPayload(l *Log) map[string]string {
-	m := make(map[string]string, len(payloadFields))
+	m := make(map[string]string, len(payloadFields)+1)
 	m["input_history"] = l.InputHistory
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
@@ -88,6 +90,15 @@ func ExtractPayload(l *Log) map[string]string {
 	m["passthrough_request_body"] = l.PassthroughRequestBody
 	m["passthrough_response_body"] = l.PassthroughResponseBody
 	m["routing_engine_logs"] = l.RoutingEngineLogs
+	// Metadata is written to the snapshot so consumers reading objects
+	// directly see custom attributes, but it is deliberately NOT part of
+	// payloadFields: it must always stay DB-resident as well (filters,
+	// rankings, log-list display), so ClearPayload never strips it from the
+	// row. NOTE: the snapshot carries the metadata value as of upload time;
+	// subsequent DB updates are NOT reflected in the object store.
+	if l.Metadata != nil && *l.Metadata != "" {
+		m["metadata"] = *l.Metadata
+	}
 	return m
 }
 
@@ -275,12 +286,101 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["routing_engine_logs"]; ok && v != "" {
 		l.RoutingEngineLogs = v
 	}
+	// Metadata is intentionally NOT restored from the snapshot: the copy
+	// written there (see ExtractPayload) is for external object consumers
+	// only, and the DB row stays authoritative.
 	return l.DeserializeFields()
 }
 
-// MarshalPayload serializes the payload map (from ExtractPayload) to JSON.
+// ExtractPayloadFiltered is like ExtractPayload but omits fields present in
+// the excluded set. An empty/nil excluded map is equivalent to ExtractPayload.
+func ExtractPayloadFiltered(l *Log, excluded map[string]struct{}) map[string]string {
+	if len(excluded) == 0 {
+		return ExtractPayload(l)
+	}
+	m := ExtractPayload(l)
+	for f := range excluded {
+		delete(m, f)
+	}
+	return m
+}
+
+// ClearPayloadFiltered zeros only the payload fields that are not present in
+// the excluded set (i.e. the fields that will be sent to object storage).
+// Fields in the excluded set stay in the DB and are left untouched.
+// An empty/nil excluded map is equivalent to ClearPayload.
+func ClearPayloadFiltered(l *Log, excluded map[string]struct{}) {
+	if len(excluded) == 0 {
+		ClearPayload(l)
+		return
+	}
+	for _, f := range payloadFields {
+		if _, skip := excluded[f]; !skip {
+			clearPayloadField(l, f)
+		}
+	}
+}
+
 func MarshalPayload(payload map[string]string) ([]byte, error) {
 	return sonic.Marshal(payload)
+}
+
+// MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.
+// The object-store copy is intentionally complete; the DB row is only a
+// lightweight index plus a short input preview.
+func MarshalMCPToolLogPayload(l *MCPToolLog) ([]byte, error) {
+	payload := *l
+	if err := payload.SerializeFields(); err != nil {
+		return nil, err
+	}
+	_ = payload.DeserializeFields()
+	return sonic.Marshal(&payload)
+}
+
+// MergeMCPToolLogPayloadFromJSON replaces an MCP tool log with the full object
+// storage copy while preserving DB-local hydration state.
+func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
+	hasObject := l.HasObject
+	virtualKey := l.VirtualKey
+
+	var payload MCPToolLog
+	if err := sonic.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("logstore: unmarshal MCP tool log payload: %w", err)
+	}
+	if err := payload.SerializeFields(); err != nil {
+		return err
+	}
+	*l = payload
+	l.HasObject = hasObject
+	l.VirtualKey = virtualKey
+	return nil
+}
+
+// PrepareMCPToolDBEntry converts an MCP tool log to the lightweight DB form
+// used by hybrid storage. It preserves indexed/display fields and metadata,
+// keeps only a 200-character JSON-string argument preview, and clears result
+// and error payloads.
+func PrepareMCPToolDBEntry(l *MCPToolLog) {
+	preview := buildMCPToolInputPreview(l)
+	l.ArgumentsParsed = preview
+	l.Arguments = ""
+	l.Result = ""
+	l.ErrorDetails = ""
+	l.ResultParsed = nil
+	l.ErrorDetailsParsed = nil
+	_ = l.SerializeFields()
+}
+
+func buildMCPToolInputPreview(l *MCPToolLog) string {
+	if l.ArgumentsParsed != nil {
+		if data, err := sonic.Marshal(l.ArgumentsParsed); err == nil {
+			return truncateRunes(string(data), maxMCPToolInputPreviewRunes)
+		}
+	}
+	if l.Arguments != "" {
+		return truncateRunes(l.Arguments, maxMCPToolInputPreviewRunes)
+	}
+	return ""
 }
 
 // BuildInputContentSummary extracts the last user message text from input fields.
@@ -382,6 +482,19 @@ func findLastUserMessageIndex(msgs []schemas.ChatMessage) int {
 	return -1
 }
 
+// findLastUserResponsesMessageIndex returns the index of the last
+// ResponsesMessage with role "user", or -1 if none exists. Mirrors
+// findLastUserMessageIndex for the Responses API input history so prepareDBEntry
+// can preserve a last-user-message preview when payloads are offloaded.
+func findLastUserResponsesMessageIndex(msgs []schemas.ResponsesMessage) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != nil && *msgs[i].Role == schemas.ResponsesInputMessageRoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
 // BuildTags creates the S3 object tag map from a Log's index fields.
 // S3 allows max 10 tags per object; chosen for lifecycle rules and
 // S3 Metadata Tables queryability.
@@ -421,10 +534,44 @@ func BuildTags(l *Log) map[string]string {
 	return tags
 }
 
+// BuildMCPToolTags creates the object tag map from an MCP tool log's index
+// fields. S3 allows max 10 tags per object.
+func BuildMCPToolTags(l *MCPToolLog) map[string]string {
+	tags := make(map[string]string, 6)
+	if l.ToolName != "" {
+		tags["tool_name"] = truncateTag(l.ToolName, 256)
+	}
+	if l.ServerLabel != "" {
+		tags["server_label"] = truncateTag(l.ServerLabel, 256)
+	}
+	if l.Status != "" {
+		tags["status"] = l.Status
+	}
+	if l.VirtualKeyID != nil && *l.VirtualKeyID != "" {
+		tags["virtual_key_id"] = truncateTag(*l.VirtualKeyID, 256)
+	}
+	tags["has_error"] = "false"
+	if l.Status == "error" {
+		tags["has_error"] = "true"
+	}
+	tags["date"] = l.Timestamp.UTC().Format("2006-01-02")
+	return tags
+}
+
 // ObjectKey constructs the S3 object key for a log entry.
 func ObjectKey(prefix string, timestamp time.Time, logID string) string {
 	ts := timestamp.UTC()
 	return fmt.Sprintf("%s/logs/%04d/%02d/%02d/%02d/%s.json.gz",
+		prefix,
+		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
+		logID,
+	)
+}
+
+// MCPToolObjectKey constructs the S3 object key for an MCP tool log entry.
+func MCPToolObjectKey(prefix string, timestamp time.Time, logID string) string {
+	ts := timestamp.UTC()
+	return fmt.Sprintf("%s/mcp-logs/%04d/%02d/%02d/%02d/%s.json.gz",
 		prefix,
 		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
 		logID,
@@ -615,4 +762,17 @@ func truncateTag(s string, maxLen int) string {
 		byteLen += rl
 	}
 	return s[:byteLen]
+}
+
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	for i := range s {
+		if maxRunes == 0 {
+			return s[:i]
+		}
+		maxRunes--
+	}
+	return s
 }

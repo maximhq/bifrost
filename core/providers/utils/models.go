@@ -41,6 +41,59 @@ func ToDisplayName(id string) string {
 	return strings.Join(parts, " ")
 }
 
+// NormalizeBaseModelSlug converts a datasheet base_model slug into a human-readable display name.
+// Unlike ToDisplayName, it merges consecutive all-digit tokens with "." to form version strings
+// and strips trailing "@..." date suffixes.
+//
+//	"claude-opus-4-6"            → "Claude Opus 4.6"
+//	"claude-sonnet-4-5"          → "Claude Sonnet 4.5"
+//	"claude-sonnet-4-5@20250929" → "Claude Sonnet 4.5"
+//	"claude-3-5-haiku"           → "Claude 3.5 Haiku"
+//	"gpt-4-turbo"                → "Gpt 4 Turbo"
+func NormalizeBaseModelSlug(slug string) string {
+	caser := cases.Title(language.English)
+
+	if idx := strings.Index(slug, "@"); idx >= 0 {
+		slug = slug[:idx]
+	}
+
+	parts := strings.FieldsFunc(slug, func(r rune) bool {
+		return r == '-' || r == '_'
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+
+	result := make([]string, 0, len(parts))
+	for i := 0; i < len(parts); i++ {
+		if isDigitsOnly(parts[i]) && i+1 < len(parts) && isDigitsOnly(parts[i+1]) {
+			versionParts := []string{parts[i]}
+			for i+1 < len(parts) && isDigitsOnly(parts[i+1]) {
+				i++
+				versionParts = append(versionParts, parts[i])
+			}
+			result = append(result, strings.Join(versionParts, "."))
+		} else {
+			result = append(result, caser.String(strings.ToLower(parts[i])))
+		}
+	}
+
+	return strings.Join(result, " ")
+}
+
+// isDigitsOnly reports whether s is non-empty and contains only ASCII digits.
+func isDigitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // MatchFn reports whether two model ID strings should be treated as equivalent.
 // Functions are applied in order during every comparison — the first one that
 // returns true short-circuits the rest.
@@ -115,9 +168,9 @@ type FilterResult struct {
 type ListModelsPipeline struct {
 	AllowedModels     schemas.WhiteList
 	BlacklistedModels schemas.BlackList
-	// Aliases maps user-facing alias keys to provider-specific model IDs.
-	// e.g. {"my-gpt4": "gpt-4-turbo-2024-04-09"}
-	Aliases     map[string]string
+	// Aliases maps user-facing alias keys to their AliasConfig. The pipeline
+	// reads AliasConfig.ModelID for matching and Alias surfacing.
+	Aliases     schemas.KeyAliases
 	Unfiltered  bool
 	ProviderKey schemas.ModelProvider
 	// MatchFns is the ordered list of equivalence functions used for every
@@ -171,9 +224,9 @@ type aliasMatch struct {
 //	  → [{key:"gpt-3.5-turbo", value:""}]
 func (p *ListModelsPipeline) resolveModelID(modelID string) []aliasMatch {
 	var candidates []aliasMatch
-	for aliasKey, providerID := range p.Aliases {
-		if matches(modelID, providerID, p.MatchFns) {
-			candidates = append(candidates, aliasMatch{key: aliasKey, value: providerID})
+	for aliasKey, alias := range p.Aliases {
+		if matches(modelID, alias.ModelID, p.MatchFns) {
+			candidates = append(candidates, aliasMatch{key: aliasKey, value: alias.ModelID})
 		}
 	}
 	if len(candidates) == 0 {
@@ -316,9 +369,9 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 				Name: schemas.Ptr(ToDisplayName(entry)),
 			}
 			// If this allowlist entry has an alias, surface the provider-specific ID.
-			for aliasKey, providerID := range p.Aliases {
+			for aliasKey, alias := range p.Aliases {
 				if matches(entry, aliasKey, p.MatchFns) {
-					m.Alias = schemas.Ptr(providerID)
+					m.Alias = schemas.Ptr(alias.ModelID)
 					break
 				}
 			}
@@ -329,7 +382,7 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 
 	// Case B: wildcard allowlist — backfill only explicitly configured aliases.
 	if !p.Unfiltered && len(p.Aliases) > 0 {
-		for aliasKey, providerID := range p.Aliases {
+		for aliasKey, alias := range p.Aliases {
 			if included[strings.ToLower(aliasKey)] {
 				continue
 			}
@@ -347,7 +400,7 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 			result = append(result, schemas.Model{
 				ID:    string(p.ProviderKey) + "/" + aliasKey,
 				Name:  schemas.Ptr(ToDisplayName(aliasKey)),
-				Alias: schemas.Ptr(providerID),
+				Alias: schemas.Ptr(alias.ModelID),
 			})
 		}
 	}

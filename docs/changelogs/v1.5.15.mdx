@@ -1,0 +1,84 @@
+---
+title: "v1.5.15"
+description: "v1.5.15 changelog - 2026-06-16"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.15
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.15
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.15
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.15">
+## ✨ Features
+
+- **pprof Profiling Server** - Optional runtime profiling server gated by `BIFROST_PPROF_PORT`, with env-tunable block/mutex sampling rates and graceful shutdown alongside the main server.
+- **Anthropic Cache Diagnostics** - Surface Anthropic's prompt-cache diagnostics beta (`cache-diagnosis-2026-04-07`): responses now expose the first cache-prefix divergence point, so you can see exactly why a prompt cache missed.
+
+## 🐞 Fixed
+
+- **GenAI Raw Request Passthrough** - Native Vertex/Gemini batch and request bodies now follow the `x-model-provider` header and pass through verbatim only when Gemini or Vertex is explicitly selected, preventing a raw body from reaching a mismatched provider.
+- **Tool Call Metadata Preservation** - `extra_content` on assistant tool calls (e.g. Gemini `thought_signature`) is now preserved across both streaming and non-streaming responses (thanks [@nghodkicisco](https://github.com/nghodkicisco)!).
+
+</Update>
+<Update label="Core" description="1.5.21">
+- fix: preserve extra_content on ChatAssistantMessageToolCall so provider-specific tool-call metadata (e.g. Gemini thought_signature) round-trips losslessly through the gateway (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
+- fix: surface Anthropic prompt-cache diagnostics (cache-diagnosis-2026-04-07 beta) via new CacheDiagnostics/CacheMissReason schema, reporting the first cache-prefix divergence point on chat and responses APIs
+
+</Update>
+<Update label="Framework" description="1.3.21">
+- fix: carry tool-call extra_content through the streaming accumulator - deep-copied per chunk and accumulated across deltas (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
+- chore: upgraded core to v1.5.21
+
+</Update>
+<Update label="compat" description="0.1.20">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="governance" description="1.5.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="jsonparser" description="1.5.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="logging" description="1.5.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="maxim" description="1.6.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="mocker" description="1.5.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.2">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="otel" description="1.2.22">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="prompts" description="1.0.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="semanticcache" description="1.5.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>
+<Update label="telemetry" description="1.5.21">
+- chore: upgraded core to v1.5.21 and framework to v1.3.21
+
+</Update>

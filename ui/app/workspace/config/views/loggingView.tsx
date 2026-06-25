@@ -83,7 +83,7 @@ export default function LoggingView() {
 			<div className="space-y-4">
 				{/* Enable Logs */}
 				<div>
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="enable-logging" className="text-sm font-medium">
 								Enable Logs
@@ -113,7 +113,7 @@ export default function LoggingView() {
 				{/* Disable Content Logging - Only show when logging is enabled */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div>
-						<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<label htmlFor="disable-content-logging" className="text-sm font-medium">
 									Disable Content Logging
@@ -137,19 +137,19 @@ export default function LoggingView() {
 
 				{/* Allow Per-Request Content Storage Override - Only show when logging is enabled */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allow-per-request-content-storage-override" className="text-sm font-medium">
 								Allow Per-Request Content Storage Override
 							</label>
 							<p className="text-muted-foreground text-sm">
 								When enabled, individual requests can override the global content logging setting using the{" "}
-								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw provider
-								bytes in logs using the <code className="text-xs">x-bf-store-raw-request-response</code> header. Raw-byte storage requires
-								content logging to be on — either globally, or via{" "}
-								<code className="text-xs">x-bf-disable-content-logging: false</code> on the same request. If content logging is off, raw bytes
-								are dropped from the log record even when <code className="text-xs">x-bf-store-raw-request-response: true</code>. Does not
-								control sending raw bytes back to callers — see Allow Per-Request Raw Override.
+								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw
+								provider bytes in logs using the <code className="text-xs">x-bf-store-raw-request-response</code> header. Raw-byte storage
+								requires content logging to be on — either globally, or via{" "}
+								<code className="text-xs">x-bf-disable-content-logging: false</code> on the same request. If content logging is off, raw
+								bytes are dropped from the log record even when <code className="text-xs">x-bf-store-raw-request-response: true</code>. Does
+								not control sending raw bytes back to callers — see Allow Per-Request Raw Override.
 							</p>
 						</div>
 						<Switch
@@ -163,29 +163,30 @@ export default function LoggingView() {
 				)}
 
 				{/* Allow Per-Request Raw Override */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
-						<div className="space-y-0.5">
-							<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">
-								Allow Per-Request Raw Override
-							</label>
-							<p className="text-muted-foreground text-sm">
-								When enabled, individual requests can send raw provider request/response bytes back to the caller using the{" "}
-								<code className="text-xs">x-bf-send-back-raw-request</code> and{" "}
-								<code className="text-xs">x-bf-send-back-raw-response</code> headers. Does not affect log storage — raw-byte persistence in logs is controlled by Allow Per-Request Content Storage Override.
-							</p>
-						</div>
-						<Switch
-							id="allow-per-request-raw-override"
-							data-testid="workspace-raw-override-switch"
-							size="md"
-							checked={localConfig.allow_per_request_raw_override}
-							onCheckedChange={(checked) => handleConfigChange("allow_per_request_raw_override", checked)}
-						/>
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">
+							Allow Per-Request Raw Override
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, individual requests can send raw provider request/response bytes back to the caller using the{" "}
+							<code className="text-xs">x-bf-send-back-raw-request</code> and <code className="text-xs">x-bf-send-back-raw-response</code>{" "}
+							headers. Does not affect log storage — raw-byte persistence in logs is controlled by Allow Per-Request Content Storage
+							Override.
+						</p>
 					</div>
+					<Switch
+						id="allow-per-request-raw-override"
+						data-testid="workspace-raw-override-switch"
+						size="md"
+						checked={localConfig.allow_per_request_raw_override}
+						onCheckedChange={(checked) => handleConfigChange("allow_per_request_raw_override", checked)}
+					/>
+				</div>
 
 				{/* Log Retention Days */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="log-retention-days" className="text-sm font-medium">
 								Log Retention Days
@@ -208,7 +209,7 @@ export default function LoggingView() {
 					</div>
 				)}
 
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">
 							Do Not Show Deleted VirtualKeys In Filters
@@ -228,20 +229,21 @@ export default function LoggingView() {
 
 				{/* Logging Headers */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<label htmlFor="logging-headers" className="text-sm font-medium">
 							Logging Headers
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Comma-separated list of request headers to capture in log metadata. Values are extracted from incoming requests and stored in
-							the metadata field of log entries. Headers with the <code className="text-xs">x-bf-lh-</code> prefix are always captured
-							automatically.
+							Comma-separated list of request headers to capture in log metadata. Supports exact names and wildcard patterns (e.g.{" "}
+							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs
+							all headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are extracted from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
+							<code className="text-xs">x-bf-lh-</code> prefix are always captured automatically.
 						</p>
 						<Textarea
 							id="logging-headers"
 							data-testid="workspace-logging-headers-textarea"
 							className="h-24"
-							placeholder="X-Tenant-ID, X-Request-Source, X-Correlation-ID"
+							placeholder="X-Tenant-ID, X-Request-Source, x-custom-*"
 							value={loggingHeadersText}
 							onChange={(e) => handleLoggingHeadersChange(e.target.value)}
 						/>

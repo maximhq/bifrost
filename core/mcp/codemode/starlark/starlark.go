@@ -23,11 +23,9 @@ type StarlarkCodeMode struct {
 	toolExecutionTimeout atomic.Value // time.Duration
 
 	// Dependencies
-	clientManager          mcp.ClientManager
-	pluginPipelineProvider func() mcp.PluginPipeline
-	releasePluginPipeline  func(pipeline mcp.PluginPipeline)
-	fetchNewRequestIDFunc  func(ctx *schemas.BifrostContext) string
-	oauth2Provider         schemas.OAuth2Provider
+	clientManager         mcp.ClientManager
+	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
+	credStore             schemas.MCPCredentialStore
 
 	// Logger for this instance
 	logger schemas.Logger
@@ -84,10 +82,8 @@ func NewStarlarkCodeMode(config *mcp.CodeModeConfig, logger schemas.Logger) *Sta
 func (s *StarlarkCodeMode) SetDependencies(deps *mcp.CodeModeDependencies) {
 	if deps != nil {
 		s.clientManager = deps.ClientManager
-		s.pluginPipelineProvider = deps.PluginPipelineProvider
-		s.releasePluginPipeline = deps.ReleasePluginPipeline
 		s.fetchNewRequestIDFunc = deps.FetchNewRequestIDFunc
-		s.oauth2Provider = deps.OAuth2Provider
+		s.credStore = deps.CredentialStore
 	}
 }
 

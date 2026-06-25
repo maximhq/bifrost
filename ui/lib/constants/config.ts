@@ -41,6 +41,8 @@ export const ModelPlaceholders = {
 	elevenlabs: "e.g. eleven_multilingual_v2, eleven_turbo_v2",
 	perplexity: "e.g. sonar-pro, sonar-deep-research",
 	ollama: "e.g. llama3.1, llama2",
+	"opencode-go": "e.g. gpt-5.5, claude-sonnet-4-6",
+	"opencode-zen": "e.g. gpt-5.5, claude-sonnet-4-6",
 	openai: "e.g. gpt-4, gpt-4o, gpt-4o-mini, gpt-3.5-turbo",
 	vertex: "e.g. gemini-1.5-pro, text-bison, chat-bison",
 	nebius: "e.g. openai/gpt-oss-120b, google/gemma-2-9b-it-fast, Qwen/Qwen2.5-VL-72B-Instruct",
@@ -66,6 +68,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	parasail: true,
 	elevenlabs: true,
 	ollama: false,
+	"opencode-go": true,
+	"opencode-zen": true,
 	openai: true,
 	vertex: true,
 	perplexity: true,
@@ -79,15 +83,16 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 
 export const DefaultNetworkConfig = {
 	base_url: "",
-	default_request_timeout_in_seconds: 30,
+	default_request_timeout_in_seconds: 300,
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
 	insecure_skip_verify: false,
 	ca_cert_pem: { value: "", env_var: "", from_env: false },
-	stream_idle_timeout_in_seconds: 60,
+	stream_idle_timeout_in_seconds: 120,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
+	allow_private_network: false,
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {
@@ -95,11 +100,13 @@ export const DefaultPerformanceConfig = {
 	buffer_size: 5000,
 } satisfies ConcurrencyAndBufferSize;
 
-export const MCP_STATUS_COLORS = {
+export const MCP_STATUS_COLORS: Record<string, string> = {
 	connected: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",
 	disconnected: "bg-gray-100 text-gray-800",
-} as const;
+	pending_tools: "bg-yellow-100 text-yellow-800",
+	disabled: "bg-orange-100 text-orange-800",
+};
 
 // Mapping of what IS supported by each base provider
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {

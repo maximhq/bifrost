@@ -8,7 +8,7 @@ import { Statuses } from "@/lib/constants/logs";
 import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ChevronDown, PanelLeftClose, PanelLeftOpen, RotateCcw } from "lucide-react";
+import { ChevronDown, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Search } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "mcp-filter-sidebar-collapsed";
@@ -219,32 +219,80 @@ function SearchableCheckboxList({
 	onToggle,
 	placeholder = "Search...",
 	inputRef,
+	allowCustom = false,
+	onSearch,
+	fetching,
 }: {
 	items: { key: string; label: string }[];
 	isSelected: (key: string) => boolean;
 	onToggle: (key: string) => void;
 	placeholder?: string;
 	inputRef?: Ref<HTMLInputElement>;
+	allowCustom?: boolean;
+	onSearch?: (query: string) => void;
+	fetching?: boolean;
 }) {
 	const [query, setQuery] = useState("");
 	const normalized = query.trim().toLowerCase();
 	const filtered = normalized ? items.filter((item) => item.label.toLowerCase().includes(normalized)) : items;
+	const trimmed = query.trim();
+	const hasExactMatch = trimmed !== "" && items.some((item) => item.label.toLowerCase() === trimmed.toLowerCase());
+	const showAddCustom = allowCustom && trimmed !== "" && !hasExactMatch;
+
+	useEffect(() => {
+		if (!onSearch) return;
+		const timer = setTimeout(() => {
+			onSearch(query.trim());
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [query, onSearch]);
+
+	const commitCustom = () => {
+		if (!showAddCustom) return;
+		onToggle(trimmed);
+		setQuery("");
+	};
 
 	return (
 		<>
-			<div className="border-b">
+			<div className="relative border-b">
+				{fetching ? (
+					<LoaderCircle className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 animate-spin" />
+				) : (
+					<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				)}
 				<Input
 					ref={inputRef}
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							commitCustom();
+						}
+					}}
 					placeholder={placeholder}
-					className="h-8 border-0 text-xs"
+					className="h-8 border-0 pl-8 text-xs"
 				/>
 			</div>
 			{filtered.map((item) => (
 				<CheckboxFilterItem key={item.key} label={item.label} checked={isSelected(item.key)} onCheckedChange={() => onToggle(item.key)} />
 			))}
-			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+			{filtered.length === 0 && !showAddCustom && (
+				<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>
+			)}
+			{showAddCustom && (
+				<button
+					type="button"
+					onClick={commitCustom}
+					className="hover:bg-muted/50 flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left text-sm"
+				>
+					<Plus className="text-muted-foreground size-3.5 shrink-0" />
+					<span className="truncate">
+						Use <span className="font-medium">&quot;{trimmed}&quot;</span>
+					</span>
+				</button>
+			)}
 		</>
 	);
 }
@@ -283,23 +331,37 @@ function ToolNamesFilter({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	const hasActive = (filters.tool_names || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetMCPLogsFilterDataQuery(undefined, { skip: !opened && !hasActive });
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["tool_names"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableToolNames = filterData?.tool_names || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableToolNames);
+		const extras = (filters.tool_names || []).filter((n) => !seen.has(n));
+		return [...availableToolNames, ...extras].map((n) => ({ key: n, label: n }));
+	}, [availableToolNames, filters.tool_names]);
 
-	if (!isUninitialized && !isLoading && availableToolNames.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableToolNames.length === 0 && !hasActive && !opened) return null;
 
 	return (
 		<FilterSection title="Tool Names" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search tools"
-				items={availableToolNames.map((name) => ({ key: name, label: name }))}
+				placeholder="Search or add a tool"
+				items={items}
+				allowCustom
 				isSelected={(name) => (filters.tool_names || []).includes(name)}
 				onToggle={(name) => {
 					const current = filters.tool_names || [];
 					const next = current.includes(name) ? current.filter((n) => n !== name) : [...current, name];
 					onFiltersChange({ ...filters, tool_names: next });
 				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 			/>
 		</FilterSection>
 	);
@@ -313,23 +375,37 @@ function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const hasActive = (filters.server_labels || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetMCPLogsFilterDataQuery(undefined, { skip: !opened && !hasActive });
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["server_labels"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableServerLabels = filterData?.server_labels || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableServerLabels);
+		const extras = (filters.server_labels || []).filter((l) => !seen.has(l));
+		return [...availableServerLabels, ...extras].map((l) => ({ key: l, label: l }));
+	}, [availableServerLabels, filters.server_labels]);
 
-	if (!isUninitialized && !isLoading && availableServerLabels.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableServerLabels.length === 0 && !hasActive && !opened) return null;
 
 	return (
 		<FilterSection title="Servers" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search servers"
-				items={availableServerLabels.map((label) => ({ key: label, label }))}
+				placeholder="Search or add a server"
+				items={items}
+				allowCustom
 				isSelected={(label) => (filters.server_labels || []).includes(label)}
 				onToggle={(label) => {
 					const current = filters.server_labels || [];
 					const next = current.includes(label) ? current.filter((l) => l !== label) : [...current, label];
 					onFiltersChange({ ...filters, server_labels: next });
 				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 			/>
 		</FilterSection>
 	);
@@ -343,11 +419,17 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 	const hasActive = (filters.virtual_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetMCPLogsFilterDataQuery(undefined, { skip: !opened && !hasActive });
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["virtual_keys"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const nameToId = useMemo(() => new Map(availableVirtualKeys.map((key) => [key.name, key.id])), [availableVirtualKeys]);
 
-	if (!isUninitialized && !isLoading && availableVirtualKeys.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableVirtualKeys.length === 0 && !hasActive && !opened) return null;
 
 	const isSelected = (name: string) => {
 		const id = nameToId.get(name) || name;
@@ -369,6 +451,8 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 				items={availableVirtualKeys.map((key) => ({ key: key.name, label: key.name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 			/>
 		</FilterSection>
 	);

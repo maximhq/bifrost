@@ -1,0 +1,13 @@
+---
+title: "v2.1.13"
+description: "Helm v2.1.13 changelog - 2026-05-02"
+---
+
+<Update label="Bifrost Helm" description="v2.1.13">
+
+## Changelog
+
+- Surfaced `bifrost.client.enforceAuthOnInference` in `values.yaml` as a commented default with usage notes. The field was already wired in `_helpers.tpl` to render to `client.enforce_auth_on_inference` and declared in `values.schema.json`; this change makes the knob discoverable without altering default rendered config.
+- Marked `bifrost.client.enforceGovernanceHeader` as deprecated in `values.yaml` (use `enforceAuthOnInference` instead). Schema description was already deprecated in 2.1.11.
+
+</Update>

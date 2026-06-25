@@ -135,14 +135,14 @@ Return an empty `promptID` to skip injection for a request. Return `versionNumbe
 
 After injection, the plugin sets the following context keys (read by the logging plugin to populate log fields):
 
-- `schemas.BifrostContextKeySelectedPromptID` — UUID of the applied prompt
-- `schemas.BifrostContextKeySelectedPromptName` — Display name of the prompt
-- `schemas.BifrostContextKeySelectedPromptVersion` — Version number as a string (e.g. `"3"`)
+- `schemas.BifrostContextKeySelectedPromptID` - UUID of the applied prompt
+- `schemas.BifrostContextKeySelectedPromptName` - Display name of the prompt
+- `schemas.BifrostContextKeySelectedPromptVersion` - Version number as a string (e.g. `"3"`)
 
 ---
 
 ## Related
 
-- [Playground](/features/prompt-repository/playground) — create folders, prompts, sessions, and committed versions.
-- [Writing Go plugins](/plugins/writing-go-plugin) — plugin interfaces and lifecycle.
+- [Playground](/features/prompt-repository/playground) - create folders, prompts, sessions, and committed versions.
+- [Writing Go plugins](/plugins/writing-go-plugin) - plugin interfaces and lifecycle.
 - Built-in plugin name in code: `prompts` (`github.com/maximhq/bifrost/plugins/prompts`).

@@ -9,13 +9,14 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// listModelsBifrostContext returns a context for ListModels. For Replicate, sets BifrostContextKeyDirectKey
-// so only the deployments key is used (see replicateProviderTestKeys in account.go). That key must not use an
-// empty Models allowlist, or ListModelsPipeline.ShouldEarlyExit returns no models before the API runs.
+// listModelsBifrostContext returns a context for ListModels. For Replicate, pins the deployments-endpoint
+// key by name (see replicateProviderTestKeys in account.go) so the test always exercises that specific key.
+// That key must not use an empty Models allowlist, or ListModelsPipeline.ShouldEarlyExit returns no models
+// before the API runs.
 func listModelsBifrostContext(parent context.Context, provider schemas.ModelProvider) *schemas.BifrostContext {
 	bfCtx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 	if provider == schemas.Replicate {
-		bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, ReplicateDirectKeyForListModels())
+		bfCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, ReplicateKeyNameListModels)
 	}
 	return bfCtx
 }

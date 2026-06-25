@@ -2,7 +2,6 @@ package semanticcache
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -14,24 +13,25 @@ import (
 
 // TestCacheTypeDirectOnly tests that CacheTypeKey set to "direct" only performs direct hash matching
 func TestCacheTypeDirectOnly(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// First, cache a response using CacheTypeDirect so it is stored under the deterministic ID
-	ctx1 := CreateContextWithCacheKeyAndType("test-cache-type-direct", CacheTypeDirect)
+	ctx1 := CreateContextWithCacheKeyAndType(t, "test-cache-type-direct", CacheTypeDirect)
 	testRequest := CreateBasicChatRequest("What is Bifrost?", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache(setup.Plugin)
 
 	// Now test with CacheTypeKey set to direct only
-	ctx2 := CreateContextWithCacheKeyAndType("test-cache-type-direct", CacheTypeDirect)
+	ctx2 := CreateContextWithCacheKeyAndType(t, "test-cache-type-direct", CacheTypeDirect)
 
 	t.Log("Making second request with CacheTypeKey=direct...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
@@ -47,17 +47,18 @@ func TestCacheTypeDirectOnly(t *testing.T) {
 
 // TestCacheTypeSemanticOnly tests that CacheTypeKey set to "semantic" only performs semantic search
 func TestCacheTypeSemanticOnly(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// First, cache a response using normal behavior
-	ctx1 := CreateContextWithCacheKey("test-cache-type-semantic")
+	ctx1 := CreateContextWithCacheKey(t, "test-cache-type-semantic")
 	testRequest := CreateBasicChatRequest("Explain machine learning concepts", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -67,7 +68,7 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	similarRequest := CreateBasicChatRequest("Can you explain concepts in machine learning", 0.7, 50)
 
 	// Try with semantic-only search
-	ctx2 := CreateContextWithCacheKeyAndType("test-cache-type-semantic", CacheTypeSemantic)
+	ctx2 := CreateContextWithCacheKeyAndType(t, "test-cache-type-semantic", CacheTypeSemantic)
 
 	t.Log("Making second request with similar content and CacheTypeKey=semantic...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, similarRequest)
@@ -79,9 +80,14 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 		}
 	}
 
-	// This might be a cache hit if semantic similarity is high enough
-	// The test validates that semantic search is attempted
-	if response2.ExtraFields.CacheDebug != nil && response2.ExtraFields.CacheDebug.CacheHit {
+	// This might be a cache hit if semantic similarity is high enough.
+	// Hit/miss is similarity-dependent, but CacheDebug must be stamped either
+	// way — semantic search ran. This catches a regression where the stamping
+	// stops without making the test flake on similarity scores.
+	if response2.ExtraFields.CacheDebug == nil {
+		t.Fatal("expected CacheDebug to be stamped on the response (semantic search should have run)")
+	}
+	if response2.ExtraFields.CacheDebug.CacheHit {
 		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "semantic")
 		t.Log("✅ CacheTypeKey=semantic correctly found semantic match")
 	} else {
@@ -94,24 +100,25 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 
 // TestCacheTypeDirectWithSemanticFallback tests the default behavior (both direct and semantic)
 func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Cache a response first
-	ctx1 := CreateContextWithCacheKey("test-cache-type-fallback")
+	ctx1 := CreateContextWithCacheKey(t, "test-cache-type-fallback")
 	testRequest := CreateBasicChatRequest("Define artificial intelligence", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache(setup.Plugin)
 
 	// Test exact match (should hit direct cache)
-	ctx2 := CreateContextWithCacheKey("test-cache-type-fallback")
+	ctx2 := CreateContextWithCacheKey(t, "test-cache-type-fallback")
 
 	t.Log("Making second identical request (should hit direct cache)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
@@ -133,8 +140,12 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 		t.Fatalf("Third request failed: %v", err3)
 	}
 
-	// May or may not be a cache hit depending on semantic similarity
-	if response3.ExtraFields.CacheDebug != nil && response3.ExtraFields.CacheDebug.CacheHit {
+	// May or may not be a cache hit depending on semantic similarity, but
+	// CacheDebug must be stamped (regression guard).
+	if response3.ExtraFields.CacheDebug == nil {
+		t.Fatal("expected CacheDebug to be stamped on the response")
+	}
+	if response3.ExtraFields.CacheDebug.CacheHit {
 		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "semantic")
 		t.Log("✅ Default behavior correctly found semantic match")
 	} else {
@@ -145,49 +156,66 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 	t.Log("✅ Default behavior correctly attempts both direct and semantic search")
 }
 
-// TestCacheTypeInvalidValue tests behavior with invalid CacheTypeKey values
+// TestCacheTypeInvalidValue tests behavior with invalid CacheTypeKey values:
+// the plugin must fall back to default behavior (try both direct + semantic)
+// rather than disable caching entirely.
 func TestCacheTypeInvalidValue(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	// Create context with invalid cache type
-	ctx := CreateContextWithCacheKey("test-invalid-cache-type")
-	ctx = ctx.WithValue(CacheTypeKey, "invalid_type")
-
 	testRequest := CreateBasicChatRequest("Test invalid cache type", 0.7, 50)
 
-	t.Log("Making request with invalid CacheTypeKey value...")
-	response, err := setup.Client.ChatCompletionRequest(ctx, testRequest)
+	// First request with invalid CacheTypeKey — must be a miss but ALSO must
+	// have caused the response to be cached (fallback to default behavior).
+	ctx1 := CreateContextWithCacheKey(t, "test-invalid-cache-type")
+	ctx1 = ctx1.WithValue(CacheTypeKey, "invalid_type")
+
+	t.Log("Making first request with invalid CacheTypeKey value...")
+	response1, err := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err)
 	}
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	// Should fall back to default behavior (both direct and semantic)
-	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response})
+	WaitForCache(setup.Plugin)
 
-	t.Log("✅ Invalid CacheTypeKey value falls back to default behavior")
+	// Second identical request — fallback should mean the entry was written
+	// the first time, so this must hit (proves the invalid value didn't
+	// disable caching as a side effect).
+	ctx2 := CreateContextWithCacheKey(t, "test-invalid-cache-type")
+	ctx2 = ctx2.WithValue(CacheTypeKey, "invalid_type")
+	t.Log("Making second identical request — must hit cache, proving fallback to default cached the first call...")
+	response2, err := setup.Client.ChatCompletionRequest(ctx2, testRequest)
+	if err != nil {
+		t.Fatalf("Second request failed: %v", err)
+	}
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, string(CacheTypeDirect))
+
+	t.Log("✅ Invalid CacheTypeKey value falls back to default behavior (caching works)")
 }
 
 // TestCacheTypeWithEmbeddingRequests tests CacheTypeKey behavior with embedding requests
 func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	embeddingRequest := CreateEmbeddingRequest([]string{"Test embedding with cache type"})
 
 	// Cache first request
-	ctx1 := CreateContextWithCacheKey("test-embedding-cache-type")
+	ctx1 := CreateContextWithCacheKey(t, "test-embedding-cache-type")
 	t.Log("Making first embedding request...")
 	response1, err1 := setup.Client.EmbeddingRequest(ctx1, embeddingRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
 	WaitForCache(setup.Plugin)
 
 	// Test with direct-only cache type
-	ctx2 := CreateContextWithCacheKeyAndType("test-embedding-cache-type", CacheTypeDirect)
+	ctx2 := CreateContextWithCacheKeyAndType(t, "test-embedding-cache-type", CacheTypeDirect)
 	t.Log("Making second embedding request with CacheTypeKey=direct...")
 	response2, err2 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
 	if err2 != nil {
@@ -200,7 +228,7 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 	AssertCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2}, "direct")
 
 	// Test with semantic-only cache type (should not find semantic match for embeddings)
-	ctx3 := CreateContextWithCacheKeyAndType("test-embedding-cache-type", CacheTypeSemantic)
+	ctx3 := CreateContextWithCacheKeyAndType(t, "test-embedding-cache-type", CacheTypeSemantic)
 	t.Log("Making third embedding request with CacheTypeKey=semantic...")
 	response3, err3 := setup.Client.EmbeddingRequest(ctx3, embeddingRequest)
 	if err3 != nil {
@@ -214,24 +242,25 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 
 // TestCacheTypePerformanceCharacteristics tests that different cache types have expected performance
 func TestCacheTypePerformanceCharacteristics(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	testRequest := CreateBasicChatRequest("Performance test for cache types", 0.7, 50)
 
 	// Cache first request using CacheTypeDirect so it is stored under the deterministic ID
-	ctx1 := CreateContextWithCacheKeyAndType("test-cache-performance", CacheTypeDirect)
+	ctx1 := CreateContextWithCacheKeyAndType(t, "test-cache-performance", CacheTypeDirect)
 	t.Log("Making first request to populate cache...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache(setup.Plugin)
 
 	// Test direct-only performance
-	ctx2 := CreateContextWithCacheKeyAndType("test-cache-performance", CacheTypeDirect)
+	ctx2 := CreateContextWithCacheKeyAndType(t, "test-cache-performance", CacheTypeDirect)
 	start2 := time.Now()
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	duration2 := time.Since(start2)
@@ -243,7 +272,7 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 	t.Logf("Direct cache lookup took: %v", duration2)
 
 	// Test default behavior (both direct and semantic) performance
-	ctx3 := CreateContextWithCacheKey("test-cache-performance")
+	ctx3 := CreateContextWithCacheKey(t, "test-cache-performance")
 	start3 := time.Now()
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx3, testRequest)
 	duration3 := time.Since(start3)
@@ -254,8 +283,17 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 
 	t.Logf("Default cache lookup took: %v", duration3)
 
-	// Both should be fast since they hit direct cache
-	// Direct-only might be slightly faster as it doesn't need to prepare for semantic fallback
+	// Both lookups hit direct cache so both must be substantially faster than
+	// a real upstream call. Compare against an upper bound rather than each
+	// other (relative comparisons flake under CI load); 1s is generous and
+	// still proves a cached lookup didn't silently hit the network.
+	const upperBoundForCacheLookup = 1 * time.Second
+	if duration2 > upperBoundForCacheLookup {
+		t.Errorf("direct-only cache lookup took %v, expected < %v (provider likely called)", duration2, upperBoundForCacheLookup)
+	}
+	if duration3 > upperBoundForCacheLookup {
+		t.Errorf("default-mode cache lookup took %v, expected < %v (provider likely called)", duration3, upperBoundForCacheLookup)
+	}
 	t.Log("✅ Cache type performance characteristics validated")
 }
 
@@ -367,7 +405,7 @@ func TestDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t *testing
 	const cacheKey = "cross-provider-direct-single"
 	const prompt = "Explain green threading in Go in one short sentence."
 
-	seedCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	seedCtx := CreateContextWithCacheKeyAndType(t, cacheKey, CacheTypeDirect)
 	seedReq := newCrossProviderChatRequest(schemas.OpenAI, "gpt-5.2", schemas.ChatCompletionRequest, prompt)
 
 	_, shortCircuit, err := plugin.PreLLMHook(seedCtx, seedReq)
@@ -407,7 +445,7 @@ func TestDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t *testing
 	}
 	plugin.WaitForPendingOperations()
 
-	hitCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	hitCtx := CreateContextWithCacheKeyAndType(t, cacheKey, CacheTypeDirect)
 	hitReq := newCrossProviderChatRequest(schemas.Anthropic, "claude-sonnet-4-6", schemas.ChatCompletionRequest, prompt)
 
 	_, shortCircuit, err = plugin.PreLLMHook(hitCtx, hitReq)
@@ -461,7 +499,7 @@ func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t
 	const cacheKey = "cross-provider-direct-stream"
 	const prompt = "Explain green threading in Go in one short sentence."
 
-	seedCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	seedCtx := CreateContextWithCacheKeyAndType(t, cacheKey, CacheTypeDirect)
 	seedReq := newCrossProviderChatRequest(schemas.OpenAI, "gpt-5.2", schemas.ChatCompletionStreamRequest, prompt)
 
 	_, shortCircuit, err := plugin.PreLLMHook(seedCtx, seedReq)
@@ -514,7 +552,7 @@ func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t
 		plugin.WaitForPendingOperations()
 	}
 
-	hitCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	hitCtx := CreateContextWithCacheKeyAndType(t, cacheKey, CacheTypeDirect)
 	hitReq := newCrossProviderChatRequest(schemas.Anthropic, "claude-sonnet-4-6", schemas.ChatCompletionStreamRequest, prompt)
 
 	_, shortCircuit, err = plugin.PreLLMHook(hitCtx, hitReq)
@@ -564,6 +602,29 @@ func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t
 	}
 }
 
+// runDirectSearchForTest is a small helper for the unit tests that directly
+// exercise performDirectSearch. It builds the metadata + paramsHash + state
+// the way PreLLMHook would and then calls the search.
+func runDirectSearchForTest(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*cacheState, *schemas.LLMPluginShortCircuit, error) {
+	t.Helper()
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if requestID == "" {
+		t.Fatal("test context is missing request ID")
+	}
+	state := plugin.createCacheState(requestID)
+	metadata, err := plugin.buildRequestMetadataForCaching(state, req)
+	if err != nil {
+		t.Fatalf("buildRequestMetadataForCaching failed: %v", err)
+	}
+	paramsHash, err := hashMap(metadata)
+	if err != nil {
+		t.Fatalf("hashMap failed: %v", err)
+	}
+	state.ParamsHash = paramsHash
+	sc, err := plugin.performDirectSearch(ctx, state, req, cacheKey, metadata, paramsHash)
+	return state, sc, err
+}
+
 func TestCacheTypeDirectUsesChunkLookup(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	store := newDirectFastPathStore()
@@ -578,10 +639,15 @@ func TestCacheTypeDirectUsesChunkLookup(t *testing.T) {
 		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
 	}
 
-	ctx := CreateContextWithCacheKeyAndType("chunk-fast-path", CacheTypeDirect)
-	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "chunk-fast-path")
+	// First pass: warm the deterministic cache ID and learn what it is.
+	ctx := CreateContextWithCacheKeyAndType(t, "chunk-fast-path", CacheTypeDirect)
+	state, _, err := runDirectSearchForTest(t, plugin, ctx, req, "chunk-fast-path")
 	if err != nil {
-		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
+		t.Fatalf("performDirectSearch failed: %v", err)
+	}
+	directID := state.DirectCacheID
+	if directID == "" {
+		t.Fatal("expected DirectCacheID to be populated")
 	}
 
 	cachedContent := "cached response"
@@ -614,15 +680,18 @@ func TestCacheTypeDirectUsesChunkLookup(t *testing.T) {
 		},
 	}
 
-	shortCircuit, err := plugin.performDirectChunkLookup(ctx, req, "chunk-fast-path")
+	// Second pass: should hit the chunk we just stored, via point-fetch only.
+	priorChunkCalls := store.getChunkCalls
+	ctx2 := CreateContextWithCacheKeyAndType(t, "chunk-fast-path", CacheTypeDirect)
+	_, shortCircuit, err := runDirectSearchForTest(t, plugin, ctx2, req, "chunk-fast-path")
 	if err != nil {
-		t.Fatalf("performDirectChunkLookup failed: %v", err)
+		t.Fatalf("second performDirectSearch failed: %v", err)
 	}
 	if shortCircuit == nil || shortCircuit.Response == nil || shortCircuit.Response.ChatResponse == nil {
 		t.Fatal("expected direct chunk lookup to return cached response")
 	}
-	if store.getChunkCalls != 1 {
-		t.Fatalf("expected one GetChunk call, got %d", store.getChunkCalls)
+	if store.getChunkCalls != priorChunkCalls+1 {
+		t.Fatalf("expected one additional GetChunk call, got %d total", store.getChunkCalls)
 	}
 	if store.getAllCalls != 0 {
 		t.Fatalf("expected no GetAll calls, got %d", store.getAllCalls)
@@ -646,22 +715,22 @@ func TestDefaultDirectSearchSetsStorageIDForDeterministicWrites(t *testing.T) {
 		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
 	}
 
-	ctx := CreateContextWithCacheKey("default-mode")
-	_, err := plugin.performDirectSearch(ctx, req, "default-mode")
-	if err != nil && !errors.Is(err, vectorstore.ErrNotSupported) {
+	ctx := CreateContextWithCacheKey(t, "default-mode")
+	state, _, err := runDirectSearchForTest(t, plugin, ctx, req, "default-mode")
+	if err != nil {
 		t.Fatalf("performDirectSearch failed: %v", err)
 	}
-
-	storageID, _ := ctx.Value(requestStorageIDKey).(string)
-	if storageID == "" {
-		t.Fatal("expected default direct search to set requestStorageIDKey")
+	if state.DirectCacheID == "" {
+		t.Fatal("expected default direct search to populate state.DirectCacheID")
 	}
 	if store.getChunkCalls != 1 {
 		t.Fatalf("expected one GetChunk call, got %d", store.getChunkCalls)
 	}
 }
 
-func TestPreLLMHookClearsStaleStorageIDOnReusedContext(t *testing.T) {
+// TestPreLLMHookResetsStateOnReusedRequestID verifies that a second PreLLMHook
+// call for the same request ID overwrites any prior state instead of inheriting it.
+func TestPreLLMHookResetsStateOnReusedRequestID(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	store := newDirectFastPathStore()
 	config := getDefaultTestConfig()
@@ -677,19 +746,29 @@ func TestPreLLMHookClearsStaleStorageIDOnReusedContext(t *testing.T) {
 		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
 	}
 
-	ctx := CreateContextWithCacheKey("reused-context")
-	ctx.SetValue(requestStorageIDKey, "stale-storage-id")
+	ctx := CreateContextWithCacheKey(t, "reused-context")
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	// Seed stale state under the same request ID.
+	stale := plugin.createCacheState(requestID)
+	stale.DirectCacheID = "stale-storage-id"
+	stale.ParamsHash = "stale-params-hash"
 
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
-	storageID, _ := ctx.Value(requestStorageIDKey).(string)
-	if storageID == "" {
-		t.Fatal("expected PreLLMHook to replace stale requestStorageIDKey with a deterministic id")
+	state := plugin.getCacheState(requestID)
+	if state == nil {
+		t.Fatal("expected cache state to be present after PreLLMHook")
 	}
-	if storageID == "stale-storage-id" {
-		t.Fatal("expected PreLLMHook to clear stale requestStorageIDKey before setting a deterministic id")
+	if state == stale {
+		t.Fatal("expected PreLLMHook to replace the stale state object")
+	}
+	if state.DirectCacheID == "" {
+		t.Fatal("expected PreLLMHook to populate a deterministic DirectCacheID")
+	}
+	if state.DirectCacheID == "stale-storage-id" {
+		t.Fatal("expected PreLLMHook to clear stale DirectCacheID before populating a new one")
 	}
 }
 
@@ -707,16 +786,17 @@ func TestCacheTypeDirectStoresDeterministicID(t *testing.T) {
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
 	}
-	ctx := CreateContextWithCacheKeyAndType("deterministic-store", CacheTypeDirect)
-	ctx.SetValue(requestIDKey, "request-uuid")
-	ctx.SetValue(requestProviderKey, schemas.OpenAI)
-	ctx.SetValue(requestModelKey, req.ChatRequest.Model)
+	ctx := CreateContextWithCacheKeyAndType(t, "deterministic-store", CacheTypeDirect)
 
-	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "deterministic-store")
-	if err != nil {
-		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-	ctx.SetValue(requestStorageIDKey, directID)
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	state := plugin.getCacheState(requestID)
+	if state == nil || state.DirectCacheID == "" {
+		t.Fatal("expected PreLLMHook to populate state.DirectCacheID")
+	}
+	directID := state.DirectCacheID
 
 	content := "stored response"
 	response := &schemas.BifrostResponse{
@@ -749,8 +829,8 @@ func TestCacheTypeDirectStoresDeterministicID(t *testing.T) {
 	if store.addIDs[0] != directID {
 		t.Fatalf("expected deterministic storage id %q, got %q", directID, store.addIDs[0])
 	}
-	if store.addIDs[0] == "request-uuid" {
-		t.Fatal("expected storage id to differ from request UUID")
+	if store.addIDs[0] == requestID {
+		t.Fatal("expected storage id to differ from request ID")
 	}
 }
 
@@ -762,6 +842,24 @@ func TestPostLLMHookUsesDeterministicStorageIDOutsideDirectMode(t *testing.T) {
 		config: getDefaultTestConfig(),
 		logger: logger,
 	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
+	}
+
+	// Default mode (no CacheTypeKey) should still produce a deterministic
+	// storage ID via the direct-search path that PreLLMHook always runs.
+	ctx := CreateContextWithCacheKey(t, "default-mode-store")
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	state := plugin.getCacheState(requestID)
+	if state == nil || state.DirectCacheID == "" {
+		t.Fatal("expected default-mode PreLLMHook to populate state.DirectCacheID")
+	}
+	directID := state.DirectCacheID
 
 	content := "stored response"
 	response := &schemas.BifrostResponse{
@@ -782,16 +880,6 @@ func TestPostLLMHookUsesDeterministicStorageIDOutsideDirectMode(t *testing.T) {
 	}
 	response.ChatResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
 
-	ctx := CreateContextWithCacheKey("default-mode-store")
-	ctx.SetValue(requestIDKey, "request-uuid")
-	ctx.SetValue(requestProviderKey, schemas.OpenAI)
-	ctx.SetValue(requestModelKey, "openai/gpt-4o-mini")
-	ctx.SetValue(requestHashKey, "request-hash")
-	ctx.SetValue(requestParamsHashKey, "params-hash")
-
-	directID := plugin.generateDirectCacheID(schemas.OpenAI, "openai/gpt-4o-mini", "default-mode-store", "request-hash", "params-hash")
-	ctx.SetValue(requestStorageIDKey, directID)
-
 	if _, _, err := plugin.PostLLMHook(ctx, response, nil); err != nil {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
@@ -803,67 +891,6 @@ func TestPostLLMHookUsesDeterministicStorageIDOutsideDirectMode(t *testing.T) {
 	}
 	if store.addIDs[0] != directID {
 		t.Fatalf("expected PostLLMHook to use deterministic storage id outside direct mode, got %q", store.addIDs[0])
-	}
-}
-
-func TestPerformDirectSearchDisablesScanFallbackForLegacyLookup(t *testing.T) {
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
-	store := newDirectFastPathStore()
-	plugin := &Plugin{
-		store:  store,
-		config: getDefaultTestConfig(),
-		logger: logger,
-	}
-
-	req := &schemas.BifrostRequest{
-		RequestType: schemas.ChatCompletionRequest,
-		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
-	}
-
-	ctx := CreateContextWithCacheKey("legacy-no-scan")
-	_, err := plugin.performDirectSearch(ctx, req, "legacy-no-scan")
-	if err != nil && !errors.Is(err, vectorstore.ErrNotSupported) {
-		t.Fatalf("performDirectSearch failed: %v", err)
-	}
-
-	if store.getAllCalls != 1 {
-		t.Fatalf("expected one legacy GetAll call, got %d", store.getAllCalls)
-	}
-	if !vectorstore.IsScanFallbackDisabled(store.lastGetAllCtx) {
-		t.Fatal("expected legacy direct lookup to disable scan fallback")
-	}
-}
-
-func TestPerformLegacyDirectSearchTreatsQuerySyntaxErrorAsMiss(t *testing.T) {
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
-	store := newDirectFastPathStore()
-	store.getAllErr = vectorstore.ErrQuerySyntax
-	plugin := &Plugin{
-		store:  store,
-		config: getDefaultTestConfig(),
-		logger: logger,
-	}
-
-	req := &schemas.BifrostRequest{
-		RequestType: schemas.ChatCompletionRequest,
-		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
-	}
-
-	ctx := CreateContextWithCacheKey("legacy-query-syntax")
-	_, err := plugin.prepareDirectCacheLookup(ctx, req, "legacy-query-syntax")
-	if err != nil {
-		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
-	}
-
-	shortCircuit, err := plugin.performLegacyDirectSearch(ctx, req, "legacy-query-syntax")
-	if err != nil {
-		t.Fatalf("performLegacyDirectSearch failed: %v", err)
-	}
-	if shortCircuit != nil {
-		t.Fatal("expected query syntax incompatibility to be treated as a miss")
-	}
-	if store.getAllCalls != 1 {
-		t.Fatalf("expected one legacy GetAll call, got %d", store.getAllCalls)
 	}
 }
 

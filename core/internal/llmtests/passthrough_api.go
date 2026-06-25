@@ -66,9 +66,11 @@ func buildPassthroughChatReq(t *testing.T, provider schemas.ModelProvider, model
 		if err != nil {
 			t.Fatalf("azure: failed to marshal passthrough chat request: %v", err)
 		}
-		// Azure passthrough expects the deployment-based path; api-version is
-		// injected automatically by buildPassthroughURL from the key config.
-		return passthroughChatReq{path: fmt.Sprintf("/openai/deployments/%s/chat/completions", model), body: body}, true
+		return passthroughChatReq{
+			path:  fmt.Sprintf("/openai/deployments/%s/chat/completions", model),
+			body:  body,
+			query: "api-version=2025-04-01-preview",
+		}, true
 
 	case schemas.Anthropic:
 		nativeReq, err := anthropic.ToAnthropicChatRequest(ctx, bfReq)
@@ -85,7 +87,7 @@ func buildPassthroughChatReq(t *testing.T, provider schemas.ModelProvider, model
 		return passthroughChatReq{path: "/v1/messages", body: body}, true
 
 	case schemas.Gemini:
-		nativeReq, err := gemini.ToGeminiChatCompletionRequest(bfReq)
+		nativeReq, err := gemini.ToGeminiChatCompletionRequest(ctx, bfReq)
 		if err != nil {
 			return passthroughChatReq{}, false
 		}
@@ -158,9 +160,10 @@ func RunPassthroughAPITest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 
 			resp, bifrostErr := client.Passthrough(bfCtx, testConfig.Provider, &schemas.BifrostPassthroughRequest{
-				Method: "POST",
-				Path:   req.path,
-				Body:   req.body,
+				Method:   "POST",
+				Path:     req.path,
+				Body:     req.body,
+				RawQuery: req.query,
 				SafeHeaders: map[string]string{
 					"content-type": "application/json",
 				},

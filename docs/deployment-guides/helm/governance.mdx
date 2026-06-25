@@ -1,6 +1,6 @@
 ---
 title: "Governance"
-description: "Configure Bifrost governance in Helm — budgets, rate limits, virtual keys, routing rules, and admin authentication"
+description: "Configure Bifrost governance in Helm - budgets, rate limits, virtual keys, routing rules, and admin authentication"
 icon: "shield"
 ---
 
@@ -162,7 +162,7 @@ Virtual keys are the primary access tokens issued to callers. They scope which p
 bifrost:
   governance:
     virtualKeys:
-      # 1. Unrestricted dev key — access to every provider
+      # 1. Unrestricted dev key - access to every provider
       - id: "vk-dev-all"
         name: "Dev: all providers"
         value: "vk-dev-all-secret-token"
@@ -171,7 +171,7 @@ bifrost:
         rate_limit_id: "rate-limit-standard"
         # No provider_configs → all providers allowed
 
-      # 2. OpenAI only — restricted to two models
+      # 2. OpenAI only - restricted to two models
       - id: "vk-openai-prod"
         name: "OpenAI Production"
         value: "vk-openai-prod-secret-token"
@@ -252,23 +252,51 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
-## Model Configs
+## Model Limits
 
-Apply budgets and rate limits at the model level, independent of virtual keys:
+Apply budgets and rate limits at the model level. Each entry is keyed on `model_name` (use `"*"` for all models), an optional `provider`, and a `scope` that determines who the limit applies to.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `id` | — | Unique identifier |
+| `model_name` | — | Model name, or `"*"` to match all models |
+| `provider` | _(all)_ | Provider name; omit to cover all providers |
+| `scope` | `"global"` | `"global"` (all traffic) or `"virtual_key"` (one VK) |
+| `scope_id` | — | Required when `scope` is `"virtual_key"` — the virtual key ID |
+| `budget_id` | — | References a `governance.budgets` entry |
+| `rate_limit_id` | — | References a `governance.rate_limits` entry |
 
 ```yaml
 bifrost:
   governance:
     modelConfigs:
-      - id: "model-gpt4o"
+      # Global cap on a specific model across all traffic
+      - id: "mc-gpt4o-global"
         model_name: "gpt-4o"
         provider: "openai"
         budget_id: "budget-production"
         rate_limit_id: "rate-limit-high"
 
-      - id: "model-claude"
-        model_name: "claude-3-5-sonnet-20241022"
+      # Global provider-level budget (all models, all traffic, openai only)
+      - id: "mc-openai-provider"
+        model_name: "*"
+        provider: "openai"
+        budget_id: "budget-production"
+
+      # VK-scoped top-level budget (all models, all providers, one VK)
+      - id: "mc-vk-dev-toplevel"
+        model_name: "*"
+        scope: "virtual_key"
+        scope_id: "vk-dev-all"
+        budget_id: "budget-dev"
+
+      # VK-scoped per-provider budget (all models, anthropic only, one VK)
+      - id: "mc-vk-dev-anthropic"
+        model_name: "*"
         provider: "anthropic"
+        scope: "virtual_key"
+        scope_id: "vk-dev-all"
+        budget_id: "budget-testing"
         rate_limit_id: "rate-limit-standard"
 ```
 
@@ -353,6 +381,33 @@ bifrost:
         scope_id: "team-ml"
         priority: 0
 ```
+
+---
+
+## Complexity Router Configuration
+
+If you use `complexity_tier` in routing rules, you can seed the analyzer thresholds and keyword lists from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
+
+Omit this block, or leave `complexityAnalyzerConfig: null`, to use the built-in defaults.
+
+```yaml
+bifrost:
+  governance:
+    complexityAnalyzerConfig:
+      tier_boundaries:
+        simple_medium: 0.15
+        medium_complex: 0.35
+        complex_reasoning: 0.60
+      keywords:
+        code_keywords: ["function", "class", "api", "debug", "deploy"]
+        reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
+        technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
+        simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+```
+
+<Note>
+In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, tier boundaries are replaced from the rendered `config.json`, while keyword lists are merged additively with stored runtime keywords (union with duplicates removed). Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored governance state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
+</Note>
 
 ---
 

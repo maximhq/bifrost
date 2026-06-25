@@ -20,7 +20,7 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 
 	// Parse provider from model string (e.g., "openai/gpt-image-1" -> provider="openai", model="gpt-image-1")
 	// This allows cross-provider routing through the GenAI endpoint
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	bifrostReq := &schemas.BifrostImageGenerationRequest{
 		Provider: provider,
@@ -94,6 +94,16 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 		}
 	}
 
+	if request.GenerationConfig.ImageConfig != nil {
+		ic := request.GenerationConfig.ImageConfig
+		if strings.TrimSpace(ic.ImageSize) != "" || strings.TrimSpace(ic.AspectRatio) != "" {
+			size := convertImagenFormatToSize(&ic.ImageSize, &ic.AspectRatio)
+			if size != "" {
+				bifrostReq.Params.Size = &size
+			}
+		}
+	}
+
 	return bifrostReq
 }
 
@@ -104,7 +114,7 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 
 	// Parse provider from model string (e.g., "openai/gpt-image-1" -> provider="openai", model="gpt-image-1")
 	// This allows cross-provider routing through the GenAI endpoint
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	bifrostReq := &schemas.BifrostImageEditRequest{
 		Provider: provider,
@@ -288,6 +298,16 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 		}
 	}
 
+	if request.GenerationConfig.ImageConfig != nil {
+		ic := request.GenerationConfig.ImageConfig
+		if strings.TrimSpace(ic.ImageSize) != "" || strings.TrimSpace(ic.AspectRatio) != "" {
+			size := convertImagenFormatToSize(&ic.ImageSize, &ic.AspectRatio)
+			if size != "" {
+				bifrostReq.Params.Size = &size
+			}
+		}
+	}
+
 	return bifrostReq
 }
 
@@ -413,7 +433,7 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
 			if imageSize != "" && aspectRatio != "" {
 				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
-					ImageSize:   strings.ToLower(imageSize),
+					ImageSize:   imageSize,
 					AspectRatio: aspectRatio,
 				}
 			}
@@ -519,8 +539,7 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
 			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
 			if imageSize != "" {
-				imageSizeLower := strings.ToLower(imageSize)
-				req.Parameters.SampleImageSize = &imageSizeLower
+				req.Parameters.SampleImageSize = &imageSize
 			}
 			if aspectRatio != "" {
 				req.Parameters.AspectRatio = &aspectRatio
@@ -749,6 +768,17 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+
+		// Handle size conversion
+		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
+			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
+			if imageSize != "" && aspectRatio != "" {
+				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
+					ImageSize:   imageSize,
+					AspectRatio: aspectRatio,
+				}
+			}
+		}
 
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {

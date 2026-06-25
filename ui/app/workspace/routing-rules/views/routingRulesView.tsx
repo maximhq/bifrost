@@ -3,14 +3,14 @@
  * Main orchestrator component for routing rules management
  */
 
-import { RbacOperation, RbacResource, useRbac } from "@/app/_fallbacks/enterprise/lib/contexts/rbacContext";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
-import { GitBranch, Plus } from "lucide-react";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { GitBranch, Plus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RoutingRuleInfoSheet } from "./routingRuleInfoSheet";
 import { RoutingRuleSheet } from "./routingRuleSheet";
 import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
@@ -76,6 +76,23 @@ export function RoutingRulesView() {
 		setInfoSheetOpen(true);
 	};
 
+	const sortedRules = useMemo(() => [...rules].sort((a, b) => a.priority - b.priority), [rules]);
+
+	const selectedRuleIndex = useMemo(
+		() => (selectedRule ? sortedRules.findIndex((r) => r.id === selectedRule.id) : -1),
+		[selectedRule, sortedRules],
+	);
+
+	const handleRuleNavigate = useCallback(
+		(direction: "prev" | "next") => {
+			const newIndex = direction === "prev" ? selectedRuleIndex - 1 : selectedRuleIndex + 1;
+			if (newIndex >= 0 && newIndex < sortedRules.length) {
+				setSelectedRule(sortedRules[newIndex]);
+			}
+		},
+		[selectedRuleIndex, sortedRules],
+	);
+
 	const handleDialogOpenChange = (open: boolean) => {
 		setDialogOpen(open);
 		if (!open) {
@@ -96,9 +113,9 @@ export function RoutingRulesView() {
 	}
 
 	return (
-		<div className="space-y-4">
+		<div className="flex flex-col overflow-y-auto">
 			{/* Header */}
-			<div className="flex items-center justify-between">
+			<div className="flex items-center justify-between mb-4">
 				<div>
 					<h1 className="text-foreground text-lg font-semibold">Routing Rules</h1>
 					<p className="text-muted-foreground text-sm">Manage CEL-based routing rules for intelligent request routing across providers</p>
@@ -135,7 +152,14 @@ export function RoutingRulesView() {
 			/>
 
 			<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
-			<RoutingRuleInfoSheet rule={selectedRule} open={infoSheetOpen} onOpenChange={setInfoSheetOpen} />
+			<RoutingRuleInfoSheet
+				rule={selectedRule}
+				open={infoSheetOpen}
+				onOpenChange={setInfoSheetOpen}
+				onNavigate={handleRuleNavigate}
+				hasPrev={selectedRuleIndex > 0}
+				hasNext={selectedRuleIndex >= 0 && selectedRuleIndex < sortedRules.length - 1}
+			/>
 		</div>
 	);
 }

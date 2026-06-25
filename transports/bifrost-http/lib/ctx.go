@@ -33,8 +33,9 @@ const (
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
 	// FastHTTPUserValueModelCatalogResolution stores model catalog resolution metadata
-	// set by prepare*Request functions when a provider was auto-resolved. Picked up
-	// centrally in ConvertToBifrostContext to add the routing engine log.
+	// set by prepare*Request functions (and inline realtime catalog lookups) when a
+	// provider was auto-resolved. Picked up centrally in ConvertToBifrostContext to
+	// add the routing engine log via EmitModelCatalogRoutingLog.
 	FastHTTPUserValueModelCatalogResolution = "__bifrost_model_catalog_resolution"
 )
 
@@ -44,6 +45,26 @@ type ModelCatalogResolution struct {
 	Model            string
 	ResolvedProvider schemas.ModelProvider
 	AllProviders     []schemas.ModelProvider
+}
+
+// EmitModelCatalogRoutingLog appends a RoutingEngineModelCatalog log entry and
+// engines-used marker to bifrostCtx for an inline catalog resolution. Used by
+// ConvertToBifrostContext (normal HTTP path) and by realtime handlers that
+// bypass it (WebRTC, realtime client_secrets) so all paths emit observability
+// in the same shape regardless of which routing layer did the lookup.
+func EmitModelCatalogRoutingLog(bifrostCtx *schemas.BifrostContext, res *ModelCatalogResolution) {
+	if bifrostCtx == nil || res == nil {
+		return
+	}
+	providerStrs := make([]string, len(res.AllProviders))
+	for i, p := range res.AllProviders {
+		providerStrs[i] = string(p)
+	}
+	bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+		"No provider specified for model %s, found %d options in model catalog: [%s], selected: %s",
+		res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider,
+	))
+	schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
 }
 
 // ParseSessionIDFromBaggage extracts the session-id baggage member value.
@@ -149,13 +170,11 @@ func ParseSessionIDFromBaggage(header string) string {
 //	// session stickiness, and extra headers
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
-	allowDirectKeys := false
 	var matcher *HeaderMatcher
 	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
 	allowPerRequestStorageOverride := false
 	allowPerRequestRawOverride := false
 	if store != nil {
-		allowDirectKeys = store.ShouldAllowDirectKeys()
 		matcher = store.GetHeaderMatcher()
 		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
 		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
@@ -210,15 +229,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// it stores the resolution info on the fasthttp context. Emit the routing
 	// engine log and mark the engine as used centrally here.
 	if res, ok := ctx.UserValue(FastHTTPUserValueModelCatalogResolution).(*ModelCatalogResolution); ok && res != nil {
-		providerStrs := make([]string, len(res.AllProviders))
-		for i, p := range res.AllProviders {
-			providerStrs[i] = string(p)
-		}
-		bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-			"No provider specified for model %s, found %d options in model catalog: [%s], selecting first: %s",
-			res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider,
-		))
-		schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
+		EmitModelCatalogRoutingLog(bifrostCtx, res)
 	}
 
 	// Initialize tags map for collecting maxim tags
@@ -245,6 +256,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		"x-bf-api-key":    true,
 		"x-bf-api-key-id": true,
 		"x-bf-vk":         true,
+		"x-bf-direct-key": true,
 	}
 
 	// Debug: Log header matcher state
@@ -320,6 +332,26 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 				bifrostCtx.SetValue(schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
 				return true
 			}
+		}
+		// Handle MCP session ID header (x-bf-mcp-session-id): a client-issued
+		// opaque identifier used for session-mode per-user OAuth flows. Any
+		// non-empty string the caller can re-present on subsequent /mcp calls.
+		// 255-char cap matches ParseSessionIDFromBaggage so both ingestion
+		// paths reject oversized lookup keys consistently.
+		if keyStr == "x-bf-mcp-session-id" {
+			if v := strings.TrimSpace(string(value)); v != "" {
+				if len(v) > 255 {
+					// Don't echo any of the value — x-bf-mcp-session-id is a
+					// re-presentable lookup key for session-mode OAuth; the
+					// length alone is enough for debugging.
+					if logger != nil {
+						logger.Warn("x-bf-mcp-session-id exceeds 255 chars, ignoring: length=%d (skipped last %d chars)", len(v), len(v)-255)
+					}
+					return true
+				}
+				bifrostCtx.SetValue(schemas.BifrostContextKeyMCPSessionID, v)
+			}
+			return true
 		}
 		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key headers)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {
@@ -602,68 +634,91 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
-	// Extract per-user MCP OAuth user identifier from X-Bf-User-Id header
-	if mcpUserID := string(ctx.Request.Header.Peek("X-Bf-User-Id")); mcpUserID != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserID, mcpUserID)
+	// Collect all request query params for downstream use (e.g., governance routing CEL rules
+	// that read params["..."]). Keys are lowercased for case-insensitive lookup.
+	queryArgs := ctx.Request.URI().QueryArgs()
+	if queryArgs.Len() > 0 {
+		allQuery := make(map[string]string, queryArgs.Len())
+		queryArgs.All()(func(key, value []byte) bool {
+			allQuery[strings.ToLower(string(key))] = string(value)
+			return true
+		})
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, allQuery)
 	}
 
-	// Build and set OAuth redirect URI for per-user OAuth flows
-	var externalBaseURL string
+	// Build and set the MCP callback base URL. Used by per-user OAuth (appends
+	// /api/oauth/callback) and per-user headers (appends the workspace submit
+	// path) resolvers when initiating their respective auth flows. Bifrost is
+	// acting as the OAuth client to upstream MCP servers here, so the client-
+	// side override applies.
+	var externalClientURL string
 	if store != nil {
-		externalBaseURL = store.GetMCPExternalBaseURL()
+		externalClientURL = store.GetMCPExternalClientURL()
 	}
-	baseURL := BuildBaseURL(ctx, externalBaseURL)
+	baseURL := BuildBaseURL(ctx, externalClientURL)
 	if baseURL != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, baseURL+"/api/oauth/callback")
+		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPCallbackBaseURL, baseURL)
 	}
 
-	if allowDirectKeys {
-		// Extract API key from Authorization header (Bearer format), x-api-key, or x-goog-api-key header
-		var apiKey string
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
 
-		// TODO: fix plugin data leak
-		// Check Authorization header (Bearer format only - OpenAI style)
+	// Direct key bypass: requires both the server-side AllowDirectKeys setting and the
+	// per-request x-bf-direct-key: true header. The server setting is the admin opt-in;
+	// the header is the per-request opt-in from the caller.
+	if store != nil && store.ShouldAllowDirectKeys() && string(ctx.Request.Header.Peek("x-bf-direct-key")) == "true" {
+		var apiKey string
 		authHeader := string(ctx.Request.Header.Peek("Authorization"))
 		if authHeader != "" {
-			// Only accept Bearer token format: "Bearer ..."
 			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-				authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
+				authHeaderValue := strings.TrimSpace(authHeader[7:])
 				if authHeaderValue != "" && !strings.HasPrefix(strings.ToLower(authHeaderValue), governance.VirtualKeyPrefix) {
 					apiKey = authHeaderValue
 				}
-			} else {
-				apiKey = authHeader
 			}
 		}
-
 		if apiKey == "" {
-			// Check x-api-key (Anthropic style) header if no valid Authorization header found
-			xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
+			xAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key")))
 			if xAPIKey != "" && !strings.HasPrefix(strings.ToLower(xAPIKey), governance.VirtualKeyPrefix) {
-				apiKey = strings.TrimSpace(xAPIKey)
+				apiKey = xAPIKey
 			} else {
-				// Check x-goog-api-key (Google Gemini style) header if no valid Authorization header found
-				xGoogleAPIKey := string(ctx.Request.Header.Peek("x-goog-api-key"))
+				xGoogleAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key")))
 				if xGoogleAPIKey != "" && !strings.HasPrefix(strings.ToLower(xGoogleAPIKey), governance.VirtualKeyPrefix) {
-					apiKey = strings.TrimSpace(xGoogleAPIKey)
+					apiKey = xGoogleAPIKey
 				}
 			}
 		}
-
-		// If we found an API key, create a Key object and store it in context
 		if apiKey != "" {
 			key := schemas.Key{
-				ID:     "header-provided", // Identifier for header-provided keys
-				Value:  *schemas.NewEnvVar(apiKey),
-				Models: schemas.WhiteList{"*"}, // Allow all models
-				Weight: 1.0,                    // Default weight
+				ID:     "header-provided",
+				Name:   "header-provided",
+				Value:  schemas.EnvVar{Val: apiKey},
+				Models: []string{},
+				Weight: 1.0,
 			}
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
-	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
-	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
+
 	return bifrostCtx, cancel
+}
+
+// ValidateBaseURL checks that a URL is parseable with both scheme and host —
+// the same gate BuildBaseURL applies before honoring an override. Empty values
+// are accepted (caller decides whether absence is allowed). Logging is the
+// caller's responsibility. The error intentionally omits the offending value:
+// callers may pass URLs resolved from env vars (e.g. `env.MY_SECRET_URL`), so
+// echoing the value back in API responses or logs would let an attacker probe
+// process env state by feeding malformed env-var references.
+func ValidateBaseURL(val string) error {
+	if val == "" {
+		return nil
+	}
+	parsed, err := url.Parse(val)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("must be a fully-qualified URL with scheme and host (e.g. https://proxy.example.com)")
+	}
+	return nil
 }
 
 // BuildBaseURL returns the effective base URL for OAuth callbacks and metadata discovery.

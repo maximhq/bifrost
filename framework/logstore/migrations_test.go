@@ -47,6 +47,7 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Drop existing tables and migration tracking in the correct order.
 	// Preserve the shared migrations table — only clear its rows.
+	dropAllManagedMatViews(db)
 	db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 	db.Exec("DROP TABLE IF EXISTS logs")
 	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
@@ -71,10 +72,20 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Clean up tables after the test
 	t.Cleanup(func() {
+		dropAllManagedMatViews(db)
 		db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 		db.Exec("DROP TABLE IF EXISTS logs")
 		db.Exec("DELETE FROM migrations")
 	})
+}
+
+func dropAllManagedMatViews(db *gorm.DB) {
+	for _, view := range allMatViewNames() {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
+	for _, view := range legacyMatViewNames {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
 }
 
 // insertTestLog inserts a test log entry with the given metadata value.
@@ -148,7 +159,7 @@ func TestMigrationAddMetadataGINIndex_ValidJSON(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	// Run the migration (cleanup only) then ensure the index is built.
-	err = migrationAddMetadataGINIndex(ctx, db)
+	err = migrationAddMetadataGINIndex(ctx, db, testLogger{})
 	require.NoError(t, err, "Migration should succeed")
 	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed")
@@ -220,7 +231,7 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	// Run the migration (cleanup only) then ensure the index is built.
-	err = migrationAddMetadataGINIndex(ctx, db)
+	err = migrationAddMetadataGINIndex(ctx, db, testLogger{})
 	require.NoError(t, err, "Migration should succeed even with invalid JSON")
 	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed after invalid JSON cleanup")
@@ -258,7 +269,7 @@ func TestMigrationAddMetadataGINIndex_MixedData(t *testing.T) {
 	insertTestLog(t, db, "log-mixed-null", nil)
 
 	// Run the migration (cleanup only) then ensure the index is built.
-	err := migrationAddMetadataGINIndex(ctx, db)
+	err := migrationAddMetadataGINIndex(ctx, db, testLogger{})
 	require.NoError(t, err, "Migration should succeed")
 
 	sqlDB, err := db.DB()
@@ -305,9 +316,8 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	insertTestLog(t, db, "log-idempotent", &validJSON)
 
 	// Run the migration (cleanup only) then ensure the index is built.
-	err := migrationAddMetadataGINIndex(ctx, db)
+	err := migrationAddMetadataGINIndex(ctx, db, testLogger{})
 	require.NoError(t, err, "First migration should succeed")
-
 
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -331,7 +341,7 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	assert.Equal(t, validJSON, *meta1)
 
 	// Run the migration second time (should be idempotent due to gomigrate tracking)
-	err = migrationAddMetadataGINIndex(ctx, db)
+	err = migrationAddMetadataGINIndex(ctx, db, testLogger{})
 	require.NoError(t, err, "Second migration should succeed (idempotent)")
 	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "ensureMetadataGINIndex should be a no-op when index already exists")
@@ -355,7 +365,7 @@ func TestMigrationAddMetadataGINIndex_EmptyTable(t *testing.T) {
 	ctx := context.Background()
 
 	// Run the migration (cleanup only) then ensure the index is built.
-	err := migrationAddMetadataGINIndex(ctx, db)
+	err := migrationAddMetadataGINIndex(ctx, db, testLogger{})
 	require.NoError(t, err, "Migration should succeed on empty table")
 
 	sqlDB, err := db.DB()
@@ -400,7 +410,7 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 	insertTestLog(t, db, "log-edge-scientific", &scientificNotation)
 
 	// Run the migration (cleanup only) then ensure the index is built.
-	err := migrationAddMetadataGINIndex(ctx, db)
+	err := migrationAddMetadataGINIndex(ctx, db, testLogger{})
 	require.NoError(t, err, "Migration should succeed")
 
 	sqlDB, err := db.DB()

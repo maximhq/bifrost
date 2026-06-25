@@ -94,6 +94,7 @@ type TestScenarios struct {
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
 	Compaction                   bool // Server-side compaction (context management)
+	ExternalCompaction           bool // OpenAI /v1/responses/compact endpoint
 	InterleavedThinking          bool // Interleaved thinking between tool calls (beta)
 	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
 	EagerInputStreaming          bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
@@ -131,12 +132,15 @@ type ComprehensiveTestConfig struct {
 	VideoGenerationModel     string                 // Model for video generation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
-	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
-	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
+	BatchExtraParams         map[string]interface{}     // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
+	BatchOutputFolder        *schemas.BatchOutputFolder // Typed batch output location (e.g., GCS gs:// prefix for Vertex)
+	FileExtraParams          map[string]interface{}     // Extra params for file operations (e.g., s3_bucket for Bedrock)
+	FileStorageConfig        *schemas.FileStorageConfig // Typed storage config for file operations (e.g., GCS bucket for Vertex)
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
 	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                 // Model for compaction tests; defaults to claude-sonnet-4-6
+	ExternalCompactionModel  string                 // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                 // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                 // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                 // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
@@ -205,12 +209,6 @@ func replicateProviderTestKeys() []schemas.Key {
 	}
 }
 
-// ReplicateDirectKeyForListModels returns the key used for Replicate ListModels (deployments endpoint).
-// List-models tests set it on the context as schemas.BifrostContextKeyDirectKey so Bifrost passes only this key.
-func ReplicateDirectKeyForListModels() schemas.Key {
-	return replicateProviderTestKeys()[0]
-}
-
 // GetKeysForProvider returns the API keys and associated models for a given provider.
 func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	switch providerKey {
@@ -246,11 +244,12 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{
 				Models: []string{"*"},
 				Weight: 1.0,
-				Aliases: map[string]string{
-					"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-					"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
-					"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-					"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+				Aliases: schemas.KeyAliases{
+					"claude-3.7-sonnet": {ModelID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"},
+					"claude-4-sonnet":   {ModelID: "global.anthropic.claude-sonnet-4-20250514-v1:0"},
+					"claude-4.5-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+					"claude-4.6-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-6"},
+					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -263,12 +262,13 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{
 				Models: []string{"*"},
 				Weight: 1.0,
-				Aliases: map[string]string{
-					"claude-3.5-sonnet": "anthropic.claude-3-5-sonnet-20240620-v1:0",
-					"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-					"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
-					"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-					"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+				Aliases: schemas.KeyAliases{
+					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
+					"claude-3.7-sonnet": {ModelID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"},
+					"claude-4-sonnet":   {ModelID: "global.anthropic.claude-sonnet-4-20250514-v1:0"},
+					"claude-4.5-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+					"claude-4.6-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-6"},
+					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -306,17 +306,16 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"*"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
-					"gpt-4o":                 "gpt-4o",
-					"gpt-4o-backup":          "gpt-4o-3",
-					"claude-opus-4-5":        "claude-opus-4-5",
-					"o1":                     "o1",
-					"gpt-image-1":            "gpt-image-1",
-					"text-embedding-ada-002": "text-embedding-ada-002",
-					"sora-2":                 "sora-2",
+					"gpt-4o":                 {ModelID: "gpt-4o"},
+					"gpt-4o-backup":          {ModelID: "gpt-4o-3"},
+					"claude-opus-4-5":        {ModelID: "claude-opus-4-5"},
+					"o1":                     {ModelID: "o1"},
+					"gpt-image-1":            {ModelID: "gpt-image-1"},
+					"text-embedding-ada-002": {ModelID: "text-embedding-ada-002"},
+					"sora-2":                 {ModelID: "sora-2"},
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:     *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
-					APIVersion:   schemas.NewEnvVar("env.AZURE_API_VERSION"),
 					ClientID:     schemas.NewEnvVar("env.AZURE_CLIENT_ID"),
 					ClientSecret: schemas.NewEnvVar("env.AZURE_CLIENT_SECRET"),
 					TenantID:     schemas.NewEnvVar("env.AZURE_TENANT_ID"),
@@ -328,14 +327,13 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"*"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
-					"whisper":                   "whisper",
-					"whisper-1":                 "whisper",
-					"gpt-4o-mini-tts":           "gpt-4o-mini-tts",
-					"gpt-4o-mini-audio-preview": "gpt-4o-mini-audio-preview",
+					"whisper":                   {ModelID: "whisper"},
+					"whisper-1":                 {ModelID: "whisper"},
+					"gpt-4o-mini-tts":           {ModelID: "gpt-4o-mini-tts"},
+					"gpt-4o-mini-audio-preview": {ModelID: "gpt-4o-mini-audio-preview"},
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
-					APIVersion: schemas.NewEnvVar("env.AZURE_API_VERSION"),
+					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
 				},
 			},
 		}, nil
@@ -370,9 +368,9 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"claude-sonnet-4-5", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
-					"claude-sonnet-4-5": "claude-sonnet-4-5",
-					"claude-4.5-haiku":  "claude-haiku-4-5@20251001",
-					"claude-opus-4-5":   "claude-opus-4-5",
+					"claude-sonnet-4-5": {ModelID: "claude-sonnet-4-5"},
+					"claude-4.5-haiku":  {ModelID: "claude-haiku-4-5@20251001"},
+					"claude-opus-4-5":   {ModelID: "claude-opus-4-5"},
 				},
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
@@ -496,7 +494,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -772,7 +770,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 120,
+				DefaultRequestTimeoutInSeconds: 300,
 				MaxRetries:                     10, // OpenRouter can be variable (proxy service)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
@@ -1063,7 +1061,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:             schemas.Azure,
-		ChatModel:            "gpt-4o",
+		ChatModel:            "gpt-5-pro",
 		TextModel:            "", // Azure doesn't support text completion in newer models
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		TranscriptionModel:   "whisper-1",
@@ -1097,17 +1095,26 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageVariation:             false, // Azure does not support image variation
 			ImageVariationStream:       false, // Azure does not support streaming image variation
 			ListModels:                 true,
-			BatchCreate:                true, // Azure supports batch API
-			BatchList:                  true, // Azure supports batch API
-			BatchRetrieve:              true, // Azure supports batch API
-			BatchCancel:                true, // Azure supports batch API
-			BatchResults:               true, // Azure supports batch API
-			FileUpload:                 true, // Azure supports file API
-			FileList:                   true, // Azure supports file API
-			FileRetrieve:               true, // Azure supports file API
-			FileDelete:                 true, // Azure supports file API
-			FileContent:                true, // Azure supports file API
-			ChatAudio:                  true, // Azure supports chat audio
+			BatchCreate:                true,  // Azure supports batch API
+			BatchList:                  true,  // Azure supports batch API
+			BatchRetrieve:              true,  // Azure supports batch API
+			BatchCancel:                true,  // Azure supports batch API
+			BatchResults:               true,  // Azure supports batch API
+			FileUpload:                 true,  // Azure supports file API
+			FileList:                   true,  // Azure supports file API
+			FileRetrieve:               true,  // Azure supports file API
+			FileDelete:                 true,  // Azure supports file API
+			FileContent:                true,  // Azure supports file API
+			ChatAudio:                  true,  // Azure supports chat audio
+			ContainerCreate:            true,  // Azure supports container API
+			ContainerList:              false, // Azure hangs on this call
+			ContainerRetrieve:          true,  // Azure supports container API
+			ContainerDelete:            true,  // Azure supports container API
+			ContainerFileCreate:        true,  // Azure supports container file API
+			ContainerFileList:          true,  // Azure supports container file API
+			ContainerFileRetrieve:      true,  // Azure supports container file API
+			ContainerFileContent:       true,  // Azure supports container file API
+			ContainerFileDelete:        true,  // Azure supports container file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

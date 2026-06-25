@@ -331,7 +331,7 @@ func TestToOpenAIResponsesRequest_FireworksPreservesNativeFields(t *testing.T) {
 		},
 	}
 
-	request := ToOpenAIResponsesRequest(bifrostReq)
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if request == nil {
 		t.Fatal("expected non-nil request")
 	}
@@ -868,5 +868,96 @@ func TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported(t *testing.
 	}
 	if len(decoded.Tools) != 3 {
 		t.Errorf("expected 3 tools preserved, got %d", len(decoded.Tools))
+	}
+}
+
+// TestResponsesToolMessage_NamespaceRoundTrip verifies that the namespace field
+// on function_call items (returned by OpenAI when namespace tools are used) is
+// preserved through unmarshal → marshal without being dropped.
+func TestResponsesToolMessage_NamespaceRoundTrip(t *testing.T) {
+	raw := `{
+		"type": "function_call",
+		"id": "fc_abc123",
+		"call_id": "call_abc123",
+		"name": "get_app_state",
+		"namespace": "mcp__computer_use__",
+		"arguments": "{\"app\":\"Google Chrome\"}",
+		"status": "completed"
+	}`
+
+	var msg schemas.ResponsesMessage
+	if err := sonic.UnmarshalString(raw, &msg); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil {
+		t.Fatal("ResponsesToolMessage is nil after unmarshal")
+	}
+	if msg.ResponsesToolMessage.Namespace == nil {
+		t.Fatal("namespace field was dropped during unmarshal")
+	}
+	if *msg.ResponsesToolMessage.Namespace != "mcp__computer_use__" {
+		t.Fatalf("namespace mismatch: want %q, got %q", "mcp__computer_use__", *msg.ResponsesToolMessage.Namespace)
+	}
+
+	out, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"namespace":"mcp__computer_use__"`) {
+		t.Fatalf("namespace not in marshaled output: %s", string(out))
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped verifies that the
+// "summary" field is removed from a compaction input item (OpenAI rejects it as an
+// unknown parameter) while a sibling reasoning item keeps its summary array intact.
+func TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped(t *testing.T) {
+	enc := "gAAAA-encrypted"
+	compactionType := schemas.ResponsesMessageTypeCompaction
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+
+	input := OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				// Compaction item: encrypted_content rides the embedded ResponsesReasoning,
+				// which would otherwise re-emit summary:null. summary must be stripped.
+				Type:               &compactionType,
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: nil, EncryptedContent: &enc},
+			},
+			{
+				// Reasoning item: summary (even empty []) is required by OpenAI and must survive.
+				Type:               &reasoningType,
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: &enc},
+			},
+		},
+	}
+
+	data, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("failed to unmarshal serialized input: %v\n%s", err, string(data))
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d: %s", len(items), string(data))
+	}
+
+	// Compaction item (index 0) must NOT carry a summary key.
+	if _, exists := items[0]["summary"]; exists {
+		t.Errorf("compaction item should not contain a summary field, got: %s", string(data))
+	}
+	if _, exists := items[0]["encrypted_content"]; !exists {
+		t.Errorf("compaction item should retain encrypted_content, got: %s", string(data))
+	}
+
+	// Reasoning item (index 1) must retain its summary array.
+	rawSummary, exists := items[1]["summary"]
+	if !exists {
+		t.Errorf("reasoning item should retain its summary field, got: %s", string(data))
+	} else if string(rawSummary) != "[]" {
+		t.Errorf("reasoning item summary should be [], got: %s", string(rawSummary))
 	}
 }

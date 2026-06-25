@@ -152,16 +152,13 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 	response := &schemas.BifrostResponsesResponse{}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	_, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
 	response.ExtraFields.Latency = latencyMs
 	response.ExtraFields.ProviderResponseHeaders = headers
 	response.ExtraFields.Provider = provider.GetProviderKey()
-	if sendBackRawRequest {
-		response.ExtraFields.RawRequest = rawRequest
-	}
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -187,16 +184,13 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 	response := &schemas.BifrostResponsesDeleteResponse{}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	_, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
 	response.ExtraFields.Latency = latencyMs
 	response.ExtraFields.ProviderResponseHeaders = headers
 	response.ExtraFields.Provider = provider.GetProviderKey()
-	if sendBackRawRequest {
-		response.ExtraFields.RawRequest = rawRequest
-	}
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -258,16 +252,13 @@ func (provider *OpenAIProvider) ResponsesInputItems(ctx *schemas.BifrostContext,
 	response := &schemas.BifrostResponsesInputItemsResponse{}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	_, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
 	response.ExtraFields.Latency = latencyMs
 	response.ExtraFields.ProviderResponseHeaders = headers
 	response.ExtraFields.Provider = provider.GetProviderKey()
-	if sendBackRawRequest {
-		response.ExtraFields.RawRequest = rawRequest
-	}
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}

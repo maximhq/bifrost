@@ -20,10 +20,60 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 	return KnownProvidersNames.includes(provider.toLowerCase() as KnownProvider);
 };
 
+// ModelFamily matching Go's schemas.ModelFamily — 1st-tier family routing enum
+export type ModelFamily =
+	| "anthropic"
+	| "openai"
+	| "mistral"
+	| "cohere"
+	| "gemini"
+	| "gemma"
+	| "llama"
+	| "imagen"
+	| "veo"
+	| "nova"
+	| "titan";
+
+export const ModelFamilyValues: ModelFamily[] = [
+	"anthropic",
+	"openai",
+	"mistral",
+	"cohere",
+	"gemini",
+	"gemma",
+	"llama",
+	"imagen",
+	"veo",
+	"nova",
+	"titan",
+];
+
+// AliasConfig matching Go's schemas.AliasConfig.
+// Go embeds AzureAliasCfg/VertexAliasCfg/BedrockAliasCfg/ReplicateAliasCfg as
+// pointer structs which flatten on the wire — sub-config fields live at the
+// top level of the JSON object.
+export interface AliasConfig {
+	model_id: string;
+	model_name?: string;
+	model_family?: ModelFamily;
+	description?: string;
+	region?: EnvVar;
+	// Azure overrides
+	api_version?: string;
+	anthropic_version?: string;
+	endpoint?: EnvVar;
+	// Vertex overrides
+	project_id?: EnvVar;
+	project_number?: EnvVar;
+	// Bedrock overrides
+	inference_profile_arn?: EnvVar;
+	// Replicate overrides
+	use_deployments_endpoint?: boolean;
+}
+
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
 	endpoint: EnvVar;
-	api_version?: EnvVar;
 	client_id?: EnvVar;
 	client_secret?: EnvVar;
 	tenant_id?: EnvVar;
@@ -32,7 +82,6 @@ export interface AzureKeyConfig {
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	endpoint: { value: "", env_var: "", from_env: false },
-	api_version: { value: "2024-02-01", env_var: "", from_env: false },
 	client_id: { value: "", env_var: "", from_env: false },
 	client_secret: { value: "", env_var: "", from_env: false },
 	tenant_id: { value: "", env_var: "", from_env: false },
@@ -136,7 +185,7 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
-	aliases?: Record<string, string>;
+	aliases?: Record<string, AliasConfig>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
@@ -179,6 +228,7 @@ export interface NetworkConfig {
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
 	beta_header_overrides?: Record<string, boolean>;
+	allow_private_network?: boolean;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize
@@ -382,6 +432,9 @@ export interface FrameworkConfig {
 	id: number;
 	pricing_url: string;
 	pricing_sync_interval: number;
+	model_parameters_url: string;
+	mcp_library_url?: string;
+	mcp_library_sync_interval?: number;
 }
 
 // Auth config
@@ -389,7 +442,6 @@ export interface AuthConfig {
 	admin_username: EnvVar;
 	admin_password: EnvVar;
 	is_enabled: boolean;
-	disable_auth_on_inference?: boolean;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
@@ -446,6 +498,13 @@ export interface RestartRequiredConfig {
 }
 
 // Bifrost Config
+export type PluginSpanFilterMode = "include" | "exclude";
+
+export interface PluginSpanFilter {
+	mode: PluginSpanFilterMode;
+	plugins: string[];
+}
+
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
@@ -455,7 +514,10 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_git_available: boolean;
 	auth_token?: string;
+	metadata?: Record<string, unknown>;
+	env_label?: string;
 }
 
 export interface CompatConfig {
@@ -474,10 +536,10 @@ export interface CoreConfig {
 	disable_content_logging: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
+	allow_direct_keys: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
-	allow_direct_keys: boolean;
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
@@ -487,6 +549,7 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_disable_auto_tool_inject: boolean;
+	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
@@ -494,7 +557,7 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
-	mcp_external_base_url?: EnvVar;
+	mcp_external_client_url?: EnvVar;
 }
 
 export const DefaultCoreConfig: CoreConfig = {
@@ -505,10 +568,10 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_content_logging: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
+	allow_direct_keys: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
-	allow_direct_keys: false,
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },
@@ -517,6 +580,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
 	mcp_disable_auto_tool_inject: false,
+	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],
@@ -528,12 +592,14 @@ export const DefaultCoreConfig: CoreConfig = {
 
 // Semantic cache configuration types
 interface BaseCacheConfig {
-	ttl_seconds: number;
+	ttl: number;
 	threshold: number;
 	conversation_history_threshold?: number;
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	vector_store_namespace?: string;
+	default_cache_key?: string;
 	created_at?: string;
 	updated_at?: string;
 }

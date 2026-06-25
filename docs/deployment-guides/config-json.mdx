@@ -1,6 +1,6 @@
 ---
 title: "Quick Start"
-description: "Configure Bifrost using a config.json file — GitOps-friendly, no-UI deployments, and multinode OSS setups"
+description: "Configure Bifrost using a config.json file - GitOps-friendly, no-UI deployments, and multinode OSS setups"
 icon: "file-code"
 ---
 
@@ -12,22 +12,25 @@ icon: "file-code"
 
 ---
 
-## Two Configuration Modes
+## Configuration Sources
 
-Bifrost supports **two mutually exclusive modes**. You cannot run both at the same time.
+Bifrost stores runtime configuration in a config database by default, so settings can be edited through the Web UI or API. You can also provide a `config.json` file to seed or reconcile that database at startup. To run with only `config.json`, set `config_store.enabled: false`.
 
-| Mode | When | Behaviour |
+| Setup | When | Behaviour |
 |------|------|-----------|
-| **Web UI / database** | No `config.json`, or `config.json` with `config_store` enabled | Full UI available, configuration stored in SQLite or PostgreSQL |
-| **File-based (`config.json`)** | `config.json` present, `config_store` disabled | UI disabled, all config loaded from file at startup, restart required for changes |
+| **Web UI / database** | No `config.json` | Bifrost creates a default SQLite config store and runtime changes are saved through the UI or API |
+| **DB-backed `config.json`** | `config.json` exists and `config_store` is omitted or enabled | File-backed sections seed or reconcile the config store at startup; UI/API edits remain available |
+| **File-only `config.json`** | `config_store.enabled` is `false` | Config is loaded from file into memory at startup; config-backed UI/API changes are unavailable and file changes require restart |
 
 <Note>
-See [Setting Up](/quickstart/gateway/setting-up#two-configuration-modes) for a full explanation of both modes and how `config_store` bootstrapping works.
+By default, DB-backed `config.json` uses `source_of_truth: "split"`: unchanged file-backed rows preserve UI/API edits, while changed file-backed rows are applied on the next startup. Use `source_of_truth: "config.json"` only when explicitly present file sections should replace matching DB state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full rules, including missing-vs-empty section behavior.
 </Note>
 
 ---
 
 ## Minimal Working Example
+
+This example uses file-only configuration for the smallest self-contained setup.
 
 ```json
 {
@@ -103,7 +106,7 @@ Never put secrets directly in `config.json`. Use the `env.` prefix to reference 
 }
 ```
 
-Set the actual values through your deployment platform — shell environment, Docker `-e`, Kubernetes Secrets mounted as env vars, or a `.env` file.
+Set the actual values through your deployment platform - shell environment, Docker `-e`, Kubernetes Secrets mounted as env vars, or a `.env` file.
 
 ---
 
@@ -136,7 +139,6 @@ A production-ready file with PostgreSQL storage, multi-provider setup, governanc
     "enable_logging": true,
     "log_retention_days": 90,
     "enforce_auth_on_inference": true,
-    "allow_direct_keys": false,
     "allowed_origins": ["https://app.yourcompany.com"]
   },
 
@@ -306,7 +308,7 @@ Ready-to-use reference configurations from the [examples/configs](https://github
 
 | Example | Description |
 |---------|-------------|
-| [noconfigstorenologstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/noconfigstorenologstore/config.json) | Bare-minimum file-only mode — no database, no UI, providers loaded from file |
+| [noconfigstorenologstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/noconfigstorenologstore/config.json) | Bare-minimum file-only mode - no database, no UI, providers loaded from file |
 | [partial](https://github.com/maximhq/bifrost/blob/main/examples/configs/partial/config.json) | SQLite config store with a minimal provider setup |
 | [v1compat](https://github.com/maximhq/bifrost/blob/main/examples/configs/v1compat/config.json) | `"version": 1` for v1.4.x array semantics (empty = allow all) |
 
@@ -389,7 +391,7 @@ Ready-to-use reference configurations from the [examples/configs](https://github
     OpenAI, Anthropic, Azure, Bedrock, Vertex, Groq, self-hosted
   </Card>
   <Card title="Storage" icon="database" href="/deployment-guides/config-json/storage">
-    config_store, logs_store, vector_store — SQLite, PostgreSQL, object storage
+    config_store, logs_store, vector_store - SQLite, PostgreSQL, object storage
   </Card>
   <Card title="Plugins" icon="puzzle-piece" href="/deployment-guides/config-json/plugins">
     Semantic cache, OTel, Maxim, Datadog, custom plugins

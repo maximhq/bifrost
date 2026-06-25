@@ -39,7 +39,7 @@ func (a *AgentModeExecutor) ExecuteAgentForChatRequest(
 	initialResponse *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create adapter for Chat API
@@ -92,7 +92,7 @@ func (a *AgentModeExecutor) ExecuteAgentForResponsesRequest(
 	initialResponse *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create adapter for Responses API
@@ -142,7 +142,7 @@ func (a *AgentModeExecutor) executeAgent(
 	maxAgentDepth int,
 	adapter agentAPIAdapter,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (interface{}, *schemas.BifrostError) {
 	// Get initial response from adapter
@@ -286,7 +286,7 @@ func (a *AgentModeExecutor) executeAgent(
 			wg := sync.WaitGroup{}
 			wg.Add(len(autoExecutableTools))
 			channelToolResults := make(chan *schemas.ChatMessage, len(autoExecutableTools))
-			var authRequiredErr *schemas.MCPUserOAuthRequiredError
+			var authRequiredErr *schemas.MCPAuthRequiredError
 			var authRequiredOnce sync.Once
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
@@ -304,11 +304,11 @@ func (a *AgentModeExecutor) executeAgent(
 
 					mcpResponse, toolErr := executeToolFunc(toolCtx, mcpRequest)
 					if toolErr != nil {
-						// Check if this is a per-user OAuth auth-required error
-						var oauthErr *schemas.MCPUserOAuthRequiredError
-						if errors.As(toolErr, &oauthErr) {
+						// Check if this is a per-user auth-required error
+						var authErr *schemas.MCPAuthRequiredError
+						if errors.As(toolErr, &authErr) {
 							authRequiredOnce.Do(func() {
-								authRequiredErr = oauthErr
+								authRequiredErr = authErr
 							})
 							channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 							return
@@ -317,11 +317,9 @@ func (a *AgentModeExecutor) executeAgent(
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
 						channelToolResults <- mcpResponse.ChatMessage
-					} else if mcpResponse != nil && mcpResponse.ChatMessage == nil {
-						// Send empty result when mcpResponse is non-nil but ChatMessage is nil
-						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					} else {
-						// Fallback: send empty result when both mcpResponse and toolErr are nil
+						// Fallback: empty result when mcpResponse is missing the chat message
+						// (either nil mcpResponse, missing execute-tool payload, or nil ChatMessage).
 						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					}
 				}(toolCall)

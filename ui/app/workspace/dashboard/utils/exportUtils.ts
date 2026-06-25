@@ -7,6 +7,7 @@
 
 import type {
 	CostHistogramResponse,
+	DimensionRankingsResponse,
 	LatencyHistogramResponse,
 	LogsHistogramResponse,
 	MCPCostHistogramResponse,
@@ -135,6 +136,30 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 	return { headers, rows };
 }
 
+export function dimensionRankingsToCSV(data: DimensionRankingsResponse | null, dimensionLabel: string): CSVData {
+	const headers = [
+		`${dimensionLabel} ID`,
+		`${dimensionLabel} Name`,
+		"Total Requests",
+		"Total Tokens",
+		"Total Cost ($)",
+		"Requests Trend (%)",
+		"Tokens Trend (%)",
+		"Cost Trend (%)",
+	];
+	const rows = (data?.rankings ?? []).map((r) => [
+		r.id,
+		r.name ?? "",
+		r.total_requests,
+		r.total_tokens,
+		r.total_cost,
+		r.trend.has_previous_period ? r.trend.requests_trend : "N/A",
+		r.trend.has_previous_period ? r.trend.tokens_trend : "N/A",
+		r.trend.has_previous_period ? r.trend.cost_trend : "N/A",
+	]);
+	return { headers, rows };
+}
+
 export function mcpVolumeToCSV(data: MCPHistogramResponse | null): CSVData {
 	const headers = ["Timestamp", "Total Executions", "Success", "Error"];
 	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error]);
@@ -166,13 +191,18 @@ export interface DashboardData {
 	providerLatencyData: ProviderLatencyHistogramResponse | null;
 	// Rankings
 	rankingsData: ModelRankingsResponse | null;
+	teamRankingsData: DimensionRankingsResponse | null;
+	customerRankingsData: DimensionRankingsResponse | null;
+	buRankingsData: DimensionRankingsResponse | null;
+	userRankingsData: DimensionRankingsResponse | null;
+	virtualKeyRankingsData: DimensionRankingsResponse | null;
 	// MCP
 	mcpHistogramData: MCPHistogramResponse | null;
 	mcpCostData: MCPCostHistogramResponse | null;
 	mcpTopToolsData: MCPTopToolsResponse | null;
 }
 
-export type ExportTab = "all" | "overview" | "provider-usage" | "rankings" | "mcp";
+export type ExportTab = "all" | "overview" | "provider-usage" | "rankings" | "team-rankings" | "customer-rankings" | "bu-rankings" | "user-rankings" | "virtual-key-rankings" | "mcp";
 
 /** Return all CSV sections for the selected scope. Each entry becomes its own sheet / file section. */
 export function getCSVSections(data: DashboardData, tab: ExportTab): { name: string; csv: CSVData }[] {
@@ -198,6 +228,26 @@ export function getCSVSections(data: DashboardData, tab: ExportTab): { name: str
 
 	if (tab === "all" || tab === "rankings") {
 		sections.push({ name: "model-rankings", csv: modelRankingsToCSV(data.rankingsData) });
+	}
+
+	if (tab === "all" || tab === "team-rankings") {
+		sections.push({ name: "team-rankings", csv: dimensionRankingsToCSV(data.teamRankingsData, "Team") });
+	}
+
+	if (tab === "all" || tab === "customer-rankings") {
+		sections.push({ name: "customer-rankings", csv: dimensionRankingsToCSV(data.customerRankingsData, "Customer") });
+	}
+
+	if (tab === "all" || tab === "bu-rankings") {
+		sections.push({ name: "bu-rankings", csv: dimensionRankingsToCSV(data.buRankingsData, "Business Unit") });
+	}
+
+	if (tab === "all" || tab === "user-rankings") {
+		sections.push({ name: "user-rankings", csv: dimensionRankingsToCSV(data.userRankingsData, "User") });
+	}
+
+	if (tab === "all" || tab === "virtual-key-rankings") {
+		sections.push({ name: "virtual-key-rankings", csv: dimensionRankingsToCSV(data.virtualKeyRankingsData, "Virtual Key") });
 	}
 
 	if (tab === "all" || tab === "mcp") {

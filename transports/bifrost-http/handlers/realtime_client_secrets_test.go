@@ -65,7 +65,8 @@ func TestResolveRealtimeClientSecretTarget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			gotProvider, gotModel, _, err := resolveRealtimeClientSecretTarget(tt.route, tt.body)
+			var ctx fasthttp.RequestCtx
+			gotProvider, gotModel, _, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, tt.route, tt.body)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -118,7 +119,8 @@ func TestResolveRealtimeClientSecretTarget_NormalizesModel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, normalizedBody, err := resolveRealtimeClientSecretTarget(tt.route, []byte(tt.body))
+			var ctx fasthttp.RequestCtx
+			_, _, normalizedBody, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, tt.route, []byte(tt.body))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -306,6 +308,10 @@ func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPreHook(_ *schemas.Bi
 }
 
 func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPostHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponse) error {
+	return nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
 }
 

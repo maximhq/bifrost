@@ -6,6 +6,7 @@ import { getErrorMessage } from "@/lib/store";
 import { useCreateProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
 import { modelProviderKeySchema } from "@/lib/types/schemas";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
 import { useCallback, useEffect } from "react";
@@ -29,6 +30,7 @@ const providerKeyFormSchema = z.object({
 type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 
 export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: Props) {
+	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [createProviderKey, { isLoading: isCreatingProviderKey }] = useCreateProviderKeyMutation();
 	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
 	const { data: keys = [] } = useGetProviderKeysQuery(provider.name);
@@ -66,6 +68,9 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 	}, [isEditing, form]);
 
 	const getTooltipContent = useCallback(() => {
+		if (!hasUpdateProviderAccess) {
+			return "You do not have permission to modify provider keys";
+		}
 		if (!form.formState.isValid && form.formState.errors.root?.message) {
 			return form.formState.errors.root?.message;
 		}
@@ -73,7 +78,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 			return "No changes made";
 		}
 		return null;
-	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty]);
+	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess]);
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
@@ -93,14 +98,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		}
 		const mutation = isEditing
 			? updateProviderKey({
-				provider: provider.name,
-				keyId: currentKey!.id,
-				key,
-			})
+					provider: provider.name,
+					keyId: currentKey!.id,
+					key,
+				})
 			: createProviderKey({
-				provider: provider.name,
-				key,
-			});
+					provider: provider.name,
+					key,
+				});
 
 		mutation
 			.unwrap()
@@ -108,6 +113,10 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 				onSave();
 			})
 			.catch((err) => {
+				if (err?.status === 409) {
+					form.setError("key.name", { message: getErrorMessage(err) });
+					return;
+				}
 				toast.error(isEditing ? "Error updating key" : "Error creating key", {
 					description: getErrorMessage(err),
 				});
@@ -116,8 +125,8 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="pt-4 grow flex flex-col gap-6">
-				<div className="px-8 grow">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="flex grow flex-col gap-6 pt-4">
+				<div className="grow px-8">
 					<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
 					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
 				</div>
@@ -132,7 +141,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 									<span>
 										<Button
 											type="submit"
-											disabled={!form.formState.isDirty}
+											disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
 											isLoading={form.formState.isSubmitting || isCreatingProviderKey || isUpdatingProviderKey}
 											data-testid="key-save-btn"
 										>

@@ -44,12 +44,17 @@ type LogStore interface {
 	GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
+	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
 	// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
 	GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error)
 	// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
 	GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error)
+	// GetNodeUsageAfter returns cumulative usage for rows after the provided stable
+	// cursor. When the cursor has both timestamp and log ID, rows with the same
+	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
+	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
 	Flush(ctx context.Context, since time.Time) error
@@ -59,12 +64,12 @@ type LogStore interface {
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 
 	// Distinct value methods for filter data
-	GetDistinctModels(ctx context.Context) ([]string, error)
-	GetDistinctAliases(ctx context.Context) ([]string, error)
-	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error)
-	GetDistinctRoutingEngines(ctx context.Context) ([]string, error)
-	GetDistinctStopReasons(ctx context.Context) ([]string, error)
-	GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error)
+	GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error)
+	GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error)
+	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
+	GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
+	GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error)
+	GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
 
 	// MCP Tool Log histogram methods
 	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)
@@ -73,6 +78,7 @@ type LogStore interface {
 
 	// MCP Tool Log methods
 	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error
+	BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error
 	FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error)
 	UpdateMCPToolLog(ctx context.Context, id string, entry any) error
 	SearchMCPToolLogs(ctx context.Context, filters MCPToolLogSearchFilters, pagination PaginationOptions) (*MCPToolLogSearchResult, error)
@@ -80,9 +86,9 @@ type LogStore interface {
 	HasMCPToolLogs(ctx context.Context) (bool, error)
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
-	GetAvailableToolNames(ctx context.Context) ([]string, error)
-	GetAvailableServerLabels(ctx context.Context) ([]string, error)
-	GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error)
+	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
+	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
+	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
@@ -135,7 +141,7 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger), nil
+		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields), nil
 	}
 	return inner, nil
 }

@@ -76,7 +76,6 @@ helm upgrade bifrost bifrost/bifrost \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.client.allowedOrigins` | CORS allowed origins | `["*"]` |
-| `bifrost.client.allowDirectKeys` | Allow callers to pass provider keys directly in requests | `false` |
 | `bifrost.client.enforceGovernanceHeader` | Require `x-bf-vk` virtual-key header on every request | `false` |
 | `bifrost.client.maxRequestBodySizeMb` | Maximum allowed request body size | `100` |
 | `bifrost.client.whitelistedRoutes` | Routes that bypass auth middleware | `[]` |
@@ -87,7 +86,6 @@ bifrost:
     allowedOrigins:
       - "https://app.yourdomain.com"
       - "https://admin.yourdomain.com"
-    allowDirectKeys: false         # Prevent callers from supplying raw provider keys
     enforceGovernanceHeader: true  # Every request must carry a virtual key
     maxRequestBodySizeMb: 50
     whitelistedRoutes:
@@ -98,8 +96,7 @@ bifrost:
 ```bash
 helm install bifrost bifrost/bifrost \
   --set image.tag=v1.4.11 \
-  --set bifrost.client.enforceGovernanceHeader=true \
-  --set bifrost.client.allowDirectKeys=false
+  --set bifrost.client.enforceGovernanceHeader=true
 ```
 
 ---
@@ -115,7 +112,7 @@ Controls which `x-bf-eh-*` headers are forwarded to upstream LLM providers.
 | `bifrost.client.requiredHeaders` | Headers that must be present on every request | `[]` |
 | `bifrost.client.allowedHeaders` | Additional headers permitted for CORS and WebSocket | `[]` |
 
-When both lists are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode — only listed headers are forwarded.
+When both lists are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode - only listed headers are forwarded.
 
 ```yaml
 bifrost:
@@ -172,7 +169,7 @@ helm upgrade bifrost bifrost/bifrost \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `bifrost.encryptionKey` | Optional encryption key (plain text — use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
+| `bifrost.encryptionKey` | Optional encryption key (plain text - use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
 | `bifrost.encryptionKeySecret.name` | Kubernetes Secret name containing the key | `""` |
 | `bifrost.encryptionKeySecret.key` | Key within the secret | `"encryption-key"` |
 
@@ -295,7 +292,6 @@ bifrost:
     disableContentLogging: false
     logRetentionDays: 90
     enforceGovernanceHeader: true
-    allowDirectKeys: false
     maxRequestBodySizeMb: 100
     headerFilterConfig:
       allowlist: []

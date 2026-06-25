@@ -46,9 +46,6 @@ ClientConfig:
       type: boolean
       deprecated: true
       description: "Deprecated: use enforce_auth_on_inference instead"
-    allow_direct_keys:
-      type: boolean
-      description: Whether to allow direct API keys
     max_request_body_size_mb:
       type: integer
       description: Maximum request body size in MB
@@ -140,6 +137,8 @@ AuthConfig:
       type: boolean
     disable_auth_on_inference:
       type: boolean
+      deprecated: true
+      description: "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
 
 HeaderFilterConfig:
   type: object

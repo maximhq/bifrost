@@ -26,6 +26,7 @@ type testConfigStore struct {
 	mu           sync.Mutex
 	oauthConfigs map[string]*tables.TableOauthConfig
 	oauthTokens  map[string]*tables.TableOauthToken
+	clientConfig *configstore.ClientConfig
 }
 
 func newTestConfigStore() *testConfigStore {
@@ -80,6 +81,15 @@ func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.Tabl
 	return nil
 }
 
+func (s *testConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clientConfig == nil {
+		return nil, nil
+	}
+	return bifrost.Ptr(*s.clientConfig), nil
+}
+
 func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -103,19 +113,19 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 		AccessToken:  "old-access-token",
 		RefreshToken: "refresh-token",
 		TokenType:    "bearer",
-		ExpiresAt:    bifrost.Ptr(time.Now().Add(1 * time.Minute)),
+		ExpiresAt:    new(time.Now().Add(1 * time.Minute)),
 		Scopes:       "[]",
 	}
 
 	oauthConfigID = "test-oauth-config-id"
 	store.oauthConfigs[oauthConfigID] = &tables.TableOauthConfig{
 		ID:          oauthConfigID,
-		ClientID:    "test-client-id",
+		ClientID:    schemas.NewEnvVar("test-client-id"),
 		TokenURL:    tokenURL,
 		RedirectURI: "http://localhost/callback",
 		Scopes:      `["read"]`,
 		Status:      "authorized",
-		TokenID:     bifrost.Ptr(tokenID),
+		TokenID:     new(tokenID),
 		ExpiresAt:   time.Now().Add(24 * time.Hour),
 	}
 
@@ -157,6 +167,19 @@ func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
 		require.Len(t, tokens, 1)
 		assert.Equal(t, "expiring", tokens[0].ID)
 	})
+}
+
+func TestMCPTempTokenAuthEnabled(t *testing.T) {
+	store := newTestConfigStore()
+	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	assert.False(t, provider.mcpTempTokenAuthEnabled(context.Background()))
+
+	store.clientConfig = &configstore.ClientConfig{}
+	assert.False(t, provider.mcpTempTokenAuthEnabled(context.Background()))
+
+	store.clientConfig.MCPEnableTempTokenAuth = true
+	assert.True(t, provider.mcpTempTokenAuthEnabled(context.Background()))
 }
 
 func TestTokenRefreshWorker_TransientError_DoesNotMarkExpired(t *testing.T) {

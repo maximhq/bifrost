@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hash"
 	"maps"
+	"math"
 	"sort"
 	"strconv"
 
@@ -43,6 +45,25 @@ type CompatConfig struct {
 	ShouldConvertParams    bool `json:"should_convert_params"`
 }
 
+// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+func (c *CompatConfig) UnmarshalJSON(data []byte) error {
+	type compatConfig struct {
+		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams       *bool `json:"should_drop_params"`
+		ShouldConvertParams    *bool `json:"should_convert_params"`
+	}
+	var s compatConfig
+	if err := sonic.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	c.ConvertTextToChat = s.ConvertTextToChat == nil || *s.ConvertTextToChat
+	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
+	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
+	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	return nil
+}
+
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
@@ -53,12 +74,12 @@ type ClientConfig struct {
 	DisableContentLogging                 bool                             `json:"disable_content_logging"`                    // Disable logging of content
 	AllowPerRequestContentStorageOverride bool                             `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride            bool                             `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
+	AllowDirectKeys                       bool                             `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
 	DisableDBPingsInHealth                bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays                      int                              `json:"log_retention_days" validate:"min=1"`  // Number of days to retain logs (minimum 1 day)
 	EnforceAuthOnInference                bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
 	EnforceGovernanceHeader               bool                             `json:"enforce_governance_header,omitempty"`  // Deprecated: use EnforceAuthOnInference
 	EnforceSCIMAuth                       bool                             `json:"enforce_scim_auth,omitempty"`          // Deprecated: use EnforceAuthOnInference
-	AllowDirectKeys                       bool                             `json:"allow_direct_keys"`                    // Allow direct keys to be used for requests
 	AllowedOrigins                        []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	AllowedHeaders                        []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
 	MaxRequestBodySizeMB                  int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
@@ -68,6 +89,7 @@ type ClientConfig struct {
 	MCPCodeModeBindingLevel               string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	MCPDisableAutoToolInject              bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
+	MCPEnableTempTokenAuth                bool                             `json:"mcp_enable_temp_token_auth"`           // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL                     int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                       []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
@@ -75,8 +97,26 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalBaseURL                    *schemas.EnvVar                  `json:"mcp_external_base_url,omitempty"`      // Public base URL for OAuth callbacks/discovery when behind a reverse proxy; supports env var syntax ("env.MY_VAR")
+	MCPExternalClientURL                  *schemas.EnvVar                  `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
+}
+
+// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+func (c *ClientConfig) UnmarshalJSON(data []byte) error {
+	type ClientConfigAlias ClientConfig
+	alias := ClientConfigAlias{
+		Compat: CompatConfig{
+			ConvertTextToChat:      true,
+			ConvertChatToResponses: true,
+			ShouldDropParams:       true,
+			ShouldConvertParams:    true,
+		},
+	}
+	if err := sonic.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*c = ClientConfig(alias)
+	return nil
 }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
@@ -114,12 +154,6 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enforceAuthOnInference:true"))
 	} else {
 		hash.Write([]byte("enforceAuthOnInference:false"))
-	}
-
-	if c.AllowDirectKeys {
-		hash.Write([]byte("allowDirectKeys:true"))
-	} else {
-		hash.Write([]byte("allowDirectKeys:false"))
 	}
 
 	if c.Compat.ConvertTextToChat {
@@ -178,12 +212,22 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPEnableTempTokenAuth {
+		hash.Write([]byte("mcpEnableTempTokenAuth:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.AllowPerRequestContentStorageOverride {
 		hash.Write([]byte("allowPerRequestContentStorageOverride:true"))
 	}
 
 	if c.AllowPerRequestRawOverride {
 		hash.Write([]byte("allowPerRequestRawOverride:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.AllowDirectKeys {
+		hash.Write([]byte("allowDirectKeys:true"))
 	}
 
 	if c.AsyncJobResultTTL > 0 {
@@ -314,15 +358,45 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 	}
 
-	if c.MCPExternalBaseURL.IsSet() {
-		if c.MCPExternalBaseURL.IsFromEnv() {
-			hash.Write([]byte("externalBaseURL:env:" + c.MCPExternalBaseURL.EnvVar))
+	if c.MCPExternalClientURL.IsSet() {
+		if c.MCPExternalClientURL.IsFromEnv() {
+			hash.Write([]byte("externalClientURL:env:" + c.MCPExternalClientURL.EnvVar))
 		} else {
-			hash.Write([]byte("externalBaseURL:val:" + c.MCPExternalBaseURL.GetValue()))
+			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateClientConfigHashWithToolManager extends GenerateClientConfigHash to also cover
+// the mcp.tool_manager_config file section. When tm is nil it returns the same value as
+// GenerateClientConfigHash, so it is safe to call unconditionally.
+func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPToolManagerConfig) (string, error) {
+	base, err := c.GenerateClientConfigHash()
+	if err != nil || tm == nil {
+		return base, err
+	}
+	h := sha256.New()
+	h.Write([]byte(base))
+	h.Write([]byte("toolMgrAgentDepth:" + strconv.Itoa(tm.MaxAgentDepth)))
+	h.Write([]byte("toolMgrTimeout:" + strconv.FormatInt(int64(math.Ceil(tm.ToolExecutionTimeout.D().Seconds())), 10)))
+	h.Write([]byte("toolMgrCodeMode:" + string(tm.CodeModeBindingLevel)))
+	if tm.DisableAutoToolInject {
+		h.Write([]byte("toolMgrDisableAutoInject:true"))
+	} else {
+		h.Write([]byte("toolMgrDisableAutoInject:false"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.
+func (c *ClientConfig) Redacted() ClientConfig {
+	out := *c
+	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromEnv() {
+		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
+	}
+	return out
 }
 
 // ProviderConfig represents the configuration for a specific AI model provider.
@@ -407,8 +481,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
+			if key.AzureKeyConfig.Endpoint.IsFromEnv() {
+				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
+			} else {
+				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
+			}
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
 			}
@@ -728,8 +805,8 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Description))
 	// Hash Value
 	hash.Write([]byte(vk.Value))
-	// Hash IsActive
-	if vk.IsActive {
+	// Hash IsActive (nil treated as DB default true)
+	if vk.IsActiveValue() {
 		hash.Write([]byte("isActive:true"))
 	} else {
 		hash.Write([]byte("isActive:false"))
@@ -906,9 +983,22 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 	// Hash Name
 	hash.Write([]byte(c.Name))
 
-	// Hash BudgetID
+	// Collect budget IDs from both sources so config-file context (BudgetID) and
+	// DB context (Budgets) produce the same hash for the same logical state.
+	seen := make(map[string]bool, len(c.Budgets)+1)
 	if c.BudgetID != nil {
-		hash.Write([]byte("budgetID:" + *c.BudgetID))
+		seen[*c.BudgetID] = true
+	}
+	for _, b := range c.Budgets {
+		seen[b.ID] = true
+	}
+	budgetIDs := make([]string, 0, len(seen))
+	for id := range seen {
+		budgetIDs = append(budgetIDs, id)
+	}
+	sort.Strings(budgetIDs)
+	for _, id := range budgetIDs {
+		hash.Write([]byte("budgetID:" + id))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -992,12 +1082,25 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 // This is used to detect changes to model configs between config.json and database.
 // Skips: CreatedAt, UpdatedAt, and relationship objects (dynamic fields)
 func GenerateModelConfigHash(m tables.TableModelConfig) (string, error) {
+	// Normalize an empty scope to "global" so a config.json entry that omits scope
+	// hashes identically to the defaulted DB row.
+	scope := m.Scope
+	if scope == "" {
+		scope = tables.ModelConfigScopeGlobal
+	}
 	hash := sha256.New()
 	writeHashField(hash, "id", m.ID)
 	writeHashField(hash, "model_name", m.ModelName)
 	writeHashField(hash, "provider", derefStr(m.Provider))
+	writeHashField(hash, "scope", scope)
+	writeHashField(hash, "scope_id", derefStr(m.ScopeID))
 	writeHashField(hash, "budget_id", derefStr(m.BudgetID))
 	writeHashField(hash, "rate_limit_id", derefStr(m.RateLimitID))
+	sortedBudgetIDs := append([]string(nil), m.BudgetIDs...)
+	sort.Strings(sortedBudgetIDs)
+	for _, id := range sortedBudgetIDs {
+		writeHashField(hash, "budget_ids", id)
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1010,6 +1113,58 @@ func GenerateProviderGovernanceHash(p tables.TableProvider) (string, error) {
 	writeHashField(hash, "budget_id", derefStr(p.BudgetID))
 	writeHashField(hash, "rate_limit_id", derefStr(p.RateLimitID))
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateComplexityAnalyzerConfigHashes returns stable section hashes for
+// config.json-sourced analyzer config.
+func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (ComplexityAnalyzerConfigHashes, error) {
+	if config == nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	normalized.ConfigHashes = ComplexityAnalyzerConfigHashes{}
+	if err := normalized.Validate(); err != nil {
+		return ComplexityAnalyzerConfigHashes{}, err
+	}
+
+	tierHash, err := hashComplexityValue(normalized.TierBoundaries)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
+	}
+	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
+	}
+	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
+	}
+	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
+	}
+	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
+	}
+
+	return ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    tierHash,
+		CodeKeywords:      codeHash,
+		ReasoningKeywords: reasoningHash,
+		TechnicalKeywords: technicalHash,
+		SimpleKeywords:    simpleHash,
+	}, nil
+}
+
+func hashComplexityValue(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // writeHashField writes a field identifier and a length-prefixed value so the
@@ -1056,8 +1211,8 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	// Hash Description
 	hash.Write([]byte(r.Description))
 
-	// Hash Enabled
-	if r.Enabled {
+	// Hash Enabled (nil treated as DB default true)
+	if r.EnabledValue() {
 		hash.Write([]byte("enabled:true"))
 	} else {
 		hash.Write([]byte("enabled:false"))
@@ -1186,6 +1341,15 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash TLSConfig
+	if m.TLSConfig != nil {
+		data, err := sonic.Marshal(m.TLSConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash ToolsToExecute (sorted for deterministic hashing)
 	if len(m.ToolsToExecute) > 0 {
 		sortedTools := make([]string, len(m.ToolsToExecute))
@@ -1214,6 +1378,9 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 			}
 		}
 	}
+
+	// will enable it in the future with a migration
+	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1265,12 +1432,61 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// frameworkConfigHashPayload holds the config.json-sourced fields used for hashing.
+type frameworkConfigHashPayload struct {
+	PricingURL          *string `json:"pricing_url"`
+	ModelParametersURL  *string `json:"model_parameters_url"`
+	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
+}
+
+type frameworkConfigHashPayloadWithMCP struct {
+	PricingURL             *string `json:"pricing_url"`
+	ModelParametersURL     *string `json:"model_parameters_url"`
+	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
+	MCPLibraryURL          *string `json:"mcp_library_url"`
+	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
+}
+
+// FrameworkConfigHashOptions adds optional framework config fields to the
+// config.json change-detection hash while preserving the legacy pricing-only
+// hash when omitted.
+type FrameworkConfigHashOptions struct {
+	MCPLibraryURL          *string
+	MCPLibrarySyncInterval *int64
+}
+
+// GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
+// This is used to detect changes to framework config between config.json and database.
+func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64, opts ...FrameworkConfigHashOptions) (string, error) {
+	var data []byte
+	var err error
+	if len(opts) > 0 {
+		data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
+			PricingURL:             pricingURL,
+			ModelParametersURL:     modelParametersURL,
+			PricingSyncInterval:    pricingSyncInterval,
+			MCPLibraryURL:          opts[0].MCPLibraryURL,
+			MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
+		})
+	} else {
+		data, err = sonic.Marshal(frameworkConfigHashPayload{
+			PricingURL:          pricingURL,
+			ModelParametersURL:  modelParametersURL,
+			PricingSyncInterval: pricingSyncInterval,
+		})
+	}
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:]), nil
+}
+
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
-	AdminUserName          *schemas.EnvVar `json:"admin_username"`
-	AdminPassword          *schemas.EnvVar `json:"admin_password"`
-	IsEnabled              bool            `json:"is_enabled"`
-	DisableAuthOnInference bool            `json:"disable_auth_on_inference"`
+	AdminUserName *schemas.EnvVar `json:"admin_username"`
+	AdminPassword *schemas.EnvVar `json:"admin_password"`
+	IsEnabled     bool            `json:"is_enabled"`
 }
 
 // ConfigMap maps provider names to their configurations.
@@ -1279,14 +1495,15 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
-	Teams            []tables.TableTeam            `json:"teams"`
-	Customers        []tables.TableCustomer        `json:"customers"`
-	Budgets          []tables.TableBudget          `json:"budgets"`
-	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
-	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
-	Providers        []tables.TableProvider        `json:"providers"`
-	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
-	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
-	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
+	VirtualKeys              []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams                    []tables.TableTeam            `json:"teams"`
+	Customers                []tables.TableCustomer        `json:"customers"`
+	Budgets                  []tables.TableBudget          `json:"budgets"`
+	RateLimits               []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs             []tables.TableModelConfig     `json:"model_configs"`
+	Providers                []tables.TableProvider        `json:"providers"`
+	RoutingRules             []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides         []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
+	AuthConfig               *AuthConfig                   `json:"auth_config,omitempty"`
+	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
 }

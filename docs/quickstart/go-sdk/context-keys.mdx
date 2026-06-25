@@ -4,7 +4,7 @@ description: "Use context keys to configure request behavior, pass metadata, and
 icon: "key"
 ---
 
-Bifrost uses `BifrostContext` — a custom `context.Context` — to pass configuration and metadata through the request lifecycle. Context keys allow you to customize request behavior, pass request-specific settings, and read metadata set by Bifrost.
+Bifrost uses `BifrostContext` - a custom `context.Context` - to pass configuration and metadata through the request lifecycle. Context keys allow you to customize request behavior, pass request-specific settings, and read metadata set by Bifrost.
 
 The idiomatic pattern is to create a `BifrostContext` and call `SetValue` (or the chainable `WithValue`) directly on it:
 
@@ -70,18 +70,6 @@ Explicitly select a named API key from your configured keys.
 bfCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, "premium-key")
 ```
 
-### Direct Key
-
-Provide credentials directly, bypassing Bifrost's key selection entirely. Useful for dynamic or per-request key scenarios.
-
-```go
-bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
-    Value:  "sk-direct-api-key",
-    Models: []string{"gpt-4o"},
-    Weight: 1.0,
-})
-```
-
 ### Skip Key Selection
 
 Skip key selection entirely and pass an empty key to the provider. Useful for providers that don't require authentication or when using ambient credentials (e.g., IAM roles).
@@ -89,6 +77,24 @@ Skip key selection entirely and pass an empty key to the provider. Useful for pr
 ```go
 bfCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 ```
+
+### Direct Key
+
+Supply a raw provider API key to use directly, bypassing the registered key pool. Set `BifrostContextKeyDirectKey` to a `schemas.Key` and Bifrost uses it as-is — there is no flag to enable in the SDK (the gateway's `allow_direct_keys` setting only gates the HTTP header path that populates this same key).
+
+```go
+bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+    ID:     "caller-provided",
+    Name:   "caller-provided",
+    Value:  schemas.EnvVar{Val: "sk-your-real-openai-key"},
+    Models: []string{},
+    Weight: 1.0,
+})
+```
+
+<Warning>
+A direct key bypasses the **key pool** (no weighted selection, no rotation or fallback, no per-key model restrictions) — the key is used exactly as supplied. It does **not** bypass governance: if a virtual key (`BifrostContextKeyVirtualKey`) is set alongside it, that key's budgets, rate limits, allow-lists, and routing are still enforced. Prefer [API Key Selection](#api-key-selection) when you want to reference a Bifrost-managed key instead of passing the secret.
+</Warning>
 
 ### Session Stickiness (Session ID)
 
@@ -203,7 +209,7 @@ response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest
 
 <Note>
 - This feature only works for JSON requests, not multipart/form-data requests
-- Parameters already handled by Bifrost are not duplicated — they appear in their proper location
+- Parameters already handled by Bifrost are not duplicated - they appear in their proper location
 - Nested parameters are merged recursively with existing nested structures
 </Note>
 
@@ -356,9 +362,9 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyVirtualKey` | `string` | Set | Virtual key identifier for governance |
 | `BifrostContextKeyAPIKeyName` | `string` | Set | Explicit API key name selection |
 | `BifrostContextKeyAPIKeyID` | `string` | Set | Explicit API key ID selection (priority over name) |
+| `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Use a caller-supplied raw provider key directly, bypassing the key pool |
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
 | `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID used for fallback attempt |
-| `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Provide credentials directly, bypassing key selection |
 | `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection entirely |
 | `BifrostContextKeySessionID` | `string` | Set | Session ID for key stickiness (requires KV store) |
 | `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session-to-key cache (default: 1 hour) |

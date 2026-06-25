@@ -24,6 +24,10 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}
@@ -76,6 +80,11 @@ spec:
             - name: gossip-udp
               containerPort: {{ .Values.bifrost.cluster.gossip.port }}
               protocol: UDP
+            {{- if .Values.bifrost.cluster.grpc }}
+            - name: grpc
+              containerPort: {{ .Values.bifrost.cluster.grpc.port }}
+              protocol: TCP
+            {{- end }}
             {{- end }}
           env:
             - name: APP_DIR
@@ -109,6 +118,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgresql.external.existingSecret }}
                   key: {{ .Values.postgresql.external.passwordKey | default "password" }}
+            {{- else if and .Values.postgresql.enabled (not .Values.postgresql.external.enabled) .Values.postgresql.auth.existingSecret }}
+            - name: BIFROST_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.auth.existingSecret }}
+                  key: {{ .Values.postgresql.auth.passwordKey | default "password" }}
             {{- end }}
             {{- /* Redis password from existing secret */ -}}
             {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.external.enabled .Values.vectorStore.redis.external.existingSecret }}
@@ -225,7 +240,8 @@ spec:
                   key: {{ .Values.bifrost.authConfig.passwordKey | default "password" }}
             {{- end }}
             {{- /* Provider secrets */ -}}
-            {{- range $provider, $secret := .Values.bifrost.providerSecrets }}
+            {{- range $provider := (.Values.bifrost.providerSecrets | keys | sortAlpha) }}
+            {{- $secret := index $.Values.bifrost.providerSecrets $provider }}
             {{- if and $secret.existingSecret $secret.envVar }}
             - name: {{ $secret.envVar }}
               valueFrom:

@@ -1,107 +1,103 @@
-// Package modelcatalog provides a pricing manager for the framework.
+// Package modelcatalog composes three subpackages — datasheet (pricing +
+// model parameters + capabilities), live (per-(provider, keyID) list-models
+// cache), and keyconfig (per-provider allow/block/aliases derived from
+// keys) — into the ModelCatalog facade that consumers (governance,
+// telemetry, logging, server, etc.) use.
+//
+// The composer owns I/O orchestration: the hourly pricing sync ticker, the
+// distributed lock used during sync, and the gossip after-sync hook.
+// Subpackages perform no I/O directly — they expose Load/Sync methods the
+// composer calls.
 package modelcatalog
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sync"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
+	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 type ModelCatalog struct {
 	configStore            configstore.ConfigStore
 	distributedLockManager *configstore.DistributedLockManager
+	logger                 schemas.Logger
 
-	logger schemas.Logger
+	datasheet *datasheet.Store
+	live      *live.Store
+	keyconf   *keyconfig.Store
 
-	// Configuration fields (protected by syncMu)
-	pricingURL   string
-	syncInterval time.Duration
-	lastSyncedAt time.Time
-	syncMu       sync.RWMutex
+	// MCP library sync configuration (protected by syncMu)
+	mcpLibraryURL          string
+	mcpLibrarySyncInterval time.Duration
+	lastMCPLibrarySyncedAt time.Time
+	syncMu                 sync.RWMutex
 
 	shouldSyncGate func(ctx context.Context) bool
 	afterSyncHook  func(ctx context.Context)
 
-	// In-memory cache for fast access - direct map for O(1) lookups
-	pricingData map[string]configstoreTables.TableModelPricing
-	mu          sync.RWMutex
-
-	// rawOverrides is the canonical list of all active overrides. It exists solely
-	// to support incremental mutations: UpsertPricingOverrides and DeletePricingOverride
-	// iterate over it to rebuild the list, then derive customPricing from it.
-	// customPricing is the actual lookup structure used at query time.
-	rawOverrides  []PricingOverride
-	customPricing *customPricingData
-	overridesMu   sync.RWMutex
-
-	modelPool           map[schemas.ModelProvider][]string
-	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
-	baseModelIndex      map[string]string                  // model string → canonical base model name
-
-	// Pre-parsed supported response types index (keyed by model name)
-	// Values are normalized response types: "chat_completion", "responses", "text_completion"
-	supportedResponseTypes map[string][]string
-
-	// Pre-parsed supported parameters index (keyed by model name, populated from model parameters supported_parameters)
-	// Values are parameter names the model accepts (e.g., "temperature", "top_p", "tools")
-	supportedParams map[string][]string
-
-	// Background sync worker
+	// Background sync orchestration. The ticker, distributed lock, and gossip
+	// hook live at this level — datasheet.Store has no internal scheduler.
 	syncTicker *time.Ticker
-	done       chan struct{}
-	wg         sync.WaitGroup
 	syncCtx    context.Context
 	syncCancel context.CancelFunc
+	done       chan struct{}
+	wg         sync.WaitGroup
 }
 
-// Init initializes the model catalog
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {
-	// Initialize pricing URL and sync interval
 	pricingURL := DefaultPricingURL
-	if config.PricingURL != nil {
+	if config != nil && config.PricingURL != nil {
 		pricingURL = *config.PricingURL
 	}
+	modelParametersURL := DefaultModelParametersURL
+	if config != nil && config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
+		modelParametersURL = *config.ModelParametersURL
+	}
+	mcpLibraryURL := DefaultMCPLibraryURL
+	if config != nil && config.MCPLibraryURL != nil && *config.MCPLibraryURL != "" {
+		mcpLibraryURL = *config.MCPLibraryURL
+	}
+	mcpLibrarySyncInterval := DefaultSyncInterval
+	if config != nil && config.MCPLibrarySyncInterval != nil && *config.MCPLibrarySyncInterval > 0 {
+		mcpLibrarySyncInterval = time.Duration(*config.MCPLibrarySyncInterval) * time.Second
+	}
 	syncInterval := DefaultSyncInterval
-	if config.PricingSyncInterval != nil {
+	if config != nil && config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
 	}
 
 	// Log the active interval and the scheduler's actual check frequency so operators
 	// are not surprised that setting interval=1h does not mean checks happen every second.
-	// Actual syncs occur when: (1) the 1-hour ticker fires AND (2) time.Since(lastSync) >= pricingSyncInterval.
 	logger.Info("pricing sync interval set to %v (scheduler checks every %v)", syncInterval, syncWorkerTickerPeriod)
 
 	mc := &ModelCatalog{
-		pricingURL:             pricingURL,
-		syncInterval:           syncInterval,
+		mcpLibraryURL:          mcpLibraryURL,
+		mcpLibrarySyncInterval: mcpLibrarySyncInterval,
 		configStore:            configStore,
 		logger:                 logger,
-		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		modelPool:              make(map[schemas.ModelProvider][]string),
-		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
-		baseModelIndex:         make(map[string]string),
-		supportedResponseTypes: make(map[string][]string),
-		supportedParams:        make(map[string][]string),
-		done:                   make(chan struct{}),
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
+		datasheet: datasheet.New(configStore, logger, datasheet.Config{
+			URL:                pricingURL,
+			ModelParametersURL: modelParametersURL,
+			SyncInterval:       syncInterval,
+		}),
+		live:    live.New(logger),
+		keyconf: keyconfig.New(logger),
+		done:    make(chan struct{}),
 	}
-
-	// Initialize syncCtx early so background startup goroutines can use it and
-	// Cleanup() can cancel them. startSyncWorker is still called at the end after
-	// cold-start paths have completed.
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 
 	// If Init returns an error the caller never owns mc and will never call
-	// Cleanup(), so cancel syncCtx to stop any background goroutines that were
-	// already spawned before the failure.
+	// Cleanup(), so cancel syncCtx to stop any background goroutines that
+	// were already spawned before the failure.
 	initSucceeded := false
 	defer func() {
 		if !initSucceeded {
@@ -111,13 +107,13 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	logger.Info("initializing model catalog...")
 	if configStore != nil {
-		// Per-model lazy load when the in-memory cache misses (eviction, new models, or if
-		// startup bulk load was skipped). loadModelParametersFromDatabase still bulk-warms
-		// the cache on init and on ReloadFromDB so common paths avoid a DB read per model.
+		// Lazy load on cache miss: providers may need params for models not
+		// covered by the startup bulk load (e.g. just-uploaded models). The
+		// bulk load still warms the common case so this only fires on misses.
 		providerUtils.SetCacheMissHandler(func(model string) *providerUtils.ModelParams {
 			missCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			params, err := configStore.GetModelParametersByModel(missCtx, model)
+			params, err := mc.datasheet.GetModelParametersByModel(missCtx, model)
 			if err != nil || params == nil {
 				return nil
 			}
@@ -136,34 +132,32 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				IsVertexMultiRegionOnly: p.VertexMultiRegionOnly,
 			}
 		})
+
 		var wg sync.WaitGroup
 		var pricingErr, paramsErr error
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if err := mc.loadPricingFromDatabase(ctx); err != nil {
+			if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 				pricingErr = fmt.Errorf("failed to load initial pricing data: %w", err)
 				return
 			}
-			mc.mu.RLock()
-			hasPricingData := len(mc.pricingData) > 0
-			mc.mu.RUnlock()
-			if hasPricingData {
-				mc.logger.Info("existing pricing data found in database, syncing from URL in background")
+			if mc.hasPricingData() {
+				logger.Info("existing pricing data found in database, syncing from URL in background")
 				mc.wg.Add(1)
 				go func() {
 					defer mc.wg.Done()
 					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_pricing_startup_sync", 10, func() error {
-						return mc.syncPricing(mc.syncCtx)
+						return mc.runPricingSync(mc.syncCtx)
 					}); err != nil {
-						mc.logger.Warn("background startup pricing sync failed: %v", err)
+						logger.Warn("background startup pricing sync failed: %v", err)
 					} else {
-						mc.logger.Info("background startup pricing sync completed successfully")
+						logger.Info("background startup pricing sync completed successfully")
 					}
 				}()
 			} else {
 				if err := mc.withDistributedLock(ctx, "model_catalog_pricing_startup_sync", 10, func() error {
-					return mc.syncPricing(ctx)
+					return mc.runPricingSync(ctx)
 				}); err != nil {
 					pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
 				}
@@ -171,27 +165,27 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		}()
 		go func() {
 			defer wg.Done()
-			n, err := mc.loadModelParametersFromDatabase(ctx)
+			n, err := mc.datasheet.LoadModelParamsFromDB(ctx)
 			if err != nil {
 				paramsErr = fmt.Errorf("failed to load initial model parameters: %w", err)
 				return
 			}
 			if n > 0 {
-				mc.logger.Info("existing model parameters found in database (%d records), syncing from URL in background", n)
+				logger.Info("existing model parameters found in database (%d records), syncing from URL in background", n)
 				mc.wg.Add(1)
 				go func() {
 					defer mc.wg.Done()
 					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_params_startup_sync", 10, func() error {
-						return mc.syncModelParameters(mc.syncCtx)
+						return mc.runParamsSync(mc.syncCtx)
 					}); err != nil {
-						mc.logger.Warn("background startup model parameters sync failed: %v", err)
+						logger.Warn("background startup model parameters sync failed: %v", err)
 					} else {
-						mc.logger.Info("background startup model parameters sync completed successfully")
+						logger.Info("background startup model parameters sync completed successfully")
 					}
 				}()
 			} else {
 				if err := mc.withDistributedLock(ctx, "model_catalog_params_startup_sync", 10, func() error {
-					return mc.syncModelParameters(ctx)
+					return mc.runParamsSync(ctx)
 				}); err != nil {
 					paramsErr = fmt.Errorf("failed to sync model parameters data: %w", err)
 				}
@@ -204,61 +198,96 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		if paramsErr != nil {
 			return nil, paramsErr
 		}
-	} else {
-		// Load pricing and model parameters from URL into memory (no config store)
-		if err := mc.loadPricingIntoMemoryFromURL(ctx); err != nil {
-			return nil, fmt.Errorf("failed to load pricing data from config memory: %w", err)
+
+		// MCP library catalog follows the datasheet bootstrap pattern: if the DB
+		// already has catalog rows, refresh from URL in the background; if it is
+		// empty, block startup until the first remote sync lands so the library page
+		// is populated immediately after boot.
+		hasMCPLibraryData, err := mc.hasMCPLibraryData(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load initial MCP library data: %w", err)
 		}
-		if err := mc.loadModelParametersIntoMemoryFromURL(ctx); err != nil {
+		if hasMCPLibraryData {
+			logger.Info("existing MCP library data found in database, syncing from URL in background")
+			mc.wg.Add(1)
+			go func() {
+				defer mc.wg.Done()
+				if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_mcp_library_startup_sync", 10, func() error {
+					return mc.syncMCPLibrary(mc.syncCtx)
+				}); err != nil {
+					mc.logger.Warn("background startup MCP library sync failed: %v", err)
+				} else {
+					mc.syncMu.Lock()
+					mc.lastMCPLibrarySyncedAt = time.Now()
+					mc.syncMu.Unlock()
+				}
+			}()
+		} else {
+			// Empty DB: attempt a blocking sync so the library page is populated
+			// immediately after boot. Unlike pricing, a failure here is non-fatal
+			// — the background worker will retry on the next tick.
+			if err := mc.withDistributedLock(ctx, "model_catalog_mcp_library_startup_sync", 10, func() error {
+				return mc.syncMCPLibrary(ctx)
+			}); err != nil {
+				logger.Warn("initial MCP library sync failed (will retry in background): %v", err)
+			} else {
+				mc.syncMu.Lock()
+				mc.lastMCPLibrarySyncedAt = time.Now()
+				mc.syncMu.Unlock()
+			}
+		}
+	} else {
+		if err := mc.datasheet.LoadFromURLIntoMemory(ctx); err != nil {
+			return nil, fmt.Errorf("failed to load pricing data into memory: %w", err)
+		}
+		if err := mc.datasheet.LoadModelParamsFromURLIntoMemory(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load model parameters from URL: %w", err)
 		}
 	}
 
-	mc.syncMu.Lock()
-	mc.lastSyncedAt = time.Now()
-	mc.syncMu.Unlock()
+	mc.datasheet.MarkSynced(time.Now())
 
-	// Populate model pool with normalized providers from pricing data
-	mc.populateModelPoolFromPricingData()
-
-	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+	if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
 		return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
 	}
 
-	// Start background sync worker
 	mc.startSyncWorker(mc.syncCtx)
 	initSucceeded = true
 	return mc, nil
 }
 
-func (mc *ModelCatalog) SetShouldSyncGate(shouldSyncGate func(ctx context.Context) bool) {
-	mc.shouldSyncGate = shouldSyncGate
+func (mc *ModelCatalog) SetShouldSyncGate(fn func(ctx context.Context) bool) {
+	mc.shouldSyncGate = fn
 }
 
-// SetAfterSyncHook registers a callback invoked after every successful URL → DB pricing sync.
-// In enterprise this is used to broadcast a gossip message so other pods reload from DB.
+// SetAfterSyncHook registers a callback invoked after every successful
+// URL → DB pricing sync. In enterprise this broadcasts a gossip message so
+// other pods reload from DB.
 func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
 	mc.afterSyncHook = fn
 }
 
-// ReloadFromDB reloads the in-memory pricing cache and model-parameters provider cache from the database.
-// In enterprise this is called on non-leader pods when they receive a gossip sync notification.
+// ReloadFromDB reloads pricing + model-parameters caches from the database.
+// Gossip handler on non-leader pods.
 func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
-	if err := mc.loadPricingFromDatabase(ctx); err != nil {
+	if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 		return err
 	}
-	mc.populateModelPoolFromPricingData()
-	_, err := mc.loadModelParametersFromDatabase(ctx)
+	_, err := mc.datasheet.LoadModelParamsFromDB(ctx)
 	return err
 }
 
-// UpdateSyncConfig updates the pricing URL and sync interval, restarts the background sync worker,
-// then delegates to ForceReloadPricing for a full sync cycle.
-func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) error {
-	// Acquire pricing mutex to update configuration atomically
-	mc.syncMu.Lock()
+// ReloadPricing re-reads the pricing table into the in-memory cache. The
+// management API uses this after a batched write so the new attributes are
+// observable immediately. The 24-hour ticker still owns refreshing pricing
+// fields from the upstream datasheet; this just refreshes the cache.
+func (mc *ModelCatalog) ReloadPricing(ctx context.Context) error {
+	return mc.datasheet.LoadFromDB(ctx)
+}
 
-	// Stop existing sync worker before updating configuration
+// UpdateSyncConfig updates the pricing/params URLs and sync interval,
+// restarts the background sync worker, then runs a full sync cycle.
+func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) error {
 	if mc.syncCancel != nil {
 		mc.syncCancel()
 	}
@@ -266,63 +295,91 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 		mc.syncTicker.Stop()
 	}
 
-	// Update pricing configuration
-	mc.pricingURL = DefaultPricingURL
-	if config.PricingURL != nil {
-		mc.pricingURL = *config.PricingURL
+	pricingURL := DefaultPricingURL
+	if config != nil && config.PricingURL != nil {
+		pricingURL = *config.PricingURL
 	}
-
-	mc.syncInterval = DefaultSyncInterval
-	if config.PricingSyncInterval != nil {
-		mc.syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
+	modelParametersURL := DefaultModelParametersURL
+	if config != nil && config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
+		modelParametersURL = *config.ModelParametersURL
 	}
+	mcpLibraryURL := DefaultMCPLibraryURL
+	if config != nil && config.MCPLibraryURL != nil && *config.MCPLibraryURL != "" {
+		mcpLibraryURL = *config.MCPLibraryURL
+	}
+	mcpLibrarySyncInterval := DefaultSyncInterval
+	if config != nil && config.MCPLibrarySyncInterval != nil && *config.MCPLibrarySyncInterval > 0 {
+		mcpLibrarySyncInterval = time.Duration(*config.MCPLibrarySyncInterval) * time.Second
+	}
+	mc.syncMu.Lock()
+	mc.mcpLibraryURL = mcpLibraryURL
+	mc.mcpLibrarySyncInterval = mcpLibrarySyncInterval
+	mc.syncMu.Unlock()
 
-	// Create new sync worker with updated configuration
+	syncInterval := DefaultSyncInterval
+	if config != nil && config.PricingSyncInterval != nil {
+		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
+	}
+	mc.datasheet.UpdateSyncConfig(datasheet.Config{
+		URL:                pricingURL,
+		ModelParametersURL: modelParametersURL,
+		SyncInterval:       syncInterval,
+	})
+
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 	mc.startSyncWorker(mc.syncCtx)
 
-	mc.syncMu.Unlock()
-
-	// Delegate to ForceReloadPricing for a complete sync cycle
 	return mc.ForceReloadPricing(ctx)
 }
 
+// ForceReloadPricing triggers an immediate URL→DB→memory sync for pricing
+// and model parameters in parallel, fires the gossip hook, and resets the
+// ticker so the next scheduled sync waits a full interval from now.
+//
+// Behavior change from pre-refactor: this no longer touches the live
+// list-models cache. List-models refresh is now driven by key/provider
+// edits, not by pricing reloads.
 func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
-	timeout := DefaultPricingTimeout
+	timeout := datasheet.DefaultPricingTimeout
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
-	// Run pricing sync and model parameters sync in parallel
 	var wg sync.WaitGroup
 	var pricingErr, paramsErr error
-
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := mc.syncPricing(ctx); err != nil {
+		if err := mc.runPricingSync(ctx); err != nil {
 			pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
 			return
 		}
-
-		// Rebuild model pool from updated pricing data
-		mc.populateModelPoolFromPricingData()
-
-		if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+		if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
 			pricingErr = fmt.Errorf("failed to load pricing overrides: %w", err)
-			return
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := mc.runParamsSync(ctx); err != nil {
+			paramsErr = fmt.Errorf("failed to sync model parameters: %w", err)
 		}
 	}()
 
+	// MCP library sync runs alongside but is non-fatal: a failure here must not
+	// block a pricing/params force-reload. It is logged and the last-sync
+	// timestamp is only advanced on success.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := mc.syncModelParameters(ctx); err != nil {
-			paramsErr = fmt.Errorf("failed to sync model parameters: %w", err)
+		if err := mc.syncMCPLibrary(ctx); err != nil {
+			mc.logger.Warn("MCP library sync during force-reload failed: %v", err)
 			return
 		}
+		mc.syncMu.Lock()
+		mc.lastMCPLibrarySyncedAt = time.Now()
+		mc.syncMu.Unlock()
 	}()
 
 	wg.Wait()
@@ -337,130 +394,251 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 		mc.afterSyncHook(ctx)
 	}
 
-	mc.syncMu.Lock()
-	// Reset the ticker so the next scheduled sync waits a full interval from now
 	if mc.syncTicker != nil {
-		mc.syncTicker.Reset(mc.syncInterval)
+		mc.syncTicker.Reset(mc.datasheet.SyncInterval())
 	}
-	mc.syncMu.Unlock()
-
 	return nil
 }
 
-// getPricingURL returns a copy of the pricing URL under mutex protection
-func (mc *ModelCatalog) getPricingURL() string {
-	mc.syncMu.RLock()
-	defer mc.syncMu.RUnlock()
-	return mc.pricingURL
-}
-
-// IsRequestTypeSupported checks if a model supports chat completion.
-// It checks the supportedResponseTypes index.
-func (mc *ModelCatalog) IsRequestTypeSupported(model string, provider schemas.ModelProvider, requestType schemas.RequestType) bool {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	outputs, ok := mc.supportedResponseTypes[model]
-	return ok && slices.Contains(outputs, string(requestType))
-}
-
-// GetSupportedParameters returns the list of supported parameter names for a model.
-// Returns nil if the model is not found in the catalog.
-func (mc *ModelCatalog) GetSupportedParameters(model string) []string {
-	mc.mu.RLock()
-	params, ok := mc.supportedParams[model]
-	mc.mu.RUnlock()
-	if !ok {
-		return nil
-	}
-	// Return a copy to prevent external modification
-	result := make([]string, len(params))
-	copy(result, params)
-	return result
-}
-
-// populateModelPool populates the model pool with all available models per provider (thread-safe)
-func (mc *ModelCatalog) populateModelPoolFromPricingData() {
-	// Acquire write lock for the entire rebuild operation
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-
-	// Clear existing model pool and base model index
-	mc.modelPool = make(map[schemas.ModelProvider][]string)
-	mc.unfilteredModelPool = make(map[schemas.ModelProvider][]string)
-	mc.baseModelIndex = make(map[string]string)
-
-	// Map to track unique models per provider
-	providerModels := make(map[schemas.ModelProvider]map[string]bool)
-
-	// Iterate through all pricing data to collect models per provider
-	for _, pricing := range mc.pricingData {
-		// Normalize provider before adding to model pool
-		normalizedProvider := schemas.ModelProvider(normalizeProvider(pricing.Provider))
-
-		// Initialize map for this provider if not exists
-		if providerModels[normalizedProvider] == nil {
-			providerModels[normalizedProvider] = make(map[string]bool)
-		}
-
-		// Add model to the provider's model set (using map for deduplication)
-		providerModels[normalizedProvider][pricing.Model] = true
-
-		// Build base model index from pre-computed base_model field
-		if pricing.BaseModel != "" {
-			mc.baseModelIndex[pricing.Model] = pricing.BaseModel
-		}
-	}
-
-	// Convert sets to slices and assign to modelPool
-	for provider, modelSet := range providerModels {
-		models := make([]string, 0, len(modelSet))
-		for model := range modelSet {
-			models = append(models, model)
-		}
-		mc.modelPool[provider] = models
-		mc.unfilteredModelPool[provider] = models
-	}
-
-	// Log the populated model pool for debugging
-	totalModels := 0
-	for provider, models := range mc.modelPool {
-		totalModels += len(models)
-		mc.logger.Debug("populated %d models for provider %s", len(models), string(provider))
-	}
-	mc.logger.Info("populated model pool with %d models across %d providers", totalModels, len(mc.modelPool))
-}
-
-// Cleanup cleans up the model catalog
 func (mc *ModelCatalog) Cleanup() error {
 	if mc.syncCancel != nil {
 		mc.syncCancel()
 	}
-
-	mc.syncMu.Lock()
 	if mc.syncTicker != nil {
 		mc.syncTicker.Stop()
 	}
-	mc.syncMu.Unlock()
-
 	close(mc.done)
 	mc.wg.Wait()
-
 	return nil
 }
 
-// NewTestCatalog creates a minimal ModelCatalog for testing purposes.
-// It does not start background sync workers or connect to external services.
-func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
-	if baseModelIndex == nil {
-		baseModelIndex = make(map[string]string)
+// --- Sync ticker (orchestrates datasheet.Store sync methods) ---
+
+func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
+	// IMPORTANT scheduling model:
+	//
+	// The sync worker wakes on a fixed ticker (syncWorkerTickerPeriod = 1h).
+	// On each wake it checks time.Since(LastSyncedAt) >= SyncInterval.
+	// This means SyncInterval defines the *minimum elapsed time* between syncs,
+	// and the actual frequency = max(syncWorkerTickerPeriod, SyncInterval).
+	// Setting SyncInterval below the ticker period has no effect — the hourly
+	// ticker is the hard lower bound on check granularity.
+	mc.syncTicker = time.NewTicker(syncWorkerTickerPeriod)
+	mc.wg.Add(1)
+	go mc.syncWorker(ctx)
+}
+
+func (mc *ModelCatalog) syncWorker(ctx context.Context) {
+	// Capture the ticker once so the select loop doesn't race with
+	// UpdateSyncConfig overwriting mc.syncTicker while this goroutine
+	// is still draining after mc.syncCancel().
+	ticker := mc.syncTicker
+	defer mc.wg.Done()
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			mc.syncTick(ctx)
+		case <-mc.done:
+			return
+		}
 	}
+}
+
+func (mc *ModelCatalog) syncTick(ctx context.Context) {
+	pricingDue := time.Since(mc.datasheet.LastSyncedAt()) >= mc.datasheet.SyncInterval()
+	mcpLibraryDue := mc.isMCPLibrarySyncDue()
+	if !pricingDue && !mcpLibraryDue {
+		return
+	}
+	mc.logger.Debug("starting model catalog background sync")
+
+	// Pricing and MCP library use separate distributed locks so their
+	// independent cadences don't block each other.
+	var outerWg sync.WaitGroup
+	if pricingDue {
+		outerWg.Add(1)
+		go func() {
+			defer outerWg.Done()
+			if err := mc.withDistributedLock(ctx, "model_catalog_pricing_sync", 10, func() error {
+				var wg sync.WaitGroup
+				var pricingErr, paramsErr error
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					if err := mc.runPricingSync(ctx); err != nil {
+						mc.logger.Error("background pricing sync failed: %v", err)
+						pricingErr = err
+					}
+				}()
+				go func() {
+					defer wg.Done()
+					if err := mc.runParamsSync(ctx); err != nil {
+						mc.logger.Error("background model parameters sync failed: %v", err)
+						paramsErr = err
+					}
+				}()
+				wg.Wait()
+				if pricingErr == nil && paramsErr == nil {
+					if mc.afterSyncHook != nil {
+						mc.afterSyncHook(ctx)
+					}
+					mc.datasheet.MarkSynced(time.Now())
+				}
+				if pricingErr != nil {
+					return pricingErr
+				}
+				return paramsErr
+			}); err != nil {
+				mc.logger.Error("failed to run pricing sync: %v", err)
+			}
+		}()
+	}
+	if mcpLibraryDue {
+		outerWg.Add(1)
+		go func() {
+			defer outerWg.Done()
+			if err := mc.withDistributedLock(ctx, "model_catalog_mcp_library_sync", 10, func() error {
+				if err := mc.syncMCPLibrary(ctx); err != nil {
+					mc.logger.Error("background MCP library sync failed: %v", err)
+					return err
+				}
+				mc.syncMu.Lock()
+				mc.lastMCPLibrarySyncedAt = time.Now()
+				mc.syncMu.Unlock()
+				return nil
+			}); err != nil {
+				mc.logger.Error("failed to run MCP library sync: %v", err)
+			}
+		}()
+	}
+	outerWg.Wait()
+	mc.logger.Debug("model catalog background sync completed")
+}
+
+// runPricingSync wraps the datasheet pricing sync with the gate check.
+func (mc *ModelCatalog) runPricingSync(ctx context.Context) error {
+	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+		return nil
+	}
+	return mc.datasheet.SyncFromURL(ctx)
+}
+
+// runParamsSync wraps the datasheet params sync with the gate check.
+func (mc *ModelCatalog) runParamsSync(ctx context.Context) error {
+	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+		mc.logger.Debug("model parameters sync cancelled by custom gate")
+		return nil
+	}
+	return mc.datasheet.SyncModelParamsFromURL(ctx)
+}
+
+// withDistributedLock acquires a named distributed lock and runs fn under
+// it. retries=0 blocks until acquired; retries>0 uses LockWithRetry. The
+// unlock uses a fresh context so cancelled work contexts don't leak the
+// lock until TTL expiry.
+func (mc *ModelCatalog) withDistributedLock(ctx context.Context, key string, retries int, fn func() error) error {
+	lock, err := mc.distributedLockManager.NewLock(key)
+	if err != nil {
+		return fmt.Errorf("failed to create lock %q: %w", key, err)
+	}
+	if retries > 0 {
+		if err := lock.LockWithRetry(ctx, retries); err != nil {
+			return fmt.Errorf("failed to acquire lock %q: %w", key, err)
+		}
+	} else {
+		if err := lock.Lock(ctx); err != nil {
+			return fmt.Errorf("failed to acquire lock %q: %w", key, err)
+		}
+	}
+	defer func() {
+		if err := lock.Unlock(context.Background()); err != nil {
+			mc.logger.Warn("failed to release distributed lock %q: %v", key, err)
+		}
+	}()
+	return fn()
+}
+
+// hasPricingData reports whether the datasheet store currently has any
+// pricing rows in memory. Used during Init to decide between blocking sync
+// and background sync.
+func (mc *ModelCatalog) hasPricingData() bool {
+	return len(mc.datasheet.DatasheetProviders()) > 0
+}
+
+func (mc *ModelCatalog) hasMCPLibraryData(ctx context.Context) (bool, error) {
+	if mc.configStore == nil {
+		return false, nil
+	}
+	_, totalCount, err := mc.configStore.GetMCPLibraryPaginated(ctx, configstore.MCPLibraryQueryParams{Limit: 1})
+	if err != nil {
+		return false, err
+	}
+	return totalCount > 0, nil
+}
+
+func (mc *ModelCatalog) isMCPLibrarySyncDue() bool {
+	if mc.configStore == nil {
+		return false
+	}
+	mc.syncMu.RLock()
+	lastSyncedAt := mc.lastMCPLibrarySyncedAt
+	syncInterval := mc.mcpLibrarySyncInterval
+	mc.syncMu.RUnlock()
+	if syncInterval <= 0 {
+		syncInterval = DefaultSyncInterval
+	}
+	return lastSyncedAt.IsZero() || time.Since(lastSyncedAt) >= syncInterval
+}
+
+// knownProviders returns the union of providers seen by any store. Used by
+// GetProvidersForModel (models.go) to enumerate candidates.
+func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
+	seen := make(map[schemas.ModelProvider]struct{})
+	out := make([]schemas.ModelProvider, 0)
+	for _, p := range mc.datasheet.DatasheetProviders() {
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	for k := range mc.live.Snapshot() {
+		if _, ok := seen[k.Provider]; !ok {
+			seen[k.Provider] = struct{}{}
+			out = append(out, k.Provider)
+		}
+	}
+	for _, p := range mc.keyconf.Providers() {
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// NewTestCatalog constructs a minimal ModelCatalog for unit tests. Does not
+// start background workers or hit external services.
+func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 	return &ModelCatalog{
-		modelPool:              make(map[schemas.ModelProvider][]string),
-		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
-		baseModelIndex:         baseModelIndex,
-		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		supportedResponseTypes: make(map[string][]string),
-		supportedParams:        make(map[string][]string),
-		done:                   make(chan struct{}),
+		datasheet: datasheet.NewTestStore(baseModelIndex),
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
+	}
+}
+
+// NewTestCatalogWithDatasheet wraps a caller-provided datasheet.Store (e.g. one
+// loaded from a local testdata pricing file via datasheet.New(...) +
+// LoadFromURLIntoMemory) in a ModelCatalog, so tests in other packages can
+// exercise real pricing/cost computation without reaching the network.
+func NewTestCatalogWithDatasheet(ds *datasheet.Store) *ModelCatalog {
+	return &ModelCatalog{
+		datasheet: ds,
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
 	}
 }

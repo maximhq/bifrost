@@ -18,12 +18,13 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	// Create the BifrostResponsesRequest
 	bifrostReq := &schemas.BifrostResponsesRequest{
-		Provider: provider,
-		Model:    model,
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
 	params := request.convertGenerationConfigToResponsesParameters()
@@ -61,6 +62,11 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		params.ExtraParams["safety_settings"] = request.SafetySettings
 	}
 
+	if request.ServiceTier != "" {
+		mapped := mapGeminiServiceTierToBifrost(request.ServiceTier)
+		params.ServiceTier = &mapped
+	}
+
 	if request.CachedContent != "" {
 		params.ExtraParams["cached_content"] = request.CachedContent
 	}
@@ -68,10 +74,9 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	bifrostReq.Params = params
 
 	return bifrostReq
-
 }
 
-func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -83,28 +88,38 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 		Model: bifrostReq.Model,
 	}
 
+	// Canonical model for capability gating only; wire model is untouched.
+	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		var err error
-		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params)
+		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, capModel)
 		if err != nil {
 			return nil, err
 		}
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools = convertResponsesToolsToGemini(bifrostReq.Params.Tools)
+			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools)
+			if err != nil {
+				return nil, err
+			}
 
 			// Convert tool choice if present
 			if bifrostReq.Params.ToolChoice != nil {
 				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
 			}
 		}
+
+		if bifrostReq.Params.ServiceTier != nil {
+			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
+		}
 	}
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input)
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider)
 		if err != nil {
 			return nil, err
 		}
@@ -159,6 +174,15 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Convert usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
+
+	if response.UsageMetadata != nil {
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			bifrostResp.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			bifrostResp.ServiceTier = &tier
+		}
+	}
 
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
@@ -466,6 +490,16 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 	if bifrostResp.Usage != nil {
 		geminiResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Usage)
 	}
+	if bifrostResp.ServiceTier != nil {
+		if geminiResp.UsageMetadata == nil {
+			geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
+		}
+		if bifrostResp.ExtraFields.Provider == schemas.Vertex {
+			geminiResp.UsageMetadata.TrafficType = mapBifrostServiceTierToVertexTrafficType(*bifrostResp.ServiceTier)
+		} else {
+			geminiResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.ServiceTier)
+		}
+	}
 
 	return geminiResp
 }
@@ -718,6 +752,16 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			// Convert usage metadata if available
 			if bifrostResp.Response.Usage != nil {
 				streamResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Response.Usage)
+			}
+			if bifrostResp.Response.ServiceTier != nil {
+				if streamResp.UsageMetadata == nil {
+					streamResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
+				}
+				if bifrostResp.Response.ExtraFields.Provider == schemas.Vertex {
+					streamResp.UsageMetadata.TrafficType = mapBifrostServiceTierToVertexTrafficType(*bifrostResp.Response.ServiceTier)
+				} else {
+					streamResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.Response.ServiceTier)
+				}
 			}
 
 			// Derive finish reason from StopReason when present
@@ -1610,10 +1654,11 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 	})
 
-	// Emit content_part.done
+	// Emit content_part.done with accumulated text
+	partText := fullText
 	part := &schemas.ResponsesMessageContentBlock{
 		Type: schemas.ResponsesOutputMessageContentTypeText,
-		Text: schemas.Ptr(""),
+		Text: &partText,
 		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -1628,13 +1673,23 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		Part:           part,
 	})
 
-	// Emit output_item.done
+	// Emit output_item.done with content blocks
+	itemText := fullText
 	doneItem := &schemas.ResponsesMessage{
 		Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 		Status: schemas.Ptr("completed"),
 		Content: &schemas.ResponsesMessageContent{
-			ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &itemText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					},
+				},
+			},
 		},
 	}
 	if itemID != "" {
@@ -1808,6 +1863,14 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		CreatedAt: state.CreatedAt,
 		Usage:     bifrostUsage,
 	}
+	if usage != nil {
+		if t := mapGeminiTrafficTypeToBifrost(usage.TrafficType); t != nil {
+			completedResp.ServiceTier = t
+		} else if usage.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(usage.ServiceTier)
+			completedResp.ServiceTier = &tier
+		}
+	}
 	if state.Model != nil {
 		completedResp.Model = *state.Model
 	}
@@ -1880,6 +1943,45 @@ func convertGeminiSystemInstructionToResponsesMessage(systemInstruction *Content
 			ContentBlocks: contentBlocks,
 		},
 	}
+}
+
+// stripFunctionResponseMediaRefs returns the textual payload of a Gemini functionResponse.Response
+// to carry alongside reconstructed media blocks. It drops top-level keys whose value is a
+// {"$ref": ...} placeholder — those reference the media we materialize as content blocks, and
+// re-emitting them would re-trigger the Gemini Developer API "$ref" bug — while preserving every
+// other field so multimodal tool results are not lossy. The Gemini spec lets callers use any keys
+// (output, result, error, ...), not just "output". When only the conventional "output" field
+// remains it is unwrapped to keep the common round-trip shape; a media-only response yields "".
+func stripFunctionResponseMediaRefs(response json.RawMessage) string {
+	if len(response) == 0 {
+		return ""
+	}
+	root := providerUtils.GetJSONField(response, "@this")
+	if !root.IsObject() {
+		return string(response)
+	}
+
+	cleaned := []byte(response)
+	remaining := 0
+	for key, value := range root.Map() {
+		if value.IsObject() && value.Get("$ref").Exists() {
+			if updated, err := providerUtils.DeleteJSONField(cleaned, key); err == nil {
+				cleaned = updated
+			}
+			continue
+		}
+		remaining++
+	}
+
+	if remaining == 0 {
+		return "" // media-only result; the forward path emits an empty "output" placeholder
+	}
+	if remaining == 1 {
+		if out := providerUtils.GetJSONField(cleaned, "output"); out.Exists() {
+			return out.String()
+		}
+	}
+	return string(cleaned)
 }
 
 func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.ResponsesMessage {
@@ -1965,13 +2067,48 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					}
 				}
 
+				output := &schemas.ResponsesToolMessageOutputStruct{}
+				if len(part.FunctionResponse.Parts) > 0 {
+					// Multimodal function response (Gemini 3 series): the tool returned images/files
+					// nested in functionResponse.parts. Reconstruct them as content blocks so the media
+					// is preserved on the way in, instead of being collapsed to the text "output" field.
+					// Mirrors the forward conversion in convertResponsesMessagesToGeminiContents.
+					var blocks []schemas.ResponsesMessageContentBlock
+					// Preserve the structured response text alongside the media. The Gemini spec allows
+					// any keys (output, result, error, ...), so keep the whole response object minus the
+					// {"$ref": ...} placeholders (those point at the media we materialize as blocks below).
+					if textPayload := stripFunctionResponseMediaRefs(part.FunctionResponse.Response); textPayload != "" {
+						blocks = append(blocks, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: &textPayload,
+						})
+					}
+					for _, p := range part.FunctionResponse.Parts {
+						var block *schemas.ResponsesMessageContentBlock
+						switch {
+						case p.InlineData != nil:
+							block = convertGeminiInlineDataToContentBlock(p.InlineData)
+						case p.FileData != nil:
+							block = convertGeminiFileDataToContentBlock(p.FileData)
+						}
+						if block != nil {
+							blocks = append(blocks, *block)
+						}
+					}
+					if len(blocks) > 0 {
+						output.ResponsesFunctionToolCallOutputBlocks = blocks
+					} else {
+						output.ResponsesToolCallOutputStr = &responseStr
+					}
+				} else {
+					output.ResponsesToolCallOutputStr = &responseStr
+				}
+
 				msg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID: &responseID,
-						Output: &schemas.ResponsesToolMessageOutputStruct{
-							ResponsesToolCallOutputStr: &responseStr,
-						},
+						Output: output,
 					},
 				}
 
@@ -2191,6 +2328,16 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 				if fn.Parameters != nil {
 					params := convertSchemaToFunctionParameters(fn.Parameters)
 					responsesTool.ResponsesToolFunction.Parameters = &params
+				} else if fn.ParametersJSONSchema != nil {
+					raw, err := providerUtils.MarshalSorted(fn.ParametersJSONSchema)
+					if err != nil {
+						continue
+					}
+					var params schemas.ToolFunctionParameters
+					if err := json.Unmarshal(raw, &params); err != nil {
+						continue
+					}
+					responsesTool.ResponsesToolFunction.Parameters = &params
 				}
 				responsesTools = append(responsesTools, responsesTool)
 			}
@@ -2212,6 +2359,8 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 	switch toolConfig.FunctionCallingConfig.Mode {
 	case FunctionCallingConfigModeAuto:
 		toolChoice.Mode = schemas.Ptr("auto")
+	case FunctionCallingConfigModeAny:
+		toolChoice.Mode = schemas.Ptr("required")
 	case FunctionCallingConfigModeNone:
 		toolChoice.Mode = schemas.Ptr("none")
 	default:
@@ -2493,8 +2642,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				},
 			}
 			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
-				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query =
-					schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
 			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}
@@ -2674,7 +2822,7 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
-func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters) (GenerationConfig, error) {
+func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters, capModel string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	if params.Temperature != nil {
@@ -2687,14 +2835,14 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		config.MaxOutputTokens = int32(*params.MaxOutputTokens)
 	}
 	// Only set ThinkingConfig if the model actually supports thinking
-	if params.Reasoning != nil && supportsThinkingConfig(r.Model) {
+	if params.Reasoning != nil && supportsThinkingConfig(capModel) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
-		supportsLevel := isGemini3Plus(r.Model) // Check if model is 3.0+
+		supportsLevel := isGemini3Plus(capModel) // Check if model is 3.0+
 
 		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
 		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
@@ -2714,7 +2862,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
-				if err := validateThinkingBudget(r.Model, budget); err != nil {
+				if err := validateThinkingBudget(capModel, budget); err != nil {
 					return config, err
 				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
@@ -2723,13 +2871,13 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, r.Model))
+				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, capModel))
 			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(capModel, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
 					maxTokens = int(config.MaxOutputTokens)
 				}
-				budgetRange := getThinkingBudgetRange(r.Model, maxTokens)
+				budgetRange := getThinkingBudgetRange(capModel, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
@@ -2778,7 +2926,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 }
 
 // convertResponsesToolsToGemini converts Responses tools to Gemini tools
-func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
+func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) ([]Tool, error) {
 	geminiTool := Tool{}
 
 	hasWebSearchTool := false
@@ -2804,12 +2952,13 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
 							}
 							return ""
 						}(),
-						Parameters: func() *Schema {
-							if tool.ResponsesToolFunction.Parameters != nil {
-								return convertFunctionParametersToSchema(*tool.ResponsesToolFunction.Parameters)
-							}
-							return nil
-						}(),
+					}
+					if tool.ResponsesToolFunction.Parameters != nil {
+						raw, err := providerUtils.MarshalSorted(tool.ResponsesToolFunction.Parameters)
+						if err != nil {
+							return []Tool{}, fmt.Errorf("marshal tool %q parameters: %w", *tool.Name, err)
+						}
+						funcDecl.ParametersJSONSchema = json.RawMessage(raw)
 					}
 					geminiTool.FunctionDeclarations = append(geminiTool.FunctionDeclarations, funcDecl)
 				}
@@ -2832,9 +2981,9 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
 	}
 
 	if len(geminiTool.FunctionDeclarations) > 0 || geminiTool.GoogleSearch != nil {
-		return []Tool{geminiTool}
+		return []Tool{geminiTool}, nil
 	}
-	return []Tool{}
+	return []Tool{}, nil
 }
 
 // convertResponsesToolChoiceToGemini converts Responses tool choice to Gemini tool config
@@ -2857,8 +3006,21 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 		}
 
 		if ext.Name != nil {
-			funcConfig.Mode = FunctionCallingConfigModeAny
+			if ext.Mode == nil {
+				funcConfig.Mode = FunctionCallingConfigModeAny
+			}
 			funcConfig.AllowedFunctionNames = []string{*ext.Name}
+		}
+
+		if len(ext.Tools) > 0 {
+			if ext.Mode == nil {
+				funcConfig.Mode = FunctionCallingConfigModeAny
+			}
+			for _, tool := range ext.Tools {
+				if tool.Name != nil {
+					funcConfig.AllowedFunctionNames = append(funcConfig.AllowedFunctionNames, *tool.Name)
+				}
+			}
 		}
 
 		config.FunctionCallingConfig = funcConfig
@@ -2882,8 +3044,39 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 	return config
 }
 
-// convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage) ([]Content, *Content, error) {
+// convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents.
+// model is used to gate features that are only valid on Gemini 3+ (e.g. multimodal function
+// responses, where a tool returns images/files nested in functionResponse.parts). provider
+// distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
+// function responses must be referenced (see the FunctionCallOutput handling below).
+func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider) ([]Content, *Content, error) {
+	isVertex := provider == schemas.Vertex
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		content := Content{Role: "user"}
+		if messages[0].Content != nil {
+			if messages[0].Content.ContentStr != nil && *messages[0].Content.ContentStr != "" {
+				content.Parts = append(content.Parts, &Part{
+					Text: *messages[0].Content.ContentStr,
+				})
+			}
+			if messages[0].Content.ContentBlocks != nil {
+				for _, block := range messages[0].Content.ContentBlocks {
+					part, err := convertContentBlockToGeminiPart(block)
+					if err != nil {
+						return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
+					}
+					if part != nil {
+						content.Parts = append(content.Parts, part)
+					}
+				}
+			}
+		}
+		if len(content.Parts) > 0 {
+			return []Content{content}, nil, nil
+		}
+	}
+
 	var contents []Content
 	var systemInstruction *Content
 
@@ -2912,7 +3105,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		}
 
 		// Handle system messages separately
-		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
+		if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -2948,7 +3141,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		if len(pendingFunctionResponseParts) > 0 && !isFunctionOutput {
 			contents = append(contents, Content{
 				Parts: pendingFunctionResponseParts,
-				Role:  "model", // Function responses use "model" role in Gemini
+				Role:  "user", // Function responses use "user" role in Gemini
 			})
 			pendingFunctionResponseParts = nil
 		}
@@ -3039,6 +3232,9 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				// must be sent in a single message with only functionResponse parts (no text/content parts)
 				if msg.ResponsesToolMessage.CallID != nil {
 					responseMap := make(map[string]any)
+					// Multimodal blocks (images, files) returned by the function are collected here
+					// and attached to FunctionResponse.Parts (Gemini 3+ only).
+					var funcMediaParts []*Part
 
 					// Extract output from ResponsesToolMessage.Output
 					if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
@@ -3049,12 +3245,48 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							responseMap["output"] = output
 						}
 					} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-						// Handle structured output blocks (e.g. from Anthropic Responses API format
-						// where output is an array of content blocks like [{"type":"input_text","text":"..."}])
+						// Handle structured output blocks (e.g. from the OpenAI/Anthropic Responses API
+						// format where output is an array of content blocks like
+						// [{"type":"input_text","text":"..."}, {"type":"input_image","image_url":"..."}]).
+						//
+						// Text blocks go into responseMap["output"]. Multimodal blocks (images, files)
+						// cannot live inside the structured response; per the Gemini docs they must be
+						// nested as sibling FunctionResponse.Parts (inlineData/fileData). This is a
+						// Gemini 3+ feature, so for older models we drop the media and keep text only
+						// (sending parts to e.g. gemini-2.5 returns a hard "not supported" 400).
+						//
+						// Referencing the media from the structured response differs by provider:
+						//   - Vertex AI: emit a "<displayName>_ref": {"$ref": "<displayName>"} entry into
+						//     the response (the documented format; Vertex resolves the ref to the part).
+						//   - Gemini Developer API: do NOT emit $ref — the API rejects it
+						//     ("does not match to a display_name", a known upstream bug). The model
+						//     still reads the media directly from parts.
+						supportsMultimodalToolOutput := isGemini3Plus(model)
 						var textParts []string
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil && *block.Text != "" {
 								textParts = append(textParts, *block.Text)
+								continue
+							}
+							if !supportsMultimodalToolOutput {
+								continue // older models can't accept media in a function response
+							}
+							mediaPart, err := convertContentBlockToGeminiPart(block)
+							if err != nil {
+								return nil, nil, fmt.Errorf("failed to convert function output content block: %w", err)
+							}
+							if mediaPart == nil {
+								continue
+							}
+							displayName := fmt.Sprintf("media_%d", len(funcMediaParts))
+							if mediaPart.InlineData != nil {
+								mediaPart.InlineData.DisplayName = displayName
+							} else if mediaPart.FileData != nil {
+								mediaPart.FileData.DisplayName = displayName
+							}
+							funcMediaParts = append(funcMediaParts, mediaPart)
+							if isVertex {
+								responseMap[displayName+"_ref"] = map[string]string{"$ref": displayName}
 							}
 						}
 						if len(textParts) > 0 {
@@ -3064,13 +3296,13 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							} else {
 								responseMap["output"] = combined
 							}
-						} else {
-							// Fallback for non-text blocks (e.g. images, files): marshal the raw blocks
-							// so responseMap["output"] is never left empty when blocks are present
-							rawBlocks, err := providerUtils.MarshalSorted(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
-							if err == nil && len(rawBlocks) > 0 {
-								responseMap["output"] = json.RawMessage(rawBlocks)
-							}
+						} else if len(funcMediaParts) > 0 {
+							// Media-only result: the content lives in parts. We intentionally emit
+							// {"output": ""} rather than leaving response as {} — an empty object would
+							// be treated by Gemini as the full (empty) function output. The reverse
+							// converter's stripFunctionResponseMediaRefs reads this "" back as no text
+							// block, so the media-only round-trip stays clean.
+							responseMap["output"] = ""
 						}
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility
@@ -3098,6 +3330,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							Name:     funcName,
 							Response: json.RawMessage(responseBytes),
 							ID:       *msg.ResponsesToolMessage.CallID,
+							Parts:    funcMediaParts,
 						},
 					}
 					pendingFunctionResponseParts = append(pendingFunctionResponseParts, part)
@@ -3106,7 +3339,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 					if i == len(messages)-1 && len(pendingFunctionResponseParts) > 0 {
 						contents = append(contents, Content{
 							Parts: pendingFunctionResponseParts,
-							Role:  "model",
+							Role:  "user",
 						})
 						pendingFunctionResponseParts = nil
 					}

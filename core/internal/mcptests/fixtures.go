@@ -1498,6 +1498,8 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 
 	// Create MCP manager - dependencies are injected automatically
 	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
+	// Construction no longer dials; connect the configured clients explicitly.
+	manager.ConnectConfiguredClients(context.Background())
 
 	// Cleanup
 	t.Cleanup(func() {

@@ -99,6 +99,87 @@ func TestConvertToolConfig_KeepsBedrockSupportedServerTools(t *testing.T) {
 	}
 }
 
+// TestConvertChatParameters_ServerToolNameFromBody is a diagnostic probe for the
+// Bedrock managed-tool harness failures (`tools.0.<type>.name: Field required`). It
+// reproduces the real inbound seam: the harness body is unmarshaled into
+// schemas.ChatParameters (exactly what OpenAIChatRequest.UnmarshalJSON does via sonic),
+// then run through convertChatParameters, and the tunneled
+// additionalModelRequestFields.tools entry is checked for the `name`. Unlike
+// TestCollectBedrockServerTools_BashOnly (which builds the struct directly), this
+// exercises the full body -> Unmarshal -> Bedrock convert path where the name is
+// suspected to drop.
+func TestConvertChatParameters_ServerToolNameFromBody(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		model    string
+		wantName string
+	}{
+		{"bash", `{"tools":[{"type":"bash_20250124","name":"bash"}],"max_tokens":1024}`, "global.anthropic.claude-sonnet-4-6", "bash"},
+		{"computer", `{"tools":[{"type":"computer_20251124","name":"computer","display_width_px":1280,"display_height_px":800}],"max_tokens":1024}`, "global.anthropic.claude-sonnet-4-6", "computer"},
+		{"text_editor", `{"tools":[{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"}],"max_tokens":1024}`, "global.anthropic.claude-sonnet-4-6", "str_replace_based_edit_tool"},
+		{"memory", `{"tools":[{"type":"memory_20250818","name":"memory"}],"max_tokens":1024}`, "global.anthropic.claude-opus-4-7", "memory"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var params schemas.ChatParameters
+			if err := schemas.Unmarshal([]byte(tc.body), &params); err != nil {
+				t.Fatalf("unmarshal body: %v", err)
+			}
+			// Sanity: the inbound parse should retain the top-level name.
+			if len(params.Tools) != 1 || params.Tools[0].Name != tc.wantName {
+				t.Fatalf("inbound ChatParameters dropped name: %+v", params.Tools)
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model:  tc.model,
+				Params: &params,
+				Input: []schemas.ChatMessage{
+					{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Run ls")},
+					},
+				},
+			}
+			// Go through the real public entrypoint (messages + ensureChatToolConfig
+			// + cache-point stripping), not just convertChatParameters.
+			bedrockReq, err := ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("ToBedrockChatCompletionRequest: %v", err)
+			}
+
+			if bedrockReq.AdditionalModelRequestFields == nil {
+				t.Fatalf("expected additionalModelRequestFields.tools to be set")
+			}
+			raw, ok := bedrockReq.AdditionalModelRequestFields.Get("tools")
+			if !ok {
+				t.Fatalf("expected tunneled server tools, got none")
+			}
+			serialized, err := schemas.Marshal(raw)
+			if err != nil {
+				t.Fatalf("marshal tunneled tools: %v", err)
+			}
+			if !strings.Contains(string(serialized), `"name":"`+tc.wantName+`"`) {
+				t.Errorf("tunneled server tool is missing name (in-memory value); got %s", string(serialized))
+			}
+
+			// Wire-level: marshal the FULL request exactly as bedrock.go does
+			// (providerUtils.MarshalSorted at bedrock.go:2990). This routes the
+			// []json.RawMessage tools value through OrderedMap.MarshalJSON, the
+			// suspected drop point for the harness 400s.
+			wire, err := schemas.MarshalSorted(bedrockReq)
+			if err != nil {
+				t.Fatalf("marshal full request: %v", err)
+			}
+			if !strings.Contains(string(wire), `"name":"`+tc.wantName+`"`) {
+				t.Errorf("WIRE request is missing tool name; got %s", string(wire))
+			}
+		})
+	}
+}
+
 // TestCollectBedrockServerTools_BashOnly — bash is Bedrock-supported per the
 // B-header list; the helper must emit it as a native-JSON tool entry with no
 // derived beta header (bash has no high-confidence 1:1 beta-header mapping;

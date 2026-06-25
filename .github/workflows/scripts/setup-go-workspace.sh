@@ -29,6 +29,7 @@ go work use ./plugins/mocker
 go work use ./plugins/otel
 go work use ./plugins/prompts
 go work use ./plugins/semanticcache
+go work use ./plugins/modelcatalogresolver
 go work use ./plugins/telemetry
 go work use ./transports
 go work use ./cli

@@ -12,8 +12,8 @@ icon: "database"
 
 AI Gateway exposes two categories of APIs on every endpoint:
 
-- **Unified APIs** — Provider-agnostic, OpenAI-compatible interfaces powered by MLflow. You can swap the underlying model without changing client code. Path: `/mlflow/v1/chat/completions`.
-- **Native APIs** — Provider-specific interfaces that give full access to a provider's latest features. For Anthropic, the path is `/anthropic/v1/messages`.
+- **Unified APIs** - Provider-agnostic, OpenAI-compatible interfaces powered by MLflow. You can swap the underlying model without changing client code. Path: `/mlflow/v1/chat/completions`.
+- **Native APIs** - Provider-specific interfaces that give full access to a provider's latest features. For Anthropic, the path is `/anthropic/v1/messages`.
 
 In Bifrost, each API category maps to a different custom provider base format:
 
@@ -23,7 +23,7 @@ In Bifrost, each API category maps to a different custom provider base format:
 | **Native** (Anthropic Messages) | `anthropic` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 
 <Warning>
-The **Unified (MLflow) API** is a pure chat completions interface — it does **not** support the Responses API. Coding agents like Claude Code, Cursor, or Codex CLI that depend on the Responses API will **not** work through the Unified API.
+The **Unified (MLflow) API** is a pure chat completions interface - it does **not** support the Responses API. Coding agents like Claude Code, Cursor, or Codex CLI that depend on the Responses API will **not** work through the Unified API.
 
 Use the **Native Anthropic Messages API** if you need Responses API support, coding agent compatibility, or text completions.
 </Warning>
@@ -33,12 +33,12 @@ Use the **Native Anthropic Messages API** if you need Responses API support, cod
 Before configuring Bifrost, you need:
 
 1. A Databricks workspace with **Unity Catalog enabled** and AI Gateway access turned on by an account admin via **Account Console > Previews**
-2. An AI Gateway endpoint with at least one model destination — create one from the **AI Gateway** page in the Databricks sidebar
-3. The endpoint's AI Gateway URL — visible at the top of the endpoint overview page, in the format:
+2. An AI Gateway endpoint with at least one model destination - create one from the **AI Gateway** page in the Databricks sidebar
+3. The endpoint's AI Gateway URL - visible at the top of the endpoint overview page, in the format:
    ```
    https://<workspace-id>.ai-gateway.cloud.databricks.com
    ```
-4. A Databricks Personal Access Token (PAT) — generate one from **Settings > Developer > Access tokens** in your Databricks workspace, or click **Generate Access Token** at the bottom of the endpoint page
+4. A Databricks Personal Access Token (PAT) - generate one from **Settings > Developer > Access tokens** in your Databricks workspace, or click **Generate Access Token** at the bottom of the endpoint page
 
 <img src="/media/databricks-endpoint-overview.png" alt="Databricks AI Gateway endpoint overview page showing the API format dropdown and Generate Access Token button" />
 
@@ -56,7 +56,7 @@ AI Gateway exposes every endpoint at a `/mlflow/v1/chat/completions` path. Becau
 https://<workspace-id>.ai-gateway.cloud.databricks.com/mlflow/v1/chat/completions
 ```
 
-You register only the base portion (`/mlflow`) as the custom provider's Base URL — Bifrost appends the standard `/v1/chat/completions` path automatically.
+You register only the base portion (`/mlflow`) as the custom provider's Base URL - Bifrost appends the standard `/v1/chat/completions` path automatically.
 
 ## Step 1: Create the Custom Provider
 
@@ -78,7 +78,7 @@ The default `/v1/models` path does not work against the AI Gateway URL. To enabl
 In the **Allowed Request Types** section of the dialog:
 
 1. Find the **List Models** toggle (make sure it's enabled)
-2. Click the **settings icon** (gear) next to List Models — this opens the **Custom Path or URL** popover
+2. Click the **settings icon** (gear) next to List Models - this opens the **Custom Path or URL** popover
 3. Enter your workspace's Unity Catalog models endpoint:
 
 ```
@@ -153,7 +153,7 @@ AI Gateway exposes every endpoint at an `/anthropic/v1/messages` path that follo
 https://<workspace-id>.ai-gateway.cloud.databricks.com/anthropic/v1/messages
 ```
 
-You register only the base portion (`/anthropic`) as the custom provider's Base URL — Bifrost appends the standard Anthropic paths automatically.
+You register only the base portion (`/anthropic`) as the custom provider's Base URL - Bifrost appends the standard Anthropic paths automatically.
 
 ## Step 1: Create the Custom Provider
 
@@ -244,7 +244,7 @@ The Native Anthropic Messages API works with Claude Code and other coding agents
 | **Bifrost Base Format** | `openai` | `anthropic` |
 
 <Note>
-You can create **two separate custom providers** — one per API category — pointing to the same AI Gateway endpoint. Use the Unified provider for chat completions with model listing, and the Native Anthropic provider for Responses API or coding agents.
+You can create **two separate custom providers** - one per API category - pointing to the same AI Gateway endpoint. Use the Unified provider for chat completions with model listing, and the Native Anthropic provider for Responses API or coding agents.
 </Note>
 
 ---

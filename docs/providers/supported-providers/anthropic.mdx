@@ -32,9 +32,68 @@ Anthropic has significant structural differences from OpenAI's format. Bifrost p
 **Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, and Image Generation are not supported by the upstream Anthropic API. These return `UnsupportedOperationError`.
 </Note>
 
+## Setup & Configuration
+
+Configure Anthropic as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Anthropic provider dashboard](../../media/provider-dashboard-anthropic.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Anthropic** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Anthropic**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.ANTHROPIC_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-key-1",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Anthropic:
+    return []schemas.Key{{
+        Name:   "anthropic-key-1",
+        Value:  *schemas.NewEnvVar("env.ANTHROPIC_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Use `network_config.beta_header_overrides` when you need to override the default Anthropic beta-header support matrix for a provider.
+
 ## Beta Headers
 
-Bifrost automatically manages Anthropic beta headers — detecting required headers from request features and injecting them. Headers are validated per provider to prevent unsupported headers from reaching the upstream API.
+Bifrost automatically manages Anthropic beta headers - detecting required headers from request features and injecting them. Headers are validated per provider to prevent unsupported headers from reaching the upstream API.
 
 | Beta Header | Anthropic | Azure | Vertex | Bedrock | Auto-Injected |
 |---|---|---|---|---|---|

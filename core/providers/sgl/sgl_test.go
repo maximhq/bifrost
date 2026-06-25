@@ -45,6 +45,7 @@ func TestSGL(t *testing.T) {
 			CompleteEnd2End:            true,
 			Embedding:                  true,
 			ListModels:                 true,
+			PassThroughExtraParams:     true,
 		},
 	}
 

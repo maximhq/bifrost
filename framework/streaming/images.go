@@ -315,6 +315,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 				Provider:       provider,
 				RequestedModel: requestedModel,
 				ResolvedModel:  resolvedModel,
+				RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 				Data:           data,
 				RawRequest:     &rawRequest,
 			}, nil
@@ -331,6 +332,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		Provider:       provider,
 		RequestedModel: requestedModel,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
 }

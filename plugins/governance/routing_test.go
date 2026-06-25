@@ -240,7 +240,7 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -308,7 +308,7 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 				Weight:   0.0,
 			},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -334,13 +334,37 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 	// KeyID must be propagated through the routing decision.
 	assert.Equal(t, pinnedKeyID, decision.KeyID)
 
-	// Simulate the propagation step performed by governance/main.go so that we can
-	// assert the pinned key_id is visible in the BifrostContext.
-	if decision.KeyID != "" {
-		bgCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
+	// Now exercise the REAL propagation path through applyRoutingRules, under the same
+	// restricted-write block that core's RunPreRequestHooks installs around every
+	// PreRequestHook (core/bifrost.go: ctx.BlockRestrictedWrites + ctx.WithPluginScope).
+	// This is what production actually does — the routing pin lands on the dedicated,
+	// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (a write to the reserved
+	// BifrostContextKeyAPIKeyID would be silently dropped during this phase). Key selection
+	// (selectKeyFromProviderForModelWithPool) reads the pinned key back from this context.
+	plugin := &GovernancePlugin{
+		logger: NewMockLogger(),
+		store:  store,
+		engine: engine,
 	}
-	ctxKeyID, _ := bgCtx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
-	assert.Equal(t, pinnedKeyID, ctxKeyID)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+	}
+
+	root := schemas.NewBifrostContext(context.Background(), time.Now())
+	root.BlockRestrictedWrites()
+	pluginName := PluginName
+	scoped := root.WithPluginScope(&pluginName)
+
+	appliedDecision, err := plugin.applyRoutingRules(scoped, req, nil)
+	require.NoError(t, err)
+	require.NotNil(t, appliedDecision)
+	assert.Equal(t, pinnedKeyID, appliedDecision.KeyID)
+
+	// The pinned key_id must be readable from the root context that key selection consults.
+	ctxKeyID, _ := root.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+	assert.Equal(t, pinnedKeyID, ctxKeyID,
+		"routing-rule pinned key_id must reach BifrostContextKeyRoutingPinnedAPIKeyID that selectKeyFromProviderForModelWithPool reads")
 }
 
 // TestEvaluateRoutingRules_ScopePrecedence tests virtual_key scope takes precedence over global
@@ -360,7 +384,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -374,7 +398,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "virtual_key",
 		ScopeID:  bifrost.Ptr("vk-123"),
 		Priority: 10,
@@ -424,7 +448,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 10,
 	}
@@ -438,7 +462,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -473,7 +497,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -539,7 +563,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  false,
+		Enabled:  bifrost.Ptr(false),
 		Scope:    "global",
 		Priority: 10,
 	}
@@ -553,7 +577,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -590,7 +614,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -634,7 +658,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -671,7 +695,7 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:  true,
+		Enabled:  bifrost.Ptr(true),
 		Scope:    "global",
 		Priority: 0,
 	}
@@ -716,7 +740,7 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  0,
 		ChainRule: true,
@@ -731,7 +755,7 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  1,
 		ChainRule: false,
@@ -774,7 +798,7 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  0,
 		ChainRule: false,
@@ -789,7 +813,7 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  1,
 		ChainRule: false,
@@ -832,7 +856,7 @@ func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  0,
 		ChainRule: true,
@@ -847,7 +871,7 @@ func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("claude-3"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  1,
 		ChainRule: false,
@@ -888,7 +912,7 @@ func TestEvaluateRoutingRules_SelfLoopAloneTerminates(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  0,
 		ChainRule: true,
@@ -931,7 +955,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  0,
 		ChainRule: true,
@@ -946,7 +970,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  1,
 		ChainRule: true,
@@ -961,7 +985,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("claude-3"), Weight: 1.0},
 		},
-		Enabled:   true,
+		Enabled:   bifrost.Ptr(true),
 		Scope:     "global",
 		Priority:  2,
 		ChainRule: false,
@@ -1002,7 +1026,7 @@ func TestCompileAndCacheProgram_ValidExpression_Routing(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1029,7 +1053,7 @@ func TestCompileAndCacheProgram_EmptyExpression_Routing(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1051,7 +1075,7 @@ func TestCompileAndCacheProgram_InvalidExpression_Routing(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	_, err = store.GetRoutingProgram(context.Background(), rule)
@@ -1084,7 +1108,7 @@ func TestCompileAndCacheProgram_ListExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1106,7 +1130,7 @@ func TestCompileAndCacheProgram_RegexExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1128,7 +1152,7 @@ func TestCompileAndCacheProgram_HeaderExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1150,7 +1174,7 @@ func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1172,7 +1196,7 @@ func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1194,7 +1218,7 @@ func TestCompileAndCacheProgram_ComplexExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1249,7 +1273,7 @@ func TestEvaluateCELExpression_TrueResult(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1280,7 +1304,7 @@ func TestEvaluateCELExpression_FalseResult(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1311,7 +1335,7 @@ func TestEvaluateCELExpression_ListMembership(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
@@ -1349,7 +1373,7 @@ func TestEvaluateCELExpression_HeaderAccess(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)

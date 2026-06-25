@@ -16,16 +16,39 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// Define a set of retryable status codes
-var retryableStatusCodes = map[int]bool{
+const (
+	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
+	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
+)
+
+// transientServerStatusCodes are upstream-side failures unrelated to the credential —
+// retried with the *same* key (a different credential gains nothing against a flaky
+// server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
+var transientServerStatusCodes = map[int]bool{
 	500: true, // Internal Server Error
 	502: true, // Bad Gateway
 	503: true, // Service Unavailable
 	504: true, // Gateway Timeout
-	429: true, // Too Many Requests
+}
+
+// perKeyFailureStatusCodes are failures bound to the specific key/account rather than
+// the request. On these, executeRequestWithRetries rotates to the next available key
+// (if any) instead of retrying the same key. Request-bound 4xx (400/404/422/...) are
+// intentionally excluded — rotating would just burn every key on the same bad request.
+//
+// Split further inside the retry loop:
+//   - 429 → transient per-key (rate limit) → tracked in usedKeyIDs, may be retried later
+//   - 401/402/403 → permanent per-key (auth/billing/permission) → tracked in deadKeyIDs,
+//     never retried within the same request.
+var perKeyFailureStatusCodes = map[int]bool{
+	401: true, // Unauthorized — bad / revoked API key
+	402: true, // Payment Required — billing issue on this key's account
+	403: true, // Forbidden — key lacks permission or is org-level blocked
+	429: true, // Too Many Requests — this key is rate-limited, another may have capacity
 }
 
 // Define rate limit error message patterns (case-insensitive)
@@ -117,17 +140,17 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
-// validateRequest validates the given request.
-func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
+// validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
+func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
-		return newBifrostErrorFromMsg("provider is required")
+		return newBifrostErrorFromMsg(ProviderAutoResolveErrorMessage)
 	}
 	if isModelRequired(req.RequestType) && model == "" {
-		return newBifrostErrorFromMsg("model is required")
+		return newBifrostErrorFromMsg(ModelAutoResolveErrorMessage)
 	}
 	return nil
 }
@@ -194,6 +217,32 @@ func IsRateLimitErrorMessage(errorMessage string) bool {
 	}
 
 	return false
+}
+
+// routingErrorSummary produces a sanitized, audit-safe one-line summary of a
+// BifrostError for emission to the per-request routing engine log trail.
+// It deliberately omits the upstream provider message — which can echo back
+// API keys, tokens, or user input — and surfaces only the error type and HTTP
+// status code. Used by the core fallback orchestrator so the routing log
+// records *why* a fallback was triggered without leaking secrets into log
+// storage or the UI.
+func routingErrorSummary(e *schemas.BifrostError) string {
+	if e == nil {
+		return "unknown error"
+	}
+	parts := make([]string, 0, 2)
+	if e.Error != nil && e.Error.Type != nil && *e.Error.Type != "" {
+		parts = append(parts, *e.Error.Type)
+	} else if e.Type != nil && *e.Type != "" {
+		parts = append(parts, *e.Type)
+	}
+	if e.StatusCode != nil {
+		parts = append(parts, fmt.Sprintf("HTTP %d", *e.StatusCode))
+	}
+	if len(parts) == 0 {
+		return "request failed"
+	}
+	return strings.Join(parts, " ")
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -275,6 +324,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -331,6 +381,13 @@ func isBatchRequestType(reqType schemas.RequestType) bool {
 // isFileRequestType returns true if the given request type is a file API operation.
 func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
+}
+
+// isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.
+func isCachedContentRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.CachedContentCreateRequest || reqType == schemas.CachedContentListRequest ||
+		reqType == schemas.CachedContentRetrieveRequest || reqType == schemas.CachedContentUpdateRequest ||
+		reqType == schemas.CachedContentDeleteRequest
 }
 
 // isContainerRequestType returns true if the given request type is a container API operation.
@@ -398,6 +455,18 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 	return
 }
 
+// GetResponseRoutingInfo extracts the RoutingInfo recorded on a completed
+// attempt — from the accumulated response, or the error when the attempt failed.
+func GetResponseRoutingInfo(result *schemas.BifrostResponse, err *schemas.BifrostError) schemas.RoutingInfo {
+	if result != nil {
+		return result.GetExtraFields().RoutingInfo
+	}
+	if err != nil {
+		return err.ExtraFields.RoutingInfo
+	}
+	return schemas.RoutingInfo{}
+}
+
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
 // Returns empty string if marshaling fails.
 func MarshalUnsafe(v any) string {
@@ -412,43 +481,9 @@ func MarshalUnsafe(v any) string {
 	return strings.TrimSpace(buf.String())
 }
 
+// // [Deprecated] use err.GetErrorString() instead. Will be removed in a future release.
 func GetErrorMessage(err *schemas.BifrostError) string {
-	if err == nil {
-		return ""
-	}
-	if err.Error != nil && err.Error.Message != "" {
-		return err.Error.Message
-	} else if err.StatusCode != nil {
-		switch *err.StatusCode {
-		case 401:
-			return "unauthorized"
-		case 403:
-			return "forbidden"
-		case 404:
-			return "endpoint not found"
-		case 405:
-			return "method not allowed"
-		case 429:
-			return "rate limit exceeded"
-		case 500:
-			return "internal server error"
-		case 502:
-			return "bad gateway"
-		case 503:
-			return "service unavailable"
-		case 504:
-			return "gateway timeout"
-		default:
-			if err.Error != nil && err.Error.Message != "" {
-				return err.Error.Message
-			}
-			return fmt.Sprintf("HTTP %d error", *err.StatusCode)
-		}
-	} else if err.Type != nil {
-		return *err.Type
-	} else {
-		return "unknown error"
-	}
+	return err.GetErrorString()
 }
 
 // GetStringFromContext safely extracts a string value from context
@@ -493,8 +528,10 @@ func RedactSensitiveString(s string) string {
 	return s[:4] + "[REDACTED]" + s[len(s)-4:]
 }
 
-// ValidateExternalURL validates a URL for security concerns (SSRF protection)
-func ValidateExternalURL(urlStr string) error {
+// ValidateExternalURL validates a URL for security concerns (SSRF protection).
+// When allowPrivateNetwork is true, RFC 1918 private IPs are permitted (for k8s/LAN deployments).
+// Link-local addresses (169.254.x.x, fe80::) are always blocked regardless of allowPrivateNetwork.
+func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	if urlStr == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
@@ -512,66 +549,32 @@ func ValidateExternalURL(urlStr string) error {
 	if hostname == "" {
 		return fmt.Errorf("URL must have a hostname")
 	}
-	// Block localhost and loopback addresses
-	if isLocalhost(hostname) {
-		return fmt.Errorf("localhost and loopback addresses are not allowed")
-	}
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname: %w", err)
 	}
-	// Check if any resolved IP is private
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
+		if ip.IsLoopback() {
+			continue
+		}
+		// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified IP addresses are not allowed")
+		}
+		if network.IsLinkLocal(ip) {
+			return fmt.Errorf("link-local IP addresses are not allowed")
+		}
+		if !allowPrivateNetwork && network.IsPrivateIP(ip) {
 			return fmt.Errorf("private IP addresses are not allowed")
 		}
 	}
 	return nil
 }
 
-// isLocalhost checks if a hostname is localhost or a loopback address
-func isLocalhost(hostname string) bool {
-	return hostname == "localhost" ||
-		hostname == "127.0.0.1" ||
-		hostname == "::1" ||
-		hostname == "0.0.0.0" ||
-		hostname == "::"
-}
-
-// isPrivateIP checks if an IP address is in a private range
-func isPrivateIP(ip net.IP) bool {
-	// Private IPv4 ranges
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16", // Link-local
-		"127.0.0.0/8",    // Loopback
-	}
-	for _, cidr := range privateRanges {
-		_, subnet, _ := net.ParseCIDR(cidr)
-		if subnet.Contains(ip) {
-			return true
-		}
-	}
-	// Check for private IPv6
-	if ip.To4() == nil {
-		// Check for IPv6 loopback and link-local
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			return true
-		}
-		// Check for IPv6 unique local addresses (fc00::/7)
-		if len(ip) == 16 && (ip[0]&0xfe) == 0xfc {
-			return true
-		}
-	}
-	return false
-}
-
-// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
+// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name.
 func sanitizeSpanName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return schemas.SanitizePluginSpanName(name)
 }
 
 // IsCodemodeTool returns true if the given tool name is a codemode tool.

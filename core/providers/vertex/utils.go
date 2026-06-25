@@ -7,8 +7,57 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-	"github.com/maximhq/bifrost/core/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+// resolveVertexProjectID returns the GCP project ID for the current attempt.
+// Priority: alias-level VertexAliasCfg.ProjectID > key-level
+// VertexKeyConfig.ProjectID. Per-alias override lets one Vertex credential
+// span deployments across distinct GCP projects (e.g. Anthropic models in
+// one project, Gemini in another).
+func resolveVertexProjectID(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectID != nil {
+		if v := ra.Config.VertexAliasCfg.ProjectID.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.ProjectID.GetValue()
+	}
+	return ""
+}
+
+// resolveVertexProjectNumber returns the GCP project number for the current
+// attempt. Same precedence as resolveVertexProjectID.
+func resolveVertexProjectNumber(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectNumber != nil {
+		if v := ra.Config.VertexAliasCfg.ProjectNumber.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.ProjectNumber.GetValue()
+	}
+	return ""
+}
+
+// resolveVertexRegion returns the Vertex region for the current attempt.
+// Priority: alias-level AliasConfig.Region (top-level, shared with other
+// providers) > key-level VertexKeyConfig.Region. Different Vertex model
+// families publish in different regions (Anthropic on us-east5, Gemini on
+// us-central1, …), so per-alias overrides let one credential reach all of
+// them.
+func resolveVertexRegion(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.Region != nil {
+		if v := ra.Config.Region.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.Region.GetValue()
+	}
+	return ""
+}
 
 // getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Vertex AI.
 // Compared to the native Anthropic path, it strips model/region fields, remaps tool versions, injects beta headers
@@ -35,7 +84,7 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 	if buildErr != nil {
 		return nil, buildErr
 	}
-	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, deployment)
+	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, schemas.ResolveCanonicalModel(ctx, deployment))
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
 	}
@@ -175,9 +224,74 @@ func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID
 	return getVertexPublisherModelURL(region, "v1", projectID, "google", deployment, method)
 }
 
+// vertexPriorityModels lists model name prefixes that support Priority PayGo on Vertex.
+// Source: https://cloud.google.com/vertex-ai/generative-ai/docs/priority-paygo
+var vertexPriorityModels = []string{
+	"gemini-2.5-pro",
+	"gemini-2.5-flash",
+	"gemini-2.5-flash-lite",
+	"gemini-3-flash-preview",
+	"gemini-3.1-pro-preview",
+	"gemini-3.1-flash-lite",
+}
+
+// vertexFlexModels lists model name prefixes that support Flex PayGo on Vertex.
+// Source: https://cloud.google.com/vertex-ai/generative-ai/docs/flex-paygo
+var vertexFlexModels = []string{
+	"gemini-3.1-flash-lite",
+	"gemini-3.1-flash-image-preview",
+	"gemini-3.1-pro-preview",
+	"gemini-3-flash-preview",
+	"gemini-3-pro-image-preview",
+}
+
+// isVertexModelSupportedForTier reports whether a model supports the given service tier.
+// Custom/fine-tuned models (all-digits IDs) are passed through without restriction since
+// their base model cannot be determined from the ID alone.
+func isVertexModelSupportedForTier(model string, tier schemas.BifrostServiceTier) bool {
+	if schemas.IsAllDigitsASCII(model) {
+		return true
+	}
+	normalized := gemini.NormalizeModelName(model)
+	var prefixes []string
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		prefixes = vertexPriorityModels
+	case schemas.BifrostServiceTierFlex:
+		prefixes = vertexFlexModels
+	default:
+		return false
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// vertexServiceTierHeaderValue returns the value for the X-Vertex-AI-LLM-Shared-Request-Type header,
+// or "" if no header should be set. Requires the global endpoint and a supported model.
+func vertexServiceTierHeaderValue(region string, model string, tier schemas.BifrostServiceTier) string {
+	if region != "global" {
+		return ""
+	}
+	if !isVertexModelSupportedForTier(model, tier) {
+		return ""
+	}
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		return "priority"
+	case schemas.BifrostServiceTierFlex:
+		return "flex"
+	default:
+		return ""
+	}
+}
+
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used when the user has explicitly configured which models they want to use.
-func buildResponseFromConfig(deployments map[string]string, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
@@ -207,7 +321,7 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 		modelEntry := schemas.Model{
 			ID:    modelID,
 			Name:  schemas.Ptr(modelName),
-			Alias: schemas.Ptr(deploymentValue),
+			Alias: schemas.Ptr(deploymentValue.ModelID),
 		}
 
 		response.Data = append(response.Data, modelEntry)

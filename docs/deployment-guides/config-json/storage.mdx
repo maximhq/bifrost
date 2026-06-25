@@ -1,10 +1,10 @@
 ---
 title: "Storage"
-description: "Configure Bifrost storage backends in config.json — config_store, logs_store, vector_store, and object storage for logs"
+description: "Configure Bifrost storage backends in config.json - config_store, logs_store, vector_store, and object storage for logs"
 icon: "database"
 ---
 
-Bifrost persists two types of data — **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store. A **vector store** is required for semantic caching.
+Bifrost persists two types of data - **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store. A **vector store** is required for semantic caching.
 
 | Store | Purpose | Backends |
 |-------|---------|---------|
@@ -21,7 +21,7 @@ If you use PostgreSQL for any store, the target database must be **UTF8 encoded*
 ## config_store
 
 <Note>
-When `config_store` is disabled (or absent), all configuration is loaded from `config.json` at startup only — the Web UI is disabled and changes require a restart. See [Two Configuration Modes](/deployment-guides/config-json#two-configuration-modes).
+When `config_store` is omitted, Bifrost creates a default SQLite config store in the app directory. Set `config_store.enabled` to `false` only when you want file-only configuration with no config-backed Web UI/API edits. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
 </Note>
 
 <Tabs>
@@ -30,7 +30,7 @@ When `config_store` is disabled (or absent), all configuration is loaded from `c
 
 ### SQLite (Default)
 
-Simplest setup — no external database required. Bifrost stores configuration in a local SQLite file.
+Simplest setup - no external database required. Bifrost stores configuration in a local SQLite file.
 
 ```json
 {
@@ -77,14 +77,51 @@ Production-grade storage suitable for high-availability and high-throughput depl
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `host` | — | PostgreSQL host (supports `env.` prefix) |
-| `port` | — | PostgreSQL port (as string) |
-| `user` | — | Database user (supports `env.` prefix) |
-| `password` | — | Database password (supports `env.` prefix). Leave empty for IAM role auth. |
-| `db_name` | — | Database name |
-| `ssl_mode` | — | `"disable"`, `"require"`, `"verify-ca"`, `"verify-full"` |
+| `host` | - | PostgreSQL host (supports `env.` prefix) |
+| `port` | - | PostgreSQL port (as string) |
+| `user` | - | Database user (supports `env.` prefix) |
+| `password` | - | Database password (supports `env.` prefix). Mutually exclusive with `password_command`; configure exactly one password source. |
+| `password_command` | - | Command executed without a shell to produce the database password on stdout for each new physical connection. Mutually exclusive with `password`; runtime validation rejects configs that set both fields. Put only the executable path or name in `command`; pass arguments through `args`. |
+| `db_name` | - | Database name |
+| `ssl_mode` | - | `"disable"`, `"require"`, `"verify-ca"`, `"verify-full"` |
 | `max_idle_conns` | `5` | Maximum idle connections in the pool |
 | `max_open_conns` | `50` | Maximum open connections to the database |
+| `conn_max_lifetime` | - | Maximum lifetime for physical database connections, as a Go duration string such as `"10m"`. |
+
+Use `password_command` for short-lived database credentials such as AWS RDS IAM auth tokens:
+
+```json
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-rds-endpoint.us-east-1.rds.amazonaws.com",
+      "port": "5432",
+      "user": "bifrost",
+      "password_command": {
+        "command": "aws",
+        "args": [
+          "rds",
+          "generate-db-auth-token",
+          "--hostname",
+          "your-rds-endpoint.us-east-1.rds.amazonaws.com",
+          "--port",
+          "5432",
+          "--region",
+          "us-east-1",
+          "--username",
+          "bifrost"
+        ],
+        "timeout": "10s"
+      },
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "conn_max_lifetime": "10m"
+    }
+  }
+}
+```
 
 </Tab>
 
@@ -92,7 +129,7 @@ Production-grade storage suitable for high-availability and high-throughput depl
 
 ### Disabled (file-only mode)
 
-Use this when you want Bifrost to read all configuration from `config.json` only — no database, no Web UI.
+Use this when you want Bifrost to read all configuration from `config.json` only - no configuration database and no config-backed Web UI/API edits.
 
 ```json
 {
@@ -155,6 +192,14 @@ This is the recommended setup for [multinode OSS deployments](/deployment-guides
 }
 ```
 
+`logs_store` supports the same dynamic PostgreSQL credential fields as `config_store`:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `password` | - | Database password (supports `env.` prefix). Mutually exclusive with `password_command`; configure exactly one password source. |
+| `password_command` | - | Command executed without a shell to produce the database password on stdout for each new physical connection. Mutually exclusive with `password`; runtime validation rejects configs that set both fields. Put only the executable path or name in `command`; pass arguments through `args`. |
+| `conn_max_lifetime` | - | Maximum lifetime for physical database connections, as a Go duration string such as `"10m"`. |
+
 For high log volumes, increase `max_open_conns`:
 
 ```json
@@ -208,12 +253,86 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 }
 ```
 
+### Materialized View Refresh Interval (PostgreSQL only)
+
+The PostgreSQL logs store backs the dashboard's stats and histograms with materialized views, refreshed in the background. The default cadence is **1 minute**, which keeps dashboard data near real-time but issues a `REFRESH MATERIALIZED VIEW CONCURRENTLY` every minute — an expensive operation that can be too aggressive on smaller or CPU-constrained database instances.
+
+Set `matview_refresh_interval` (Go duration string) to slow down refreshes when near-real-time accuracy isn't critical:
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "matview_refresh_interval": "5m"
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`). Minimum `5s`. |
+
+**Notes**
+
+- Refreshes are already **activity-gated**: when no INSERT/UPDATE/DELETE has hit the `logs` table since the last refresh, the scheduled tick short-circuits without touching the views. So idle clusters don't pay for the configured cadence — they only pay when there's actual log activity.
+- Dashboard freshness lag will be **at most** the configured interval. Stats and histograms over the last 24 hours come straight from the raw `logs` table (no matview), so short-window dashboards stay real-time regardless of this setting.
+- A 10-minute safety-net refresh runs even on totally idle clusters so the rolling 30-day filter dropdown window evicts aged-out values.
+
+**When to raise it:**
+
+- Your database instance is CPU-constrained and matview refreshes are showing up as a hot consumer.
+- Your team mostly looks at multi-day trends, not minute-by-minute dashboards.
+
+**When to leave it at the default:**
+
+- The database has consistent CPU headroom.
+- Operators rely on near-real-time dashboards (e.g. live incident triage).
+
 ### Object Storage for Logs
 
-Offload large request/response payloads from the database to S3 or GCS. The database retains only lightweight index records; payloads are fetched on demand.
+Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
 <Tabs>
 <Tab title="AWS S3">
+
+#### Required IAM Permissions
+
+The IAM user or role needs the following permissions on your bucket:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketAccess",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::bifrost-logs"
+    },
+    {
+      "Sid": "ObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:PutObjectTagging",
+        "s3:GetObjectTagging"
+      ],
+      "Resource": "arn:aws:s3:::bifrost-logs/*"
+    }
+  ]
+}
+```
 
 ```json
 {
@@ -234,7 +353,7 @@ Offload large request/response payloads from the database to S3 or GCS. The data
 }
 ```
 
-**IAM role (instance profile / IRSA)** — omit `access_key_id` and `secret_access_key`:
+**IAM role (instance profile / IRSA)** - omit `access_key_id` and `secret_access_key`:
 
 ```json
 {
@@ -287,7 +406,7 @@ Omit `credentials_json` to use Application Default Credentials (Workload Identit
 | Field | Description |
 |-------|-------------|
 | `project_id` | GCP project ID (supports `env.` prefix) |
-| `credentials_json` | Service account JSON or path — omit for ADC |
+| `credentials_json` | Service account JSON or path - omit for ADC |
 
 </Tab>
 <Tab title="MinIO (Self-Hosted)">
@@ -385,12 +504,12 @@ A vector store is required for [semantic caching](/features/semantic-caching). C
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `addr` | — | Redis/Valkey address `host:port` (supports `env.` prefix) |
-| `password` | — | Redis AUTH password (supports `env.` prefix) |
+| `addr` | - | Redis/Valkey address `host:port` (supports `env.` prefix) |
+| `password` | - | Redis AUTH password (supports `env.` prefix) |
 | `db` | `0` | Redis database number |
 | `use_tls` | `false` | Enable TLS |
 | `cluster_mode` | `false` | Enable cluster mode (required for MemoryDB; `db` must be `0`) |
-| `pool_size` | — | Maximum socket connections |
+| `pool_size` | - | Maximum socket connections |
 
 </Tab>
 
@@ -413,9 +532,9 @@ A vector store is required for [semantic caching](/features/semantic-caching). C
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `host` | — | Qdrant server host (supports `env.` prefix) |
+| `host` | - | Qdrant server host (supports `env.` prefix) |
 | `port` | `6334` | gRPC port |
-| `api_key` | — | API key (supports `env.` prefix) |
+| `api_key` | - | API key (supports `env.` prefix) |
 | `use_tls` | `false` | Enable TLS |
 
 </Tab>

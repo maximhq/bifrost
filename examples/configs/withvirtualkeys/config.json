@@ -1,7 +1,6 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
   "client": {
-    "allow_direct_keys": false,
     "allowed_origins": [
       "*"
     ],
@@ -135,7 +134,6 @@
         {
           "id": "key-azure-us-1-prod",
           "azure_key_config": {
-            "api_version": "2025-03-01-preview",
             "endpoint": "https://orca-prod-us-east-1.openai.azure.com/"
           },
           "models": [
@@ -154,7 +152,6 @@
         {
           "id": "key-azure-us-2-prod",
           "azure_key_config": {
-            "api_version": "2025-03-01-preview",
             "endpoint": "https://orca-prod-us-east-2.openai.azure.com/"
           },
           "models": [
@@ -173,7 +170,6 @@
         {
           "id": "key-azure-eu-1-prod",
           "azure_key_config": {
-            "api_version": "2025-03-01-preview",
             "endpoint": "https://orca-prod-eu-central-1.openai.azure.com/"
           },
           "models": [

@@ -85,6 +85,7 @@ export interface Model {
 	id: string;
 	canonical_slug?: string;
 	name?: string;
+	normalized_name?: string;
 	alias?: string;
 	created?: number;
 	context_length?: number;
@@ -141,6 +142,7 @@ export interface DefaultParameters {
 // Message content types
 export type MessageContentType =
 	| "text"
+	| "file"
 	| "image_url"
 	| "input_audio"
 	| "input_text"
@@ -155,6 +157,13 @@ export interface ContentBlock {
 	image_url?: {
 		url: string;
 		detail?: string;
+	};
+	file?: {
+		file_data?: string;
+		file_url?: string;
+		file_id?: string;
+		filename?: string;
+		file_type?: string;
 	};
 	input_audio?: {
 		data: string;
@@ -496,6 +505,8 @@ export interface LogEntry {
 	provider: string;
 	model: string;
 	alias?: string; // Set when model was resolved via alias mapping; the original name the caller used
+	canonical_model_name?: string; // Canonical model name configured on the resolved alias, when set
+	alias_model_family?: string; // Model family configured on the resolved alias, when set
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
@@ -509,6 +520,12 @@ export interface LogEntry {
 	customer_id?: string;
 	business_unit_id?: string;
 	business_unit_name?: string;
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;
@@ -584,6 +601,7 @@ export interface LogFilters {
 	min_tokens?: number;
 	max_tokens?: number;
 	missing_cost_only?: boolean;
+	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
 	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 	user_ids?: string[];
@@ -607,6 +625,9 @@ export interface LogStats {
 	average_latency: number;
 	total_tokens: number;
 	total_cost: number;
+	cache_hit_rate_total_requests?: number | null;
+	direct_cache_hits?: number | null;
+	semantic_cache_hits?: number | null;
 }
 
 export interface LogSessionDetailResponse {
@@ -1072,8 +1093,7 @@ export interface MCPToolLogStats {
 // MCP Tool Log Search Response
 export interface MCPToolLogsResponse {
 	logs: MCPToolLogEntry[];
-	pagination: Pagination;
-	stats: MCPToolLogStats;
+	pagination: Pagination & { total_count: number };
 	has_logs: boolean;
 }
 
@@ -1167,6 +1187,31 @@ export interface UserRankingEntry {
 
 export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
+}
+
+export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "virtual_key";
+
+export interface DimensionRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface DimensionRankingEntry {
+	id: string;
+	name?: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: DimensionRankingTrend;
+}
+
+export interface DimensionRankingsResponse {
+	rankings: DimensionRankingEntry[];
+	dimension: RankingDimension;
+	total_actual_requests?: number; // shows the actual request count for units that can have multiple child entities
+	total_attributed_requests?: number; // shows the request count attributed to all entities for units that can have multiple child entities
 }
 
 // Date utility functions for URL state management

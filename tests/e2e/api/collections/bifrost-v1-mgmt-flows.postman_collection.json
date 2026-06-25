@@ -99,44 +99,6 @@
       }
     },
     {
-      "name": "Flow A - Chat Completion",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('Chat Completion returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": [
-            "{{base_url}}"
-          ],
-          "path": [
-            "v1",
-            "chat",
-            "completions"
-          ]
-        }
-      }
-    },
-    {
       "name": "Flow B - Create Customer",
       "event": [
         {
@@ -311,48 +273,6 @@
       }
     },
     {
-      "name": "Flow B - Chat Completion with VK",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('Chat with VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "x-bf-vk",
-            "value": "{{vk_value}}"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": [
-            "{{base_url}}"
-          ],
-          "path": [
-            "v1",
-            "chat",
-            "completions"
-          ]
-        }
-      }
-    },
-    {
       "name": "Flow B - Delete VK",
       "event": [
         {
@@ -501,48 +421,6 @@
       }
     },
     {
-      "name": "Flow C - Chat Completion with VK",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('Chat with VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "x-bf-vk",
-            "value": "{{vk_value}}"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": [
-            "{{base_url}}"
-          ],
-          "path": [
-            "v1",
-            "chat",
-            "completions"
-          ]
-        }
-      }
-    },
-    {
       "name": "Flow C - Update VK (rename)",
       "event": [
         {
@@ -591,48 +469,6 @@
       }
     },
     {
-      "name": "Flow C - Chat Completion after rename",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('Chat after rename returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "x-bf-vk",
-            "value": "{{vk_value}}"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": [
-            "{{base_url}}"
-          ],
-          "path": [
-            "v1",
-            "chat",
-            "completions"
-          ]
-        }
-      }
-    },
-    {
       "name": "Flow C - Deactivate VK",
       "event": [
         {
@@ -676,49 +512,6 @@
             "governance",
             "virtual-keys",
             "{{vk_id}}"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Flow C - Chat with deactivated VK (expect 403)",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "var code = pm.response.code;",
-              "pm.test('Deactivated VK returns 403', function() { pm.expect(code).to.equal(403); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "x-bf-vk",
-            "value": "{{vk_value}}"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": [
-            "{{base_url}}"
-          ],
-          "path": [
-            "v1",
-            "chat",
-            "completions"
           ]
         }
       }

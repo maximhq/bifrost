@@ -58,12 +58,12 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 
 ## Setup & Configuration
 
-Bedrock supports both SigV4-based authentication and direct API-key authentication. Four authentication flows are supported — choose the one that matches your deployment environment.
+Bedrock supports both SigV4-based authentication and direct API-key authentication. Four authentication flows are supported - choose the one that matches your deployment environment.
 
 <Note>
   The `aliases` field (mapping model names to inference profile IDs, ARNs, or
   deployment identifiers) requires **v1.5.0-prerelease2 or later**. On v1.4.x,
-  use `deployments` inside `bedrock_key_config` instead — see the [v1.5.0
+  use `deployments` inside `bedrock_key_config` instead - see the [v1.5.0
   Migration
   Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases)
   for details.
@@ -125,7 +125,7 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
 
 <Note>
 **On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Pass `keys` directly in the `POST /api/providers` body - there is no separate `/api/providers/{provider}/keys` endpoint.
 - Replace the top-level `aliases` with `"deployments"` inside `bedrock_key_config`:
 ```json
 "bedrock_key_config": {
@@ -242,7 +242,7 @@ curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "bedrock"}'
 
-# Step 2a: System identity — leave credentials empty
+# Step 2a: System identity - leave credentials empty
 curl -X POST http://localhost:8080/api/providers/bedrock/keys \
   -H "Content-Type: application/json" \
   -d '{
@@ -257,7 +257,7 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
     }
   }'
 
-# Step 2b: AssumeRole — add role_arn on top
+# Step 2b: AssumeRole - add role_arn on top
 curl -X POST http://localhost:8080/api/providers/bedrock/keys \
   -H "Content-Type: application/json" \
   -d '{
@@ -275,7 +275,7 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
 
 <Note>
   **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
-  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  /api/providers` body - there is no separate `/api/providers/{provider}/keys`
   endpoint. - Replace the top-level `aliases` with `"deployments"` inside
   `bedrock_key_config`.
 </Note>
@@ -330,7 +330,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
                 },
                 BedrockKeyConfig: &schemas.BedrockKeyConfig{
-                    // Leave AccessKey and SecretKey empty — resolved from IRSA/instance profile/env vars
+                    // Leave AccessKey and SecretKey empty - resolved from IRSA/instance profile/env vars
                     Region:          schemas.NewEnvVar("us-east-1"),
                     RoleARN:         schemas.NewEnvVar("env.AWS_ROLE_ARN"),         // optional
                     ExternalID:      schemas.NewEnvVar("env.AWS_EXTERNAL_ID"),      // optional
@@ -449,13 +449,13 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 | Field           | Required | Default           | Description                                                                                                           |
 | --------------- | -------- | ----------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `region`        | Yes      | —                 | AWS region (e.g., `us-east-1`)                                                                                        |
-| `access_key`    | No       | —                 | AWS access key ID                                                                                                     |
-| `secret_key`    | No       | —                 | AWS secret access key                                                                                                 |
-| `session_token` | No       | —                 | AWS session token (for temporary credentials)                                                                         |
-| `arn`           | No       | —                 | ARN prefix for constructing inference profile URLs (see [Inference Profiles](#inference-profiles--arn-configuration)) |
-| `role_arn`      | No       | —                 | IAM role ARN for STS AssumeRole                                                                                       |
-| `external_id`   | No       | —                 | External ID for AssumeRole (when required by trust policy)                                                            |
+| `region`        | Yes      | -                 | AWS region (e.g., `us-east-1`)                                                                                        |
+| `access_key`    | No       | -                 | AWS access key ID                                                                                                     |
+| `secret_key`    | No       | -                 | AWS secret access key                                                                                                 |
+| `session_token` | No       | -                 | AWS session token (for temporary credentials)                                                                         |
+| `arn`           | No       | -                 | ARN prefix for constructing inference profile URLs (see [Inference Profiles](#inference-profiles--arn-configuration)) |
+| `role_arn`      | No       | -                 | IAM role ARN for STS AssumeRole                                                                                       |
+| `external_id`   | No       | -                 | External ID for AssumeRole (when required by trust policy)                                                            |
 | `session_name`  | No       | `bifrost-session` | Session name for AssumeRole CloudTrail logs                                                                           |
 
 **Key-level fields:**
@@ -1214,7 +1214,7 @@ resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schema
 
 Supported generation models: **`stability.stable-image-core-v1:1`**, **`stability.stable-image-ultra-v1:1`**
 
-These models use a flat JSON body (not the nested Bedrock `taskType` structure). Bifrost detects them automatically — any model ID containing `"stability."` is converted via `ToStabilityAIImageGenerationRequest`.
+These models use a flat JSON body (not the nested Bedrock `taskType` structure). Bifrost detects them automatically - any model ID containing `"stability."` is converted via `ToStabilityAIImageGenerationRequest`.
 
 **Request Parameters**
 
@@ -1223,8 +1223,8 @@ These models use a flat JSON body (not the nested Bedrock `taskType` structure).
 | `prompt`          | string | ✅       | Text description of the image                                                                |
 | `negative_prompt` | string | ❌       | What to exclude                                                                              |
 | `seed`            | int    | ❌       | Reproducibility seed                                                                         |
-| `aspect_ratio`    | string | ❌       | e.g. `"16:9"`, `"1:1"`, `"21:9"` — via `aspect_ratio` param or `ExtraParams["aspect_ratio"]` |
-| `output_format`   | string | ❌       | `"png"`, `"jpeg"`, `"webp"` — via `output_format` param                                      |
+| `aspect_ratio`    | string | ❌       | e.g. `"16:9"`, `"1:1"`, `"21:9"` - via `aspect_ratio` param or `ExtraParams["aspect_ratio"]` |
+| `output_format`   | string | ❌       | `"png"`, `"jpeg"`, `"webp"` - via `output_format` param                                      |
 
 ### Example Request
 
@@ -1347,7 +1347,7 @@ Bedrock supports three image edit task types: **INPAINTING**, **OUTPAINTING**, a
 
 <Warning>Requests use **multipart/form-data**, not JSON.</Warning>
 
-Stability AI edit models are automatically detected by their model ID (contains `"stability."`). The **task type is inferred from the model name** by default, but you can also set the `type` field explicitly — useful when using deployment aliases. See [Type values for explicit task selection](#type-values-for-explicit-task-selection) below.
+Stability AI edit models are automatically detected by their model ID (contains `"stability."`). The **task type is inferred from the model name** by default, but you can also set the `type` field explicitly - useful when using deployment aliases. See [Type values for explicit task selection](#type-values-for-explicit-task-selection) below.
 
 ### Supported models
 
@@ -1384,19 +1384,19 @@ Pass these via `extra_params` (Go SDK) or as top-level form fields (Gateway).
 
 | Extra parameter               | Type   | Task(s)                                                                                                      |
 | ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------ |
-| `output_format`               | string | All — `"png"`, `"jpeg"`, `"webp"`                                                                            |
+| `output_format`               | string | All - `"png"`, `"jpeg"`, `"webp"`                                                                            |
 | `style_preset`                | string | inpaint, outpaint, recolor, search-replace, control-sketch, control-structure, style-guide, upscale-creative |
 | `grow_mask`                   | int    | inpaint, recolor, search-replace, erase-object                                                               |
-| `left`, `right`, `up`, `down` | int    | outpaint — pixels to expand in each direction                                                                |
+| `left`, `right`, `up`, `down` | int    | outpaint - pixels to expand in each direction                                                                |
 | `creativity`                  | float  | upscale-creative, upscale-conservative, outpaint                                                             |
-| `select_prompt`               | string | recolor — which region to recolor                                                                            |
-| `search_prompt`               | string | search-replace — what object to find and replace                                                             |
-| `control_strength`            | float  | control-sketch, control-structure — 0.0–1.0                                                                  |
-| `aspect_ratio`                | string | style-guide — output aspect ratio                                                                            |
-| `fidelity`                    | float  | style-guide — 0.0–1.0                                                                                        |
-| `style_strength`              | float  | style-transfer — 0.0–1.0                                                                                     |
-| `composition_fidelity`        | float  | style-transfer — 0.0–1.0                                                                                     |
-| `change_strength`             | float  | style-transfer — 0.0–1.0                                                                                     |
+| `select_prompt`               | string | recolor - which region to recolor                                                                            |
+| `search_prompt`               | string | search-replace - what object to find and replace                                                             |
+| `control_strength`            | float  | control-sketch, control-structure - 0.0–1.0                                                                  |
+| `aspect_ratio`                | string | style-guide - output aspect ratio                                                                            |
+| `fidelity`                    | float  | style-guide - 0.0–1.0                                                                                        |
+| `style_strength`              | float  | style-transfer - 0.0–1.0                                                                                     |
+| `composition_fidelity`        | float  | style-transfer - 0.0–1.0                                                                                     |
+| `change_strength`             | float  | style-transfer - 0.0–1.0                                                                                     |
 
 <Note>
   **Style-transfer image order matters.** The first image (`image[0]`) becomes
@@ -1686,7 +1686,7 @@ Leave `access_key` and `secret_key` empty (or omit them). Bifrost calls AWS `Loa
 
 ### 3. STS AssumeRole
 
-Set `role_arn` to assume an IAM role before signing requests. AssumeRole requires a valid source identity — it works when credentials are available either via explicit `access_key`/`secret_key` in key config, or via the default credential chain (environment variables, EC2 instance profile, ECS task role, EKS IRSA, etc.). **If no credentials are available from either source, AssumeRole will fail.**
+Set `role_arn` to assume an IAM role before signing requests. AssumeRole requires a valid source identity - it works when credentials are available either via explicit `access_key`/`secret_key` in key config, or via the default credential chain (environment variables, EC2 instance profile, ECS task role, EKS IRSA, etc.). **If no credentials are available from either source, AssumeRole will fail.**
 
 ```json
 {
@@ -1714,7 +1714,7 @@ When using AWS Bedrock inference profiles or application inference profiles, you
 | Field         | Purpose                                                                                                                                                      |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **`arn`**     | The ARN prefix (everything before the final `/resource-id`). Required for URL formation when using inference profiles.                                       |
-| **`aliases`** | Map logical model names to the **model ID or inference profile resource ID only** — not the full ARN. Set at the key level, not inside `bedrock_key_config`. |
+| **`aliases`** | Map logical model names to the **model ID or inference profile resource ID only** - not the full ARN. Set at the key level, not inside `bedrock_key_config`. |
 
 <Warning>
   **Do not** put the full ARN in the aliases mapping. The resource ID (e.g.,
@@ -1723,7 +1723,7 @@ When using AWS Bedrock inference profiles or application inference profiles, you
   malformed URLs and `UnknownOperationException`.
 </Warning>
 
-**Application inference profiles** — use the resource ID (short alphanumeric suffix) in aliases:
+**Application inference profiles** - use the resource ID (short alphanumeric suffix) in aliases:
 
 ```json
 {
@@ -1741,7 +1741,7 @@ When using AWS Bedrock inference profiles or application inference profiles, you
 }
 ```
 
-**Cross-region inference profiles** — use the model identifier (e.g., `us.anthropic.claude-3-5-sonnet-v1:0`) in aliases:
+**Cross-region inference profiles** - use the model identifier (e.g., `us.anthropic.claude-3-5-sonnet-v1:0`) in aliases:
 
 ```json
 {

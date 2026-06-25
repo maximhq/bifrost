@@ -67,6 +67,11 @@ func GetName() string {
 	return "llm-only"
 }
 
+// PreRequestHook is the per-request routing phase. This example plugin doesn't route.
+func PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook is called before the LLM provider is invoked
 // This example demonstrates request modification and logging
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {

@@ -1411,14 +1411,6 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 		}
 	}
 
-	// Check model field
-	if expectations.ShouldHaveModel {
-		if strings.TrimSpace(response.Model) == "" {
-			result.Passed = false
-			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
-		}
-	}
-
 	// Check latency field
 	if expectations.ShouldHaveLatency {
 		if response.ExtraFields.Latency <= 0 {

@@ -18,9 +18,7 @@ type testHandlerStore struct {
 	kv *kvstore.Store
 }
 
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                               { return true }
-func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher                      { return nil }
-func (s testHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider { return nil }
+func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher { return nil }
 func (s testHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
 	return nil
 }
@@ -30,10 +28,14 @@ func (s testHandlerStore) GetKVStore() *kvstore.Store                       { re
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList { return nil }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { return false }
-func (s testHandlerStore) GetMCPExternalBaseURL() string                    { return "" }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                      { return false }
+func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
+func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
 
 func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) {
-	_, _, _, err := resolveRealtimeSDPTarget("/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
+	var ctx fasthttp.RequestCtx
+	cfg := &lib.Config{}
+	_, _, _, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
 	if err == nil {
 		t.Fatal("expected provider/model validation error")
 	}
@@ -43,7 +45,9 @@ func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) 
 }
 
 func TestResolveRealtimeSDPTarget_BaseRouteNormalizesModel(t *testing.T) {
-	provider, model, normalized, err := resolveRealtimeSDPTarget("/v1/realtime", []byte(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`))
+	var ctx fasthttp.RequestCtx
+	cfg := &lib.Config{}
+	provider, model, normalized, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +72,9 @@ func TestResolveRealtimeSDPTarget_BaseRouteNormalizesModel(t *testing.T) {
 }
 
 func TestResolveRealtimeSDPTarget_OpenAIRouteDefaultsProvider(t *testing.T) {
-	provider, model, _, err := resolveRealtimeSDPTarget("/openai/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
+	var ctx fasthttp.RequestCtx
+	cfg := &lib.Config{}
+	provider, model, _, err := resolveRealtimeSDPTarget(&ctx, cfg, "/openai/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +93,7 @@ func TestParseCallsWebRTCRequest_RawSDPKeepsGARoute(t *testing.T) {
 	ctx.Request.Header.SetContentType("application/sdp")
 	ctx.Request.SetBodyString("v=0\r\n")
 
-	sdpOffer, provider, model, session, err := parseCallsWebRTCRequest(&ctx)
+	sdpOffer, provider, model, session, err := parseCallsWebRTCRequest(&ctx, &lib.Config{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,7 +304,6 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 	ctx.Request.Header.Set("Authorization", "Bearer ek_test_unmapped")
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided"})
 	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "selected")
 	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyName, "selected-name")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, "mapped-id")
@@ -313,9 +318,6 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 	}
 	if selectedKey != nil {
 		t.Fatalf("selectedKey = %#v, want nil", selectedKey)
-	}
-	if got := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey); got != nil {
-		t.Fatalf("direct key context = %#v, want nil", got)
 	}
 	if got := bifrostCtx.Value(schemas.BifrostContextKeySelectedKeyID); got != nil {
 		t.Fatalf("selected key id context = %#v, want nil", got)

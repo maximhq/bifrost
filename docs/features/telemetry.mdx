@@ -47,31 +47,37 @@ Labels:
 
 These metrics track requests forwarded to AI providers:
 
-| Metric                             | Type      | Description                                          | Labels                                    |
-| ---------------------------------- | --------- | ---------------------------------------------------- | ----------------------------------------- |
-| `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers       | Base Labels, custom labels                |
-| `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers      | Base Labels, custom labels                |
-| `bifrost_error_requests_total`     | Counter   | Total failed requests to upstream providers          | Base Labels, `status_code`, custom labels |
-| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                | Base Labels, `is_success`, custom labels  |
-| `bifrost_input_tokens_total`       | Counter   | Total input tokens sent to upstream providers        | Base Labels, custom labels                |
-| `bifrost_output_tokens_total`      | Counter   | Total output tokens received from upstream providers | Base Labels, custom labels                |
-| `bifrost_cache_hits_total`         | Counter   | Total cache hits by type (direct/semantic)           | Base Labels, `cache_type`, custom labels  |
-| `bifrost_cost_total`               | Counter   | Total cost in USD for upstream provider requests     | Base Labels, custom labels                |
+| Metric                             | Type      | Description                                                       | Labels                                                |
+| ---------------------------------- | --------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
+| `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers                    | Base Labels, custom labels                            |
+| `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
+| `bifrost_error_requests_total`     | Counter   | Total failed requests to upstream providers                       | Base Labels, `status_code`, custom labels             |
+| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
+| `bifrost_input_tokens_total`       | Counter   | Total input tokens sent to upstream providers                     | Base Labels, custom labels                            |
+| `bifrost_output_tokens_total`      | Counter   | Total output tokens received from upstream providers              | Base Labels, custom labels                            |
+| `bifrost_cache_hits_total`         | Counter   | Total cache hits by type (direct/semantic)                        | Base Labels, `cache_type`, custom labels              |
+| `bifrost_cost_total`               | Counter   | Total cost in USD for upstream provider requests                  | Base Labels, custom labels                            |
+| `bifrost_active_requests`          | Gauge     | LLM requests currently in-flight                                  | `method`                                              |
+| `bifrost_provider_key_up`          | Gauge     | Per-key health: `1` after a successful attempt, `0` after a failure | `provider`, `key_id`, `key_name`                    |
+| `bifrost_key_rotation_events_total`| Counter   | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — one increment per actual swap | `provider`, `requested_model`, `key_id`, `key_name`, `fail_reason` |
+| `bifrost_request_retries`          | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). | Base Labels |
 
 Base Labels:
 
 - `provider`: AI provider name (e.g., `openai`, `anthropic`, `azure`)
 - `model`: Model name (e.g., `gpt-4o-mini`, `claude-3-sonnet`)
+- `alias`: Alias resolved to this model (empty if none)
 - `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
 - `virtual_key_id`: Virtual key ID
 - `virtual_key_name`: Virtual key name
-- `routing_engines_used`: Comma-separated routing engines used ("routing-rule", "governance", "loadbalancing", "model-catalog")
+- `routing_engine_used`: Comma-separated routing engines used (`routing-rule`, `governance`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — i.e. a fallback transition or a retry transition.
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
-- `selected_key_id`: ID of the key that successfully served the request (`null` on final errors)
-- `selected_key_name`: Name of the key that successfully served the request (`null` on final errors)
-- `number_of_retries`: Number of retries
+- `selected_key_id`: ID of the key that successfully served the request (empty string `""` on final errors)
+- `selected_key_name`: Name of the key that successfully served the request (empty string `""` on final errors)
 - `fallback_index`: Fallback index (0 for first attempt, 1 for second attempt, etc.)
+- `team_id` / `team_name`: Team identifiers (empty when governance is not used)
+- `customer_id` / `customer_name`: Customer identifiers (empty when governance is not used)
 - custom labels: Custom labels configured in the Bifrost configuration
 
 ### Streaming Metrics

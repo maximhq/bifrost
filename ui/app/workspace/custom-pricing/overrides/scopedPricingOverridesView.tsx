@@ -10,8 +10,10 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
@@ -25,11 +27,66 @@ import {
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { useLocation } from "@tanstack/react-router";
-import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import PricingOverrideSheet from "./pricingOverrideSheet";
 import { PricingOverridesEmptyState } from "./pricingOverridesEmptyState";
+
+function PricingOverrideActionsMenu({
+	row,
+	onEdit,
+	onDelete,
+}: {
+	row: PricingOverride;
+	onEdit: (row: PricingOverride) => void;
+	onDelete: (row: PricingOverride) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Actions for pricing override ${row.name || row.id}`}
+					data-testid={`pricing-override-actions-btn-${row.id}`}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					data-testid={`pricing-override-edit-btn-${row.id}`}
+					className="cursor-pointer"
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(row);
+						setIsOpen(false);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					data-testid={`pricing-override-delete-btn-${row.id}`}
+					variant="destructive"
+					className="cursor-pointer"
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(row);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
 
 type ScopeFilter = "all" | PricingOverrideScopeKind;
 
@@ -239,8 +296,8 @@ export default function ScopedPricingOverridesView() {
 	}
 
 	return (
-		<div className="space-y-4">
-			<div className="flex items-center justify-between gap-4">
+		<div className="flex flex-col overflow-y-auto">
+			<div className="flex items-center justify-between gap-4 mb-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
 					<p className="text-muted-foreground text-sm">
@@ -254,7 +311,7 @@ export default function ScopedPricingOverridesView() {
 			</div>
 
 			{/* Search */}
-			<div className="relative max-w-sm">
+			<div className="relative max-w-sm mb-4">
 				<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 				<Input
 					aria-label="Search pricing overrides by name"
@@ -266,21 +323,21 @@ export default function ScopedPricingOverridesView() {
 				/>
 			</div>
 
-			<div className="overflow-hidden rounded-sm border">
+			<div className="overflow-hidden rounded-sm border mb-2">
 				{isLoading ? (
 					<div className="p-4 text-sm">Loading overrides...</div>
 				) : error ? (
 					<div className="p-4 text-sm text-red-500">Failed to load pricing overrides. Please try refreshing the page.</div>
 				) : (
-					<Table>
-						<TableHeader>
+					<Table containerClassName="h-full overflow-auto">
+						<TableHeader className="sticky top-0 bg-muted z-10">
 							<TableRow className="bg-muted/50">
 								<TableHead className="font-semibold">Name</TableHead>
 								<TableHead className="font-semibold">Scope</TableHead>
 								<TableHead className="font-semibold">Provider</TableHead>
 								<TableHead className="font-semibold">Key</TableHead>
 								<TableHead className="font-semibold">Model</TableHead>
-								<TableHead className="w-[100px] text-right font-semibold">Actions</TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>Actions</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -292,7 +349,7 @@ export default function ScopedPricingOverridesView() {
 								</TableRow>
 							) : (
 								rows.map((row) => (
-									<TableRow key={row.id} className="hover:bg-muted/50 cursor-pointer transition-colors">
+									<TableRow key={row.id} className="group hover:bg-muted/50 cursor-pointer transition-colors">
 										<TableCell>{row.name || "-"}</TableCell>
 										<TableCell>
 											<Badge variant="secondary">{scopeLabel(row, virtualKeyMap)}</Badge>
@@ -311,26 +368,16 @@ export default function ScopedPricingOverridesView() {
 										</TableCell>
 										<TableCell>{keyLabel(row, providerKeyLabelMap)}</TableCell>
 										<TableCell>{row.pattern}</TableCell>
-										<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-											<div className="flex items-center justify-end gap-2">
-												<Button
-													data-testid={`pricing-override-edit-btn-${row.id}`}
-													variant="ghost"
-													size="sm"
-													onClick={() => openEditDrawer(row)}
-													aria-label="Edit pricing override"
-												>
-													<Edit className="h-4 w-4" />
-												</Button>
-												<Button
-													data-testid={`pricing-override-delete-btn-${row.id}`}
-													variant="ghost"
-													size="sm"
-													onClick={() => setDeleteTarget(row)}
-													aria-label="Delete pricing override"
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
+										<TableCell
+											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+											onClick={(e) => e.stopPropagation()}
+										>
+											<div className="flex items-center justify-center">
+												<PricingOverrideActionsMenu
+													row={row}
+													onEdit={openEditDrawer}
+													onDelete={setDeleteTarget}
+												/>
 											</div>
 										</TableCell>
 									</TableRow>
@@ -343,30 +390,38 @@ export default function ScopedPricingOverridesView() {
 
 			{/* Pagination */}
 			{totalCount > 0 && (
-				<div className="flex items-center justify-between px-2">
-					<p className="text-muted-foreground text-sm">
-						Showing {offset + 1}-{Math.min(offset + PAGE_SIZE, totalCount)} of {totalCount}
-					</p>
-					<div className="flex gap-2">
+				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+					<div className="text-muted-foreground flex items-center gap-2">
+						{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+					</div>
+
+					<div className="flex items-center gap-2">
 						<Button
-							variant="outline"
+							variant="ghost"
 							size="sm"
-							disabled={offset === 0}
 							onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+							disabled={offset === 0}
 							data-testid="pricing-overrides-pagination-prev-btn"
+							aria-label="Previous page"
 						>
-							<ChevronLeft className="mr-1 h-4 w-4" />
-							Previous
+							<ChevronLeft className="size-3" />
 						</Button>
+
+						<div className="flex items-center gap-1">
+							<span>Page</span>
+							<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
+							<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
+						</div>
+
 						<Button
-							variant="outline"
+							variant="ghost"
 							size="sm"
-							disabled={offset + PAGE_SIZE >= totalCount}
 							onClick={() => setOffset(offset + PAGE_SIZE)}
+							disabled={offset + PAGE_SIZE >= totalCount}
 							data-testid="pricing-overrides-pagination-next-btn"
+							aria-label="Next page"
 						>
-							Next
-							<ChevronRight className="ml-1 h-4 w-4" />
+							<ChevronRight className="size-3" />
 						</Button>
 					</div>
 				</div>

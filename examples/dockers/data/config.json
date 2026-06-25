@@ -22,7 +22,6 @@
     "disable_content_logging": false,
     "log_retention_days": 365,
     "enforce_auth_on_inference": false,
-    "allow_direct_keys": false,
     "allowed_origins": [
       "*"
     ],
@@ -34,7 +33,8 @@
   "framework": {
     "pricing": {
       "pricing_url": "https://getbifrost.ai/datasheet",
-      "pricing_sync_interval": 86400
+      "pricing_sync_interval": 86400,
+      "model_parameters_url": "https://getbifrost.ai/datasheet/model-parameters"
     }
   }
 }

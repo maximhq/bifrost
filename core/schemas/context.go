@@ -14,17 +14,19 @@ var reservedKeys = []any{
 	BifrostContextKeyVirtualKey,
 	BifrostContextKeyAPIKeyName,
 	BifrostContextKeyAPIKeyID,
+	BifrostContextKeyDirectKey,
 	BifrostContextKeyRequestID,
 	BifrostContextKeyFallbackRequestID,
-	BifrostContextKeyDirectKey,
 	BifrostContextKeySelectedKeyID,
 	BifrostContextKeySelectedKeyName,
 	BifrostContextKeyNumberOfRetries,
 	BifrostContextKeyFallbackIndex,
 	BifrostContextKeySkipKeySelection,
+	BifrostContextKeySkipBudgetAndRateLimits,
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
 	BifrostContextKeyAttemptTrail,
+	BifrostContextKeyMCPHealthCheckRequest,
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -39,13 +41,6 @@ type pluginLogStore struct {
 var pluginLogStorePool = sync.Pool{
 	New: func() any {
 		return &pluginLogStore{logs: make([]PluginLogEntry, 0, 8)}
-	},
-}
-
-// pluginScopePool pools BifrostContext instances used as scoped plugin contexts.
-var pluginScopePool = sync.Pool{
-	New: func() any {
-		return &BifrostContext{}
 	},
 }
 
@@ -76,6 +71,18 @@ type BifrostContext struct {
 func NewBifrostContext(parent context.Context, deadline time.Time) *BifrostContext {
 	if parent == nil {
 		parent = context.Background()
+	}
+	// Unwrap pooled scoped BifrostContexts to their delegate root. A scoped
+	// context (from WithPluginScope) is reset and returned to a sync.Pool when
+	// ReleasePluginScope is called, which can happen before a derived context's
+	// watchCancellation goroutine has finished observing parent.Deadline()/Done().
+	// Pointing the derived parent at the long-lived root avoids that race.
+	for {
+		bc, ok := parent.(*BifrostContext)
+		if !ok || bc.valueDelegate == nil {
+			break
+		}
+		parent = bc.valueDelegate
 	}
 	ctx := &BifrostContext{
 		parent:                parent,
@@ -124,6 +131,41 @@ func NewBifrostContextWithCancel(parent context.Context) (*BifrostContext, conte
 // WithValue returns a new context with the given value set.
 func (bc *BifrostContext) WithValue(key any, value any) *BifrostContext {
 	bc.SetValue(key, value)
+	return bc
+}
+
+// Root returns the underlying root BifrostContext. For root contexts this is
+// the receiver itself; for plugin-scoped contexts it is the underlying root
+// that scoped Value/SetValue calls delegate to.
+//
+// PLUGIN AUTHORS: capture Root() synchronously inside Pre/PostLLMHook (or
+// any other hook) when you need to write to the context from a goroutine
+// that outlives the hook. The plugin-scoped *BifrostContext passed into your
+// hook is reclaimed by an internal sync.Pool the moment the hook returns —
+// any later SetValue/Value call on it lands in detached storage that nobody
+// downstream can read (and can leak into a future pool reuse). The root,
+// in contrast, lives for the entire request, so a pointer captured here is
+// safe to use for the lifetime of the request even after your hook returns.
+//
+// Example:
+//
+//	func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req ...) (...) {
+//	    rootCtx := ctx.Root() // capture before the scope is released
+//	    go func() {
+//	        // ... long-running work that produces stream chunks ...
+//	        rootCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+//	    }()
+//	    return req, &schemas.LLMPluginShortCircuit{Stream: ch}, nil
+//	}
+func (bc *BifrostContext) Root() *BifrostContext {
+	// Unwrap the full delegation chain. A scoped context can in principle be
+	// derived from another scoped context (e.g. nested plugin scopes), and
+	// stopping at the first valueDelegate would return an intermediate pooled
+	// scope — which loses the async-safety guarantee as soon as that
+	// intermediate scope is released.
+	for bc != nil && bc.valueDelegate != nil {
+		bc = bc.valueDelegate
+	}
 	return bc
 }
 
@@ -259,6 +301,31 @@ func (bc *BifrostContext) Value(key any) any {
 	return bc.parent.Value(key)
 }
 
+// AuthMode derives the per-user OAuth lookup mode from current context state.
+// Priority: UserID > VirtualKey > session. Call this at token-lookup time, not
+// in middleware — the governance plugin can inject UserID (via VK→owner
+// resolution) after middleware runs, and the mode must reflect that.
+//
+// Returns MCPAuthModeNone when no identity column is populated (no user, no
+// VK, no session header), so callers that branch on the returned mode alone
+// cannot mistake an unauthenticated request for a session-mode caller.
+//
+// VK check uses BifrostContextKeyGovernanceVirtualKeyID (the resolved VK row
+// ID) rather than BifrostContextKeyVirtualKey (the raw header value) because
+// vk-mode token rows are keyed by the resolved VK ID.
+func (bc *BifrostContext) MCPAuthMode() MCPAuthMode {
+	if userID, ok := bc.Value(BifrostContextKeyUserID).(string); ok && userID != "" {
+		return MCPAuthModeUser
+	}
+	if vkID, ok := bc.Value(BifrostContextKeyGovernanceVirtualKeyID).(string); ok && vkID != "" {
+		return MCPAuthModeVK
+	}
+	if sid, ok := bc.Value(BifrostContextKeyMCPSessionID).(string); ok && sid != "" {
+		return MCPAuthModeSession
+	}
+	return MCPAuthModeNone
+}
+
 // SetValue sets a value in the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 // This is thread-safe and can be called concurrently.
@@ -384,12 +451,11 @@ func (bc *BifrostContext) GetRoutingEngineLogs() []RoutingEngineLogEntry {
 	return nil
 }
 
-// AppendToContextList appends a value to the context list value.
-// Parameters:
-//   - ctx: The Bifrost context
-//   - key: The key to append the value to
-//   - value: The value to append
-func AppendToContextList[T any](ctx *BifrostContext, key BifrostContextKey, value T) {
+// AppendToContextList appends value to the context list at key, skipping the
+// append when value already exists in the list. Downstream consumers of these
+// lists (notably `routing_engines_used` → Prometheus labels) treat duplicate
+// entries as bugs, so set semantics are enforced at the write site.
+func AppendToContextList[T comparable](ctx *BifrostContext, key BifrostContextKey, value T) {
 	if ctx == nil {
 		return
 	}
@@ -397,13 +463,23 @@ func AppendToContextList[T any](ctx *BifrostContext, key BifrostContextKey, valu
 	if !ok {
 		existingValues = []T{}
 	}
+	if slices.Contains(existingValues, value) {
+		return
+	}
 	ctx.SetValue(key, append(existingValues, value))
 }
 
-// WithPluginScope returns a lightweight scoped BifrostContext from the pool.
-// The scoped context shares the root's pluginLogs store and delegates all
-// Value/SetValue operations to the root context.
-// Call ReleasePluginScope() when done to return the scoped context to the pool.
+// WithPluginScope returns a scoped BifrostContext that shares the root's
+// pluginLogs store and delegates Value/SetValue/Deadline/Err/Done operations
+// to the root.
+//
+// Scoped contexts are NOT pool-reused. Plugins routinely pass the scoped ctx
+// to stdlib helpers (context.WithDeadline, HTTP clients, vector store SDKs)
+// which spawn watcher goroutines via context.propagateCancel — those watchers
+// can read the scoped struct's fields long after the plugin returns. Reusing
+// the struct across requests would race those reads. Allocating fresh is
+// idiomatic Go context handling (the stdlib context types are not pooled
+// either) and keeps the lifecycle race-free without atomics.
 func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
 	// Lazily initialize the plugin log store on the root context (CAS to avoid race)
 	if bc.pluginLogs.Load() == nil {
@@ -414,28 +490,47 @@ func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
 		}
 	}
 
-	scoped := pluginScopePool.Get().(*BifrostContext)
-	scoped.parent = bc.parent
-	scoped.done = bc.done
-	scoped.pluginScope = name
+	scoped := &BifrostContext{
+		parent:        bc.parent,
+		done:          bc.done,
+		pluginScope:   name,
+		valueDelegate: bc,
+	}
 	scoped.pluginLogs.Store(bc.pluginLogs.Load())
-	scoped.valueDelegate = bc
 	return scoped
 }
 
-// ReleasePluginScope returns a scoped context to the pool.
-// Safe no-op if called on a non-scoped context.
-// Do not use the scoped context after calling this method.
+// ReleasePluginScope marks a scoped context as released. Safe no-op if called
+// on a non-scoped context.
+//
+// We deliberately do NOT mutate the scoped struct's fields here. External
+// watcher goroutines spawned via stdlib context helpers (e.g. propagateCancel
+// from context.WithDeadline) may still hold references and read parent/done
+// asynchronously. Mutating those fields would race the watchers. The struct
+// becomes garbage and is reclaimed by the GC once all watchers have exited.
+//
+// We still release the plugin log store reference so it can be drained or
+// reclaimed independently of the scope's lifetime.
 func (bc *BifrostContext) ReleasePluginScope() {
 	if bc.valueDelegate == nil {
 		return // not a scoped context
 	}
-	bc.parent = nil
-	bc.done = nil
-	bc.pluginScope = nil
 	bc.pluginLogs.Store(nil)
-	bc.valueDelegate = nil
-	pluginScopePool.Put(bc)
+}
+
+// SetTraceAttribute adds an attribute to the root span for the current trace.
+// This is thread-safe and can be called concurrently.
+func (bc *BifrostContext) SetTraceAttribute(key string, value any) {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return
+	}
+	handle := tr.GetSpanHandleByID(tid, nil)
+	if handle == nil {
+		return
+	}
+	tr.SetAttribute(handle, key, value)
 }
 
 // Log appends a structured log entry for the current plugin scope.

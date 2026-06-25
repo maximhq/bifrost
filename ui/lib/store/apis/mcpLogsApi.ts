@@ -46,8 +46,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		getMCPLogs: builder.query<
 			{
 				logs: MCPToolLogEntry[];
-				pagination: Pagination;
-				stats: MCPToolLogStats;
+				pagination: Pagination & { total_count: number };
 				has_logs: boolean;
 			},
 			{
@@ -97,6 +96,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: ["MCPLogs"],
 		}),
 
+		// Get a single MCP tool log entry by ID
+		getMCPLogById: builder.query<MCPToolLogEntry, string>({
+			query: (id) => `/mcp-logs/${encodeURIComponent(id)}`,
+			providesTags: (result, error, id) => [{ type: "MCPLogs", id }],
+		}),
+
 		// Get MCP tool logs statistics with filters
 		getMCPLogsStats: builder.query<
 			MCPToolLogStats,
@@ -141,9 +146,22 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: ["MCPLogs"],
 		}),
 
-		// Get available filter data (tool names, server labels)
-		getMCPAvailableFilterData: builder.query<MCPToolLogFilterData, void>({
-			query: () => "/mcp-logs/filterdata",
+		// Get available MCP filter data. Pass `dimensions` to fetch only a subset
+		// (tool_names, server_labels, virtual_keys); omit for all.
+		getMCPAvailableFilterData: builder.query<Partial<MCPToolLogFilterData>, { dimensions?: string[]; q?: string } | void>({
+			query: (arg) => {
+				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
+				const q = arg && "q" in arg ? arg.q : undefined;
+				const params = new URLSearchParams();
+				if (dims && dims.length > 0) {
+					params.set("dimensions", [...dims].sort().join(","));
+				}
+				if (q) {
+					params.set("q", q);
+				}
+				const qs = params.toString();
+				return qs ? `/mcp-logs/filterdata?${qs}` : "/mcp-logs/filterdata";
+			},
 			providesTags: ["MCPLogs"],
 		}),
 
@@ -188,13 +206,18 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 
 export const {
 	useGetMCPLogsQuery,
+	useGetMCPLogByIdQuery,
 	useGetMCPLogsStatsQuery,
 	useGetMCPAvailableFilterDataQuery,
 	useGetMCPAvailableFilterDataQuery: useGetMCPLogsFilterDataQuery,
 	useLazyGetMCPLogsQuery,
+	useLazyGetMCPLogByIdQuery,
 	useLazyGetMCPLogsStatsQuery,
 	useLazyGetMCPAvailableFilterDataQuery,
+	useGetMCPHistogramQuery,
 	useLazyGetMCPHistogramQuery,
+	useGetMCPCostHistogramQuery,
+	useGetMCPTopToolsQuery,
 	useLazyGetMCPCostHistogramQuery,
 	useLazyGetMCPTopToolsQuery,
 	useDeleteMCPLogsMutation,

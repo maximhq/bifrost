@@ -120,7 +120,7 @@ Each model's pricing information includes comprehensive cost metrics, supporting
 
 ```go
 // PricingEntry represents a single model's pricing information.
-// The fields below are an excerpt — see framework/modelcatalog/main.go for the full definition.
+// The fields below are an excerpt - see framework/modelcatalog/main.go for the full definition.
 type PricingEntry struct {
     BaseModel string `json:"base_model,omitempty"`
     Provider  string `json:"provider"`
@@ -316,9 +316,9 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 
 **Behavior**:
 
-- **`["*"]` wildcard**: Delegates to `GetProvidersForModel` (includes cross-provider logic) — this is the "allow all via catalog" mode
+- **`["*"]` wildcard**: Delegates to `GetProvidersForModel` (includes cross-provider logic) - this is the "allow all via catalog" mode
 - **Non-empty explicit list**: Checks for both direct matches and provider-prefixed entries
-- **Empty slice (`[]string{}` / empty `schemas.WhiteList`)**: Returns `false` (deny-all) — mirrors the config deny-by-default semantics
+- **Empty slice (`[]string{}` / empty `schemas.WhiteList`)**: Returns `false` (deny-all) - mirrors the config deny-by-default semantics
 
 <Note>
   In `config.json` and the governance API, `allowed_models: []` (empty array)

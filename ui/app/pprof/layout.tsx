@@ -13,7 +13,7 @@ function PprofLayout({ children }: { children: React.ReactNode }) {
 
 	return (
 		<ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-			<Toaster />
+			<Toaster closeButton />
 			<ReduxProvider>
 				<div className="min-h-screen bg-zinc-950 text-zinc-100">{children}</div>
 			</ReduxProvider>

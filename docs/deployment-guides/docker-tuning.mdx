@@ -40,7 +40,7 @@ services:
 
 Bifrost automatically detects container CPU limits using [automaxprocs](https://github.com/uber-go/automaxprocs). This sets `GOMAXPROCS` to match your container's CPU quota from cgroups (v1 and v2).
 
-**No configuration needed** — this works automatically. You'll see a log line at startup:
+**No configuration needed** - this works automatically. You'll see a log line at startup:
 
 ```
 maxprocs: Updating GOMAXPROCS=4: determined from CPU quota

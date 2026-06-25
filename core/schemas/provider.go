@@ -13,12 +13,12 @@ const (
 	DefaultMaxRetries                 = 0
 	DefaultRetryBackoffInitial        = 500 * time.Millisecond
 	DefaultRetryBackoffMax            = 5 * time.Second
-	DefaultRequestTimeoutInSeconds    = 30
+	DefaultRequestTimeoutInSeconds    = 300
 	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
 	DefaultBufferSize                 = 5000
 	DefaultConcurrency                = 1000
 	DefaultStreamBufferSize           = 256
-	DefaultStreamIdleTimeoutInSeconds = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultStreamIdleTimeoutInSeconds = 120 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
 	DefaultMaxIdleConnsPerHost        = 40
@@ -26,7 +26,7 @@ const (
 
 // Pre-defined errors for provider operations
 const (
-	ErrProviderRequestTimedOut      = "request timed out (default is 30 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
+	ErrProviderRequestTimedOut      = "request timed out (default is 300 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
 	ErrRequestCancelled             = "request cancelled by caller"
 	ErrRequestBodyConversion        = "failed to convert bifrost request to the expected provider request body"
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"
@@ -63,6 +63,7 @@ type NetworkConfig struct {
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
+	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -86,6 +87,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
+		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -104,6 +106,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
+	nc.AllowPrivateNetwork = alias.AllowPrivateNetwork
 
 	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
 	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
@@ -175,6 +178,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
+		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -190,13 +194,10 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
+		AllowPrivateNetwork:        nc.AllowPrivateNetwork,
 	}
 	if nc.CACertPEM != nil {
-		if nc.CACertPEM.IsFromEnv() {
-			alias.CACertPEM = nc.CACertPEM.EnvVar
-		} else {
-			alias.CACertPEM = nc.CACertPEM.GetValue()
-		}
+		alias.CACertPEM = EnvVarAsString(nc.CACertPEM)
 	}
 
 	return json.Marshal(alias)
@@ -259,27 +260,53 @@ type ProxyConfig struct {
 	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
+// MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
+// EnvVar fields are stored as plain strings (env.* token or literal). For HTTP API responses
+// use json.Marshal on *ProxyConfig so clients receive value/env_var/from_env objects.
+func (pc *ProxyConfig) MarshalForStorage() ([]byte, error) {
+	if pc == nil {
+		return []byte("null"), nil
+	}
+	type proxyConfigStorage struct {
+		Type      ProxyType `json:"type"`
+		URL       string    `json:"url,omitempty"`
+		Username  string    `json:"username,omitempty"`
+		Password  string    `json:"password,omitempty"`
+		CACertPEM string    `json:"ca_cert_pem,omitempty"`
+	}
+	alias := proxyConfigStorage{Type: pc.Type}
+	if pc.URL != nil {
+		alias.URL = EnvVarAsString(pc.URL)
+	}
+	if pc.Username != nil {
+		alias.Username = EnvVarAsString(pc.Username)
+	}
+	if pc.Password != nil {
+		alias.Password = EnvVarAsString(pc.Password)
+	}
+	if pc.CACertPEM != nil {
+		alias.CACertPEM = EnvVarAsString(pc.CACertPEM)
+	}
+	return json.Marshal(alias)
+}
+
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
-	// Create redacted config with same structure but redacted values
-	redactedConfig := ProxyConfig{
-		Type:     pc.Type,
-		URL:      pc.URL,
-		Username: pc.Username,
+	if pc == nil {
+		return nil
+	}
+	redactedConfig := ProxyConfig{Type: pc.Type}
+	if pc.CACertPEM != nil && pc.CACertPEM.IsSet() {
+		redactedConfig.CACertPEM = pc.CACertPEM.FullyRedacted()
+	}
+	if pc.URL != nil && pc.URL.IsSet() {
+		redactedConfig.URL = pc.URL.Redacted()
+	}
+	if pc.Username != nil && pc.Username.IsSet() {
+		redactedConfig.Username = pc.Username.Redacted()
 	}
 	if pc.Password != nil && pc.Password.IsSet() {
-		if pc.Password.IsFromEnv() {
-			redactedConfig.Password = pc.Password
-		} else {
-			redactedConfig.Password = NewEnvVar("<REDACTED>")
-		}
-	}
-	if pc.CACertPEM != nil && pc.CACertPEM.IsSet() {
-		if pc.CACertPEM.IsFromEnv() {
-			redactedConfig.CACertPEM = pc.CACertPEM
-		} else {
-			redactedConfig.CACertPEM = NewEnvVar("<REDACTED>")
-		}
+		redactedConfig.Password = pc.Password.FullyRedacted()
 	}
 	return &redactedConfig
 }
@@ -303,6 +330,7 @@ type AllowedRequests struct {
 	ResponsesCancel       bool `json:"responses_cancel"`
 	ResponsesInputItems   bool `json:"responses_input_items"`
 	CountTokens           bool `json:"count_tokens"`
+	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
 	OCR                   bool `json:"ocr"`
@@ -345,6 +373,11 @@ type AllowedRequests struct {
 	PassthroughStream     bool `json:"passthrough_stream"`
 	WebSocketResponses    bool `json:"websocket_responses"`
 	Realtime              bool `json:"realtime"`
+	CachedContentCreate   bool `json:"cached_content_create"`
+	CachedContentList     bool `json:"cached_content_list"`
+	CachedContentRetrieve bool `json:"cached_content_retrieve"`
+	CachedContentUpdate   bool `json:"cached_content_update"`
+	CachedContentDelete   bool `json:"cached_content_delete"`
 }
 
 // granularResponsesLifecycleUsed is true when any per-verb Responses lifecycle flag
@@ -409,6 +442,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case CountTokensRequest:
 		return ar.CountTokens
+	case CompactionRequest:
+		return ar.Compaction
 	case EmbeddingRequest:
 		return ar.Embedding
 	case RerankRequest:
@@ -493,6 +528,16 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.WebSocketResponses
 	case RealtimeRequest:
 		return ar.Realtime
+	case CachedContentCreateRequest:
+		return ar.CachedContentCreate
+	case CachedContentListRequest:
+		return ar.CachedContentList
+	case CachedContentRetrieveRequest:
+		return ar.CachedContentRetrieve
+	case CachedContentUpdateRequest:
+		return ar.CachedContentUpdate
+	case CachedContentDeleteRequest:
+		return ar.CachedContentDelete
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -610,6 +655,8 @@ type Provider interface {
 	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// CountTokens performs a count tokens request
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
+	// Compaction compacts a conversation context window (OpenAI-only; other providers return unsupported)
+	Compaction(ctx *BifrostContext, key Key, request *BifrostCompactionRequest) (*BifrostCompactionResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query
@@ -671,6 +718,16 @@ type Provider interface {
 	FileDelete(ctx *BifrostContext, keys []Key, request *BifrostFileDeleteRequest) (*BifrostFileDeleteResponse, *BifrostError)
 	// FileContent downloads file content from the provider
 	FileContent(ctx *BifrostContext, keys []Key, request *BifrostFileContentRequest) (*BifrostFileContentResponse, *BifrostError)
+	// CachedContentCreate creates a new cached content (Gemini / Vertex AI named cache lifecycle)
+	CachedContentCreate(ctx *BifrostContext, key Key, request *BifrostCachedContentCreateRequest) (*BifrostCachedContentCreateResponse, *BifrostError)
+	// CachedContentList lists cached contents
+	CachedContentList(ctx *BifrostContext, keys []Key, request *BifrostCachedContentListRequest) (*BifrostCachedContentListResponse, *BifrostError)
+	// CachedContentRetrieve retrieves a single cached content by name
+	CachedContentRetrieve(ctx *BifrostContext, keys []Key, request *BifrostCachedContentRetrieveRequest) (*BifrostCachedContentRetrieveResponse, *BifrostError)
+	// CachedContentUpdate updates a cached content's expiration (TTL or expireTime)
+	CachedContentUpdate(ctx *BifrostContext, keys []Key, request *BifrostCachedContentUpdateRequest) (*BifrostCachedContentUpdateResponse, *BifrostError)
+	// CachedContentDelete deletes a cached content by name
+	CachedContentDelete(ctx *BifrostContext, keys []Key, request *BifrostCachedContentDeleteRequest) (*BifrostCachedContentDeleteResponse, *BifrostError)
 	// ContainerCreate creates a new container
 	ContainerCreate(ctx *BifrostContext, key Key, request *BifrostContainerCreateRequest) (*BifrostContainerCreateResponse, *BifrostError)
 	// ContainerList lists containers

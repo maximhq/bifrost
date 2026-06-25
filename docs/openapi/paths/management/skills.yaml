@@ -1,0 +1,509 @@
+skills:
+  get:
+    operationId: listSkills
+    summary: List skills
+    description: Returns a paginated list of skills from the Skills Repository.
+    tags:
+      - Skills
+    parameters:
+      - name: search
+        in: query
+        description: Search by skill name or description.
+        schema:
+          type: string
+      - name: sort_by
+        in: query
+        description: Field to sort by.
+        schema:
+          type: string
+          enum:
+            - name
+            - updated_at
+            - created_at
+          default: created_at
+      - name: order
+        in: query
+        description: Sort order.
+        schema:
+          type: string
+          enum:
+            - asc
+            - desc
+          default: desc
+      - name: limit
+        in: query
+        description: Number of skills to return. Maximum 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      - name: offset
+        in: query
+        description: Number of skills to skip.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/ListSkillsResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createSkill
+    summary: Create skill
+    description: Creates a new skill and immediately serves its first immutable version.
+    tags:
+      - Skills
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/skills.yaml#/CreateSkillRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Skill created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/SkillResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+skills-by-id:
+  get:
+    operationId: getSkill
+    summary: Get skill
+    description: Returns a skill by ID. Pass `version` to inspect a historical version snapshot.
+    tags:
+      - Skills
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID
+        schema:
+          type: string
+      - name: version
+        in: query
+        description: Optional version to load instead of the currently served version.
+        schema:
+          type: string
+          example: 1.0.0
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/SkillResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateSkill
+    summary: Update skill
+    description: Creates a new immutable skill version. Set `serve` to false to save the version without switching the served version.
+    tags:
+      - Skills
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/skills.yaml#/UpdateSkillRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Skill updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/SkillResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteSkill
+    summary: Delete skill
+    description: Deletes a skill and all of its versions.
+    tags:
+      - Skills
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Skill deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+skill-versions:
+  get:
+    operationId: listSkillVersions
+    summary: List skill versions
+    description: Returns immutable version snapshots for a skill.
+    tags:
+      - Skills
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID
+        schema:
+          type: string
+      - name: search
+        in: query
+        description: Search versions by version string.
+        schema:
+          type: string
+      - name: sort_by
+        in: query
+        description: Field to sort by.
+        schema:
+          type: string
+          enum:
+            - version
+            - created_at
+          default: created_at
+      - name: order
+        in: query
+        description: Sort order.
+        schema:
+          type: string
+          enum:
+            - asc
+            - desc
+          default: desc
+      - name: limit
+        in: query
+        description: Number of versions to return. Maximum 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: offset
+        in: query
+        description: Number of versions to skip.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/ListSkillVersionsResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+shift-skill-version:
+  post:
+    operationId: shiftSkillVersion
+    summary: Shift served skill version
+    description: Changes the served version for a skill without deleting newer versions.
+    tags:
+      - Skills
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/skills.yaml#/ShiftSkillVersionRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Served version shifted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/SkillResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+skill-file-upload:
+  post:
+    operationId: uploadSkillFile
+    summary: Upload skill file
+    description: Uploads one file for later attachment to a skill version. The response contains either an object-storage key or a database blob ID.
+    tags:
+      - Skills
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/management/skills.yaml#/UploadSkillFileRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: File uploaded successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/UploadSkillFileResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+skill-orphan-files:
+  delete:
+    operationId: cleanupOrphanSkillFiles
+    summary: Clean up orphan skill files
+    description: |
+      Deletes uploaded files that are not attached to any skill version. This is mostly a maintenance escape hatch: Bifrost also runs orphan cleanup on server startup. Non-forced cleanup preserves uploads newer than 24 hours so files are not deleted while a skill is still being edited.
+    tags:
+      - Skills
+    parameters:
+      - name: force
+        in: query
+        description: Bypass the 24-hour grace period when true.
+        schema:
+          type: boolean
+          default: false
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Cleanup completed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/SkillOrphanCleanupResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+all-skills-version:
+  get:
+    operationId: getAllSkillsVersion
+    summary: Get all-skills version
+    description: Returns the current version of the synthetic `bifrost-all-skills` marketplace plugin.
+    tags:
+      - Skills
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/AllSkillsVersionResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: bumpAllSkillsVersion
+    summary: Bump all-skills version
+    description: Manually bumps the synthetic `bifrost-all-skills` plugin version as an escape hatch for marketplace refreshes.
+    tags:
+      - Skills
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Version bumped successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/AllSkillsVersionResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+claude-code-skills-marketplace:
+  get:
+    operationId: getClaudeCodeSkillsMarketplace
+    summary: Get Claude Code skills marketplace
+    description: Public marketplace JSON consumed by Claude Code. Available only when the Bifrost server can access the `git` binary.
+    tags:
+      - Skills
+    # Public: marketplace URLs cannot securely carry dashboard credentials.
+    security: []
+    responses:
+      '200':
+        description: Claude Code marketplace JSON
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/ClaudeCodeSkillMarketplace'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+codex-skills-marketplace:
+  get:
+    operationId: getCodexSkillsMarketplace
+    summary: Get Codex skills marketplace JSON
+    description: Public Codex marketplace JSON for inspecting the skills and plugin sources exposed by Bifrost.
+    tags:
+      - Skills
+    # Public: marketplace URLs cannot securely carry dashboard credentials.
+    security: []
+    responses:
+      '200':
+        description: Codex marketplace JSON
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/skills.yaml#/CodexSkillMarketplace'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+all-skills-download:
+  get:
+    operationId: downloadAllSkills
+    summary: Download all skills as ZIP
+    description: Public ZIP download containing every currently served skill.
+    tags:
+      - Skills
+    # Public: skill downloads are intended for external harnesses and tooling.
+    security: []
+    responses:
+      '200':
+        description: ZIP archive
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+skill-download:
+  get:
+    operationId: downloadSkill
+    summary: Download skill as ZIP
+    description: Public ZIP download containing a single currently served skill.
+    tags:
+      - Skills
+    # Public: skill downloads are intended for external harnesses and tooling.
+    security: []
+    parameters:
+      - name: skill-name
+        in: path
+        required: true
+        description: Skill name.
+        schema:
+          type: string
+    responses:
+      '200':
+        description: ZIP archive
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+skill-file-download:
+  get:
+    operationId: downloadSkillFile
+    summary: Download skill file
+    description: Public raw file download from the currently served version of a skill.
+    tags:
+      - Skills
+    # Public: skill downloads are intended for external harnesses and tooling.
+    security: []
+    parameters:
+      - name: skill-name
+        in: path
+        required: true
+        description: Skill name.
+        schema:
+          type: string
+      - name: filepath
+        in: path
+        required: true
+        description: Relative file path inside the skill package.
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Raw file content
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

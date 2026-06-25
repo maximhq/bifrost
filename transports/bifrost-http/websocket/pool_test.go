@@ -150,6 +150,37 @@ func TestPoolDialIncludesHandshakeDetails(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid websocket token")
 }
 
+func TestDialUpstreamCloseDoesNotAffectPoolCapacityCounters(t *testing.T) {
+	server := startTestWSServer(t)
+	defer server.Close()
+
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                1,
+		MaxTotalConnections:          1,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	unpooled, err := DialUpstream(wsURL, nil, schemas.OpenAI, "test-key")
+	require.NoError(t, err)
+	require.NotNil(t, unpooled)
+	require.NoError(t, unpooled.Close())
+
+	pool.mu.Lock()
+	inFlight := pool.inFlight
+	pool.mu.Unlock()
+	assert.Equal(t, 0, inFlight)
+
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+	pooled, err := pool.Get(key, nil)
+	require.NoError(t, err)
+	require.NotNil(t, pooled)
+	pool.Discard(pooled)
+}
+
 func TestPoolExpiredConnection(t *testing.T) {
 	server := startTestWSServer(t)
 	defer server.Close()

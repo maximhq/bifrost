@@ -18,6 +18,7 @@ import (
 )
 
 var initMCPServerPathsOnce sync.Once
+var stdioFixtureSemaphore = make(chan struct{}, 2)
 
 // =============================================================================
 // SETUP HELPERS FOR CODE MODE WITH STDIO SERVERS
@@ -38,6 +39,11 @@ func toCamelCase(s string) string {
 // Uses fixture functions for proper server configuration
 func setupCodeModeWithSTDIOServers(t *testing.T, serverNames ...string) (*mcp.MCPManager, *bifrost.Bifrost) {
 	t.Helper()
+
+	stdioFixtureSemaphore <- struct{}{}
+	t.Cleanup(func() {
+		<-stdioFixtureSemaphore
+	})
 
 	// Initialize MCP server paths (guarded against concurrent execution)
 	initMCPServerPathsOnce.Do(func() {
@@ -108,10 +114,54 @@ func setupCodeModeWithSTDIOServers(t *testing.T, serverNames ...string) (*mcp.MC
 	}
 
 	manager := setupMCPManager(t, clientConfigs...)
+	requireCodeModeClientsReady(t, manager, clientConfigs)
+
 	bifrost := setupBifrost(t)
 	bifrost.SetMCPManager(manager)
 
 	return manager, bifrost
+}
+
+func requireCodeModeClientsReady(t *testing.T, manager *mcp.MCPManager, configs []schemas.MCPClientConfig) {
+	t.Helper()
+
+	clientsByID := make(map[string]schemas.MCPClientState)
+	for _, client := range manager.GetClients() {
+		clientsByID[client.ExecutionConfig.ID] = client
+	}
+
+	for _, config := range configs {
+		client, ok := clientsByID[config.ID]
+		if !ok {
+			t.Fatalf("MCP client %q (%s) was not registered", config.Name, config.ID)
+		}
+		if client.State != schemas.MCPConnectionStateConnected {
+			t.Fatalf("MCP client %q (%s) is %s; expected connected", config.Name, config.ID, client.State)
+		}
+		if !client.ExecutionConfig.IsCodeModeClient {
+			t.Fatalf("MCP client %q (%s) is not configured as a code-mode client", config.Name, config.ID)
+		}
+		if countExecutableTools(client.ToolMap, client.ExecutionConfig.ToolsToExecute) == 0 {
+			t.Fatalf("MCP client %q (%s) has no executable code-mode tools; state=%s tool_count=%d tools_to_execute=%v", config.Name, config.ID, client.State, len(client.ToolMap), client.ExecutionConfig.ToolsToExecute)
+		}
+	}
+}
+
+func countExecutableTools(tools map[string]schemas.ChatTool, allowList schemas.WhiteList) int {
+	if allowList == nil || allowList.IsEmpty() {
+		return 0
+	}
+	if allowList.IsUnrestricted() {
+		return len(tools)
+	}
+
+	count := 0
+	for toolName := range tools {
+		if allowList.Contains(toolName) {
+			count++
+		}
+	}
+	return count
 }
 
 // =============================================================================

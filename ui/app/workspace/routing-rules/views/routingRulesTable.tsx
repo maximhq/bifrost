@@ -15,18 +15,82 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
 import { useDeleteRoutingRuleMutation, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule, RoutingTarget } from "@/lib/types/routingRules";
-import { getPriorityBadgeClass, getScopeLabel, truncateCELExpression } from "@/lib/utils/routingRules";
-import { ChevronLeft, ChevronRight, Edit, Search, Trash2 } from "lucide-react";
+import { getScopeLabel } from "@/lib/utils/labels";
+import { getPriorityBadgeClass, truncateCELExpression } from "@/lib/utils/routingRules";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+
+function RoutingRuleActionsMenu({
+	rule,
+	canUpdate,
+	canDelete,
+	onEdit,
+	onDelete,
+}: {
+	rule: RoutingRule;
+	canUpdate: boolean;
+	canDelete: boolean;
+	onEdit: (rule: RoutingRule) => void;
+	onDelete: (ruleId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Actions for routing rule ${rule.name}`}
+					data-testid={`routing-rule-actions-${rule.id}-btn`}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					className="cursor-pointer"
+					disabled={!canUpdate}
+					data-testid={`routing-rule-edit-${rule.id}-btn`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(rule);
+						setIsOpen(false);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					className="cursor-pointer"
+					disabled={!canDelete}
+					data-testid={`routing-rule-delete-${rule.id}-btn`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(rule.id);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
 
 interface RoutingRulesTableProps {
 	rules: RoutingRule[] | undefined;
@@ -70,7 +134,7 @@ export function RoutingRulesTable({
 			await deleteRoutingRule(deleteRuleId).unwrap();
 			toast.success("Routing rule deleted successfully");
 			setDeleteRuleId(null);
-		} catch (error: any) {
+		} catch (error: unknown) {
 			toast.error(getErrorMessage(error));
 		}
 	};
@@ -110,7 +174,7 @@ export function RoutingRulesTable({
 	return (
 		<>
 			{/* Toolbar: Search */}
-			<div className="flex items-center gap-3">
+			<div className="flex items-center gap-3 mb-4">
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -124,9 +188,9 @@ export function RoutingRulesTable({
 				</div>
 			</div>
 
-			<div className="overflow-hidden rounded-sm border">
-				<Table>
-					<TableHeader>
+			<div className="overflow-hidden rounded-sm border mb-2">
+				<Table containerClassName="h-full overflow-auto">
+					<TableHeader className="sticky top-0 bg-muted z-10">
 						<TableRow className="bg-muted/50">
 							<TableHead className="font-semibold">Name</TableHead>
 							<TableHead className="font-semibold">Targets</TableHead>
@@ -134,7 +198,7 @@ export function RoutingRulesTable({
 							<TableHead className="text-right font-semibold">Priority</TableHead>
 							<TableHead className="font-semibold">Expression</TableHead>
 							<TableHead className="font-semibold">Status</TableHead>
-							<TableHead className="text-right font-semibold">Actions</TableHead>
+							<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>Actions</TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
@@ -146,7 +210,7 @@ export function RoutingRulesTable({
 							</TableRow>
 						) : (
 							sortedRules.map((rule) => (
-								<TableRow key={rule.id} className="hover:bg-muted/50 cursor-pointer transition-colors" onClick={() => onRowClick(rule)}>
+								<TableRow key={rule.id} className="group hover:bg-muted/50 cursor-pointer transition-colors" onClick={() => onRowClick(rule)}>
 									<TableCell className="font-medium">
 										<div className="flex flex-col gap-1">
 											<span className="max-w-xs truncate">{rule.name}</span>
@@ -178,39 +242,34 @@ export function RoutingRulesTable({
 											size="md"
 											disabled={!canUpdate}
 											onAsyncCheckedChange={async (checked) => {
-												await updateRoutingRule({ id: rule.id, data: { enabled: checked } })
+												await updateRoutingRule({
+													id: rule.id,
+													data: { enabled: checked },
+												})
 													.unwrap()
 													.then(() => {
 														toast.success(`Rule ${checked ? "enabled" : "disabled"} successfully`);
 													})
 													.catch((err) => {
-														toast.error("Failed to update rule", { description: getErrorMessage(err) });
+														toast.error("Failed to update rule", {
+															description: getErrorMessage(err),
+														});
 													});
 											}}
 										/>
 									</TableCell>
-									<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-										<div className="flex items-center justify-end gap-2">
-											<Button
-												variant="ghost"
-												size="sm"
-												onClick={() => onEdit(rule)}
-												aria-label="Edit routing rule"
-												data-testid={`routing-rule-edit-${rule.id}-btn`}
-											>
-												<Edit className="h-4 w-4" />
-											</Button>
-											{canDelete && (
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() => setDeleteRuleId(rule.id)}
-													aria-label="Delete routing rule"
-													data-testid={`routing-rule-delete-${rule.id}-btn`}
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
-											)}
+									<TableCell
+										className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+										onClick={(e) => e.stopPropagation()}
+									>
+										<div className="flex items-center justify-center">
+											<RoutingRuleActionsMenu
+												rule={rule}
+												canUpdate={canUpdate}
+												canDelete={canDelete}
+												onEdit={onEdit}
+												onDelete={setDeleteRuleId}
+											/>
 										</div>
 									</TableCell>
 								</TableRow>
@@ -222,30 +281,38 @@ export function RoutingRulesTable({
 
 			{/* Pagination */}
 			{totalCount > 0 && (
-				<div className="flex items-center justify-between px-2">
-					<p className="text-muted-foreground text-sm">
-						Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
-					</p>
-					<div className="flex gap-2">
+				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+					<div className="text-muted-foreground flex items-center gap-2">
+						{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+					</div>
+
+					<div className="flex items-center gap-2">
 						<Button
-							variant="outline"
+							variant="ghost"
 							size="sm"
-							disabled={offset === 0}
 							onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+							disabled={offset === 0}
 							data-testid="routing-rules-pagination-prev-btn"
+							aria-label="Previous page"
 						>
-							<ChevronLeft className="mr-1 h-4 w-4" />
-							Previous
+							<ChevronLeft className="size-3" />
 						</Button>
+
+						<div className="flex items-center gap-1">
+							<span>Page</span>
+							<span>{Math.floor(offset / limit) + 1}</span>
+							<span>of {Math.ceil(totalCount / limit)}</span>
+						</div>
+
 						<Button
-							variant="outline"
+							variant="ghost"
 							size="sm"
-							disabled={offset + limit >= totalCount}
 							onClick={() => onOffsetChange(offset + limit)}
+							disabled={offset + limit >= totalCount}
 							data-testid="routing-rules-pagination-next-btn"
+							aria-label="Next page"
 						>
-							Next
-							<ChevronRight className="ml-1 h-4 w-4" />
+							<ChevronRight className="size-3" />
 						</Button>
 					</div>
 				</div>

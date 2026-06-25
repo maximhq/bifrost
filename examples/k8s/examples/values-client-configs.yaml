@@ -21,7 +21,6 @@ bifrost:
     logRetentionDays: 365
     # Deprecated in transport schema; prefer enforceAuthOnInference.
     enforceSCIMAuth: false
-    allowDirectKeys: true
     maxRequestBodySizeMb: 101
     compat:
       convertTextToChat: true

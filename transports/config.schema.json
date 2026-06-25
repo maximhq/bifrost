@@ -10,15 +10,37 @@
       "description": "The schema version. This should be set to \"https://www.getbifrost.ai/schema\"",
       "const": "https://www.getbifrost.ai/schema"
     },
+    "server": {
+      "type": "object",
+      "properties": {
+        "read_buffer_size": {
+          "type": "integer",
+          "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
+          "default": 65536
+        }
+      },
+      "required": ["read_buffer_size"]
+    },
     "version": {
       "type": "integer",
       "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",
       "enum": [1, 2],
       "default": 2
     },
+    "source_of_truth": {
+      "type": "string",
+      "description": "Controls how config.json is reconciled with the config store. \"split\" preserves existing merge behavior. \"config.json\" makes present config.json sections authoritative during startup sync; missing sections leave database rows untouched.",
+      "enum": ["split", "config.json"],
+      "default": "split"
+    },
     "encryption_key": {
       "type": "string",
       "description": "You can set the value as env.<ENV_VAR_NAME> to use an environment variable. We also read encryption key from BIFROST_ENCRYPTION_KEY environment variable. Note: once set, the encryption key cannot be changed unless you clean up the database. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF. If not provided, data will be saved in plain text. Recommended: use a passphrase of at least 16 bytes for better security"
+    },
+    "env_label": {
+      "type": "string",
+      "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Overrides the BIFROST_ENV_LABEL environment variable when both are set.",
+      "maxLength": 10
     },
     "auth_config": {
       "$ref": "#/$defs/auth_config"
@@ -100,10 +122,6 @@
         "enforce_scim_auth": {
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"
-        },
-        "allow_direct_keys": {
-          "type": "boolean",
-          "description": "Allow provider keys"
         },
         "max_request_body_size_mb": {
           "type": "integer",
@@ -194,6 +212,11 @@
           },
           "description": "Additional allowed headers for CORS and WebSocket"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and the provider's raw API key in an Authorization (Bearer), x-api-key, or x-goog-api-key header.",
+          "default": false
+        },
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
@@ -222,13 +245,18 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_enable_temp_token_auth": {
+          "type": "boolean",
+          "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting — they always require SSO login.",
+          "default": false
+        },
         "routing_chain_max_depth": {
           "type": "integer",
           "minimum": 1,
           "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
         },
-        "mcp_external_base_url": {
+        "mcp_external_client_url": {
           "anyOf": [
             {
               "type": "string"
@@ -243,7 +271,7 @@
               "additionalProperties": false
             }
           ],
-          "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy (e.g. \"https://api.example.com\"). Supports env var syntax: \"env.MY_VAR\"."
+          "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         }
       },
       "additionalProperties": false
@@ -289,6 +317,12 @@
           "$ref": "#/$defs/provider"
         },
         "gemini": {
+          "$ref": "#/$defs/provider"
+        },
+        "opencode-go": {
+          "$ref": "#/$defs/provider"
+        },
+        "opencode-zen": {
           "$ref": "#/$defs/provider"
         },
         "openrouter": {
@@ -373,13 +407,21 @@
                 "type": "integer",
                 "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
               },
+              "model_config_id": {
+                "type": "string",
+                "description": "ID of the model config this budget belongs to (mutually exclusive with the other owner IDs)"
+              },
+              "customer_id": {
+                "type": "string",
+                "description": "ID of the customer this budget belongs to (mutually exclusive with the other owner IDs)"
+              },
               "team_id": {
                 "type": "string",
                 "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id and provider_config_id)"
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -435,7 +477,7 @@
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -457,16 +499,31 @@
                 "type": "string",
                 "description": "Customer name"
               },
+              "budgets": {
+                "type": "array",
+                "description": "Inline budget configurations for this customer. Each entry must have a unique reset_duration. Mutually exclusive with budget_id.",
+                "items": {
+                  "$ref": "#/$defs/budget_line"
+                }
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Associated budget ID"
+                "description": "Single budget reference (pre-declared in governance.budgets). Deprecated in favour of inline budgets."
               },
               "rate_limit_id": {
                 "type": "string",
                 "description": "Associated rate limit ID"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               }
             },
             "required": ["id", "name"],
+            "not": {
+              "required": ["budgets", "budget_id"]
+            },
             "additionalProperties": false
           }
         },
@@ -483,6 +540,10 @@
               "name": {
                 "type": "string",
                 "description": "Team name"
+              },
+              "source_id": {
+                "type": "string",
+                "description": "Optional external source identifier (e.g. SCIM group ID) used to map this team to an upstream system. Unique when set."
               },
               "customer_id": {
                 "type": "string",
@@ -511,6 +572,11 @@
               "claims": {
                 "type": "object",
                 "description": "Team claims data"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               },
               "virtual_key_count": {
                 "type": "integer",
@@ -569,6 +635,54 @@
             "additionalProperties": false
           }
         },
+        "roles": {
+          "type": "array",
+          "description": "RBAC role definitions. Roles are created or updated on startup if the config hash changes; system roles and dashboard-created roles are never deleted.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Unique role name"
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable description of the role"
+              },
+              "dac": {
+                "type": "string",
+                "description": "Data Access Control scope: own-data (user's own records), team-data (user's team records), all-data (unrestricted). Defaults to all-data.",
+                "enum": ["own-data", "team-data", "all-data"],
+                "default": "all-data"
+              },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) to attach as the default for this role. Changing this field triggers a re-sync on next startup. Leave unset to let the dashboard manage the assignment."
+              },
+              "permissions": {
+                "type": "array",
+                "description": "List of resource+operation permission pairs to grant to this role",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "description": "Permission resource (e.g. Logs, VirtualKeys, Users, ModelProvider, Metrics, Guardrails, AccessProfiles, MCPToolGroups, Roles, BusinessUnits, AuditLogs, Billing)"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "description": "Permission operation (e.g. View, Create, Update, Delete, Download, RunInference, ManageInference, ViewInference)"
+                    }
+                  },
+                  "required": ["resource", "operation"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+          }
+        },
         "virtual_keys": {
           "type": "array",
           "description": "Virtual key configurations",
@@ -608,6 +722,11 @@
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID (mutually exclusive with team_id)"
+              },
+              "access_profile_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
               },
               "rate_limit_id": {
                 "type": "string",
@@ -649,6 +768,9 @@
         "auth_config": {
           "$ref": "#/$defs/auth_config"
         },
+        "complexity_analyzer_config": {
+          "$ref": "#/$defs/complexity_analyzer_config"
+        },
         "model_configs": {
           "type": "array",
           "description": "Per-model rate limit and budget configurations",
@@ -667,9 +789,28 @@
                 "type": "string",
                 "description": "Optional provider name to scope this config"
               },
+              "scope": {
+                "type": "string",
+                "description": "Scope where this config applies: \"global\" (default) or \"virtual_key\"",
+                "default": "global"
+              },
+              "scope_id": {
+                "type": "string",
+                "description": "Target entity ID for non-global scopes (e.g. virtual key ID). Required when scope != \"global\""
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap this config's budget resets to calendar boundaries (e.g. a monthly budget resets on the 1st) rather than rolling windows. For virtual_key-scoped configs it inherits the virtual key's setting.",
+                "default": false
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Budget ID to associate with this model"
+                "description": "Deprecated — single budget reference. Use budget_ids instead."
+              },
+              "budget_ids": {
+                "type": "array",
+                "description": "List of budget IDs (from governance.budgets) to associate with this model config. Supports multiple budgets (e.g. daily + monthly). Replaces budget_id.",
+                "items": { "type": "string" }
               },
               "rate_limit_id": {
                 "type": "string",
@@ -904,7 +1045,35 @@
                   },
                   "password": {
                     "type": "string",
-                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                    "description": "Database password. Use password_command instead when the password must be generated dynamically."
+                  },
+                  "password_command": {
+                    "type": "object",
+                    "description": "Command executed without a shell to produce the database password on stdout for each new physical connection.",
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^\\S+$",
+                        "description": "Executable path or name to run"
+                      },
+                      "args": {
+                        "type": "array",
+                        "description": "Arguments passed directly to the executable",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "timeout": {
+                        "type": "string",
+                        "description": "Command timeout as a Go duration string (default: 10s)",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "10s"
+                      }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
                   },
                   "db_name": {
                     "type": "string",
@@ -925,15 +1094,27 @@
                     "description": "Maximum number of open connections to the database (default: 50)",
                     "minimum": 2,
                     "default": 50
+                  },
+                  "conn_max_lifetime": {
+                    "type": "string",
+                    "description": "Maximum lifetime for physical database connections as a Go duration string",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
                   "host",
                   "port",
                   "user",
-                  "password",
                   "db_name",
                   "ssl_mode"
+                ],
+                "oneOf": [
+                  {
+                    "required": ["password"]
+                  },
+                  {
+                    "required": ["password_command"]
+                  }
                 ],
                 "additionalProperties": false
               }
@@ -1002,7 +1183,35 @@
                   },
                   "password": {
                     "type": "string",
-                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                    "description": "Database password. Use password_command instead when the password must be generated dynamically."
+                  },
+                  "password_command": {
+                    "type": "object",
+                    "description": "Command executed without a shell to produce the database password on stdout for each new physical connection.",
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^\\S+$",
+                        "description": "Executable path or name to run"
+                      },
+                      "args": {
+                        "type": "array",
+                        "description": "Arguments passed directly to the executable",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "timeout": {
+                        "type": "string",
+                        "description": "Command timeout as a Go duration string (default: 10s)",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "10s"
+                      }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
                   },
                   "db_name": {
                     "type": "string",
@@ -1023,24 +1232,79 @@
                     "description": "Maximum number of open connections to the database (default: 50)",
                     "minimum": 2,
                     "default": 50
+                  },
+                  "matview_refresh_interval": {
+                    "type": "string",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
+                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "default": "1m"
+                  },
+                  "conn_max_lifetime": {
+                    "type": "string",
+                    "description": "Maximum lifetime for physical database connections as a Go duration string",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
                   "host",
                   "port",
                   "user",
-                  "password",
                   "db_name",
                   "ssl_mode"
+                ],
+                "oneOf": [
+                  {
+                    "required": ["password"]
+                  },
+                  {
+                    "required": ["password_command"]
+                  }
                 ],
                 "additionalProperties": false
               }
             }
           ]
         },
+        "writer": {
+          "type": "object",
+          "description": "Async logging writer queue and batch tuning. Omitted fields use runtime defaults.",
+          "properties": {
+            "max_batch_size": {
+              "type": "integer",
+              "description": "Maximum number of log entries to batch before flushing (default: 1000)",
+              "minimum": 1,
+              "default": 1000
+            },
+            "batch_interval": {
+              "type": "string",
+              "description": "Maximum time to wait before flushing a partial batch as a Go duration string (default: 5s)",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+              "default": "5s"
+            },
+            "max_batch_bytes": {
+              "type": "integer",
+              "description": "Approximate byte-size ceiling for a batch before flushing (default: 314572800)",
+              "minimum": 1,
+              "default": 314572800
+            },
+            "write_queue_capacity": {
+              "type": "integer",
+              "description": "Buffered queue capacity for pending log writes (default: 10000)",
+              "minimum": 1,
+              "default": 10000
+            },
+            "deferred_usage_concurrency": {
+              "type": "integer",
+              "description": "Maximum concurrent deferred usage database updates (default: 5)",
+              "minimum": 1,
+              "default": 5
+            }
+          },
+          "additionalProperties": false
+        },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading log payloads. When configured, large request/response payloads are stored in S3/GCS while the DB keeps only lightweight index data.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
@@ -1136,10 +1400,86 @@
             "additionalProperties": false
           }
         },
+        "object_storage_exclude_fields": {
+          "type": "array",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
+          "items": {
+            "type": "string"
+          }
+        },
         "retention_days": {
           "type": "integer",
           "minimum": 0,
           "description": "Days to retain log entries. 0 disables retention-based cleanup."
+        }
+      },
+      "additionalProperties": false
+    },
+    "skills_registry": {
+      "type": "object",
+      "description": "Declarative Skills Repository definitions reconciled from config.json",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether config-defined skills should be reconciled at startup"
+        },
+        "skills": {
+          "type": "array",
+          "description": "Skills to create or update from config.json",
+          "items": {
+            "type": "object",
+            "required": ["name", "description", "skill_md_body", "version"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "license": { "type": "string" },
+              "compatibility": { "type": "string" },
+              "allowed_tools": { "type": "string" },
+              "extra_frontmatter": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "skill_md_body": { "type": "string" },
+              "version": { "type": "string" },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "source_type"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "source_type": {
+                      "type": "string",
+                      "enum": ["text", "url", "dataurl"]
+                    },
+                    "url": { "type": "string" },
+                    "content": { "type": "string" },
+                    "dataurl": { "type": "string" }
+                  },
+                  "additionalProperties": false,
+                  "oneOf": [
+                    {
+                      "properties": { "source_type": { "const": "url" } },
+                      "required": ["url"]
+                    },
+                    {
+                      "properties": { "source_type": { "const": "text" } },
+                      "required": ["content"]
+                    },
+                    {
+                      "properties": { "source_type": { "const": "dataurl" } },
+                      "required": ["dataurl"]
+                    }
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -1362,6 +1702,13 @@
                     "log_repo_id": {
                       "type": "string",
                       "description": "Optional default ID for the Maxim logger instance"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and attach as trace tags. Note: * captures all headers including sensitive ones like Authorization."
                     }
                   },
                   "required": ["api_key"],
@@ -1413,10 +1760,6 @@
                     "embedding_model": {
                       "type": "string",
                       "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
-                    },
-                    "cleanup_on_shutdown": {
-                      "type": "boolean",
-                      "description": "Clean up cache on shutdown (default: false)"
                     },
                     "ttl": {
                       "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
@@ -1518,78 +1861,11 @@
               "required": ["config"],
               "properties": {
                 "config": {
-                  "type": "object",
-                  "description": "Configuration for the OpenTelemetry plugin",
-                  "properties": {
-                    "service_name": {
-                      "type": "string",
-                      "description": "Service name to be used for tracing",
-                      "default": "bifrost"
-                    },
-                    "collector_url": {
-                      "type": "string",
-                      "description": "URL of the OpenTelemetry collector",
-                      "oneOf": [
-                        {
-                          "format": "uri"
-                        },
-                        {
-                          "pattern": "^[^:\\s]+:\\d+$"
-                        }
-                      ]
-                    },
-                    "trace_type": {
-                      "type": "string",
-                      "description": "Type of trace to use for the OTEL collector",
-                      "enum": ["genai_extension", "vercel", "open_inference"]
-                    },
-                    "protocol": {
-                      "type": "string",
-                      "description": "Protocol to use for the OTEL collector",
-                      "enum": ["http", "grpc"]
-                    },
-                    "metrics_enabled": {
-                      "type": "boolean",
-                      "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
-                      "default": false
-                    },
-                    "metrics_endpoint": {
-                      "type": "string",
-                      "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)",
-                      "oneOf": [
-                        {
-                          "format": "uri"
-                        },
-                        {
-                          "pattern": "^[^:\\s]+:\\d+$"
-                        }
-                      ]
-                    },
-                    "metrics_push_interval": {
-                      "type": "integer",
-                      "description": "Metrics push interval in seconds",
-                      "default": 15,
-                      "minimum": 1,
-                      "maximum": 300
-                    },
-                    "headers": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "string"
-                      },
-                      "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
-                    },
-                    "tls_ca_cert": {
-                      "type": "string",
-                      "description": "Path to TLS CA certificate file"
-                    },
-                    "insecure": {
-                      "type": "boolean",
-                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
-                    }
-                  },
-                  "required": ["collector_url", "trace_type", "protocol"],
-                  "additionalProperties": false
+                  "anyOf": [
+                    { "$ref": "#/$defs/otel_profile_config" },
+                    { "$ref": "#/$defs/otel_profiles_config" }
+                  ],
+                  "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
                 }
               }
             }
@@ -1614,10 +1890,37 @@
                       "description": "Name of the service to report to Datadog",
                       "default": "bifrost"
                     },
+                    "ml_app": {
+                      "type": "string",
+                      "description": "ML application name for LLM Observability grouping (defaults to service_name)"
+                    },
                     "agent_addr": {
                       "type": "string",
-                      "description": "Address of the Datadog Agent for APM traces",
+                      "description": "Combined host:port address of the Datadog Agent for APM traces (agent mode only, can use env. prefix). Overridden by agent_host when set.",
                       "default": "localhost:8126"
+                    },
+                    "agent_host": {
+                      "type": "string",
+                      "description": "Host of the Datadog Agent for APM traces, provided separately from the port (agent mode only, can use env. prefix). Takes precedence over agent_addr when set. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)."
+                    },
+                    "agent_port": {
+                      "type": "string",
+                      "description": "Port of the Datadog Agent for APM traces (agent mode only, can use env. prefix). Used only when agent_host is set (defaults to 8126); has no effect when agent_host is unset, in which case agent_addr supplies the port.",
+                      "default": "8126"
+                    },
+                    "dogstatsd_addr": {
+                      "type": "string",
+                      "description": "Combined host:port address of the DogStatsD server for metrics (agent mode only, can use env. prefix). Overridden by dogstatsd_host when set.",
+                      "default": "localhost:8125"
+                    },
+                    "dogstatsd_host": {
+                      "type": "string",
+                      "description": "Host of the DogStatsD server for metrics, provided separately from the port (agent mode only, can use env. prefix). Takes precedence over dogstatsd_addr when set. Useful in Kubernetes where the host is injected via the downward API (status.hostIP)."
+                    },
+                    "dogstatsd_port": {
+                      "type": "string",
+                      "description": "Port of the DogStatsD server for metrics (agent mode only, can use env. prefix). Used only when dogstatsd_host is set (defaults to 8125); has no effect when dogstatsd_host is unset, in which case dogstatsd_addr supplies the port.",
+                      "default": "8125"
                     },
                     "env": {
                       "type": "string",
@@ -1632,14 +1935,370 @@
                       "additionalProperties": {
                         "type": "string"
                       },
-                      "description": "Additional tags to add to all traces and metrics"
+                      "description": "Additional tags to add to all traces and metrics (values can use env. prefix)"
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Enable metrics emission (default: true)",
+                      "default": true
                     },
                     "enable_traces": {
                       "type": "boolean",
                       "description": "Enable APM traces (default: true)",
                       "default": true
+                    },
+                    "enable_llm_obs": {
+                      "type": "boolean",
+                      "description": "Enable LLM Observability (default: true)",
+                      "default": true
+                    },
+                    "group_traces_by_session": {
+                      "type": "boolean",
+                      "description": "Group requests sharing the same x-bf-session-id header into a single APM trace, with each request as a top-level sibling span. Agent mode only; an inbound W3C traceparent takes precedence (default: false)",
+                      "default": false
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Disable logging of message content to Datadog (default: false)",
+                      "default": false
+                    },
+                    "agentless": {
+                      "type": "boolean",
+                      "description": "Use agentless mode to send data directly to Datadog APIs (default: false)",
+                      "default": false
+                    },
+                    "api_key": {
+                      "type": "string",
+                      "description": "Datadog API key, required for agentless mode (can use env. prefix)"
+                    },
+                    "site": {
+                      "type": "string",
+                      "description": "Datadog site/region (e.g., datadoghq.com, datadoghq.eu)",
+                      "default": "datadoghq.com"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request header names to capture as span tags"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
                     }
                   },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "agentless": {
+                            "const": true
+                          }
+                        },
+                        "required": ["agentless"]
+                      },
+                      "then": {
+                        "required": ["api_key"]
+                      }
+                    }
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "bigquery"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the BigQuery traces plugin",
+                  "properties": {
+                    "project_id": {
+                      "type": "string",
+                      "description": "GCP project ID (required)"
+                    },
+                    "dataset_id": {
+                      "type": "string",
+                      "description": "BigQuery dataset name",
+                      "default": "bifrost_traces"
+                    },
+                    "table_id": {
+                      "type": "string",
+                      "description": "BigQuery table name",
+                      "default": "traces"
+                    },
+                    "location": {
+                      "type": "string",
+                      "description": "BigQuery dataset location",
+                      "default": "US"
+                    },
+                    "service_account_key": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "Service account key JSON for authentication. Omit to use Application Default Credentials (ADC). Supports env var syntax: \"env.MY_VAR\"."
+                    },
+                    "create_table_if_not_exists": {
+                      "type": "boolean",
+                      "description": "Auto-create the table if it does not exist",
+                      "default": true
+                    },
+                    "flush_interval_seconds": {
+                      "type": "integer",
+                      "description": "Interval between buffer flushes, in seconds",
+                      "default": 5
+                    },
+                    "buffer_size": {
+                      "type": "integer",
+                      "description": "Max rows to buffer before flushing",
+                      "default": 500
+                    },
+                    "custom_labels": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "anyOf": [
+                          { "type": "string" },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "value": { "type": "string" },
+                              "env_var": { "type": "string" },
+                              "from_env": { "type": "boolean" }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "description": "Arbitrary key-value pairs stored as JSON in the labels column"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Omit conversation history (input/output) columns",
+                      "default": false
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose values are stored in the request_headers column"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
+                    }
+                  },
+                  "required": ["project_id"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "kafka"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Kafka traces plugin (Enterprise). Publishes completed traces as JSON messages to a Kafka topic, keyed by trace ID.",
+                  "properties": {
+                    "brokers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "minItems": 1,
+                      "description": "Kafka broker addresses (required)"
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "Kafka topic to publish traces to (required)"
+                    },
+                    "sasl_enabled": {
+                      "type": "boolean",
+                      "description": "Enable SASL authentication. SASL is only activated when both sasl_enabled is true and sasl is set.",
+                      "default": false
+                    },
+                    "sasl": {
+                      "type": "object",
+                      "description": "SASL credentials, used when sasl_enabled is true",
+                      "properties": {
+                        "mechanism": {
+                          "type": "string",
+                          "enum": ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"]
+                        },
+                        "username": {
+                          "anyOf": [
+                            { "type": "string" },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "value": { "type": "string" },
+                                "env_var": { "type": "string" },
+                                "from_env": { "type": "boolean" }
+                              },
+                              "additionalProperties": false
+                            }
+                          ],
+                          "description": "SASL username. Supports env var syntax: \"env.MY_VAR\"."
+                        },
+                        "password": {
+                          "anyOf": [
+                            { "type": "string" },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "value": { "type": "string" },
+                                "env_var": { "type": "string" },
+                                "from_env": { "type": "boolean" }
+                              },
+                              "additionalProperties": false
+                            }
+                          ],
+                          "description": "SASL password. Supports env var syntax: \"env.MY_VAR\"."
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "tls_enabled": {
+                      "type": "boolean",
+                      "description": "Enable TLS for broker connections",
+                      "default": false
+                    },
+                    "ca_cert": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "PEM-encoded CA certificate used to verify the broker's TLS certificate. Omit to use the system CA pool. Supports env var syntax: \"env.KAFKA_CA_CERT\"."
+                    },
+                    "compression": {
+                      "type": "string",
+                      "enum": ["none", "gzip", "snappy", "lz4", "zstd"],
+                      "description": "Compression codec for published messages",
+                      "default": "none"
+                    },
+                    "batch_size": {
+                      "type": "integer",
+                      "description": "Maximum number of messages batched per write",
+                      "default": 100
+                    },
+                    "flush_interval_ms": {
+                      "type": "integer",
+                      "description": "Maximum time (ms) to wait before flushing a batch",
+                      "default": 1000
+                    },
+                    "auto_create_topic": {
+                      "type": "boolean",
+                      "description": "Create the topic at startup if it does not exist",
+                      "default": false
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip input/output message content from traces before publishing",
+                      "default": false
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are embedded in published traces"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
+                    }
+                  },
+                  "required": ["brokers", "topic"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "pubsub"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Google Cloud Pub/Sub traces plugin (Enterprise). Publishes completed traces as JSON messages to a Pub/Sub topic.",
+                  "properties": {
+                    "project_id": {
+                      "type": "string",
+                      "description": "GCP project ID (required)"
+                    },
+                    "topic_id": {
+                      "type": "string",
+                      "description": "Pub/Sub topic ID — just the ID, not the full resource name (required)"
+                    },
+                    "service_account_key": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "Service account key JSON for authentication. Omit to use Application Default Credentials (ADC). Supports env var syntax: \"env.MY_VAR\"."
+                    },
+                    "auto_create_topic": {
+                      "type": "boolean",
+                      "description": "Create the topic at startup if it does not exist",
+                      "default": false
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip request/response content from traces before publishing",
+                      "default": false
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are included in published traces"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
+                    }
+                  },
+                  "required": ["project_id", "topic_id"],
                   "additionalProperties": false
                 }
               }
@@ -1672,10 +2331,199 @@
     },
     "access_profiles": {
       "$ref": "#/$defs/access_profiles"
+    },
+    "feature_flags": {
+      "$ref": "#/$defs/feature_flags_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "otel_endpoint": {
+      "type": "string",
+      "anyOf": [
+        {
+          "format": "uri"
+        },
+        {
+          "pattern": "^[^:\\s]+:\\d+$"
+        },
+        {
+          "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      ]
+    },
+    "plugin_span_filter": {
+      "type": "object",
+      "description": "Controls which plugin hook spans this observability connector exports. Omit to export all plugin spans. Mode \"include\" exports only the listed plugins; mode \"exclude\" exports everything except them. Plugin names match the <name> in the span name \"plugin.<name>.<stage>\".",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["include", "exclude"]
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mode", "plugins"],
+      "additionalProperties": false
+    },
+    "otel_profile_config": {
+      "type": "object",
+      "description": "OpenTelemetry export profile. This legacy single-profile shape is still accepted directly as the plugin config.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this profile exports traces and metrics",
+          "default": true
+        },
+        "service_name": {
+          "type": "string",
+          "description": "Service name to be used for tracing",
+          "default": "bifrost"
+        },
+        "collector_url": {
+          "$ref": "#/$defs/otel_endpoint",
+          "description": "URL of the OpenTelemetry collector"
+        },
+        "trace_type": {
+          "type": "string",
+          "description": "Type of trace to use for the OTEL collector",
+          "enum": ["genai_extension", "vercel", "open_inference"]
+        },
+        "protocol": {
+          "type": "string",
+          "description": "Protocol to use for the OTEL collector",
+          "enum": ["http", "grpc"]
+        },
+        "metrics_enabled": {
+          "type": "boolean",
+          "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
+          "default": false
+        },
+        "metrics_endpoint": {
+          "$ref": "#/$defs/otel_endpoint",
+          "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
+        },
+        "metrics_push_interval": {
+          "type": "integer",
+          "description": "Metrics push interval in seconds",
+          "default": 15,
+          "minimum": 1,
+          "maximum": 300
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and emit as span attributes. Note: * captures all headers including sensitive ones like Authorization."
+        },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
+          "default": false
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+        },
+        "tls_ca_cert": {
+          "type": "string",
+          "description": "Path to TLS CA certificate file"
+        },
+        "insecure": {
+          "type": "boolean",
+          "description": "Skip TLS verification (ignored if tls_ca_cert is set)",
+          "default": true
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/plugin_span_filter"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "enabled": {
+                  "const": false
+                }
+              },
+              "required": ["enabled"]
+            }
+          },
+          "then": {
+            "required": ["collector_url", "trace_type", "protocol"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "metrics_enabled": {
+                "const": true
+              }
+            },
+            "required": ["metrics_enabled"]
+          },
+          "then": {
+            "required": ["metrics_endpoint"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "otel_profiles_config": {
+      "type": "object",
+      "description": "OpenTelemetry plugin configuration with one or more export profiles.",
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "description": "OpenTelemetry export profiles",
+          "items": {
+            "$ref": "#/$defs/otel_profile_config"
+          },
+          "minItems": 1
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/plugin_span_filter"
+        }
+      },
+      "required": ["profiles"],
+      "additionalProperties": false
+    },
+    "feature_flags_config": {
+      "type": "object",
+      "description": "Boot-time overrides for feature flags. Flags themselves are declared in code via featureflags.Register; this block only sets initial values. Anything set here is rendered as locked in the UI - operators must edit the config (or Helm values) to change it.",
+      "properties": {
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "description": "Boolean value or a string: either 'env.NAME' for env-var indirection, or a literal boolean (true / false / 1 / 0 / yes / no / on / off, case-insensitive).",
+                "oneOf": [
+                  { "type": "boolean" },
+                  {
+                    "type": "string",
+                    "pattern": "^(env\\.[A-Za-z_][A-Za-z0-9_]*|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[01]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff])$"
+                  }
+                ]
+              }
+            },
+            "required": ["enabled"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "routing_target": {
       "type": "object",
       "description": "A single weighted routing target within a rule. All fields except weight are optional; omitting provider or model means use the incoming request value. Weights across all targets in a rule must sum to 1.",
@@ -1842,13 +2690,20 @@
             "type": "string"
           }
         },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
         },
         "key_ids": {
           "type": "array",
-          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In config.json, values are key names. Via the API, values are key UUIDs.",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys. Semantics depend on version: v2 (default) empty = deny all; v1 empty = allow all. Values are the key IDs.",
           "items": {
             "type": "string"
           }
@@ -1887,6 +2742,91 @@
       },
       "additionalProperties": false
     },
+    "complexity_tier_boundaries": {
+      "type": "object",
+      "description": "Score thresholds used to classify complexity_tier values",
+      "properties": {
+        "simple_medium": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Scores below this threshold are SIMPLE"
+        },
+        "medium_complex": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Scores below this threshold and at or above simple_medium are MEDIUM"
+        },
+        "complex_reasoning": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Scores below this threshold and at or above medium_complex are COMPLEX"
+        }
+      },
+      "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+      "additionalProperties": false
+    },
+    "complexity_analyzer_keywords": {
+      "type": "object",
+      "description": "User-editable keyword lists for complexity analysis",
+      "properties": {
+        "code_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reasoning_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "technical_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "simple_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "code_keywords",
+        "reasoning_keywords",
+        "technical_keywords",
+        "simple_keywords"
+      ],
+      "additionalProperties": false
+    },
+    "complexity_analyzer_config": {
+      "type": "object",
+      "description": "Runtime configuration for complexity_tier CEL routing",
+      "properties": {
+        "tier_boundaries": {
+          "$ref": "#/$defs/complexity_tier_boundaries"
+        },
+        "keywords": {
+          "$ref": "#/$defs/complexity_analyzer_keywords"
+        }
+      },
+      "required": ["tier_boundaries", "keywords"],
+      "additionalProperties": false
+    },
     "auth_config": {
       "type": "object",
       "description": "Authentication configuration. Deprecated: Use governance.auth_config instead.",
@@ -1905,7 +2845,8 @@
         },
         "disable_auth_on_inference": {
           "type": "boolean",
-          "description": "Whether authentication is disabled on inference"
+          "deprecated": true,
+          "description": "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
         }
       },
       "additionalProperties": false
@@ -1922,6 +2863,25 @@
         "pricing_sync_interval": {
           "type": "integer",
           "description": "Pricing sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+          "default": 86400,
+          "optional": true,
+          "minimum": 3600
+        },
+        "model_parameters_url": {
+          "type": "string",
+          "description": "Model parameters URL",
+          "optional": true,
+          "format": "uri"
+        },
+        "mcp_library_url": {
+          "type": "string",
+          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog.",
+          "optional": true,
+          "format": "uri"
+        },
+        "mcp_library_sync_interval": {
+          "type": "integer",
+          "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
           "default": 86400,
           "optional": true,
           "minimum": 3600
@@ -1980,7 +2940,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -1994,6 +2954,11 @@
             "type": "boolean"
           },
           "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        },
+        "allow_private_network": {
+          "type": "boolean",
+          "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -2044,7 +3009,7 @@
           "type": "integer",
           "minimum": 5,
           "maximum": 3600,
-          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -2058,6 +3023,11 @@
             "type": "boolean"
           },
           "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        },
+        "allow_private_network": {
+          "type": "boolean",
+          "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -2121,13 +3091,82 @@
         "aliases": {
           "type": "object",
           "additionalProperties": {
-            "type": "string",
-            "minLength": 1
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "description": "Legacy shape: a bare provider-specific identifier. Equivalent to {\"model_id\": \"<value>\"}."
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "model_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Provider-specific identifier sent on the wire (deployment name, inference profile ID, fine-tuned model ID, etc.)."
+                  },
+                  "model_name": {
+                    "type": "string",
+                    "description": "Canonical model name used for pricing, logging, and family inference."
+                  },
+                  "model_family": {
+                    "type": "string",
+                    "enum": [
+                      "anthropic",
+                      "openai",
+                      "mistral",
+                      "cohere",
+                      "gemini",
+                      "nova",
+                      "titan"
+                    ],
+                    "description": "Underlying model family. Used by provider routing without substring-sniffing the wire model ID."
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "Per-alias region override (can use env. prefix)."
+                  },
+                  "api_version": {
+                    "type": "string",
+                    "description": "Azure OpenAI api-version override for this alias."
+                  },
+                  "anthropic_version": {
+                    "type": "string",
+                    "description": "Azure anthropic-version header override for Claude-on-Azure deployments."
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "description": "Per-alias Azure endpoint override (can use env. prefix)."
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Per-alias Vertex project ID override (can use env. prefix)."
+                  },
+                  "project_number": {
+                    "type": "string",
+                    "description": "Per-alias Vertex project number override (can use env. prefix)."
+                  },
+                  "inference_profile_arn": {
+                    "type": "string",
+                    "description": "Per-alias Bedrock inference profile ARN (can use env. prefix)."
+                  },
+                  "use_deployments_endpoint": {
+                    "type": "boolean",
+                    "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  }
+                },
+                "required": ["model_id"],
+                "additionalProperties": false
+              }
+            ]
           },
           "propertyNames": {
             "minLength": 1
           },
-          "description": "Model alias mappings: maps a model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)"
+          "description": "Model alias mappings: each entry maps a user-facing model name to either a bare provider identifier (legacy string shape) or an AliasConfig object carrying the wire identifier plus optional canonical name, family, and provider-specific overrides."
         }
       },
       "required": ["name", "weight"]
@@ -2337,12 +3376,34 @@
                   "type": "string",
                   "description": "Azure endpoint (can use env. prefix)"
                 },
+                "client_id": {
+                  "type": "string",
+                  "description": "Azure client ID for Entra authentication (can use env. prefix)"
+                },
+                "client_secret": {
+                  "type": "string",
+                  "description": "Azure client secret for Entra authentication (can use env. prefix)"
+                },
+                "tenant_id": {
+                  "type": "string",
+                  "description": "Azure tenant ID for Entra authentication (can use env. prefix)"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "OAuth2 scopes for Entra authentication"
+                },
                 "api_version": {
                   "type": "string",
-                  "description": "Azure API version"
+                  "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
                 }
               },
-              "required": ["endpoint", "api_version"],
+              "required": ["endpoint"],
+              "dependentRequired": {
+                "client_id": ["client_secret", "tenant_id"],
+                "client_secret": ["client_id", "tenant_id"],
+                "tenant_id": ["client_id", "client_secret"]
+              },
               "additionalProperties": false
             }
           },
@@ -2722,7 +3783,13 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth",
+            "per_user_oauth",
+            "per_user_headers"
+          ],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -2733,6 +3800,13 @@
           "type": "object",
           "description": "Headers to send with the request (for headers auth type)",
           "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "per_user_header_keys": {
+          "type": "array",
+          "description": "Header names each caller must supply when auth_type is 'per_user_headers'. Required (non-empty) for that auth type.",
+          "items": {
             "type": "string"
           }
         },
@@ -2811,6 +3885,26 @@
           "type": "boolean",
           "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server, that config takes precedence and overrides this behaviour.",
           "default": false
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "When true, this MCP client is disabled (connection and workers are stopped while preserving configuration).",
+          "default": false
+        },
+        "tls_config": {
+          "type": "object",
+          "description": "TLS configuration for HTTP and SSE connections. Not applicable to stdio or inprocess connection types.",
+          "properties": {
+            "insecure_skip_verify": {
+              "type": "boolean",
+              "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set. Use only in development or trusted isolated environments. Not recommended for production."
+            },
+            "ca_cert_pem": {
+              "type": "string",
+              "description": "PEM-encoded CA certificate to trust for MCP server connections. Use when the MCP server uses a self-signed or private CA certificate. Supports env.VAR_NAME syntax to read the certificate from an environment variable."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": ["name", "connection_type"],
@@ -2872,8 +3966,8 @@
       "type": "object",
       "properties": {
         "tool_execution_timeout": {
-          "type": "integer",
-          "description": "Tool execution timeout in seconds",
+          "type": ["integer", "string"],
+          "description": "Tool execution timeout. Accepts a duration string (e.g. \"30s\", \"2m\") or an integer number of seconds (e.g. 30 means 30 seconds).",
           "minimum": 1,
           "default": 30
         },
@@ -3149,6 +4243,12 @@
           "type": "boolean",
           "description": "Use TLS for connection (optional)",
           "default": false
+        },
+        "max_recv_msg_size_mb": {
+          "type": "integer",
+          "description": "gRPC max receive message size in MB (default: 64). Increase when caching large payloads such as base64-encoded image generation responses.",
+          "minimum": 1,
+          "default": 64
         }
       },
       "required": ["host"],
@@ -3216,6 +4316,12 @@
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
         },
+        "type": {
+          "type": "string",
+          "enum": ["mesh", "broker"],
+          "default": "mesh",
+          "description": "Clustering mode. 'mesh' (default) is peer-to-peer via memberlist gossip. 'broker' routes all cluster traffic through a central broker process, for platforms without peer-to-peer connectivity (e.g. Cloud Run)."
+        },
         "region": {
           "type": "string",
           "description": "Region label for cluster deployment (runtime default: unknown)"
@@ -3267,6 +4373,26 @@
             }
           },
           "required": ["port", "config"],
+          "additionalProperties": false
+        },
+        "grpc": {
+          "type": "object",
+          "description": "gRPC transport settings for the cluster counter-sync layer. Replaces the memberlist gossip broadcast path for governance usage counters; memberlist continues to handle cluster membership and other entity sync.",
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "TCP port the gRPC server listens on",
+              "default": 10102
+            },
+            "dial_timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "How long to wait when dialing a peer, in seconds",
+              "default": 5
+            }
+          },
           "additionalProperties": false
         },
         "discovery": {
@@ -3342,6 +4468,32 @@
           },
           "required": ["type"],
           "additionalProperties": false
+        },
+        "broker": {
+          "type": "object",
+          "description": "Broker settings, used when type is 'broker'",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "host:port of the broker that nodes dial"
+            },
+            "tls": {
+              "type": "boolean",
+              "description": "Whether to dial the broker over TLS"
+            },
+            "auth_token": {
+              "type": "string",
+              "description": "Optional shared secret sent on connect"
+            },
+            "listen_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port the broker process serves on (default: 50051)"
+            }
+          },
+          "required": ["address"],
+          "additionalProperties": false
         }
       },
       "required": ["enabled"],
@@ -3357,7 +4509,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["okta", "entra"],
+          "enum": ["okta", "entra", "keycloak"],
           "description": "SCIM provider type"
         },
         "config": {
@@ -3371,10 +4523,14 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "okta"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
@@ -3387,15 +4543,39 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "entra"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
               "config": {
                 "$ref": "#/$defs/entra_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "keycloak"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/keycloak_config"
               }
             }
           }
@@ -3410,6 +4590,11 @@
           "type": "string",
           "format": "uri",
           "description": "Okta issuer URL (e.g., https://your-domain.okta.com/oauth2/default)"
+        },
+        "authServerType": {
+          "type": "string",
+          "enum": ["org", "custom"],
+          "description": "'org' for Org Authorization Server or 'custom' for Custom Authorization Server. Auto-detected from issuer URL when omitted."
         },
         "clientId": {
           "type": "string",
@@ -3441,6 +4626,102 @@
           "type": "string",
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings (first match wins). Requires an Okta Custom Authorization Server.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match (case-insensitive)"
+              },
+              "role": {
+                "type": "string",
+                "description": "Bifrost role to assign on match"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value", "role"],
+            "additionalProperties": false
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match, or '*' for pass-through"
+              },
+              "team": {
+                "type": "string",
+                "description": "Bifrost team slug to assign. In case of '*' value, leave this empty"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value", "team"],
+            "additionalProperties": false
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign."
+              },
+              "business_unit": {
+                "type": "string",
+                "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
@@ -3491,9 +4772,218 @@
           "type": "string",
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings (first match wins).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name (supports dot paths)"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match (case-insensitive)"
+              },
+              "role": {
+                "type": "string",
+                "description": "Bifrost role to assign on match"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value", "role"],
+            "additionalProperties": false
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match, or '*' for pass-through"
+              },
+              "team": {
+                "type": "string",
+                "description": "Bifrost team slug to assign. In case of '*' value, leave this empty"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign."
+              },
+              "business_unit": {
+                "type": "string",
+                "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["tenantId", "clientId"],
+      "additionalProperties": false
+    },
+    "keycloak_config": {
+      "type": "object",
+      "description": "Keycloak OIDC/SCIM authentication configuration",
+      "properties": {
+        "serverUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL of the Keycloak server (e.g., https://keycloak.company.com). Must NOT include the /realms/{realm} suffix."
+        },
+        "realm": {
+          "type": "string",
+          "description": "Keycloak realm name (e.g., 'bifrost-prod')"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Keycloak client ID for the confidential client used by Bifrost"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Keycloak client secret. Supports env. prefix for environment variable references (e.g., 'env.KEYCLOAK_CLIENT_SECRET')"
+        },
+        "audience": {
+          "type": "string",
+          "description": "Expected JWT audience (default: clientId)"
+        },
+        "userIdField": {
+          "type": "string",
+          "description": "JWT claim field for user ID (default: 'sub')",
+          "default": "sub"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for roles (default: 'roles')",
+          "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings (first match wins).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match (case-insensitive)"
+              },
+              "role": {
+                "type": "string",
+                "description": "Bifrost role to assign on match"
+              }
+            },
+            "required": ["attribute", "value", "role"],
+            "additionalProperties": false
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match, or '*' for pass-through"
+              },
+              "team": {
+                "type": "string",
+                "description": "Bifrost team slug to assign. In case of '*' value, leave this empty"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match. Wildcard '*' will use the claim as is the name of the business unit to assign."
+              },
+              "business_unit": {
+                "type": "string",
+                "description": "Bifrost business unit slug to assign. In case of '*' value, leave this empty"
+              }
+            },
+            "required": ["attribute", "value"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["serverUrl", "realm", "clientId", "clientSecret"],
       "additionalProperties": false
     },
     "load_balancer_config": {
@@ -3600,7 +5090,18 @@
               "timeout": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Timeout in milliseconds for rule execution"
+                "description": "Timeout in seconds for rule execution"
+              },
+              "max_turns_to_send": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
+              },
+              "evaluation_mode": {
+                "type": "string",
+                "enum": ["bundled", "per_turn"],
+                "default": "bundled",
+                "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
               },
               "provider_config_ids": {
                 "type": "array",
@@ -3639,7 +5140,7 @@
               "timeout": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Timeout in milliseconds for provider execution"
+                "description": "Timeout in seconds for provider execution"
               },
               "config": {
                 "type": "object",
@@ -3674,6 +5175,11 @@
         "reset_duration": {
           "type": "string",
           "description": "Reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id", "max_limit", "reset_duration"],
@@ -3701,6 +5207,11 @@
         "request_reset_duration": {
           "type": "string",
           "description": "Request reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id"],
@@ -3738,6 +5249,11 @@
         },
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
+          "default": false
         },
         "provider_configs": {
           "type": "array",
@@ -3798,6 +5314,13 @@
         },
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
+        },
+        "key_ids": {
+          "type": "array",
+          "description": "Key IDs allowed for this provider config. Use [\"*\"] to allow all keys; empty array or omitted denies all keys. Specific IDs restrict access to those keys only.",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": ["provider_name"],
@@ -4049,7 +5572,8 @@
         "image_variation",
         "image_edit",
         "video_generation",
-        "video_remix"
+        "video_remix",
+        "compaction"
       ]
     },
     "custom_provider_config": {
@@ -4072,6 +5596,8 @@
             "mistral",
             "ollama",
             "groq",
+            "opencode-go",
+            "opencode-zen",
             "sgl",
             "parasail",
             "perplexity",
@@ -4138,6 +5664,9 @@
               "description": "GET list input items for a stored response (OpenAI Responses lifecycle)"
             },
             "count_tokens": {
+              "type": "boolean"
+            },
+            "compaction": {
               "type": "boolean"
             },
             "embedding": {
@@ -4264,6 +5793,21 @@
               "type": "boolean"
             },
             "realtime": {
+              "type": "boolean"
+            },
+            "cached_content_create": {
+              "type": "boolean"
+            },
+            "cached_content_list": {
+              "type": "boolean"
+            },
+            "cached_content_retrieve": {
+              "type": "boolean"
+            },
+            "cached_content_update": {
+              "type": "boolean"
+            },
+            "cached_content_delete": {
               "type": "boolean"
             }
           },

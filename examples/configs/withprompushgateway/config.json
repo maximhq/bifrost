@@ -164,8 +164,7 @@
           "name": "Azure API Key",
           "value": "env.AZURE_API_KEY",
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT"
           },
           "weight": 1,
           "models": [
@@ -207,7 +206,6 @@
     ],
     "enable_logging": true,
     "enforce_auth_on_inference": false,
-    "allow_direct_keys": false,
     "max_request_body_size_mb": 100
   },
   "config_store": {

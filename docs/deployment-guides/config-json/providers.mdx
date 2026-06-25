@@ -1,14 +1,18 @@
 ---
 title: "Provider Setup"
-description: "Configure LLM providers in config.json — API keys, cloud-native auth, per-provider network settings, and self-hosted endpoints"
+description: "Configure LLM providers in config.json - API keys, cloud-native auth, per-provider network settings, and self-hosted endpoints"
 icon: "plug"
 ---
 
 All providers are configured under `providers` in `config.json`. Each provider entry contains a `keys` array where every key has a `name`, `value`, `models`, and `weight`, plus optional provider-specific config objects.
 
+<Note>
+In DB-backed deployments, provider entries from `config.json` are reconciled into the config store at startup. The default `source_of_truth: "split"` mode preserves UI/API edits while matching file-backed providers are unchanged. With `source_of_truth: "config.json"`, a present `providers` section is authoritative and prunes DB-only providers or keys. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+</Note>
+
 **Supplying credentials:**
 
-Use the `env.` prefix to reference environment variables — never put API keys directly in `config.json`:
+Use the `env.` prefix to reference environment variables - never put API keys directly in `config.json`:
 
 ```json
 {
@@ -171,7 +175,7 @@ Supports multiple keys with weighted load balancing. Mark one key with `use_for_
 
 ### Azure OpenAI
 
-Azure requires `azure_key_config` on every key with `endpoint` and `api_version`. List your Azure deployment names in `models` — Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
+Azure requires `azure_key_config` on every key with `endpoint`. Bifrost uses the Azure OpenAI v1 API — no `api_version` needed. List your Azure deployment names in `models` - Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
 
 <Tabs>
 <Tab title="API Key">
@@ -187,8 +191,7 @@ Azure requires `azure_key_config` on every key with `endpoint` and `api_version`
           "models": ["gpt-4o", "gpt-4o-mini"],
           "weight": 1.0,
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT"
           }
         }
       ]
@@ -202,13 +205,12 @@ Set environment variables:
 ```bash
 export AZURE_API_KEY="your-azure-api-key"
 export AZURE_ENDPOINT="https://your-resource.openai.azure.com"
-export AZURE_API_VERSION="2024-10-21"
 ```
 
 </Tab>
 <Tab title="Managed Identity / DefaultAzureCredential">
 
-When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — which resolves credentials from Workload Identity, VM managed identity, or `az login`.
+When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` - which resolves credentials from Workload Identity, VM managed identity, or `az login`.
 
 ```json
 {
@@ -221,8 +223,7 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — whic
           "models": ["gpt-4o"],
           "weight": 1.0,
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT"
           }
         }
       ]
@@ -234,7 +235,7 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — whic
 </Tab>
 </Tabs>
 
-**Deployment name aliases** — when your Azure deployment names differ from the model names in requests, use `aliases`:
+**Deployment name aliases** - when your Azure deployment names differ from the model names in requests, use `aliases`:
 
 ```json
 {
@@ -250,8 +251,7 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — whic
             "gpt-4o": "gpt-4o-prod-deployment"
           },
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT"
           }
         }
       ]
@@ -259,6 +259,10 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — whic
   }
 }
 ```
+
+<Note>
+`aliases` values can also be objects, not just plain strings. The object form lets you tag each alias with a canonical `model_name` (improves pricing/log attribution when the wire ID is opaque), a `model_family` for routing, and per-alias provider overrides like `api_version` or `endpoint`. See [Aliasing Models](/providers/aliasing-models) for the full schema.
+</Note>
 
 **Multi-region failover** (two keys, different regions):
 
@@ -273,8 +277,7 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — whic
           "models": ["gpt-4o"],
           "weight": 1.0,
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT_EAST",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT_EAST"
           }
         },
         {
@@ -283,8 +286,7 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — whic
           "models": ["gpt-4o"],
           "weight": 1.0,
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT_WEST",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT_WEST"
           }
         }
       ]
@@ -329,7 +331,7 @@ Bedrock requires `bedrock_key_config` with at minimum a `region`. Three auth mod
 </Tab>
 <Tab title="IAM Role (instance profile / IRSA)">
 
-When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain — IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
+When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain - IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
 
 ```json
 {
@@ -394,7 +396,7 @@ When only `region` is set, Bifrost inherits credentials from the AWS SDK default
 }
 ```
 
-**Batch API — S3 configuration:**
+**Batch API - S3 configuration:**
 
 ```json
 {
@@ -453,7 +455,7 @@ Vertex requires `vertex_key_config` with `project_id` and `region`. Two auth mod
 </Tab>
 <Tab title="GKE Workload Identity / ADC">
 
-When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` — which resolves to GKE Workload Identity, GCE metadata server, or `gcloud auth application-default login`.
+When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` - which resolves to GKE Workload Identity, GCE metadata server, or `gcloud auth application-default login`.
 
 ```json
 {
@@ -485,7 +487,7 @@ When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials
 
 ### Standard API-Key Providers
 
-These providers follow the same simple pattern — one or more keys with weights. Replace the provider name and env var name accordingly.
+These providers follow the same simple pattern - one or more keys with weights. Replace the provider name and env var name accordingly.
 
 ```json
 {
@@ -586,7 +588,7 @@ Using an env var for the URL (useful across environments):
 </Tab>
 <Tab title="vLLM">
 
-vLLM instances are model-specific — one key per served model:
+vLLM instances are model-specific - one key per served model:
 
 ```json
 {

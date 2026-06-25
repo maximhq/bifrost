@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -22,10 +23,10 @@ func (m *mockToolClientManager) GetClientByName(clientName string) *schemas.MCPC
 		return &schemas.MCPClientState{
 			Name: "test-client",
 			ExecutionConfig: &schemas.MCPClientConfig{
-				ID:              "test-client",
-				Name:            "test-client",
+				ID:               "test-client",
+				Name:             "test-client",
 				IsCodeModeClient: false,
-				ToolsToExecute:  []string{"*"},
+				ToolsToExecute:   []string{"*"},
 			},
 		}
 	}
@@ -40,6 +41,19 @@ func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string
 	return map[string][]schemas.ChatTool{
 		"test-client": m.tools,
 	}
+}
+
+func (m *mockToolClientManager) GetPluginPipeline() PluginPipeline             { return nil }
+func (m *mockToolClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
+func (m *mockToolClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+	return nil, func() {}, nil
+}
+func (m *mockToolClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, err := op(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
+	}
+	return resp, nil
 }
 
 // makeTool is a convenience constructor for test tool fixtures.
@@ -102,8 +116,6 @@ func newToolsManagerForTest(cm ClientManager) *ToolsManager {
 		},
 		cm,
 		nil, // fetchNewRequestIDFunc
-		nil, // pluginPipelineProvider
-		nil, // releasePluginPipeline
 		nil, // oauth2Provider
 		&MockLogger{},
 	)
@@ -154,8 +166,8 @@ func TestBuildIntegrationDuplicateCheckMap_NilFunction_IsSkipped(t *testing.T) {
 
 	tools := []schemas.ChatTool{
 		{Type: schemas.ChatToolTypeFunction, Function: nil}, // nil Function
-		makeTool(""),            // empty name
-		makeTool("valid_tool"),  // valid
+		makeTool(""),           // empty name
+		makeTool("valid_tool"), // valid
 	}
 
 	m := buildIntegrationDuplicateCheckMap(tools, "", defaultLogger)

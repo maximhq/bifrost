@@ -1,6 +1,7 @@
 .env
 .vscode
 .DS_Store
+.tool-versions
 *_creds*
 **/venv/
 **/__pycache__/**
@@ -45,6 +46,7 @@ transports/schema/config.schema.json
 *.db
 *.db-shm
 *.db-wal
+transports/bifrost-http/v1.5.x
 
 # Test reports
 test-reports
@@ -97,6 +99,7 @@ dist/
 # IDE
 .idea/
 .vscode/
+.zed/
 
 # OS
 .DS_Store
@@ -171,3 +174,16 @@ ui/app/routeTree.gen.ts
 
 .tanstack
 .next
+
+.infisical
+
+# e2e test artifacts
+examples/mcps/auth-demo-server/auth-demo-server
+examples/mcps/oauth-demo-server/oauth-demo-server
+
+# binaries
+tests/cmd/e2eseed/e2eseed
+tests/cmd/seedvks/seedvks
+
+# routing harness ledgers (local run journals, never committed)
+tests/e2e/api/routing/ledger-*

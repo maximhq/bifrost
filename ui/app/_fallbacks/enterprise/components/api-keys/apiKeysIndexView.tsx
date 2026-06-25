@@ -53,7 +53,7 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 		);
 	}
 
-	const isInferenceAuthDisabled = bifrostConfig?.auth_config?.disable_auth_on_inference ?? false;
+	const isInferenceAuthDisabled = !(bifrostConfig?.client_config?.enforce_auth_on_inference ?? false);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">

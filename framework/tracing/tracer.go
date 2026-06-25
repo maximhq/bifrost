@@ -18,12 +18,13 @@ import (
 // framework's TraceStore implementation.
 // It also embeds a streaming.Accumulator for centralized streaming chunk accumulation.
 type Tracer struct {
-	store          *TraceStore
-	accumulator    *streaming.Accumulator
-	pricingManager *modelcatalog.ModelCatalog
-	logger         schemas.Logger
-	obsPlugins     atomic.Pointer[[]schemas.ObservabilityPlugin]
-	flushWG        sync.WaitGroup
+	store              *TraceStore
+	accumulator        *streaming.Accumulator
+	pricingManager     *modelcatalog.ModelCatalog
+	logger             schemas.Logger
+	obsPlugins         atomic.Pointer[[]schemas.ObservabilityPlugin]
+	cachedHdrPatterns  atomic.Pointer[[]string]
+	flushWG            sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -40,11 +41,73 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 }
 
 // SetObservabilityPlugins updates the plugins that receive completed traces.
+// It also precomputes the deduplicated, normalized union of request-header patterns
+// requested by those plugins so the per-request capture path is a single atomic load.
 func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
 	if t == nil {
 		return
 	}
 	t.obsPlugins.Store(&obsPlugins)
+
+	seen := make(map[string]struct{})
+	var patterns []string
+	for _, plugin := range obsPlugins {
+		if w, ok := plugin.(interface{ RequestHeaderPatterns() []string }); ok {
+			for _, p := range w.RequestHeaderPatterns() {
+				normalized := strings.ToLower(strings.TrimSpace(p))
+				if normalized == "" {
+					continue
+				}
+				if _, exists := seen[normalized]; !exists {
+					seen[normalized] = struct{}{}
+					patterns = append(patterns, normalized)
+				}
+			}
+		}
+	}
+	t.cachedHdrPatterns.Store(&patterns)
+}
+
+// ShouldCaptureRequestHeaders reports whether any observability plugin has opted into
+// request-header capture (by implementing RequestHeaderPatterns). Derived from the cached
+// pattern union computed in SetObservabilityPlugins, so there is no per-request recompute.
+func (t *Tracer) ShouldCaptureRequestHeaders() bool {
+	cached := t.cachedHdrPatterns.Load()
+	return cached != nil && len(*cached) > 0
+}
+
+// CollectRequestHeaderPatterns returns the deduplicated union of header patterns
+// requested by all observability plugins. The middleware uses this to capture only
+// matched headers onto the trace, keeping the trace lean. The union is precomputed in
+// SetObservabilityPlugins; this is a single atomic load.
+func (t *Tracer) CollectRequestHeaderPatterns() []string {
+	cached := t.cachedHdrPatterns.Load()
+	if cached == nil {
+		return nil
+	}
+	return *cached
+}
+
+// SetTraceRequestHeaders filters the given request headers down to the union of
+// patterns requested by observability plugins and stores the matched subset on the
+// trace. Header keys are expected to be lowercased by the caller.
+func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]string) {
+	if len(headers) == 0 {
+		return
+	}
+	patterns := t.CollectRequestHeaderPatterns()
+	matched := schemas.FilterHeaders(headers, patterns)
+	if len(matched) == 0 {
+		return
+	}
+	t.store.SetRequestHeaders(traceID, matched)
+}
+
+// SetTraceAttribute sets a trace-level attribute. Trace attributes are never
+// exported as OTEL/Datadog span attributes; observability connectors read them
+// directly off the completed trace.
+func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
+	t.store.SetTraceAttribute(traceID, key, value)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
@@ -139,6 +202,28 @@ func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) 
 	}
 }
 
+// GetSpanHandleByID retrieves a span handle for the given trace and span ID.
+// If spanID is nil, it returns a handle for the trace's root span.
+func (t *Tracer) GetSpanHandleByID(traceID string, spanID *string) schemas.SpanHandle {
+	if traceID == "" {
+		return nil
+	}
+	trace := t.store.GetTrace(traceID)
+	if trace == nil {
+		return nil
+	}
+	if spanID == nil {
+		if trace.RootSpan == nil {
+			return nil
+		}
+		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID}
+	}
+	if *spanID == "" || trace.GetSpan(*spanID) == nil {
+		return nil
+	}
+	return &spanHandle{traceID: traceID, spanID: *spanID}
+}
+
 // AddEvent adds a timestamped event to the span identified by the handle.
 func (t *Tracer) AddEvent(handle schemas.SpanHandle, name string, attrs map[string]any) {
 	h, ok := handle.(*spanHandle)
@@ -226,7 +311,9 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	respAttrs := PopulateResponseAttributes(resp)
 	for k, v := range respAttrs {
 		if k == schemas.AttrFinishReasons {
-			// llm.call span gets the singular finish_reason (first element only)
+			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
+			span.SetAttribute(schemas.AttrFinishReasons, v)
+			// legacy: also expose the singular scalar finish_reason (first element) for back-compat.
 			if reasons, ok := v.([]string); ok && len(reasons) > 0 {
 				span.SetAttribute(schemas.AttrFinishReason, reasons[0])
 			}
@@ -358,10 +445,11 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 }
 
 // ProcessStreamingChunk processes a streaming chunk and accumulates it.
-// Returns the accumulated result. IsFinal will be true when the stream is complete.
+// Returns the accumulated result when isFinalChunk is true and the stream is complete;
+// returns nil for non-final chunks.
 // This method is used by plugins to access accumulated streaming data.
-// The ctx parameter must contain the stream end indicator for proper final chunk detection.
-func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
+// Set isFinalChunk to indicate whether the current chunk is the last in the stream.
+func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
 	if traceID == "" || t.accumulator == nil {
 		return nil
 	}
@@ -370,6 +458,12 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 	accumCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
+
+	// Forward relevant context values to the new context
+	if ctx != nil {
+		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
 	if processErr != nil || processedResp == nil {
@@ -411,6 +505,7 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 		accResult.AudioOutput = processedResp.Data.AudioOutput
 		accResult.TranscriptionOutput = processedResp.Data.TranscriptionOutput
 		accResult.ImageGenerationOutput = processedResp.Data.ImageGenerationOutput
+		accResult.PassthroughOutput = processedResp.Data.PassthroughOutput
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 

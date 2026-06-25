@@ -75,6 +75,7 @@ service:
   port: 8080
   annotations: {}
 
+# Single ingress (legacy format):
 ingress:
   enabled: false
   className: ""
@@ -85,6 +86,30 @@ ingress:
         - path: /
           pathType: Prefix
   tls: []
+# Named ingresses map (new format) — replaces the single ingress above.
+# Each key becomes a separate Ingress resource named "<release>-<key>".
+# Use this when you need multiple ingress controllers (e.g. public + internal).
+# ingress:
+#   public:
+#     enabled: true
+#     className: nginx-public
+#     annotations: {}
+#     hosts:
+#       - host: bifrost.example.com
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#     tls: []
+#   internal:
+#     enabled: true
+#     className: nginx-internal
+#     annotations: {}
+#     hosts:
+#       - host: bifrost.internal.example.com
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#     tls: []
 
 resources:
   limits:
@@ -145,6 +170,17 @@ tolerations: []
 
 affinity: {}
 
+# Deployment rolling update strategy. Applies to the Deployment only (not the
+# StatefulSet used for sqlite-with-persistence). Rendered verbatim into spec.strategy.
+# Empty ({}) uses the Kubernetes default (RollingUpdate, maxSurge 25%, maxUnavailable 25%).
+# For HA gateway deployments, surge-only rollouts avoid dropping capacity:
+# strategy:
+#   type: RollingUpdate
+#   rollingUpdate:
+#     maxSurge: 100%
+#     maxUnavailable: 0%
+strategy: {}
+
 # Graceful shutdown configuration for long-lived connections (SSE streaming)
 # When a pod is terminated (e.g. during HPA scale-down), active streaming connections
 # are severed abruptly. This causes clients to lose their SSE stream mid-response.
@@ -167,6 +203,13 @@ bifrost:
   host: 0.0.0.0
   logLevel: info
   logStyle: json
+  # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
+
+  # Controls how config.json is reconciled with the database on startup.
+  # "split" (default): existing merge behavior — file and DB rows coexist.
+  # "config.json": sections explicitly present in the file are authoritative;
+  #   database-only rows for those sections are pruned on startup.
+  # sourceOfTruth: "config.json"
 
   # Encryption key for sensitive data
   # Can be set as a secret or environment variable
@@ -186,11 +229,29 @@ bifrost:
     adminUsername: ""
     adminPassword: ""
     isEnabled: false
-    disableAuthOnInference: false
     # Use existing Kubernetes secret for admin credentials
     existingSecret: ""
     usernameKey: "username"
     passwordKey: "password"
+
+  # Feature flag boot overrides. Flags themselves are code-declared inside
+  # Bifrost (via featureflags.Register); this map only sets their initial
+  # values. Anything set here is rendered as a "locked" flag in the UI —
+  # operators must edit values.yaml (and redeploy) to change it, which
+  # matches the GitOps invariant that Helm-managed values are authoritative.
+  #
+  # Each key is a flag name; each value carries `enabled`. The `enabled`
+  # field accepts either a literal boolean OR an "env.NAME" string so the
+  # actual on/off decision can come from a container env var without
+  # re-templating the chart.
+  #
+  # Example:
+  #   featureFlags:
+  #     experimental.streaming-mux:
+  #       enabled: true
+  #     audit.verbose:
+  #       enabled: "env.BIFROST_AUDIT_VERBOSE"
+  featureFlags: {}
 
   # Client configuration
   client:
@@ -202,8 +263,11 @@ bifrost:
     disableContentLogging: false
     disableDbPingsInHealth: false
     logRetentionDays: 365
+    # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
-    allowDirectKeys: false
+    # Require auth (VK, API key, or user token) on inference endpoints.
+    # Open by default in the raw binary; this chart enables enforcement for production.
+    enforceAuthOnInference: true
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false
@@ -225,17 +289,30 @@ bifrost:
     # mcpCodeModeBindingLevel: "server"
     # mcpToolSyncInterval: 10
     # mcpDisableAutoToolInject: false
+    # mcpEnableTempTokenAuth: false
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
+    # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
+    # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+
+  # Server configuration
+  server:
+    readBufferSize: 65536      # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
 
   # Framework configuration
   framework:
     pricing:
       # Custom pricing URL for model cost data
-      pricingUrl: ""
+      pricingUrl: "https://getbifrost.ai/datasheet"
+      # Custom model parameters URL
+      modelParametersUrl: "https://getbifrost.ai/datasheet/model-parameters"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
+      # Custom MCP server catalog URL (optional, leave empty to use the default Bifrost catalog)
+      # mcpLibraryUrl: ""
+      # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
+      # mcpLibrarySyncInterval: 86400
 
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
@@ -264,6 +341,10 @@ bifrost:
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
     #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
+    #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
+    #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
+    #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
+    #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
     #     beta_header_overrides:                         # Override Anthropic beta header support (optional)
     #       redact-thinking-: true                       # Enable/disable specific beta headers by prefix
     #   # Concurrency configuration (optional)
@@ -349,10 +430,28 @@ bifrost:
       #   secretRef:
       #     name: ""                               # k8s secret name
       #     connectionStringKey: "connection-string"  # key within the secret
+      #
+      # - name: "example-https-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-internal-mcp.corp/mcp"
+      #   # TLS configuration for HTTP and SSE connection types.
+      #   # Use when the MCP server presents a self-signed or private CA certificate.
+      #   tlsConfig:
+      #     insecureSkipVerify: false              # Disable TLS verification (dev/test only — takes priority over caCertPem)
+      #     caCertPem: "env.MY_MCP_CA_CERT"       # PEM string or env.VAR_NAME reference
+      #
+      # - name: "example-oauth-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-mcp.corp/mcp"
+      #   # authType "oauth": shared OAuth token; provide oauthConfigId referencing an existing oauth_config.
+      #   # authType "per_user_oauth": each user authenticates individually via OAuth flow;
+      #   #   oauth_config is registered via the API (POST /api/mcp/clients), not configured here.
+      #   authType: "oauth"
+      #   oauthConfigId: "my-oauth-config-id"   # ID of the OAuth config created in Bifrost
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Tool manager configuration
     toolManagerConfig:
-      toolExecutionTimeout: 30
+      toolExecutionTimeout: "30s"
       maxAgentDepth: 10
       # codeModeBindingLevel: "server"  # Code mode binding level (server or tool)
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
@@ -417,37 +516,137 @@ bifrost:
         cache_by_model: true
         cache_by_provider: true
         exclude_system_prompt: false
-        cleanup_on_shutdown: false
         vector_store_namespace: ""
 
     otel:
       enabled: false
       version: 1
       config:
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "include"           # "include" or "exclude"
+        #   plugins: ["maxim", "otel"]
+        #
+        # Multi-profile shape (use profiles OR the flat single-profile fields below, not both):
+        # profiles:
+        #   - service_name: "bifrost"
+        #     collector_url: ""       # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        #     trace_type: "genai_extension" # genai_extension | vercel | open_inference
+        #     protocol: "grpc"        # http | grpc
+        #     metrics_enabled: false
+        #     metrics_endpoint: ""    # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        #     metrics_push_interval: 15 # Push interval in seconds (1-300)
+        #     headers: {}
+        #     tls_ca_cert: ""         # Path to TLS CA certificate file
+        #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
+        #     disable_content_logging: false
+        #
+        # Single-profile shape:
         service_name: "bifrost"
-        collector_url: ""
-        trace_type: "genai_extension"
-        protocol: "grpc"
+        collector_url: ""             # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        trace_type: "genai_extension" # genai_extension | vercel | open_inference
+        protocol: "grpc"              # http | grpc
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
-        metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
-        metrics_push_interval: 15 # Push interval in seconds (1-300)
-        # Custom headers for the collector (supports env.VAR_NAME prefix for env var substitution)
+        metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        metrics_push_interval: 15     # Push interval in seconds (1-300)
+        # Custom headers for the collector (supports env.VAR_NAME prefix)
         headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
         insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
-
+        # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
+        disable_content_logging: false
     datadog:
       enabled: false
       version: 1
       config:
         service_name: "bifrost"
+        # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
+        # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
+        # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
         agent_addr: "localhost:8126"
+        # dogstatsd_addr: "localhost:8125"  # DogStatsD address (supports env.VAR_NAME)
+        # Alternatively, set host and port separately (common in Kubernetes, where the
+        # host comes from the downward API status.hostIP and the port is fixed — the two
+        # can't be collapsed into one env var). When a *_host is set it takes precedence
+        # over the matching *_addr; the *_port defaults to 8126 (agent) / 8125 (DogStatsD).
+        # agent_host: "env.DD_AGENT_HOST"
+        # agent_port: "8126"
+        # dogstatsd_host: "env.DD_AGENT_HOST"
+        # dogstatsd_port: "8125"
         env: ""
         version: ""
         custom_tags: {}
         enable_traces: true
+        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
+        # enable_metrics: true
+        # enable_llm_obs: true
+        # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
+        # disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # Agentless mode (direct to Datadog API, no local agent):
+        # agentless: true
+        # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
+        # site: "datadoghq.com"       # Datadog site/region (e.g. datadoghq.eu)
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    bigquery:
+      enabled: false
+      version: 1
+      config:
+        project_id: ""                # GCP project ID (required when enabled)
+        dataset_id: "bifrost_traces"
+        table_id: "traces"
+        location: "US"
+        # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
+        create_table_if_not_exists: true
+        flush_interval_seconds: 5
+        buffer_size: 500
+        custom_labels: {}
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    kafka:
+      enabled: false
+      version: 1
+      config:
+        brokers: []                   # Kafka broker addresses (required when enabled)
+        topic: ""                     # Topic to publish traces to (required when enabled)
+        sasl_enabled: false
+        # sasl:
+        #   mechanism: "PLAIN"        # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
+        #   username: "env.KAFKA_USERNAME"
+        #   password: "env.KAFKA_PASSWORD"
+        tls_enabled: false
+        # ca_cert: "env.KAFKA_CA_CERT" # PEM CA certificate to verify the broker. Omit to use the system CA pool.
+        compression: "none"           # none | gzip | snappy | lz4 | zstd
+        batch_size: 100
+        flush_interval_ms: 1000
+        auto_create_topic: false
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    pubsub:
+      enabled: false
+      version: 1
+      config:
+        project_id: ""                # GCP project ID (required when enabled)
+        topic_id: ""                  # Pub/Sub topic ID (required when enabled)
+        # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
+        auto_create_topic: false
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
 
     # Custom/dynamic plugins
     custom: []
@@ -473,8 +672,17 @@ bifrost:
     customers: []
       # - id: "customer-1"
       #   name: "Customer Name"
-      #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
+      #   # Option A: inline multi-budget (each must have a unique reset_duration)
+      #   budgets:
+      #     - id: "budget-monthly"
+      #       max_limit: 500
+      #       reset_duration: "1M"
+      #     - id: "budget-yearly"
+      #       max_limit: 5000
+      #       reset_duration: "1Y"
+      #   # Option B: single budget reference (pre-declared in governance.budgets)
+      #   budget_id: "budget-1"
     teams: []
       # - id: "team-1"
       #   name: "Team Name"
@@ -484,6 +692,18 @@ bifrost:
       #   profile: {}              # Team profile data
       #   config: {}               # Team configuration data
       #   claims: {}               # Team claims data
+    roles: []
+      # - name: "dataAnalyst"
+      #   description: "Read-only access for data analysts"
+      #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
+      #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
+      #   permissions:
+      #     - resource: "Logs"
+      #       operation: "View"
+      #     - resource: "Metrics"
+      #       operation: "View"
+      #     - resource: "VirtualKeys"
+      #       operation: "View"
     virtualKeys: []
       # - id: "vk-1"
       #   name: "Virtual Key 1"
@@ -498,6 +718,7 @@ bifrost:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
+      #       blacklisted_models: []   # Models blocked even if matched by allowed_models; ["*"] blocks all
       #       rate_limit_id: ""
       #       keys:
       #         - key_id: "uuid-of-key"
@@ -509,8 +730,10 @@ bifrost:
       #       tools_to_execute: ["tool1", "tool2"]
     modelConfigs: []
       # - id: "model-config-1"
-      #   model_name: "gpt-4o"
-      #   provider: "openai"
+      #   model_name: "gpt-4o"       # model name, or "*" for all models
+      #   provider: "openai"          # optional; omit to apply to all providers
+      #   scope: "global"             # "global" (default) or "virtual_key"
+      #   scope_id: ""                # required when scope is "virtual_key" — the virtual key id
       #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
     providers: []
@@ -543,11 +766,20 @@ bifrost:
       #   pattern: "gpt-4o-mini"
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
+    complexityAnalyzerConfig: null
+      # tier_boundaries:
+      #   simple_medium: 0.15
+      #   medium_complex: 0.35
+      #   complex_reasoning: 0.60
+      # keywords:
+      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
+      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
+      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
+      #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
     authConfig:
       adminUsername: ""
       adminPassword: ""
       isEnabled: false
-      disableAuthOnInference: false
       # Use existing Kubernetes secret for admin credentials
       existingSecret: ""
       usernameKey: "username"
@@ -566,6 +798,10 @@ bifrost:
         timeoutSeconds: 10
         successThreshold: 3
         failureThreshold: 3
+    # gRPC transport for cluster counter-sync (replaces gossip broadcast for governance counters)
+    grpc:
+      port: 10102
+      dialTimeoutSeconds: 5
     discovery:
       enabled: false
       # Discovery type: kubernetes, dns, udp, consul, etcd, mdns
@@ -591,11 +827,12 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra
+    # Provider: okta, entra, keycloak, zitadel, google
     provider: ""
     config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
+      # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
       # clientId: ""
       # clientSecret: ""
       # apiToken: ""
@@ -603,6 +840,32 @@ bifrost:
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # # Attribute -> role/team/business-unit mappings (requires Custom Authorization Server;
+      # # the free Org Auth Server does not support claim expressions).
+      # attributeRoleMappings:
+      #   - attribute: "groups"
+      #     value: "bifrost-admins"
+      #     role: "admin"
+      # attributeTeamMappings:
+      #   - attribute: "groups"
+      #     value: "*"            # pass-through: every group becomes a team
+      #     team: ""              # ignored when value is "*"
+      #   # SCIM provisioning: match by SCIM user attribute
+      #   - attribute: "department"
+      #     value: "engineering"
+      #     team: "eng-team"
+      #     attributeType: "user"     # "user" = SCIM User push, "group" = SCIM Group push
+      #     attributeValue: "engineering"
+      #   # SCIM provisioning: match by SCIM group (displayName)
+      #   - attribute: "groups"
+      #     value: "Engineering"
+      #     team: "eng-team"
+      #     attributeType: "group"
+      #     attributeValue: "displayName"   # always "displayName" for group type
+      # attributeBusinessUnitMappings:
+      #   - attribute: "department"
+      #     value: "platform"
+      #     business_unit: "Platform"
       #
       # Entra (Azure AD) configuration:
       # tenantId: ""
@@ -614,6 +877,59 @@ bifrost:
       # userIdField: "oid"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # attributeRoleMappings:
+      #   - attribute: "roles"
+      #     value: "BifrostAdmin"
+      #     role: "admin"
+      # attributeTeamMappings:
+      #   - attribute: "groups"
+      #     value: "<group-object-id>"
+      #     team: "platform-team"
+      # attributeBusinessUnitMappings: []
+      #
+      # Keycloak configuration:
+      # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
+      # realm: "bifrost-prod"
+      # clientId: "bifrost"
+      # clientSecret: "env.KEYCLOAK_CLIENT_SECRET"  # supports env. prefix
+      # audience: ""
+      # userIdField: "sub"
+      # teamIdsField: "groups"
+      # rolesField: "roles"
+      # attributeRoleMappings:
+      #   - attribute: "realm_access.roles"
+      #     value: "bifrost-admin"
+      #     role: "admin"
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      #
+      # Zitadel configuration:
+      # domain: "my-instance.zitadel.cloud"      # no scheme
+      # clientId: ""
+      # clientSecret: ""                          # optional, for confidential clients
+      # projectId: ""                             # optional, for project-scoped role claims
+      # audience: ""
+      # serviceAccountClientId: ""                # required for user provisioning
+      # serviceAccountClientSecret: ""
+      # teamIdsField: "groups"
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      #
+      # Google Workspace configuration:
+      # domain: "company.com"
+      # clientId: ""
+      # clientSecret: ""
+      # credentialMode: "inherit"                 # "inherit" (ADC), "env", or "file"
+      # serviceAccountEnvVar: "GOOGLE_SA_JSON"    # required when credentialMode is "env"
+      # serviceAccountFile: "/etc/bifrost/sa.json" # required when credentialMode is "file"
+      # adminEmail: "admin@company.com"           # required for Directory API (domain-wide delegation)
+      # impersonateServiceAccount: ""             # optional, for Workload Identity
+      # audience: ""
+      # teamIdsField: "groups"
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
@@ -631,13 +947,37 @@ bifrost:
       #   cel_expression: "!contains(request.body, 'SSN')"
       #   apply_to: "input"
       #   sampling_rate: 100
-      #   timeout: 1000
+      #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
+      #   max_turns_to_send: 0
+      #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
       #   policy_name: "content-filter"
       #   enabled: true
+      #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
       #   config: {}
+
+  # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`
+  # in config.json and reconciled at startup when enabled.
+  # skillsRegistry:
+  #   enabled: true
+  #   skills:
+  #     - name: "my-skill"
+  #       description: "What this skill does"
+  #       version: "1.0.0"
+  #       skill_md_body: "# My Skill\n\nInstructions..."
+  #       # license: "MIT"
+  #       # compatibility: ">=1.0.0"
+  #       # allowed_tools: "Read,Write"
+  #       # metadata: {}
+  #       # extra_frontmatter: {}
+  #       # files:
+  #       #   - path: "reference.md"
+  #       #     source_type: "text"   # text | url | dataurl
+  #       #     content: "..."          # required when source_type=text
+  #       #     # url: "https://..."    # required when source_type=url
+  #       #     # dataurl: "data:..."   # required when source_type=dataurl
 
   # Access profiles (enterprise): seed RBAC access profile templates from Helm.
   # This is rendered directly as top-level `access_profiles` in config.json.
@@ -722,6 +1062,17 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
+    # writer:
+    #   maxBatchSize: 1000
+    #   batchInterval: "5s"
+    #   maxBatchBytes: 314572800
+    #   writeQueueCapacity: 10000
+    #   deferredUsageConcurrency: 5
+    # Keep selected payload fields in DB instead of offloading to object storage.
+    # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
+    objectStorageExcludeFields: []
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS
@@ -758,6 +1109,23 @@ postgresql:
     port: 5432
     user: bifrost
     password: ""
+    # Command executed by Bifrost to produce the PostgreSQL password on stdout.
+    # Use for dynamic credentials such as AWS RDS IAM auth tokens.
+    # passwordCommand:
+    #   command: aws
+    #   args:
+    #     - rds
+    #     - generate-db-auth-token
+    #     - --hostname
+    #     - your-rds-endpoint.us-east-1.rds.amazonaws.com
+    #     - --port
+    #     - "5432"
+    #     - --region
+    #     - us-east-1
+    #     - --username
+    #     - bifrost
+    #   timeout: 10s
+    # connMaxLifetime: 10m
     database: bifrost
     sslMode: disable
     # Use existing Kubernetes secret for password (takes precedence over password field)
@@ -775,6 +1143,10 @@ postgresql:
     username: bifrost
     password: bifrost_password
     database: bifrost
+    # Use existing Kubernetes secret for password (takes precedence over password field).
+    # The postgres pod and bifrost will both read from this secret.
+    existingSecret: ""
+    passwordKey: "password"
 
   primary:
     persistence:
@@ -788,6 +1160,11 @@ postgresql:
       requests:
         cpu: 250m
         memory: 256Mi
+
+    podSecurityContext:
+      fsGroup: 999
+
+    containerSecurityContext: {}
 
   metrics:
     enabled: false

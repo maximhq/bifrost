@@ -25,11 +25,11 @@ dependencies = [
     "openai>=1.30.0",
     "anthropic>=0.25.0",
     "litellm==1.80.5",
-    "langchain-openai==0.1.0",
-    "langchain-core==0.3.81",
-    "langchain-anthropic==0.1.0",
+    "langchain-openai==1.1.14",
+    "langchain-core>=1.3.3",
+    "langchain-anthropic==1.3.0",
     "langchain-google-genai==4.1.1",
-    "langchain-mistralai==0.1.0",
+    "langchain-mistralai==1.1.1",
     "langgraph>=0.1.0",
     "mistralai>=0.4.0",
     "google-genai>=1.50.0",
@@ -123,4 +123,4 @@ exclude_lines = [
 
 
 [tool.uv]
-exclude-newer = "2026-04-08"
+exclude-newer = "2026-06-02T00:00:00Z"
