@@ -8,7 +8,7 @@ icon: "/media/runware-nav.svg"
 
 Runware exposes a single synchronous endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**. Bifrost wraps each request in this array envelope and maps the unified image and video schemas onto Runware's `imageInference` and `videoInference` task types. Image tasks return synchronously; video tasks are submitted asynchronously and polled to completion.
 
-Runware additionally exposes an **OpenAI-compatible LLM API** at the same base URL (`/v1/chat/completions`, `/v1/models`). Bifrost routes chat completions (unary and streaming) and model listing through its shared OpenAI-compatible handlers, so any Runware-hosted text model (e.g. DeepSeek, Qwen, GLM, Kimi, MiniMax) works with the standard `chat/completions` schema, including tool calling and structured outputs.
+Bifrost routes chat completions (unary and streaming), the Responses API (unary and streaming, translated to chat completions), and model listing through its shared OpenAI-compatible handlers,
 
 ### Supported Operations
 
@@ -17,6 +17,8 @@ Runware additionally exposes an **OpenAI-compatible LLM API** at the same base U
 | Chat Completion | ✅ | OpenAI-compatible `/v1/chat/completions` |
 | Chat Completion (stream) | ✅ | OpenAI-compatible `/v1/chat/completions` (SSE) |
 | List Models | ✅ | OpenAI-compatible `/v1/models` |
+| Responses API | ✅ | OpenAI-compatible `/v1/responses` (translated to chat) |
+| Responses API (stream) | ✅ | OpenAI-compatible `/v1/responses` (SSE, translated to chat) |
 | Image Generation | ✅ | `imageInference` |
 | Image Edit (inpainting / outpainting) | ✅ | `imageInference` |
 | Video Generation | ✅ | `videoInference` (async) |
