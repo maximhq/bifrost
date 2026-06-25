@@ -461,7 +461,14 @@
                 ]
               },
               "enterprise/setting-up-entra",
-              "enterprise/setting-up-keycloak",
+              {
+                "group": "Keycloak",
+                "icon": "/media/keycloak-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-keycloak/oidc"
+                ]
+              },
               "enterprise/setting-up-zitadel",
               "enterprise/setting-up-google-workspace"
             ]
@@ -1071,6 +1078,10 @@
     {
       "source": "/enterprise/setting-up-okta",
       "destination": "/enterprise/setting-up-okta/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-keycloak",
+      "destination": "/enterprise/setting-up-keycloak/oidc"
     },
     {
       "source": "/enterprise/users",
