@@ -19,10 +19,14 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
-// (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
-// recognised alongside standard single-segment ones (eu-north-1, ap-southeast-2).
-var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
+// awsRegionPattern matches a valid AWS region identifier (e.g. "us-east-1", "eu-north-1",
+// "us-gov-east-1"). (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions
+// (us-gov-east-1) are recognised alongside standard single-segment ones (eu-north-1,
+// ap-southeast-2). Unanchored so it can be composed into larger patterns (see bareMantleID).
+const awsRegionPattern = `[a-z]{2,3}(?:-[a-z]+)+-\d+`
+
+// awsRegionRegex matches a string that is exactly an AWS region identifier.
+var awsRegionRegex = regexp.MustCompile(`^` + awsRegionPattern + `$`)
 var bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
 // bedrockToolNameAliasKey stores Bedrock wire-name aliases on the request context.

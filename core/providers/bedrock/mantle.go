@@ -13,12 +13,30 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// isMantleModel reports whether a model should be routed via the Bedrock Mantle endpoint.
-// Accepts "gpt-*"/"gemma-4-*", "openai.gpt-*"/"google.gemma-4-*", or region-prefixed variants.
-// Gemma 3 is intentionally excluded: it only supports Chat (not Responses) on mantle, and the
-// non-mantle path serves both APIs via Converse, so forcing it to mantle would break Responses.
-func isMantleModel(model string) bool {
+// matchesMantleModelNameHeuristic guesses, from the model name alone, whether a model
+// is mantle-served. It is a fallback for when the authoritative mantle-only registry
+// has not been populated yet (see shouldRouteToMantle) — not a definitive check.
+// Matches "gpt-*"/"gemma-4-*", "openai.gpt-*"/"google.gemma-4-*", or region-prefixed
+// variants. Gemma 3 is intentionally excluded: it only supports Chat (not Responses)
+// on mantle, and the non-mantle path serves both APIs via Converse, so forcing it to
+// mantle would break Responses.
+func matchesMantleModelNameHeuristic(model string) bool {
 	return strings.Contains(model, "gpt-") || strings.Contains(model, "gemma-4")
+}
+
+// shouldRouteToMantle decides whether a request should go to the Bedrock Mantle
+// endpoint. It prefers the authoritative signal — membership in the mantle-only
+// registry populated by ListModels — and falls back to the name heuristic
+// (matchesMantleModelNameHeuristic) before the registry is populated (cold start)
+// or when the model was never observed. This unblocks mantle-only models whose names
+// don't contain "gpt-"/"gemma-4" without regressing models the heuristic handled.
+func (provider *BedrockProvider) shouldRouteToMantle(ctx *schemas.BifrostContext, key schemas.Key, model string) bool {
+	canonical := schemas.ResolveCanonicalModel(ctx, model)
+	if matchesMantleModelNameHeuristic(canonical) {
+		return true
+	}
+	awsRegion := resolveBedrockRegion(ctx, key, model)
+	return provider.mantleRegistry.isMantleOnly(awsRegion, canonical)
 }
 
 // mantleURL builds the Bedrock Mantle endpoint URL for the given region, model, and API path.

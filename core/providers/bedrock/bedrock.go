@@ -43,6 +43,7 @@ type BedrockProvider struct {
 	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
 	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
+	mantleRegistry        *mantleRegistry               // Per-AWS-region cache of mantle-only models, populated by ListModels and consulted for routing
 }
 
 // assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
@@ -155,6 +156,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		customProviderConfig:  config.CustomProviderConfig,
 		sendBackRawRequest:    config.SendBackRawRequest,
 		sendBackRawResponse:   config.SendBackRawResponse,
+		mantleRegistry:        newMantleRegistry(),
 	}, nil
 }
 
@@ -864,18 +866,24 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Merge in the mantle catalog: ListFoundationModels omits the mantle-only models
 	// (gpt-5.x, gemma-4, ...) served on the OpenAI-compatible endpoint. Same gating, dedup by id.
+	// Record each appended model in mantleRegistry so request routing can recognize it without
+	// the name-substring heuristic. Models present in both catalogs (e.g. Gemma 3, which has a
+	// Converse fallback) never get appended here, so they stay on the Converse path.
 	if mantleResponse := provider.listMantleModels(ctx, key, region, request.Unfiltered); mantleResponse != nil {
 		seen := make(map[string]struct{}, len(response.Data))
 		for _, m := range response.Data {
 			seen[m.ID] = struct{}{}
 		}
+		mantleOnly := make([]string, 0, len(mantleResponse.Data))
 		for _, m := range mantleResponse.Data {
 			if _, ok := seen[m.ID]; ok {
 				continue
 			}
 			seen[m.ID] = struct{}{}
 			response.Data = append(response.Data, m)
+			mantleOnly = append(mantleOnly, m.ID)
 		}
+		provider.mantleRegistry.addRegion(region, mantleOnly)
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
@@ -1139,7 +1147,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.chatCompletionViaMantle(ctx, key, request)
 	}
 
@@ -1231,7 +1239,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.chatCompletionStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
@@ -1559,7 +1567,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.responsesViaMantle(ctx, key, request)
 	}
 
@@ -1631,7 +1639,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+	if provider.shouldRouteToMantle(ctx, key, request.Model) {
 		return provider.responsesStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 

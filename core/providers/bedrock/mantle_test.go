@@ -2,7 +2,7 @@ package bedrock
 
 import "testing"
 
-func TestIsMantleModel(t *testing.T) {
+func TestMatchesMantleModelNameHeuristic(t *testing.T) {
 	cases := []struct {
 		model string
 		want  bool
@@ -30,8 +30,8 @@ func TestIsMantleModel(t *testing.T) {
 		{"amazon.titan-text-express-v1", false},
 	}
 	for _, tc := range cases {
-		if got := isMantleModel(tc.model); got != tc.want {
-			t.Errorf("isMantleModel(%q) = %v, want %v", tc.model, got, tc.want)
+		if got := matchesMantleModelNameHeuristic(tc.model); got != tc.want {
+			t.Errorf("matchesMantleModelNameHeuristic(%q) = %v, want %v", tc.model, got, tc.want)
 		}
 	}
 }
