@@ -142,7 +142,7 @@ func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
-		nil,
+		ParseSGLError,
 		provider.logger,
 	)
 }
@@ -171,7 +171,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
-		nil,
+		ParseSGLError,
 		postHookRunner,
 		nil,
 		nil,
@@ -198,7 +198,7 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
-		nil,
+		ParseSGLError,
 		provider.logger,
 	)
 }
@@ -232,7 +232,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		postHookRunner,
 		nil,
 		nil,
-		nil,
+		ParseSGLError,
 		nil,
 		nil,
 		provider.logger,
@@ -290,10 +290,7 @@ func (provider *SGLProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
 }
 
-// Rerank is not supported by the SGL provider.
-func (provider *SGLProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
-}
+// Rerank is implemented in rerank.go (sglang /v1/rerank).
 
 // OCR is not supported by the Sgl provider.
 func (provider *SGLProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {

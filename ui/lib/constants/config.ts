@@ -201,6 +201,17 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"responses_stream",
 		"embedding",
 	],
+	sgl: [
+		"list_models",
+		"text_completion",
+		"text_completion_stream",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"embedding",
+		"rerank",
+	],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";

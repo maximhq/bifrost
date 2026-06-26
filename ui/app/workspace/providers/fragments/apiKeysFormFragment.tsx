@@ -20,6 +20,7 @@ interface Props {
 	control: Control<any>;
 	providerName: string;
 	form: UseFormReturn<any>;
+	baseProviderType?: string;
 }
 
 // Batch API form field for all providers
@@ -45,14 +46,16 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 	);
 }
 
-export function ApiKeyFormFragment({ control, providerName, form }: Props) {
+export function ApiKeyFormFragment({ control, providerName, form, baseProviderType }: Props) {
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
 	const isVLLM = providerName === "vllm";
 	const isOllama = providerName === "ollama";
-	const isSGL = providerName === "sgl";
+	// SGL applies to both the built-in `sgl` provider and any custom provider
+	// whose base_provider_type is `sgl`.
+	const isSGL = providerName === "sgl" || baseProviderType === "sgl";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 

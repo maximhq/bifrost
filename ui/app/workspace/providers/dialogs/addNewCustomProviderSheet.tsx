@@ -169,6 +169,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 													<SelectItem value="cohere">Cohere</SelectItem>
 													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
 													<SelectItem value="replicate">Replicate</SelectItem>
+													<SelectItem value="sgl">SGLang</SelectItem>
 												</SelectContent>
 											</Select>
 										</FormControl>
@@ -255,6 +256,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							control={form.control}
 							providerType={form.watch("baseFormat") as BaseProvider}
 							disabled={!hasProviderCreateAccess}
+							hideAdvancedTypes
 						/>
 					</div>
 					<div className="bg-card sticky bottom-0 ml-auto flex w-full flex-row gap-2 border-t px-8 py-4">
