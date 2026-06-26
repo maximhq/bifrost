@@ -66,7 +66,6 @@ func (r *mantleRegistry) isMantleOnly(awsRegion, model string) bool {
 	_, ok := set[bareMantleID(model)]
 	return ok
 }
-}
 
 // mantlePrefixRegex matches the leading prefixes of a Bedrock model ID that carry
 // no identity of their own and must be stripped before comparison:
