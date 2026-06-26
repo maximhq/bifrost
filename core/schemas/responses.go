@@ -936,11 +936,8 @@ type ResponsesMessage struct {
 	Author    json.RawMessage `json:"author,omitempty"`
 	Recipient json.RawMessage `json:"recipient,omitempty"`
 
-	// ToolSearchOutputTools holds the discovered tools of a `tool_search_output`
-	// item. These are ResponsesTool-shaped (discriminated by `type`, e.g.
-	// "namespace" wrapping "function" tools), not MCP-list-tools-shaped, so they
-	// are preserved verbatim as raw JSON to avoid a lossy []ResponsesMCPTool decode
-	// that drops `type` and the nested tools. Handled in custom (Un)MarshalJSON.
+	// Discovered tools of a tool_search_output item, kept as raw JSON so the
+	// type-discriminated entries round-trip without a lossy []ResponsesMCPTool decode.
 	ToolSearchOutputTools json.RawMessage `json:"-"`
 
 	*ResponsesToolMessage // For Tool calls and outputs
@@ -952,17 +949,11 @@ type ResponsesMessage struct {
 	*ResponsesReasoning
 }
 
-// UnmarshalJSON normalizes function/tool-call arguments before decoding the rest
-// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
-// a JSON string, but `tool_search_call` items (emitted when the request enables
-// the `tool_search` deferred-tool-discovery tool, as Codex does) serialize
-// `arguments` as a JSON object — e.g. {} while in_progress and
-// {"query":"...","limit":10} when completed. The embedded
-// ResponsesToolMessage.Arguments field is a *string, so an object value makes a
-// plain decode fail with "Mismatch type string with value object", which
-// silently drops the item mid-stream and hangs streaming clients. We shadow
-// `arguments` as raw JSON, decode everything else as usual, then store the
-// canonical stringified form.
+// UnmarshalJSON normalizes the `arguments` field before decoding the rest of the
+// item. OpenAI sends function_call arguments as a JSON string but tool_search_call
+// arguments as a JSON object; the Arguments field is a *string, so decoding an
+// object directly fails and drops the item mid-stream. We shadow `arguments` as
+// raw JSON and store the stringified form.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	type Alias ResponsesMessage
 	aux := &struct {
@@ -984,10 +975,8 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		m.Arguments = &args
 	}
 
-	// A `tool_search_output` item carries ResponsesTool-shaped discovered tools
-	// under `tools`, but the embedded ResponsesMCPListTools.Tools ([]ResponsesMCPTool)
-	// greedily absorbs that key and drops `type`/nesting. Re-extract the raw `tools`
-	// for verbatim passthrough and drop the lossy parse.
+	// The embedded ResponsesMCPListTools decode of `tools` drops the type
+	// discriminator, so capture the raw array and skip that lossy parse.
 	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
 		var probe struct {
 			Tools json.RawMessage `json:"tools,omitempty"`
@@ -1020,10 +1009,7 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	type Alias ResponsesMessage
 
-	// tool_search_output: re-emit the discovered tools verbatim from raw JSON so
-	// the ResponsesTool-shaped entries (namespace/function, discriminated by
-	// `type`) survive intact. The lossy embedded ResponsesMCPListTools was cleared
-	// during unmarshal, so it contributes nothing here.
+	// Re-emit the raw tools captured during unmarshal so the type discriminator survives.
 	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
 		aux := &struct {
 			Tools json.RawMessage `json:"tools,omitempty"`
@@ -1233,7 +1219,7 @@ type ResponsesToolMessage struct {
 	Name      *string                           `json:"name,omitempty"`      // Common name field for tool calls
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
-	Execution *string                           `json:"execution,omitempty"` // "client" for client-executed deferred calls (e.g. tool_search_call); clients like Codex require it to dispatch the call
+	Execution *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
