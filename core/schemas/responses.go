@@ -899,6 +899,7 @@ const (
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
 	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
+	ResponsesMessageTypeToolSearchOutput     ResponsesMessageType = "tool_search_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
@@ -934,6 +935,13 @@ type ResponsesMessage struct {
 	// Preserved as raw JSON to survive bifrost round-trip without schema coupling.
 	Author    json.RawMessage `json:"author,omitempty"`
 	Recipient json.RawMessage `json:"recipient,omitempty"`
+
+	// ToolSearchOutputTools holds the discovered tools of a `tool_search_output`
+	// item. These are ResponsesTool-shaped (discriminated by `type`, e.g.
+	// "namespace" wrapping "function" tools), not MCP-list-tools-shaped, so they
+	// are preserved verbatim as raw JSON to avoid a lossy []ResponsesMCPTool decode
+	// that drops `type` and the nested tools. Handled in custom (Un)MarshalJSON.
+	ToolSearchOutputTools json.RawMessage `json:"-"`
 
 	*ResponsesToolMessage // For Tool calls and outputs
 
@@ -976,6 +984,22 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		m.Arguments = &args
 	}
 
+	// A `tool_search_output` item carries ResponsesTool-shaped discovered tools
+	// under `tools`, but the embedded ResponsesMCPListTools.Tools ([]ResponsesMCPTool)
+	// greedily absorbs that key and drops `type`/nesting. Re-extract the raw `tools`
+	// for verbatim passthrough and drop the lossy parse.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
+		var probe struct {
+			Tools json.RawMessage `json:"tools,omitempty"`
+		}
+		if err := Unmarshal(data, &probe); err == nil && len(probe.Tools) > 0 && string(probe.Tools) != "null" {
+			m.ToolSearchOutputTools = probe.Tools
+		}
+		if m.ResponsesToolMessage != nil {
+			m.ResponsesMCPListTools = nil
+		}
+	}
+
 	return nil
 }
 
@@ -995,6 +1019,24 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 // normalizes both forms into the internal string field.
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	type Alias ResponsesMessage
+
+	// tool_search_output: re-emit the discovered tools verbatim from raw JSON so
+	// the ResponsesTool-shaped entries (namespace/function, discriminated by
+	// `type`) survive intact. The lossy embedded ResponsesMCPListTools was cleared
+	// during unmarshal, so it contributes nothing here.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
+		aux := &struct {
+			Tools json.RawMessage `json:"tools,omitempty"`
+			*Alias
+		}{
+			Alias: (*Alias)(&m),
+		}
+		if m.ToolSearchOutputTools != nil {
+			aux.Tools = m.ToolSearchOutputTools
+		}
+		return MarshalSorted(aux)
+	}
+
 	aux := &struct {
 		Arguments json.RawMessage `json:"arguments,omitempty"`
 		*Alias
@@ -1191,6 +1233,7 @@ type ResponsesToolMessage struct {
 	Name      *string                           `json:"name,omitempty"`      // Common name field for tool calls
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
+	Execution *string                           `json:"execution,omitempty"` // "client" for client-executed deferred calls (e.g. tool_search_call); clients like Codex require it to dispatch the call
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`

@@ -348,6 +348,51 @@ func TestResponsesMessageMarshalsToolSearchArgumentsAsObject(t *testing.T) {
 	})
 }
 
+func TestResponsesMessagePreservesToolSearchExecution(t *testing.T) {
+	raw := []byte(`{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{"query":"loki"},"call_id":"call_1","execution":"client"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal tool_search_call: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil || msg.Execution == nil || *msg.Execution != "client" {
+		t.Fatalf("expected execution=client to survive unmarshal, got %#v", msg.ResponsesToolMessage)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal tool_search_call: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"execution":"client"`) {
+		t.Fatalf("expected execution to round-trip, got %s", encoded)
+	}
+}
+
+func TestResponsesMessageRoundTripsToolSearchOutputTools(t *testing.T) {
+	raw := []byte(`{"id":"tso_1","type":"tool_search_output","call_id":"call_1","tools":[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs","description":"query loki","parameters":{"type":"object","properties":{"run_id":{"type":"string"}}}}]}]}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal tool_search_output: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageTypeToolSearchOutput {
+		t.Fatalf("expected tool_search_output type, got %#v", msg.Type)
+	}
+	if len(msg.ToolSearchOutputTools) == 0 {
+		t.Fatalf("expected raw tools to be captured, got none")
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal tool_search_output: %v", err)
+	}
+	for _, want := range []string{`"type":"namespace"`, `"type":"function"`, `"name":"query_loki_logs"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("expected re-emitted tools to contain %s, got %s", want, encoded)
+		}
+	}
+}
+
 func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	raw := []byte(`{"id":"msg_123","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"}`)
 
