@@ -2746,8 +2746,8 @@ func (s *RDBConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TableP
 	var existing tables.TablePlugin
 	err := txDB.WithContext(ctx).Where("name = ?", plugin.Name).First(&existing).Error
 	if err == nil {
-		// Plugin exists, check version
-		if plugin.Version < existing.Version {
+		// Plugin exists, check config hash
+		if plugin.ConfigHash == existing.ConfigHash {
 			return nil
 		}
 	}
