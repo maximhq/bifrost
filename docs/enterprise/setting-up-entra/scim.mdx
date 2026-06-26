@@ -1,0 +1,208 @@
+---
+title: "Setup SCIM"
+description: "Enable real-time user and group provisioning from Microsoft Entra ID to Bifrost Enterprise using SCIM 2.0."
+---
+
+SCIM (System for Cross-domain Identity Management) keeps Bifrost in sync with Entra in real time - new users are provisioned, deactivated users are suspended, and group memberships are updated without waiting for the next login or background sync.
+
+<Note>
+  Complete [SSO using OIDC](./oidc) before setting up SCIM. SCIM runs as a **separate** provisioning job alongside your existing OIDC integration.
+</Note>
+
+---
+
+## Step 1: Enable SCIM in Bifrost
+
+<Steps>
+
+<Step title="Open your Entra provider">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning** and open your configured Microsoft Entra provider.
+
+<Frame caption="The Microsoft Entra provider dashboard showing your connection details and attribute mappings.">
+  <img src="/media/user-provisioning/entra/bifrost-provider-setting.png" alt="Bifrost Microsoft Entra provider dashboard showing connection details and attribute mappings" />
+</Frame>
+
+</Step>
+
+<Step title="Enable SCIM provisioning">
+
+Click the settings icon to open **Provider Configuration**.
+
+Toggle on **Enable SCIM Provisioning** and click **Save & Enable**.
+
+<Frame caption="Enable SCIM Provisioning in Provider Configuration - the SCIM endpoint URL and token are generated after saving.">
+  <img src="/media/user-provisioning/entra/bifrost-enable-scim.png" alt="Bifrost Provider Configuration with Enable SCIM Provisioning toggle turned on" />
+</Frame>
+
+</Step>
+
+<Step title="Copy the SCIM credentials">
+
+After saving, Bifrost shows a **Setup Complete** dialog with:
+
+- **SCIM Endpoint URL** - the base URL Entra will send provisioning requests to
+- **Provisioning Token** - the bearer token Entra uses to authenticate
+
+Copy both values now - you will need them in [Step 2](#step-2-configure-entra-provisioning).
+
+<Frame caption="Setup Complete dialog showing the SCIM Endpoint URL and Provisioning Token.">
+  <img src="/media/user-provisioning/entra/bifrost-scim-provisioning-token-dialog.png" alt="Bifrost Setup Complete dialog displaying the SCIM Endpoint URL and one-time Provisioning Token" />
+</Frame>
+
+<Warning>
+  The provisioning token is only shown once. Store it somewhere safe before closing this dialog. You can always rotate it later, but the previous token will immediately become invalid.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Configure Entra provisioning
+
+<Steps>
+
+<Step title="Open the Provisioning tab">
+
+In the [Azure Portal](https://portal.azure.com), go to **Microsoft Entra ID → Enterprise applications → Bifrost Enterprise**.
+
+Open the **Provisioning** tab and click **Get started**.
+
+<Frame caption="Enterprise Application Provisioning tab - click Get started to configure the SCIM connection.">
+  <img src="/media/user-provisioning/entra/entra-provisioning-get-started.png" alt="Microsoft Entra Enterprise Application Provisioning tab with Get started button" />
+</Frame>
+
+</Step>
+
+<Step title="Set the provisioning mode and credentials">
+
+Set **Provisioning Mode** to **Automatic**.
+
+Under **Admin Credentials**, enter:
+
+| Field | Value |
+| --- | --- |
+| **Tenant URL** | The SCIM Endpoint URL from [Step 1](#step-1-enable-scim-in-bifrost) |
+| **Secret Token** | The Provisioning Token from [Step 1](#step-1-enable-scim-in-bifrost) |
+
+Click **Test Connection** to verify, then **Save**.
+
+<Frame caption="Admin Credentials - enter the SCIM Endpoint URL as Tenant URL and the Provisioning Token as Secret Token, then test the connection.">
+  <img src="/media/user-provisioning/entra/entra-scim-admin-credentials.png" alt="Entra Provisioning admin credentials form with Tenant URL and Secret Token fields filled in and Test Connection button highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Configure attribute mappings (optional)">
+
+Expand **Mappings** to review or adjust how Entra user and group attributes are mapped to SCIM fields that Bifrost receives.
+
+The default mappings cover standard fields (name, email, active status, groups). Skip this step unless you need to sync custom attributes.
+
+<Accordion title="Syncing custom profile attributes (e.g. employeeId, department, costCenter)">
+
+To include a custom attribute in the SCIM payload Entra sends to Bifrost:
+
+1. Under **Mappings**, click **Provision Microsoft Entra ID Users**
+2. Click **Add New Mapping**
+3. Set the **Source attribute** to the Entra user property (e.g. `employeeId`, `department`)
+4. Set the **Target attribute** to the corresponding SCIM attribute name (e.g. `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:employeeNumber`)
+5. Click **Ok** and **Save**
+
+<Frame caption="Add New Mapping - map an Entra user attribute to the SCIM attribute Bifrost will receive.">
+  <img src="/media/user-provisioning/entra/entra-scim-attribute-mapping.png" alt="Entra provisioning attribute mapping dialog showing Source attribute and Target attribute dropdowns" />
+</Frame>
+
+Back in Bifrost, go to **Attribute Mapping** in the provider setup and add a **SCIM Attribute** entry using the same attribute name. The name must match exactly - including case.
+
+</Accordion>
+
+</Step>
+
+<Step title="Enable provisioning">
+
+Back on the main Provisioning settings page, set **Provisioning Status** to **On** and click **Save**.
+
+<Frame caption="Set Provisioning Status to On to start the SCIM sync cycle.">
+  <img src="/media/user-provisioning/entra/entra-scim-provisioning-on.png" alt="Entra Provisioning settings page with Provisioning Status toggle set to On" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 3: Assign users and groups
+
+<Steps>
+
+<Step title="Assign users or groups to the application">
+
+Go to **Enterprise applications → Bifrost Enterprise → Users and groups**.
+
+Click **Add user/group** and select the users or groups you want to provision into Bifrost.
+
+<Frame caption="Users and groups - only users and groups assigned here are included in the SCIM provisioning scope.">
+  <img src="/media/user-provisioning/entra/entra-scim-user-assignments.png" alt="Entra Enterprise Application Users and groups page with Add user/group button highlighted" />
+</Frame>
+
+<Note>
+  Only users and groups explicitly assigned to the application are provisioned when the provisioning scope is set to **Sync only assigned users and groups** (the default). Set scope to **Sync all users and groups** only if you want to provision your entire directory.
+</Note>
+
+Assigned users are pushed to Bifrost during the next provisioning cycle (typically within 40 minutes). When a user is unassigned or disabled in Entra, Bifrost deactivates them in real time.
+
+</Step>
+
+<Step title="Trigger an on-demand sync (optional)">
+
+To provision a specific user immediately without waiting for the next cycle, go to the **Provisioning** tab and click **Provision on demand**.
+
+Search for the user, select them, and click **Provision**.
+
+<Frame caption="Provision on demand - push a specific user to Bifrost immediately for testing or urgent onboarding.">
+  <img src="/media/user-provisioning/entra/entra-scim-provision-on-demand.png" alt="Entra Provision on demand screen with a user selected and Provision button" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 4: Verify in Bifrost
+
+Once provisioning is active, confirm everything is syncing correctly.
+
+- Go to **Governance** → **Users** to see provisioned users and their assigned roles
+- Go to **Governance** → **Teams** to see teams populated from synced groups
+- Go to **Governance** → **Business Units** to see business units resolved from group or attribute mappings
+
+Changes in Entra - new assignments, group membership updates, deactivations - will reflect in Bifrost within the provisioning cycle (typically 40 minutes for incremental cycles, up to 4 hours for the initial cycle).
+
+---
+
+## How sync works
+
+**Initial cycle** - on first enable, Entra performs a full sync of all in-scope users and groups. This can take up to 4 hours for large directories.
+
+**Incremental cycles** - after the initial sync, Entra pushes only changes (new users, deactivations, attribute updates, group membership changes) every ~40 minutes.
+
+**Background reconciliation** - Bifrost also runs a full reconciliation from the Microsoft Graph API every 24 hours to catch anything the SCIM push may have missed.
+
+---
+
+## Troubleshooting
+
+**Test Connection fails** - verify the Tenant URL has no trailing slash and the Secret Token matches exactly what Bifrost generated. Rotate the token in Bifrost and update Entra if needed.
+
+**Users are provisioned but have no role** - SCIM provisions the user record; role assignment comes from attribute mappings in the OIDC provider. Confirm your Attribute-to-Role mappings are configured and the relevant claims are present in the JWT at login time.
+
+**Custom attribute is not arriving in Bifrost** - confirm the SCIM attribute name in Entra's mapping and Bifrost's SCIM Attribute setting match exactly (case-sensitive). Verify the mapping was saved under **Provision Microsoft Entra ID Users**.
+
+**Group membership is not syncing** - groups must be assigned to the Enterprise Application and provisioning scope must include groups. Check that **Provision Microsoft Entra ID Groups** is enabled under **Mappings**.
+
+**Users are stuck in "Pending"** - this is normal during the initial cycle for large directories. Check the **Provisioning logs** under **Monitoring** in the Provisioning tab for per-user status and any errors.
