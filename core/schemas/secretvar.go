@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"fmt"
 	"os"
@@ -47,8 +48,7 @@ func NewSecretVar(value string) *SecretVar {
 	}
 	// If it's a valid JSON object following the SecretVar schema, unmarshal it
 	if sonic.Valid([]byte(value)) {
-		valueNode, _ := sonic.Get([]byte(val), "value")
-		if valueNode.Exists() {
+		if trimmed := bytes.TrimSpace([]byte(val)); len(trimmed) > 0 && trimmed[0] == '{' {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
@@ -299,8 +299,7 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 		val = unquoted
 	}
 	if sonic.Valid(data) {
-		valueNode, _ := sonic.Get(data, "value")
-		if valueNode.Exists() {
+		if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '{' {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
