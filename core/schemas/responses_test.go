@@ -276,3 +276,50 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 		t.Fatalf("expected encoded message to contain phase, got %s", encoded)
 	}
 }
+
+func TestResponsesTool_ParametersRoundTrip(t *testing.T) {
+	var tool ResponsesTool
+	if err := Unmarshal([]byte(`{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":5}}`), &tool); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tool.Parameters == nil || tool.Parameters["engine"] != "exa" {
+		t.Fatalf("expected parameters.engine=exa to be captured, got %+v", tool.Parameters)
+	}
+	out, err := tool.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Re-unmarshal and assert the values are nested under "parameters", not just
+	// present somewhere in the JSON (a substring check would false-pass on misnesting).
+	var roundTrip map[string]interface{}
+	if err := Unmarshal(out, &roundTrip); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	params, ok := roundTrip["parameters"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected parameters object on marshal, got %s", string(out))
+	}
+	if params["engine"] != "exa" {
+		t.Fatalf("expected parameters.engine=exa, got %v", params["engine"])
+	}
+	// JSON numbers decode to float64; assert the value, not just presence.
+	if mr, ok := params["max_results"].(float64); !ok || mr != 5 {
+		t.Fatalf("expected parameters.max_results=5 under parameters, got %v", params["max_results"])
+	}
+}
+
+// TestResponsesTool_FunctionParametersNotCaptured guards against the free-form
+// Parameters field hijacking a function tool's typed "parameters" (a JSON Schema
+// object). Only "openrouter:"-namespaced tools populate t.Parameters.
+func TestResponsesTool_FunctionParametersNotCaptured(t *testing.T) {
+	var tool ResponsesTool
+	if err := Unmarshal([]byte(`{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}`), &tool); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tool.Parameters != nil {
+		t.Fatalf("expected free-form Parameters to stay nil for function tools, got %+v", tool.Parameters)
+	}
+	if tool.ResponsesToolFunction == nil || tool.ResponsesToolFunction.Parameters == nil {
+		t.Fatalf("expected function tool's typed parameters to be preserved")
+	}
+}
