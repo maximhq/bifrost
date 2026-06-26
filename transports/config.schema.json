@@ -1472,7 +1472,7 @@
         },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). token_usage is always kept in the database and does not need to be listed. Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }

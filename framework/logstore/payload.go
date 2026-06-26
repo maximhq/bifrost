@@ -12,9 +12,11 @@ import (
 const maxMCPToolInputPreviewRunes = 200
 
 // payloadFields lists the DB column names of large TEXT fields that are
-// offloaded to object storage in hybrid mode. These fields are never needed
-// for analytics queries (histograms, search, rankings) — only for individual
-// log detail views (FindByID).
+// offloaded to object storage in hybrid mode and cleared from the DB row on
+// write. Small index-friendly fields such as token_usage and metadata are
+// deliberately omitted: they stay DB-resident for list views, sorting, and
+// analytics while still being copied into the object-store snapshot via
+// ExtractPayload when present.
 var payloadFields = []string{
 	"input_history",
 	"responses_input_history",
@@ -43,7 +45,6 @@ var payloadFields = []string{
 	"video_list_output",
 	"video_delete_output",
 	"cache_debug",
-	"token_usage",
 	"error_details",
 	"raw_request",
 	"raw_response",
@@ -83,6 +84,9 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_list_output"] = l.VideoListOutput
 	m["video_delete_output"] = l.VideoDeleteOutput
 	m["cache_debug"] = l.CacheDebug
+	// token_usage is written to the snapshot for object consumers but is not
+	// part of payloadFields: it must stay DB-resident for log-list display and
+	// token sorting without hydrating every row from object storage.
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -136,7 +140,6 @@ func ClearPayload(l *Log) {
 	l.VideoListOutput = ""
 	l.VideoDeleteOutput = ""
 	l.CacheDebug = ""
-	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
 	l.RawResponse = ""
@@ -172,7 +175,6 @@ func ClearPayload(l *Log) {
 	l.VideoListOutputParsed = nil
 	l.VideoDeleteOutputParsed = nil
 	l.CacheDebugParsed = nil
-	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
 

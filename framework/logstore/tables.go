@@ -727,6 +727,16 @@ func (l *Log) DeserializeFields() error {
 			l.TokenUsageParsed = nil
 		}
 	}
+	// Hybrid object storage clears token_usage from older rows but keeps the
+	// denormalized prompt/completion/total columns. Rebuild token_usage for list
+	// responses when the JSON column is empty.
+	if l.TokenUsageParsed == nil && (l.PromptTokens > 0 || l.CompletionTokens > 0 || l.TotalTokens > 0) {
+		l.TokenUsageParsed = &schemas.BifrostLLMUsage{
+			PromptTokens:     l.PromptTokens,
+			CompletionTokens: l.CompletionTokens,
+			TotalTokens:      l.TotalTokens,
+		}
+	}
 
 	if l.ErrorDetails != "" {
 		if err := sonic.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {

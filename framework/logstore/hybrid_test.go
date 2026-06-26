@@ -643,6 +643,44 @@ func TestHybrid_MetadataIsRetainedInDBAndWrittenToObjectPayload(t *testing.T) {
 	assert.Equal(t, "payments", found.MetadataParsed["team"])
 }
 
+func TestHybrid_TokenUsageStaysInDB(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	inputText := "hello"
+	entry := &Log{
+		ID:        "tokens-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "anthropic",
+		Model:     "claude-sonnet",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputText}},
+		},
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     8,
+			CompletionTokens: 24,
+			TotalTokens:      32,
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "tokens-1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, dbLog.TokenUsage, "token_usage JSON must remain in the DB row")
+	assert.Equal(t, 32, dbLog.TotalTokens)
+
+	result, err := hybrid.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	require.NotNil(t, result.Logs[0].TokenUsageParsed)
+	assert.Equal(t, 32, result.Logs[0].TokenUsageParsed.TotalTokens)
+}
+
 func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())

@@ -50,7 +50,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	}
 
 	payload := ExtractPayload(log)
-	assert.Equal(t, len(payloadFields)+1, len(payload), "payload map should have all payload fields plus metadata")
+	assert.Equal(t, len(payloadFields)+2, len(payload), "payload map should have all payload fields plus token_usage and metadata")
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
 	assert.Equal(t, `routing log`, payload["routing_engine_logs"])
@@ -64,6 +64,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Empty(t, log.RoutingEngineLogs)
 	require.NotNil(t, log.Metadata)
 	assert.Equal(t, metadata, *log.Metadata)
+	assert.Equal(t, `{"total_tokens":100}`, log.TokenUsage, "token_usage must stay DB-resident like metadata")
 
 	// Marshal and merge back.
 	data, err := MarshalPayload(payload)
@@ -281,6 +282,19 @@ func TestPayloadFieldNames(t *testing.T) {
 	// Verify it's a copy.
 	fields[0] = "modified"
 	assert.NotEqual(t, "modified", payloadFields[0])
+}
+
+func TestDeserializeFields_TokenUsageFromDenormalizedColumns(t *testing.T) {
+	log := &Log{
+		PromptTokens:     8,
+		CompletionTokens: 24,
+		TotalTokens:      32,
+	}
+	require.NoError(t, log.DeserializeFields())
+	require.NotNil(t, log.TokenUsageParsed)
+	assert.Equal(t, 8, log.TokenUsageParsed.PromptTokens)
+	assert.Equal(t, 24, log.TokenUsageParsed.CompletionTokens)
+	assert.Equal(t, 32, log.TokenUsageParsed.TotalTokens)
 }
 
 func strPtr(s string) *string {
