@@ -58,13 +58,14 @@ func (r *mantleRegistry) addRegion(awsRegion string, ids []string) {
 // pre-registry behavior).
 func (r *mantleRegistry) isMantleOnly(awsRegion, model string) bool {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	set := r.byRegion[awsRegion]
-	r.mu.RUnlock()
 	if set == nil {
 		return false
 	}
 	_, ok := set[bareMantleID(model)]
 	return ok
+}
 }
 
 // mantlePrefixRegex matches the leading prefixes of a Bedrock model ID that carry
