@@ -898,6 +898,7 @@ const (
 	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
+	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
@@ -988,6 +989,32 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 		return str
 	}
 	return string(raw)
+}
+
+// MarshalJSON preserves OpenAI's per-item argument shape after UnmarshalJSON
+// normalizes both forms into the internal string field.
+func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	type Alias ResponsesMessage
+	aux := &struct {
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(&m),
+	}
+
+	if m.ResponsesToolMessage != nil && m.Arguments != nil {
+		if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall {
+			aux.Arguments = json.RawMessage(*m.Arguments)
+		} else {
+			encoded, err := Marshal(*m.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			aux.Arguments = encoded
+		}
+	}
+
+	return MarshalSorted(aux)
 }
 
 type ResponsesMessageRoleType string
