@@ -235,6 +235,9 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	if original.Recipient != nil {
 		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
+	// The framework module still compiles against released core versions that
+	// do not expose every Responses API field, so newer fields are copied by name
+	// when a workspace build provides them.
 	copyRawMessageFieldByName(&copy, original, "ToolSearchOutputTools")
 
 	// Deep copy ResponsesReasoning if present
