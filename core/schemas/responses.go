@@ -936,8 +936,8 @@ type ResponsesMessage struct {
 	Author    json.RawMessage `json:"author,omitempty"`
 	Recipient json.RawMessage `json:"recipient,omitempty"`
 
-	// Discovered tools of a tool_search_output item, kept as raw JSON so the
-	// type-discriminated entries round-trip without a lossy []ResponsesMCPTool decode.
+	// Discovered tool_search_output tools. Programmatic callers must set this,
+	// not ResponsesMCPListTools.Tools, because the entries are ResponsesTool-shaped.
 	ToolSearchOutputTools json.RawMessage `json:"-"`
 
 	*ResponsesToolMessage // For Tool calls and outputs
@@ -1012,13 +1012,17 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	// Re-emit the raw tools captured during unmarshal so the type discriminator survives.
 	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
 		aux := &struct {
-			Tools json.RawMessage `json:"tools,omitempty"`
+			Arguments json.RawMessage `json:"arguments,omitempty"`
+			Tools     json.RawMessage `json:"tools,omitempty"`
 			*Alias
 		}{
 			Alias: (*Alias)(&m),
 		}
 		if m.ToolSearchOutputTools != nil {
 			aux.Tools = m.ToolSearchOutputTools
+		}
+		if m.ResponsesToolMessage != nil && m.Arguments != nil {
+			aux.Arguments = json.RawMessage(*m.Arguments)
 		}
 		return MarshalSorted(aux)
 	}
