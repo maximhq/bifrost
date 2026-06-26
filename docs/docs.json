@@ -461,7 +461,22 @@
                   "enterprise/setting-up-okta/scim"
                 ]
               },
-              "enterprise/setting-up-entra",
+              {
+                "group": "Microsoft Entra",
+                "icon": "microsoft",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-entra/oidc"
+                ]
+              },
+              {
+                "group": "Zitadel",
+                "icon": "/media/zitadel-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-zitadel/oidc"
+                ]
+              },
               {
                 "group": "Keycloak",
                 "icon": "/media/keycloak-icon.svg",
@@ -470,8 +485,31 @@
                   "enterprise/setting-up-keycloak/oidc"
                 ]
               },
-              "enterprise/setting-up-zitadel",
-              "enterprise/setting-up-google-workspace"
+              {
+                "group": "Google Workspace",
+                "icon": "google",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-google-workspace"
+                ]
+              },
+              {
+                "group": "Auth0",
+                "icon": "/media/auth0-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-auth0/oidc"
+                ]
+              },
+              {
+                "group": "Generic OIDC",
+                "icon": "fingerprint",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-generic-oidc/oidc",
+                  "enterprise/setting-up-generic-oidc/scim"
+                ]
+              }
             ]
           },
           {
@@ -1083,8 +1121,28 @@
       "destination": "/enterprise/setting-up-okta/oidc"
     },
     {
+      "source": "/enterprise/setting-up-entra",
+      "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-zitadel",
+      "destination": "/enterprise/setting-up-zitadel/oidc"
+    },
+    {
       "source": "/enterprise/setting-up-keycloak",
       "destination": "/enterprise/setting-up-keycloak/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-google-workspace",
+      "destination": "/enterprise/setting-up-google-workspace/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-auth0",
+      "destination": "/enterprise/setting-up-auth0/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-generic-oidc",
+      "destination": "/enterprise/setting-up-generic-oidc/oidc"
     },
     {
       "source": "/enterprise/users",
