@@ -187,6 +187,7 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		provider.GetProviderKey(),
 		nil,
 		ParseMistralError,
+		nil,
 		provider.logger,
 	)
 }
@@ -211,6 +212,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		nil,
 		nil,
 		ParseMistralError,
+		nil,
 		nil,
 		nil,
 		provider.logger,

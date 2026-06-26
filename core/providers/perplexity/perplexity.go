@@ -207,6 +207,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)

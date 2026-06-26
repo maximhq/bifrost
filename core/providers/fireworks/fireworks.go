@@ -143,6 +143,7 @@ func (provider *FireworksProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		provider.GetProviderKey(),
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -169,6 +170,7 @@ func (provider *FireworksProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
@@ -186,6 +188,7 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -206,6 +209,7 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
