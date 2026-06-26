@@ -1,0 +1,1 @@
+- fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)
