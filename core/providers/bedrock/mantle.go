@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,10 @@ import (
 // (they have no Converse equivalent). Gemma 3 is intentionally excluded: it only supports
 // Chat (not Responses) on mantle, and the Converse path serves both APIs, so forcing it to
 // mantle would break Responses.
+//
+// Deprecated: in-provider Bedrock Mantle routing is retained for backwards compatibility.
+// New configurations should use the "bedrock_mantle" provider, which owns the Bedrock Mantle
+// surface (Claude native-Anthropic, OpenAI-compatible, and Gemma).
 func isMantleModel(ctx *schemas.BifrostContext, model string) bool {
 	return schemas.IsOpenAIModelFamily(ctx, model) || strings.Contains(model, "gemma-4")
 }
@@ -34,13 +39,13 @@ func mantleOpenAIURL(region, model, path string) string {
 	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s/%s", region, base, path)
 }
 
-// mantleSigV4Headers computes SigV4 auth headers for a mantle request by signing a dummy
+// SignMantleV4Headers computes SigV4 auth headers for a mantle request by signing a dummy
 // net/http.Request. jsonData must be the exact bytes that will be sent. accept must match
 // the Accept header the actual request will send, since SigV4 signs all request headers.
 // extraHeaders are the static headers the actual request will carry; any x-amz-* among them
 // are added to the canonical request before signing so the signature covers them (AWS requires
 // every x-amz-* header on the wire to be signed, otherwise verification fails).
-func (provider *BedrockProvider) mantleSigV4Headers(
+func SignMantleV4Headers(
 	ctx *schemas.BifrostContext,
 	jsonData []byte,
 	requestURL, accept string,
@@ -48,7 +53,16 @@ func (provider *BedrockProvider) mantleSigV4Headers(
 	region string,
 	extraHeaders map[string]string,
 ) (map[string]string, *schemas.BifrostError) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
+	method := http.MethodPost
+	if jsonData == nil {
+		method = http.MethodGet
+	}
+	var body io.Reader
+	if jsonData != nil {
+		body = bytes.NewReader(jsonData)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to create signing request", err)
 	}
@@ -58,14 +72,33 @@ func (provider *BedrockProvider) mantleSigV4Headers(
 			req.Header.Set(k, v)
 		}
 	}
-	if bifrostErr := signAWSRequestFromKey(ctx, req, key.BedrockKeyConfig, region, bedrockMantleSigningService); bifrostErr != nil {
+
+	keyCfg := key.BedrockKeyConfig
+	// Create a synthetic BedrockKeyConfig in case of bedrock_mantle: its
+	// BedrockMantleKeyConfig carries the same credential fields, so map them across
+	// (Region is passed separately; ARN/batch config are not used for signing).
+	if key.BedrockMantleKeyConfig != nil && key.BedrockKeyConfig == nil {
+		keyCfg = &schemas.BedrockKeyConfig{
+			AccessKey:       key.BedrockMantleKeyConfig.AccessKey,
+			SecretKey:       key.BedrockMantleKeyConfig.SecretKey,
+			SessionToken:    key.BedrockMantleKeyConfig.SessionToken,
+			RoleARN:         key.BedrockMantleKeyConfig.RoleARN,
+			ExternalID:      key.BedrockMantleKeyConfig.ExternalID,
+			RoleSessionName: key.BedrockMantleKeyConfig.RoleSessionName,
+		}
+	}
+	if bifrostErr := signAWSRequest(ctx, req, keyCfg, region, bedrockMantleSigningService); bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Return the headers exactly as signed: signAWSRequest defaults an empty Accept/Content-Type
+	// to "application/json" and includes them in SignedHeaders, so the caller must send those same
+	// values (not the original, possibly-empty, accept) or the signature won't match.
 	headers := map[string]string{
 		"Authorization":        req.Header.Get("Authorization"),
 		"X-Amz-Date":           req.Header.Get("X-Amz-Date"),
 		"x-amz-content-sha256": req.Header.Get("x-amz-content-sha256"),
-		"Accept":               accept,
+		"Accept":               req.Header.Get("Accept"),
+		"Content-Type":         req.Header.Get("Content-Type"),
 	}
 	if token := req.Header.Get("X-Amz-Security-Token"); token != "" {
 		headers["X-Amz-Security-Token"] = token
@@ -88,7 +121,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
 		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
-			return provider.mantleSigV4Headers(ctx, body, url, "application/json", key, region, provider.networkConfig.ExtraHeaders)
+			return SignMantleV4Headers(ctx, body, url, "application/json", key, region, provider.networkConfig.ExtraHeaders)
 		}
 	}
 
@@ -126,7 +159,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
 		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
-			return provider.mantleSigV4Headers(ctx, body, url, "text/event-stream", key, region, provider.networkConfig.ExtraHeaders)
+			return SignMantleV4Headers(ctx, body, url, "text/event-stream", key, region, provider.networkConfig.ExtraHeaders)
 		}
 	}
 
@@ -163,7 +196,7 @@ func (provider *BedrockProvider) mantleResponses(
 	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
 		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
-			return provider.mantleSigV4Headers(ctx, body, url, "application/json", key, region, provider.networkConfig.ExtraHeaders)
+			return SignMantleV4Headers(ctx, body, url, "application/json", key, region, provider.networkConfig.ExtraHeaders)
 		}
 	}
 
@@ -201,7 +234,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
 		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
-			return provider.mantleSigV4Headers(ctx, body, url, "text/event-stream", key, region, provider.networkConfig.ExtraHeaders)
+			return SignMantleV4Headers(ctx, body, url, "text/event-stream", key, region, provider.networkConfig.ExtraHeaders)
 		}
 	}
 

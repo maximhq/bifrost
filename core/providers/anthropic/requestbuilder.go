@@ -105,6 +105,13 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	schemas.Bedrock: {
 		RemapToolVersions: true,
 	},
+	// Bedrock Mantle shares the Bedrock native-Anthropic request shape (model in
+	// body, anthropic-version HTTP header, tool versions remapped). It has its own
+	// entry so its feature surface in ProviderFeatures can diverge from Bedrock's
+	// Converse path without coupling the two.
+	schemas.BedrockMantle: {
+		RemapToolVersions: true,
+	},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
 	// required, beta headers in body (not HTTP), cache_control.scope stripped
 	// at marshal time, tool versions remapped.
