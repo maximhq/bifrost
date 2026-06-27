@@ -775,6 +775,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		provider.GetProviderKey(),
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -792,6 +793,7 @@ func HandleOpenAIChatCompletionRequest(
 	providerName schemas.ModelProvider,
 	customResponseHandler responseHandler[schemas.BifrostChatResponse],
 	customErrorConverter ErrorConverter,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create request
@@ -846,6 +848,16 @@ func HandleOpenAIChatCompletionRequest(
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonData)
+		if bErr != nil {
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	req.SetBody(jsonData)
@@ -945,6 +957,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
@@ -969,6 +982,7 @@ func HandleOpenAIChatCompletionStreaming(
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIChatRequest) *OpenAIChatRequest,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -1035,6 +1049,17 @@ func HandleOpenAIChatCompletionStreaming(
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
+	}
+
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonBody)
+		if bErr != nil {
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
@@ -1439,6 +1464,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		provider.GetProviderKey(),
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -1456,6 +1482,7 @@ func HandleOpenAIResponsesRequest(
 	providerName schemas.ModelProvider,
 	customResponseHandler responseHandler[schemas.BifrostResponsesResponse],
 	customErrorConverter ErrorConverter,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create request
@@ -1510,6 +1537,16 @@ func HandleOpenAIResponsesRequest(
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonData)
+		if bErr != nil {
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	req.SetBody(jsonData)
@@ -1611,6 +1648,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
@@ -1634,6 +1672,7 @@ func HandleOpenAIResponsesStreaming(
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -1683,6 +1722,17 @@ func HandleOpenAIResponsesStreaming(
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
+	}
+
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonBody)
+		if bErr != nil {
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)

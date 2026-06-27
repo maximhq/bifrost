@@ -393,6 +393,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 			},
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
+			nil,
 			provider.logger,
 		)
 	}
@@ -412,6 +413,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -462,6 +464,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 			provider.GetProviderKey(),
 			postHookRunner,
 			nil,
+			nil,
 			provider.logger,
 			postHookSpanFinalizer,
 		)
@@ -485,6 +488,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			postHookRunner,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -528,6 +532,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 			},
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
+			nil,
 			provider.logger,
 		)
 	}
@@ -548,6 +553,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -596,6 +602,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			provider.GetProviderKey(),
 			postHookRunner,
 			nil,
+			nil,
 			provider.logger,
 			postHookSpanFinalizer,
 		)
@@ -619,6 +626,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			postHookRunner,
+			nil,
 			nil,
 			nil,
 			nil,
