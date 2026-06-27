@@ -203,6 +203,7 @@ func completeRequest(
 	betaHeaderOverrides map[string]bool,
 	providerName schemas.ModelProvider,
 	requestType schemas.RequestType,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
@@ -237,6 +238,18 @@ func completeRequest(
 	}
 
 	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
+
+	// Sign the exact body bytes set on the request, when a signer is supplied (e.g. AWS SigV4
+	// for Bedrock Mantle). Done after the body is set so the signature covers what is actually sent.
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonBody)
+		if bErr != nil {
+			return nil, 0, nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
+	}
 
 	requestClient := client
 	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
@@ -390,7 +403,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	}
 
 	// Use struct directly for JSON marshaling (no beta headers for text completion)
-	responseBody, latency, providerResponseHeaders, err := completeRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), jsonData, provider.anthropicRequestHeaders(ctx, key), provider.networkConfig.ExtraHeaders, provider.networkConfig.BetaHeaderOverrides, provider.GetProviderKey(), schemas.TextCompletionRequest, provider.logger)
+	responseBody, latency, providerResponseHeaders, err := completeRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), jsonData, provider.anthropicRequestHeaders(ctx, key), provider.networkConfig.ExtraHeaders, provider.networkConfig.BetaHeaderOverrides, provider.GetProviderKey(), schemas.TextCompletionRequest, nil, provider.logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -465,6 +478,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		},
 		provider.anthropicRequestHeaders(ctx, key),
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.logger,
 	)
 }
@@ -484,6 +498,7 @@ func HandleAnthropicChatCompletionRequest(
 	config AnthropicRequestBuildConfig,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	jsonBody, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, config)
@@ -492,7 +507,7 @@ func HandleAnthropicChatCompletionRequest(
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.ChatCompletionRequest, logger)
+	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.ChatCompletionRequest, signer, logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -581,6 +596,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
@@ -616,6 +632,7 @@ func HandleAnthropicChatCompletionStreaming(
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -642,6 +659,19 @@ func HandleAnthropicChatCompletionStreaming(
 	}
 
 	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
+
+	// Sign the exact body bytes set on the request, when a signer is supplied (e.g. AWS SigV4
+	// for Bedrock Mantle). Done after the body is set so the signature covers what is actually sent.
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonBody)
+		if bErr != nil {
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
+	}
 
 	// Close the connection after this streaming response instead of returning it to
 	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
@@ -1025,6 +1055,7 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 		},
 		provider.anthropicRequestHeaders(ctx, key),
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.logger,
 	)
 }
@@ -1041,6 +1072,7 @@ func HandleAnthropicResponsesRequest(
 	config AnthropicRequestBuildConfig,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	jsonBody, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, config)
@@ -1048,7 +1080,7 @@ func HandleAnthropicResponsesRequest(
 		return nil, bifrostErr
 	}
 
-	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.ResponsesRequest, logger)
+	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.ResponsesRequest, signer, logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -1140,6 +1172,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
@@ -1161,6 +1194,7 @@ func HandleAnthropicResponsesStream(
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -1189,6 +1223,19 @@ func HandleAnthropicResponsesStream(
 
 	// Set body
 	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
+
+	// Sign the exact body bytes set on the request, when a signer is supplied (e.g. AWS SigV4
+	// for Bedrock Mantle). Done after the body is set so the signature covers what is actually sent.
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonBody)
+		if bErr != nil {
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
+	}
 
 	// Close the connection after this streaming response instead of returning it to
 	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
@@ -2563,7 +2610,7 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
-	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), jsonBody, provider.anthropicRequestHeaders(ctx, key), provider.networkConfig.ExtraHeaders, provider.networkConfig.BetaHeaderOverrides, provider.GetProviderKey(), schemas.CountTokensRequest, provider.logger)
+	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), jsonBody, provider.anthropicRequestHeaders(ctx, key), provider.networkConfig.ExtraHeaders, provider.networkConfig.BetaHeaderOverrides, provider.GetProviderKey(), schemas.CountTokensRequest, nil, provider.logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}

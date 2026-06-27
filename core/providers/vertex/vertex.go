@@ -884,6 +884,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			providerName,
 			postHookRunner,
 			nil,
+			nil,
 			provider.logger,
 			postHookSpanFinalizer,
 		)
@@ -1024,6 +1025,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
 			postHookRunner,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -1395,6 +1397,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			postHookRunner,
+			nil,
 			nil,
 			provider.logger,
 			postHookSpanFinalizer,
