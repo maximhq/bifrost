@@ -152,6 +152,7 @@ func (provider *NebiusProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		provider.GetProviderKey(),
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -173,6 +174,7 @@ func (provider *NebiusProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,

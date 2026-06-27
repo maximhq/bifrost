@@ -186,6 +186,7 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 		provider.GetProviderKey(),
 		HandleVLLMResponse,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -211,6 +212,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 		postHookRunner,
 		nil,
 		HandleVLLMResponse,
+		nil,
 		nil,
 		nil,
 		nil,
