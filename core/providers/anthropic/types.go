@@ -214,6 +214,32 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
 		ServiceTier: true, // Bedrock handles service_tier via its own typed conversion
 	},
+	// Bedrock Mantle — same AWS-hosted Claude models as Bedrock, reached through
+	// the native Anthropic Messages surface (/anthropic/v1/messages) instead of
+	// Converse. Feature support is a property of the model+cloud, so this mirrors
+	// schemas.Bedrock — with one deliberate exception: the *Nova flags below.
+	//
+	// WebSearchNova / CodeExecNova are intentionally OFF here. They exist only to
+	// keep web_search / code_interpreter tools so the Bedrock Converse/Responses
+	// converter can rewrite them into nova_grounding / nova_code_interpreter.
+	// Mantle uses the native Anthropic body builder, which never runs that
+	// conversion, so leaving them on would forward an un-rewritten web_search /
+	// code_interpreter tool that the endpoint rejects. Mantle's native surface
+	// does not support the Anthropic web_search / code_execution server tools
+	// either, so both stay false (no WebSearch / CodeExecution).
+	schemas.BedrockMantle: {
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		ContainerBasic:         true,
+		StructuredOutputs:      true,
+		Compaction:             true,
+		ContextEditing:         true,
+		ContextManagementField: true,
+		InterleavedThinking:    true,
+		Context1M:              true,
+		EagerInputStreaming:    true,
+		InputExamples:          true,
+		ServiceTier:            true,
+	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
 	// Az-platform: Admin API, Models API, Message Batch API (not in scope).
