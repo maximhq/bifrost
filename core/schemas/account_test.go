@@ -457,6 +457,42 @@ func TestResolveFamilyPrecedence(t *testing.T) {
 	}
 }
 
+func TestIsOpenAIModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// gpt / embeddings (pre-existing behavior)
+		{"gpt-4o", true},
+		{"gpt-5", true},
+		{"text-embedding-3-large", true},
+		// o-series reasoning families
+		{"o1", true},
+		{"o1-preview", true},
+		{"o1-mini", true},
+		{"o3", true},
+		{"o3-mini", true},
+		{"o4-mini", true},
+		{"openai/o3", true},
+		{"openai:o4-mini", true},
+		// non-OpenAI / false-positive guards
+		{"claude-3-5-sonnet", false},
+		{"mistral-large-2407", false},
+		{"co1", false},      // must not match "o1" mid-word
+		{"o3x", false},      // version digit must be terminal or followed by "-"
+		{"model-o3", false}, // "o3" not at the start of the (post-prefix) name
+		{"", false},
+		{"o", false},
+	}
+	for _, c := range cases {
+		t.Run(c.model, func(t *testing.T) {
+			if got := IsOpenAIModel(c.model); got != c.want {
+				t.Fatalf("IsOpenAIModel(%q): got %v, want %v", c.model, got, c.want)
+			}
+		})
+	}
+}
+
 func TestResolveCanonicalModelPrecedence(t *testing.T) {
 	// Helper to build a BifrostContext carrying a ResolvedAlias.
 	withAlias := func(ra *ResolvedAlias) *BifrostContext {

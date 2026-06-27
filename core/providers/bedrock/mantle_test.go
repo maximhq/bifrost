@@ -1,8 +1,14 @@
 package bedrock
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	schemas "github.com/maximhq/bifrost/core/schemas"
+)
 
 func TestIsMantleModel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	cases := []struct {
 		model string
 		want  bool
@@ -24,19 +30,20 @@ func TestIsMantleModel(t *testing.T) {
 		{"gemma-3-12b-it", false},
 		{"google.gemma-3-27b-it", false},
 		{"gemma-3-4b-it", false},
-		// other families stay on the Converse path
+		// Anthropic (Claude) models stay on the Converse path.
 		{"claude-opus-4-8", false},
 		{"anthropic.claude-3-5-sonnet-20240620-v1:0", false},
+		// other families stay on the Converse path
 		{"amazon.titan-text-express-v1", false},
 	}
 	for _, tc := range cases {
-		if got := isMantleModel(tc.model); got != tc.want {
+		if got := isMantleModel(ctx, tc.model); got != tc.want {
 			t.Errorf("isMantleModel(%q) = %v, want %v", tc.model, got, tc.want)
 		}
 	}
 }
 
-func TestMantleURL(t *testing.T) {
+func TestMantleOpenAIURL(t *testing.T) {
 	cases := []struct {
 		name   string
 		region string
@@ -57,8 +64,8 @@ func TestMantleURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mantleURL(tc.region, tc.model, tc.path); got != tc.want {
-				t.Errorf("mantleURL(%q, %q, %q) = %q, want %q", tc.region, tc.model, tc.path, got, tc.want)
+			if got := mantleOpenAIURL(tc.region, tc.model, tc.path); got != tc.want {
+				t.Errorf("mantleOpenAIURL(%q, %q, %q) = %q, want %q", tc.region, tc.model, tc.path, got, tc.want)
 			}
 		})
 	}
