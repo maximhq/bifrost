@@ -201,13 +201,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		CodeExecNova:  true, // nova_code_interpreter — Responses path only
 		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
-		// StructuredOutputs: kept true to match pre-existing behavior and the
-		// provider_feature_support_test.go assertion, but NEITHER B-header
-		// NOR B-platform upstream docs document strict tool validation /
-		// output_format on Bedrock. Needs live verification. If Bedrock's
-		// Converse API actually rejects `strict: true`, flip this to false
-		// and update the corresponding test assertion.
-		StructuredOutputs:      true,
+		StructuredOutputs:      true, // documented on Bedrock per A overview matrix
 		Compaction:             true, // compact-2026-01-12 per B-header
 		ContextEditing:         true, // context-management-2025-06-27 per B-header (bundles memory)
 		ContextManagementField: true, // Bedrock accepts context_management body field
