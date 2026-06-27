@@ -37,7 +37,7 @@ type BedrockProvider struct {
 	logger                schemas.Logger                // Logger for provider operations
 	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
 	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
-	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle (OpenAI-compatible) requests
+	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
 	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
 	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
 	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
@@ -125,7 +125,9 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 	streamingClient := providerUtils.BuildStreamingHTTPClient(client)
 
-	// fasthttp clients for Bedrock Mantle (OpenAI-compatible endpoint)
+	// fasthttp clients for Bedrock Mantle (shared by OpenAI-compatible and native-Anthropic paths).
+	// ReadTimeout is the shared provider request timeout, not an OpenAI-specific value; oversized
+	// Anthropic responses are handled by PrepareResponseStreaming, not by these static settings.
 	mantleFasthttpClient := &fasthttp.Client{
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
