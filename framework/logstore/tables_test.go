@@ -35,6 +35,17 @@ func TestDeserializeFieldsPrefersSerializedTokenUsage(t *testing.T) {
 	assert.Equal(t, 100, log.TokenUsageParsed.TotalTokens)
 }
 
+func TestDeserializeFieldsDoesNotReconstructTokenUsageWhenSerializedValueIsMalformed(t *testing.T) {
+	log := &Log{
+		TokenUsage:       `{"prompt_tokens":`,
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+	}
+	require.NoError(t, log.DeserializeFields())
+	assert.Nil(t, log.TokenUsageParsed)
+}
+
 func TestDeserializeFieldsSkipsTokenUsageReconstructionWhenAllZero(t *testing.T) {
 	log := &Log{}
 	require.NoError(t, log.DeserializeFields())
