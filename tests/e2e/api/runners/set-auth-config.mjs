@@ -3,7 +3,7 @@
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
 const mode = process.argv[2];
 const username = process.env.BIFROST_E2E_ADMIN_USERNAME || "admin";
-const password = process.env.BIFROST_E2E_ADMIN_PASSWORD || "bifrost-e2e-admin-password";
+const password = process.env.BIFROST_E2E_ADMIN_PASSWORD || "Bifrost-E2E-Admin-Pass1!";
 const authHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
 
 if (mode !== "enable" && mode !== "disable") {

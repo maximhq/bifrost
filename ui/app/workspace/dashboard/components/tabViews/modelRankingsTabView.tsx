@@ -21,42 +21,43 @@ interface ModelRankingsTabViewProps {
 	endTime: number;
 }
 
-export const ModelRankingsTabView = forwardRef<ModelRankingsTabViewHandle, ModelRankingsTabViewProps>(
-	function ModelRankingsTabView({ filters, active, startTime, endTime }, ref) {
-		const fetchArg = useMemo(() => ({ filters }), [filters]);
-		const skipOpts = useMemo(() => ({ skip: !active }), [active]);
+export const ModelRankingsTabView = forwardRef<ModelRankingsTabViewHandle, ModelRankingsTabViewProps>(function ModelRankingsTabView(
+	{ filters, active, startTime, endTime },
+	ref,
+) {
+	const fetchArg = useMemo(() => ({ filters }), [filters]);
+	const skipOpts = useMemo(() => ({ skip: !active }), [active]);
 
-		const { data: rankingsData, isLoading: loadingRankings } = useGetModelRankingsQuery(fetchArg, skipOpts);
-		const { data: modelData, isLoading: loadingModels } = useGetLogsModelHistogramQuery(fetchArg, skipOpts);
+	const { data: rankingsData, isLoading: loadingRankings } = useGetModelRankingsQuery(fetchArg, skipOpts);
+	const { data: modelData, isLoading: loadingModels } = useGetLogsModelHistogramQuery(fetchArg, skipOpts);
 
-		const [triggerRankings] = useLazyGetModelRankingsQuery();
-		const [triggerModels] = useLazyGetLogsModelHistogramQuery();
+	const [triggerRankings] = useLazyGetModelRankingsQuery();
+	const [triggerModels] = useLazyGetLogsModelHistogramQuery();
 
-		const loadData = useCallback(async () => {
-			await Promise.all([triggerRankings(fetchArg, true), triggerModels(fetchArg, true)]);
-		}, [fetchArg, triggerRankings, triggerModels]);
+	const loadData = useCallback(async () => {
+		await Promise.all([triggerRankings(fetchArg, true), triggerModels(fetchArg, true)]);
+	}, [fetchArg, triggerRankings, triggerModels]);
 
-		useImperativeHandle(
-			ref,
-			() => ({
-				getData: () => ({
-					rankingsData: rankingsData ?? null,
-					modelData: modelData ?? null,
-				}),
-				loadData,
+	useImperativeHandle(
+		ref,
+		() => ({
+			getData: () => ({
+				rankingsData: rankingsData ?? null,
+				modelData: modelData ?? null,
 			}),
-			[rankingsData, modelData, loadData],
-		);
+			loadData,
+		}),
+		[rankingsData, modelData, loadData],
+	);
 
-		return (
-			<ModelRankingsTab
-				rankingsData={rankingsData ?? null}
-				loading={loadingRankings}
-				modelData={modelData ?? null}
-				loadingModels={loadingModels}
-				startTime={startTime}
-				endTime={endTime}
-			/>
-		);
-	},
-);
+	return (
+		<ModelRankingsTab
+			rankingsData={rankingsData ?? null}
+			loading={loadingRankings}
+			modelData={modelData ?? null}
+			loadingModels={loadingModels}
+			startTime={startTime}
+			endTime={endTime}
+		/>
+	);
+});

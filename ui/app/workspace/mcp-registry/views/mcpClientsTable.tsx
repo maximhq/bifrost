@@ -22,18 +22,7 @@ import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutat
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import {
-	Box,
-	ChevronLeft,
-	ChevronRight,
-	Loader2,
-	MoreHorizontal,
-	PencilIcon,
-	Plus,
-	RefreshCcw,
-	Search,
-	Trash2,
-} from "lucide-react";
+import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -310,7 +299,7 @@ export default function MCPClientsTable({
 	}
 
 	return (
-		<div className="flex flex-col grow overflow-auto">
+		<div className="flex grow flex-col overflow-auto">
 			{showDetailSheet && selectedMCPClient && (
 				<MCPClientSheet
 					mcpClient={selectedMCPClient}
@@ -344,7 +333,7 @@ export default function MCPClientsTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="flex items-center justify-between gap-4 mb-4">
+			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
 					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
@@ -362,7 +351,7 @@ export default function MCPClientsTable({
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
 						aria-label="New MCP Server"
-						className="gap-2 h-8"
+						className="h-8 gap-2"
 					>
 						<Plus />
 						<span className="hidden sm:inline">New MCP Server</span>
@@ -371,7 +360,7 @@ export default function MCPClientsTable({
 			</div>
 
 			{/* Toolbar: Search */}
-			<div className="flex items-center gap-3 mb-4">
+			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -385,8 +374,8 @@ export default function MCPClientsTable({
 				</div>
 			</div>
 
-			<div className="grow flex flex-col overflow-auto">
-				<div className="overflow-auto rounded-sm border grow mb-2">
+			<div className="flex grow flex-col overflow-auto">
+				<div className="mb-2 grow overflow-auto rounded-sm border">
 					<Table data-testid="mcp-clients-table">
 						<TableHeader className="sticky top-0">
 							<TableRow className="bg-muted/50">
@@ -544,7 +533,8 @@ export default function MCPClientsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+							entries
 						</div>
 
 						<div className="flex items-center gap-2">

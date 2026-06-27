@@ -12,6 +12,7 @@ import {
 	Construction,
 	DatabaseZap,
 	Flag,
+	ShieldHalf,
 	FlaskConical,
 	FolderGit,
 	Globe,
@@ -560,6 +561,7 @@ export default function AppSidebar() {
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
+	const hasCircuitBreakerAccess = useRbac(RbacResource.CircuitBreaker, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
@@ -682,6 +684,13 @@ export default function AppSidebar() {
 						icon: Settings,
 						description: "Model and routing configuration",
 						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Circuit Breaker",
+						url: "/workspace/circuit-breaker",
+						icon: ShieldHalf,
+						description: "Automatic fallback when primary endpoints fail",
+						hasAccess: hasCircuitBreakerAccess,
 					},
 				],
 			},
@@ -980,6 +989,7 @@ export default function AppSidebar() {
 			hasRoutingRulesAccess,
 			hasGuardrailsProvidersAccess,
 			hasGuardrailsConfigAccess,
+			hasCircuitBreakerAccess,
 			hasClusterConfigAccess,
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,

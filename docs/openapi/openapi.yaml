@@ -140,6 +140,8 @@ tags:
     description: Log search and management endpoints
   - name: Cache
     description: Cache management endpoints
+  - name: Vault
+    description: Vault secret management endpoints
   - name: Skills
     description: Skills Repository management, marketplace, and download endpoints
 
@@ -920,6 +922,14 @@ paths:
   /api/mcp/tool-groups/{id}:
     $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
 
+  # Circuit Breaker
+  /api/circuit-breaker/policies:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policies'
+  /api/circuit-breaker/policies/{name}:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policy-by-name'
+  /api/circuit-breaker/state:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-state'
+
   # Governance - Complexity Analyzer Config
   /api/governance/complexity-analyzer-config:
     $ref: './paths/management/governance.yaml#/complexity'
@@ -1039,6 +1049,10 @@ paths:
     $ref: './paths/management/cache.yaml#/clear-by-cache-id'
   /api/cache/clear-by-key/{cacheKey}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+
+  # Vault
+  /api/vault/flush-cache:
+    $ref: './paths/management/vault.yaml#/flush-cache'
 
   # Infrastructure
   /ws:

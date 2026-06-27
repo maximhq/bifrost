@@ -1,11 +1,7 @@
 // RTK Query endpoints for the MCP per-user headers credential flow.
 // Mirrors the backend handler in transports/bifrost-http/handlers/mcp_per_user_headers.go.
 
-import {
-	MCPHeadersFlowDetail,
-	MCPPerUserHeadersSubmitRequest,
-	MCPPerUserHeadersSubmitResponse,
-} from "@/lib/types/mcpPerUserHeaders";
+import { MCPHeadersFlowDetail, MCPPerUserHeadersSubmitRequest, MCPPerUserHeadersSubmitResponse } from "@/lib/types/mcpPerUserHeaders";
 import { baseApi } from "./baseApi";
 
 export const mcpPerUserHeadersApi = baseApi.injectEndpoints({
@@ -32,10 +28,7 @@ export const mcpPerUserHeadersApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body,
 			}),
-			invalidatesTags: (_result, _err, arg) => [
-				"MCPSessions",
-				{ type: "MCPPerUserHeaderCredentials", id: arg.flowId },
-			],
+			invalidatesTags: (_result, _err, arg) => ["MCPSessions", { type: "MCPPerUserHeaderCredentials", id: arg.flowId }],
 		}),
 
 		// Revoke a single credential row by primary key. The sessions tab uses
@@ -49,8 +42,5 @@ export const mcpPerUserHeadersApi = baseApi.injectEndpoints({
 	}),
 });
 
-export const {
-	useGetMCPPerUserHeadersFlowQuery,
-	useSubmitMCPPerUserHeadersFlowMutation,
-	useRevokeMCPPerUserHeadersMutation,
-} = mcpPerUserHeadersApi;
+export const { useGetMCPPerUserHeadersFlowQuery, useSubmitMCPPerUserHeadersFlowMutation, useRevokeMCPPerUserHeadersMutation } =
+	mcpPerUserHeadersApi;

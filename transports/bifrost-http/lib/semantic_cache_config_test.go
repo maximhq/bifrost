@@ -55,7 +55,7 @@ func TestValidateSemanticCacheConfig_ProviderBackedModeValidationPasses(t *testi
 				Keys: []schemas.Key{
 					{
 						Name:   "openai-key",
-						Value:  *schemas.NewEnvVar("sk-test"),
+						Value:  *schemas.NewSecretVar("sk-test"),
 						Weight: 1,
 					},
 				},

@@ -318,7 +318,12 @@ build_mocker() {
   log_info "Building mocker..."
   cd "${MOCKER_DIR}"
 
-  if go build -o "${REPO_ROOT}/tmp/mocker" .; then
+  # GOWORK=off: in CI bifrost-benchmarking is checked out inside the repo root
+  # (${github.workspace}/bifrost-benchmarking), so `go build` would auto-discover
+  # the repo's go.work and reject the mocker module ("not one of the workspace
+  # modules"). The mocker is a standalone module and doesn't need local
+  # core/framework, so build it outside the workspace.
+  if GOWORK=off go build -o "${REPO_ROOT}/tmp/mocker" .; then
     log_success "mocker built successfully"
   else
     log_error "Failed to build mocker"

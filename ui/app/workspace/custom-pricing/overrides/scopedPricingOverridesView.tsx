@@ -297,7 +297,7 @@ export default function ScopedPricingOverridesView() {
 
 	return (
 		<div className="flex flex-col overflow-y-auto">
-			<div className="flex items-center justify-between gap-4 mb-4">
+			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
 					<p className="text-muted-foreground text-sm">
@@ -311,7 +311,7 @@ export default function ScopedPricingOverridesView() {
 			</div>
 
 			{/* Search */}
-			<div className="relative max-w-sm mb-4">
+			<div className="relative mb-4 max-w-sm">
 				<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 				<Input
 					aria-label="Search pricing overrides by name"
@@ -323,21 +323,23 @@ export default function ScopedPricingOverridesView() {
 				/>
 			</div>
 
-			<div className="overflow-hidden rounded-sm border mb-2">
+			<div className="mb-2 overflow-hidden rounded-sm border">
 				{isLoading ? (
 					<div className="p-4 text-sm">Loading overrides...</div>
 				) : error ? (
 					<div className="p-4 text-sm text-red-500">Failed to load pricing overrides. Please try refreshing the page.</div>
 				) : (
 					<Table containerClassName="h-full overflow-auto">
-						<TableHeader className="sticky top-0 bg-muted z-10">
+						<TableHeader className="bg-muted sticky top-0 z-10">
 							<TableRow className="bg-muted/50">
 								<TableHead className="font-semibold">Name</TableHead>
 								<TableHead className="font-semibold">Scope</TableHead>
 								<TableHead className="font-semibold">Provider</TableHead>
 								<TableHead className="font-semibold">Key</TableHead>
 								<TableHead className="font-semibold">Model</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>Actions</TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>
+									Actions
+								</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -373,11 +375,7 @@ export default function ScopedPricingOverridesView() {
 											onClick={(e) => e.stopPropagation()}
 										>
 											<div className="flex items-center justify-center">
-												<PricingOverrideActionsMenu
-													row={row}
-													onEdit={openEditDrawer}
-													onDelete={setDeleteTarget}
-												/>
+												<PricingOverrideActionsMenu row={row} onEdit={openEditDrawer} onDelete={setDeleteTarget} />
 											</div>
 										</TableCell>
 									</TableRow>
@@ -392,7 +390,8 @@ export default function ScopedPricingOverridesView() {
 			{totalCount > 0 && (
 				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
-						{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+						{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+						entries
 					</div>
 
 					<div className="flex items-center gap-2">

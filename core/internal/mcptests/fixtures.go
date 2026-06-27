@@ -892,7 +892,7 @@ func GetSampleHTTPClientConfig(serverURL string) schemas.MCPClientConfig {
 		ID:                 "test-http-client",
 		Name:               "TestHTTPServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		ToolsToExecute:     []string{"*"}, // Allow all tools
 		ToolsToAutoExecute: []string{},    // No auto-execute by default
 	}
@@ -904,7 +904,7 @@ func GetSampleSSEClientConfig(serverURL string) schemas.MCPClientConfig {
 		ID:                 "test-sse-client",
 		Name:               "TestSSEServer",
 		ConnectionType:     schemas.MCPConnectionTypeSSE,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		ToolsToExecute:     []string{"*"},
 		ToolsToAutoExecute: []string{},
 	}
@@ -1091,7 +1091,7 @@ func GetSampleCodeModeClientConfig(t *testing.T, serverURL string) schemas.MCPCl
 		ID:                 "test-codemode-client",
 		Name:               "TestCodeModeServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		IsCodeModeClient:   true,
 		ToolsToExecute:     []string{"*"},
 		ToolsToAutoExecute: []string{},
@@ -1421,7 +1421,7 @@ func (a *testAccount) GetKeysForProvider(ctx context.Context, providerKey schema
 	}
 	return []schemas.Key{
 		{
-			Value:  *schemas.NewEnvVar(apiKey),
+			Value:  *schemas.NewSecretVar(apiKey),
 			Models: schemas.WhiteList{"*"},
 			Weight: 1.0,
 		},
@@ -1520,9 +1520,9 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 // TestConfig holds configuration for test execution
 type TestConfig struct {
 	HTTPServerURL string
-	HTTPHeaders   map[string]schemas.EnvVar
+	HTTPHeaders   map[string]schemas.SecretVar
 	SSEServerURL  string
-	SSEHeaders    map[string]schemas.EnvVar
+	SSEHeaders    map[string]schemas.SecretVar
 	APIKey        string
 	Provider      schemas.ModelProvider
 	Model         string
@@ -1550,9 +1550,9 @@ func GetTestConfig(t *testing.T) *TestConfig {
 // loadTestConfig loads the actual configuration
 func loadTestConfig() *TestConfig {
 	// Parse HTTP headers from environment variable
-	// The EnvVar type has a custom UnmarshalJSON that handles both simple strings
-	// and the full EnvVar schema: {"value": "...", "env_var": "...", "from_env": false}
-	httpHeaders := make(map[string]schemas.EnvVar)
+	// The SecretVar type has a custom UnmarshalJSON that handles both simple strings
+	// and the full SecretVar schema: {"value": "...", "env_var": "...", "from_env": false}
+	httpHeaders := make(map[string]schemas.SecretVar)
 	if headersJSON := os.Getenv(EnvMCPHTTPHeaders); headersJSON != "" {
 		if err := json.Unmarshal([]byte(headersJSON), &httpHeaders); err != nil {
 			// Log error but continue - headers are optional
@@ -1561,7 +1561,7 @@ func loadTestConfig() *TestConfig {
 	}
 
 	// Parse SSE headers from environment variable
-	sseHeaders := make(map[string]schemas.EnvVar)
+	sseHeaders := make(map[string]schemas.SecretVar)
 	if headersJSON := os.Getenv(EnvMCPSSEHeaders); headersJSON != "" {
 		if err := json.Unmarshal([]byte(headersJSON), &sseHeaders); err != nil {
 			// Log error but continue - headers are optional
@@ -1601,7 +1601,7 @@ func applyTestConfigHeaders(t *testing.T, clientConfig *schemas.MCPClientConfig)
 	// Apply HTTP headers if this is an HTTP connection and headers are configured
 	if clientConfig.ConnectionType == schemas.MCPConnectionTypeHTTP && len(config.HTTPHeaders) > 0 {
 		if clientConfig.Headers == nil {
-			clientConfig.Headers = make(map[string]schemas.EnvVar)
+			clientConfig.Headers = make(map[string]schemas.SecretVar)
 		}
 		for key, value := range config.HTTPHeaders {
 			clientConfig.Headers[key] = value
@@ -1611,7 +1611,7 @@ func applyTestConfigHeaders(t *testing.T, clientConfig *schemas.MCPClientConfig)
 	// Apply SSE headers if this is an SSE connection and headers are configured
 	if clientConfig.ConnectionType == schemas.MCPConnectionTypeSSE && len(config.SSEHeaders) > 0 {
 		if clientConfig.Headers == nil {
-			clientConfig.Headers = make(map[string]schemas.EnvVar)
+			clientConfig.Headers = make(map[string]schemas.SecretVar)
 		}
 		for key, value := range config.SSEHeaders {
 			clientConfig.Headers[key] = value
@@ -1695,7 +1695,7 @@ func GetSampleCodeModeAgentClientConfig(t *testing.T, serverURL string) schemas.
 		ID:                 "test-codemode-client",
 		Name:               "TestCodeModeServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		IsCodeModeClient:   true,
 		ToolsToExecute:     []string{"*"},
 		ToolsToAutoExecute: []string{"executeToolCode", "listToolFiles", "readToolFile"},
@@ -1710,7 +1710,7 @@ func GetSampleHTTPClientConfigNoSpaces(serverURL string) schemas.MCPClientConfig
 		ID:                 "test-http-client",
 		Name:               "TestHTTPServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		ToolsToExecute:     []string{"*"}, // Allow all tools
 		ToolsToAutoExecute: []string{},    // No auto-execute by default
 	}

@@ -2588,12 +2588,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Handle errors
 			if chunk.BifrostError != nil {
 				var errorResponse interface{}
+				bifrostErr := lib.SanitizeBifrostErrorForClient(chunk.BifrostError)
+				if bifrostErr == nil {
+					bifrostErr = newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError)
+				}
 
 				// Use stream error converter if available, otherwise fallback to regular error converter
 				if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
-					errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, chunk.BifrostError)
+					errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, bifrostErr)
 				} else if config.ErrorConverter != nil {
-					errorResponse = config.ErrorConverter(bifrostCtx, chunk.BifrostError)
+					errorResponse = config.ErrorConverter(bifrostCtx, bifrostErr)
 				} else {
 					// Default error response
 					errorResponse = map[string]interface{}{
@@ -2805,9 +2809,12 @@ func newBedrockEventStreamException(exceptionType, message string) *bedrockEvent
 		exceptionType = "InternalServerException"
 	}
 
-	payloadJSON, err := sonic.Marshal(map[string]string{"message": message})
+	payloadJSON, err := sonic.Marshal(map[string]string{
+		"__type":  exceptionType,
+		"message": message,
+	})
 	if err != nil {
-		payloadJSON = []byte(`{"message":"An error occurred while processing your request"}`)
+		payloadJSON = []byte(fmt.Sprintf(`{"__type":%q,"message":"An error occurred while processing your request"}`, exceptionType))
 	}
 
 	return &bedrockEventStreamException{
