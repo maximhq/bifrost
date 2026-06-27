@@ -2172,7 +2172,10 @@ func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
 		RawRequestBody: rawBody,
 	}
 
-	result, bifrostErr := getRequestBodyForResponses(ctx, request, false, nil, false, false)
+	result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:    schemas.Anthropic,
+		IsStreaming: false,
+	})
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}

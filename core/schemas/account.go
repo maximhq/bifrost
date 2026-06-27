@@ -381,6 +381,8 @@ func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 		switch {
 		case IsAnthropicModel(s):
 			return ModelFamilyAnthropic
+		case IsOpenAIModel(s):
+			return ModelFamilyOpenAI
 		case IsMistralModel(s):
 			return ModelFamilyMistral
 		// Imagen and Veo are checked before Gemini as a defensive ordering:
@@ -440,6 +442,10 @@ func ResolveCanonicalModel(ctx *BifrostContext, fallbackModel string) string {
 // used when no alias is resolved in ctx — typically request.Model.
 func IsAnthropicModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyAnthropic
+}
+
+func IsOpenAIModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyOpenAI
 }
 
 // IsMistralModelFamily reports whether the current attempt resolves to the

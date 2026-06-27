@@ -298,6 +298,13 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		}
 	}
 
+	return provider.executeBedrockRequest(req)
+}
+
+// executeBedrockRequest sends an already-built (and authenticated) request via the
+// unary HTTP client, measures latency, and parses a Bedrock error envelope on non-200
+// responses. Used by completeRequest for the bedrock-runtime (Converse) path.
+func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Execute the request and measure latency
 	startTime := time.Now()
 	resp, err := provider.client.Do(req)
@@ -754,7 +761,7 @@ func signAWSRequest(
 // for this GET). Best-effort: returns nil on any failure so the foundation-model list is
 // still returned.
 func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
-	mURL := mantleURL(region, "", "models")
+	mURL := mantleOpenAIURL(region, "", "models")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
 	if err != nil {
 		provider.logger.Warn("failed to build mantle list-models request: %v", err)
@@ -1171,18 +1178,19 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 }
 
 // ChatCompletion performs a chat completion request to Bedrock's API.
-// It formats the request, sends it to Bedrock, and processes the response.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
-		return provider.chatCompletionViaMantle(ctx, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleChatCompletions(ctx, key, request)
 	}
 
-	// Use centralized Bedrock converter
+	// Use Bedrock Converse API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1192,8 +1200,6 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	// Format the path with proper model identifier
 	path, _ := provider.getModelPathAndRegion(ctx, "converse", request.Model, key)
 
 	// Create the signed request
@@ -1205,7 +1211,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// pool the response
+	// Parse Bedrock Converse API response
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
@@ -1220,8 +1226,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// Override finish reason for structured output
-	// When structured output is used, tool_use is expected but should appear as "stop" to the client
+	// Override finish reason for structured output (Converse API only)
 	if _, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 		if len(bifrostResponse.Choices) > 0 && bifrostResponse.Choices[0].FinishReason != nil {
 			if *bifrostResponse.Choices[0].FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
@@ -1234,12 +1239,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
-	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
-
-	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponse interface{}
 		if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
@@ -1263,17 +1265,19 @@ func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 }
 
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
-// It formats the request, sends it to Bedrock, and processes the streaming response.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse streaming API.
 // Returns a channel for streaming BifrostStreamChunk objects or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
-		return provider.chatCompletionStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleChatCompletionsStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
+	// Use Bedrock Converse streaming API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1285,6 +1289,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	}
 
 	startTime := time.Now()
+
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1358,13 +1363,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
-		var structuredOutputBuilder strings.Builder
-		var isAccumulatingStructuredOutput bool
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
+		var isAccumulatingStructuredOutput bool
+		var structuredOutputBuilder strings.Builder
 
 		for {
-			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
 				return
 			}
@@ -1413,7 +1417,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
-				// Parse the JSON event into our typed structure
+				// Converse API path: parse Bedrock Converse-specific stream events
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
@@ -1561,7 +1565,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 		normalizeUsage()
 
-		// Send final response
+		// Send final chunk with accumulated usage
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, request.Model, 0)
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1575,19 +1579,20 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return responseChan, nil
 }
 
-// Responses performs a chat completion request to Anthropic's API.
-// It formats the request, sends it to Anthropic, and processes the response.
+// Responses performs a responses request to Bedrock's API.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
-		return provider.responsesViaMantle(ctx, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleResponses(ctx, key, request)
 	}
 
-	// Use centralized Bedrock converter
+	// Use Bedrock Converse API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1597,8 +1602,6 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	// Format the path with proper model identifier
 	path, _ := provider.getModelPathAndRegion(ctx, "converse", request.Model, key)
 
 	// Create the signed request
@@ -1610,7 +1613,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// pool the response
+	// Parse Bedrock Converse API response
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
@@ -1655,10 +1658,11 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
-		return provider.responsesStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
+	// Use Bedrock Converse streaming API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1670,6 +1674,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	}
 
 	startTime := time.Now()
+
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1709,7 +1714,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		var streamTrace *BedrockConverseTrace
 		chunkIndex := 0
 
-		// Create stream state for stateful conversions
+		// Create stream state for stateful conversions (used by Converse API path)
 		streamState := acquireBedrockResponsesStreamState()
 		streamState.Model = &request.Model
 		streamState.Ctx = ctx
@@ -1740,7 +1745,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					return
 				}
 				if err == io.EOF {
-					// End of stream - finalize any open items
+					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -1801,7 +1806,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
-				// Parse the JSON event into our typed structure
+				// Converse API path: parse Bedrock Converse-specific stream events
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
