@@ -404,8 +404,8 @@ func TestResponsesStream_MessageStart_NoDuplicateOnPassthrough(t *testing.T) {
 		t.Fatalf("unmarshal message_start: %v", err)
 	}
 
-	state := acquireAnthropicResponsesStreamState()
-	defer releaseAnthropicResponsesStreamState(state)
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
 
 	responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, 0, state)
 	if bErr != nil {
