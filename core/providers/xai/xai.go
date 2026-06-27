@@ -140,6 +140,7 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 		provider.GetProviderKey(),
 		nil,
 		ParseXAIError,
+		nil,
 		provider.logger,
 	)
 }
@@ -166,6 +167,7 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		ParseXAIError,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
@@ -185,6 +187,7 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 		provider.GetProviderKey(),
 		nil,
 		ParseXAIError,
+		nil,
 		provider.logger,
 	)
 }
@@ -205,6 +208,7 @@ func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 		postHookRunner,
 		nil,
 		ParseXAIError,
+		nil,
 		nil,
 		nil,
 		provider.logger,

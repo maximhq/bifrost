@@ -122,6 +122,7 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 		p.GetProviderKey(),
 		nil,
 		parseOpencodeError,
+		nil,
 		p.logger,
 	)
 }
@@ -143,6 +144,7 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 		nil,
 		nil,
 		parseOpencodeError,
+		nil,
 		nil,
 		nil,
 		p.logger,

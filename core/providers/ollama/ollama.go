@@ -191,6 +191,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		provider.GetProviderKey(),
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -216,6 +217,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Ollama,
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
