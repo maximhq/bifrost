@@ -7,73 +7,116 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// AnthropicRequestBuildConfig controls how BuildAnthropicResponsesRequestBody
-// assembles the final JSON payload. Each Anthropic-family provider (Anthropic
-// native, Azure, Vertex) fills in only the fields relevant to it and leaves
-// the rest as zero values.
+// AnthropicRequestBuildConfig holds the dynamic, per-call inputs to
+// BuildAnthropic{Chat,Responses}RequestBody. The static, per-provider
+// request-shaping flags (DeleteModelField, AddAnthropicVersion, etc.) live in
+// AnthropicProviderRequestDefaultsMap and are looked up by Provider inside the
+// builder — callers do not pass them.
 type AnthropicRequestBuildConfig struct {
 	// Provider is used for feature-gating (field stripping, header injection,
-	// tool validation). Required.
+	// tool validation) and to look up static request-shaping defaults from
+	// AnthropicProviderRequestDefaultsMap. Required.
 	Provider schemas.ModelProvider
 
-	// Deployment overrides the model field. When empty the model is read from
-	// the request and normalised via ParseModelString (Anthropic native path).
-	// Azure and Vertex set this to the deployment/model name.
-	Deployment string
-
-	// DeleteModelField removes "model" from the output JSON body.
-	// Vertex passes model in the request URL, not the body.
-	// Ignored when IsCountTokens is true — count-tokens calls retain the model
-	// field so the provider can route to the correct endpoint.
-	DeleteModelField bool
-
-	// DeleteRegionField removes the "region" field (Vertex only).
-	DeleteRegionField bool
+	// Model overrides the model field. When empty the model is read from
+	// the request. Azure, Vertex, and Bedrock set this to the deployment /
+	// model name.
+	Model string
 
 	IsStreaming bool
 
-	// IsCountTokens enables token-counting mode (Vertex only): strips
-	// max_tokens and temperature from the body and keeps (or sets) the model
-	// field.
+	// IsCountTokens enables token-counting mode: strips max_tokens and
+	// temperature from the body and keeps (or sets) the model field.
 	IsCountTokens bool
 
-	// ExcludeFields lists JSON top-level keys to remove from the final body in
-	// both the raw and typed paths. Used by Anthropic's count-tokens call to
+	// ExcludeFields lists JSON top-level keys to remove from the final body
+	// in both raw and typed paths. Used by Anthropic native count-tokens to
 	// strip max_tokens and temperature after typed conversion.
 	ExcludeFields []string
 
+	// ValidateTools runs ValidateToolsForProvider before typed conversion,
+	// returning an error for any tool unsupported by the provider. Set true
+	// on Responses-API paths (the chat API doesn't carry ResponsesTool types).
+	ValidateTools bool
+
+	// BetaHeaderOverrides / ProviderExtraHeaders feed into the body-side
+	// anthropic_beta injection when the provider's defaults set
+	// InjectBetaHeadersIntoBody = true (Vertex only). Both come from the
+	// caller's NetworkConfig at request time.
+	BetaHeaderOverrides  map[string]bool
+	ProviderExtraHeaders map[string]string
+
+	// ShouldSendBackRawRequest / ShouldSendBackRawResponse control whether raw
+	// request/response bytes are attached to BifrostError.ExtraFields via
+	// providerUtils.EnrichError.
+	ShouldSendBackRawRequest  bool
+	ShouldSendBackRawResponse bool
+}
+
+// AnthropicProviderRequestDefaults captures the static, per-provider request-
+// shaping flags applied by BuildAnthropic{Chat,Responses}RequestBody.
+//
+// Keep this in lockstep with ProviderFeatures (utils.go) — together they
+// describe everything an Anthropic-family provider needs for request shaping.
+type AnthropicProviderRequestDefaults struct {
+	// DeleteModelField removes "model" from the output JSON body. Used by
+	// providers that put model in the URL (Vertex, Bedrock). Ignored when
+	// IsCountTokens is true — those calls retain model for routing.
+	DeleteModelField bool
+
+	// DeleteRegionField removes the "region" field from the body (Vertex only).
+	DeleteRegionField bool
+
+	// DeleteStreamField removes "stream" from the body unconditionally.
+	// Bedrock determines streaming via URL endpoint (invoke vs
+	// invoke-with-response-stream); the body must never carry a stream field.
+	DeleteStreamField bool
+
 	// AddAnthropicVersion injects "anthropic_version" into the body when the
-	// field is absent (Vertex only).
+	// field is absent (Vertex, Bedrock).
 	AddAnthropicVersion bool
 	AnthropicVersion    string
 
 	// StripCacheControlScope calls SetStripCacheControlScope(true) on the
-	// typed request struct before marshalling (Vertex typed path).
+	// typed request struct before marshalling (Vertex only).
 	StripCacheControlScope bool
 
-	// RemapToolVersions runs RemapRawToolVersionsForProvider on the raw body to
-	// downgrade unsupported tool type versions (Vertex raw path).
+	// RemapToolVersions runs RemapRawToolVersionsForProvider on the body to
+	// downgrade unsupported tool type versions (Vertex, Bedrock).
 	RemapToolVersions bool
 
 	// InjectBetaHeadersIntoBody serialises filtered beta headers into the JSON
-	// body as "anthropic_beta". Vertex embeds beta headers in the body rather
-	// than HTTP request headers.
+	// body as "anthropic_beta" (Vertex only — embeds in body, others use HTTP).
 	InjectBetaHeadersIntoBody bool
-	BetaHeaderOverrides       map[string]bool
-	ProviderExtraHeaders      map[string]string
+}
 
-	// ValidateTools runs ValidateResponsesToolsForProvider before typed
-	// conversion, silently dropping any tool unsupported by the provider (Azure,
-	// Vertex) so the request still reaches the provider without it. Mirrors the
-	// Chat path's strip-silently policy.
-	ValidateTools bool
-
-	// ShouldSendBackRawRequest / ShouldSendBackRawResponse control whether raw
-	// request/response bytes are attached to BifrostError.ExtraFields via
-	// providerUtils.EnrichError. Vertex honours per-provider send-back flags;
-	// Anthropic and Azure leave both false.
-	ShouldSendBackRawRequest  bool
-	ShouldSendBackRawResponse bool
+// AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
+// the static request-shaping defaults it needs. The builder reads from this
+// map directly using cfg.Provider — callers do not set these fields.
+var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicProviderRequestDefaults{
+	schemas.Anthropic: {},
+	schemas.Azure:     {},
+	// Bedrock Mantle native-Anthropic endpoint (/anthropic/v1/messages): the
+	// request is the native Anthropic Messages body, so model stays in the body
+	// (set to the bare Bedrock model id), the version is sent as an
+	// "anthropic-version" HTTP header rather than a body field, and stream is a
+	// body field. Tool type versions are still remapped to the canonical pair
+	// the hosted Claude generation expects.
+	schemas.Bedrock: {
+		RemapToolVersions: true,
+	},
+	// Vertex publisher endpoint: model + region in URL, anthropic_version
+	// required, beta headers in body (not HTTP), cache_control.scope stripped
+	// at marshal time, tool versions remapped.
+	schemas.Vertex: {
+		DeleteModelField:          true,
+		DeleteRegionField:         true,
+		AddAnthropicVersion:       true,
+		AnthropicVersion:          "vertex-2023-10-16",
+		StripCacheControlScope:    true,
+		RemapToolVersions:         true,
+		InjectBetaHeadersIntoBody: true,
+	},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
@@ -89,6 +132,8 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 	// capModel is the canonical model used for capability gating in the raw-body
 	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+
+	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
 		return providerUtils.EnrichError(
@@ -117,22 +162,22 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", cfg.Deployment)
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", cfg.Model)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		} else {
 			// Normal path: handle model field per provider.
-			if cfg.Deployment != "" {
-				if cfg.DeleteModelField {
-					// Vertex: model lives in the URL.
+			if cfg.Model != "" {
+				if defaults.DeleteModelField {
+					// Vertex/Bedrock: model lives in the URL.
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
 					if err != nil {
 						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 					}
 				} else {
 					// Azure: replace model with deployment name.
-					jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", cfg.Deployment)
+					jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", cfg.Model)
 					if err != nil {
 						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 					}
@@ -147,7 +192,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 			// Ensure max_tokens is present.
 			if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-				modelForTokens := cfg.Deployment
+				modelForTokens := cfg.Model
 				if modelForTokens == "" {
 					if r := providerUtils.GetJSONField(jsonBody, "model"); r.Exists() {
 						modelForTokens = r.String()
@@ -175,7 +220,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
-		if cfg.RemapToolVersions {
+		if defaults.RemapToolVersions {
 			// request.Model is the alias-resolved model id; pass it so
 			// computer-use / text-editor / bash tools get normalized to the
 			// canonical {type, name} pair Anthropic expects for the model's generation.
@@ -185,7 +230,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
-		if cfg.DeleteRegionField {
+		if defaults.DeleteRegionField {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -197,8 +242,8 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
-		if cfg.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", cfg.AnthropicVersion)
+		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -242,17 +287,24 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr("request body is not provided", nil, jsonBody)
 		}
 
-		if cfg.Deployment != "" {
-			reqBody.Model = cfg.Deployment
+		if cfg.Model != "" {
+			reqBody.Model = cfg.Model
 		}
 
-		if cfg.StripCacheControlScope {
+		if defaults.StripCacheControlScope {
 			reqBody.SetStripCacheControlScope(true)
 		}
 
 		if cfg.IsStreaming {
 			reqBody.Stream = schemas.Ptr(true)
 		}
+
+		// Strip request- and tool-level fields the target provider doesn't
+		// support. ToAnthropicResponsesRequest doesn't do this internally
+		// (unlike ToAnthropicChatRequest), so the builder must — keeping
+		// behaviour symmetric across raw and typed paths and across both
+		// chat/responses APIs.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
@@ -271,8 +323,8 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
-		if cfg.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", cfg.AnthropicVersion)
+		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -287,15 +339,15 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
-		} else if cfg.DeleteModelField {
-			// Vertex: model is in the URL, remove it from the body.
+		} else if defaults.DeleteModelField {
+			// Vertex/Bedrock: model is in the URL, remove it from the body.
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
 
-		if cfg.DeleteRegionField {
+		if defaults.DeleteRegionField {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -320,7 +372,235 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
-	if cfg.InjectBetaHeadersIntoBody {
+	if defaults.DeleteStreamField {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "stream")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
+	if defaults.InjectBetaHeadersIntoBody {
+		if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, cfg.ProviderExtraHeaders), cfg.Provider, cfg.BetaHeaderOverrides); len(betaHeaders) > 0 {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+	}
+
+	return jsonBody, nil
+}
+
+// BuildAnthropicChatRequestBody is the chat-completion analogue of
+// BuildAnthropicResponsesRequestBody, shared by Anthropic, Azure, Vertex, and
+// Bedrock for ChatCompletion / ChatCompletionStream paths. It mirrors the
+// responses pipeline (raw vs typed branching, field stripping, beta-header
+// injection, fallbacks deletion) but operates on BifrostChatRequest +
+// ToAnthropicChatRequest. IsCountTokens is not honoured here — count-tokens
+// is a Responses-API concept.
+func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest, cfg AnthropicRequestBuildConfig) ([]byte, *schemas.BifrostError) {
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+
+	// capModel is the canonical model used for capability gating in the raw-body
+	// path; the wire request.Model may be an opaque alias/deployment id.
+	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+
+	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
+
+	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		return providerUtils.EnrichError(
+			ctx,
+			providerUtils.NewBifrostOperationError(msg, err),
+			reqBody,
+			nil,
+			cfg.ShouldSendBackRawRequest,
+			cfg.ShouldSendBackRawResponse,
+		)
+	}
+
+	var jsonBody []byte
+	var err error
+
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		jsonBody = request.GetRawRequestBody()
+
+		if cfg.Model != "" {
+			if defaults.DeleteModelField {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+			} else {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", cfg.Model)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+			}
+		} else {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", request.Model)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
+			modelForTokens := cfg.Model
+			if modelForTokens == "" {
+				if r := providerUtils.GetJSONField(jsonBody, "model"); r.Exists() {
+					modelForTokens = r.String()
+				}
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(modelForTokens, AnthropicDefaultMaxTokens))
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		if cfg.IsStreaming {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
+		} else {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "stream")
+		}
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
+		jsonBody, err = StripAutoInjectableTools(jsonBody)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
+		if defaults.RemapToolVersions {
+			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, capModel)
+			if err != nil {
+				return nil, newErr(err.Error(), nil, jsonBody)
+			}
+		}
+
+		if defaults.DeleteRegionField {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
+		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		var probe AnthropicMessageRequest
+		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
+			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
+		}
+
+		for _, field := range cfg.ExcludeFields {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+	} else {
+		reqBody, convErr := ToAnthropicChatRequest(ctx, request)
+		if convErr != nil {
+			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
+		}
+		if reqBody == nil {
+			return nil, newErr("request body is not provided", nil, jsonBody)
+		}
+
+		if cfg.Model != "" {
+			reqBody.Model = cfg.Model
+		}
+
+		if defaults.StripCacheControlScope {
+			reqBody.SetStripCacheControlScope(true)
+		}
+
+		if cfg.IsStreaming {
+			reqBody.Stream = schemas.Ptr(true)
+		}
+
+		// Re-strip with cfg.Provider (canonical) in case the request was
+		// routed through a custom-provider alias whose name doesn't match
+		// the ProviderFeatures map entry. Idempotent — ToAnthropicChatRequest
+		// already strips using bifrostReq.Provider, so this only changes
+		// behaviour when the two diverge.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
+
+		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
+
+		jsonBody, err = providerUtils.MarshalSorted(reqBody)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
+		}
+
+		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+			extraParams := reqBody.GetExtraParams()
+			if len(extraParams) > 0 {
+				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+			}
+		}
+
+		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		if defaults.DeleteModelField {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		if defaults.DeleteRegionField {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
+		for _, field := range cfg.ExcludeFields {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+	}
+
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
+	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
+	if defaults.DeleteStreamField {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "stream")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
+	if defaults.InjectBetaHeadersIntoBody {
 		if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, cfg.ProviderExtraHeaders), cfg.Provider, cfg.BetaHeaderOverrides); len(betaHeaders) > 0 {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
 			if err != nil {
