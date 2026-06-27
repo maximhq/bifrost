@@ -419,6 +419,106 @@ When only `region` is set, Bifrost inherits credentials from the AWS SDK default
 
 </Tab>
 
+<Tab title="AWS Bedrock Mantle">
+
+### AWS Bedrock Mantle
+
+Bedrock Mantle requires `bedrock_mantle_key_config` with a **required** `region` (no default). It authenticates with AWS SigV4 or an optional Bearer API key. See the [Bedrock Mantle provider page](../../providers/supported-providers/bedrock-mantle) for model-ID details.
+
+<Tabs>
+<Tab title="Static Credentials">
+
+```json
+{
+  "providers": {
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "mantle-static",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_mantle_key_config": {
+            "region": "us-east-1",
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "session_token": "env.AWS_SESSION_TOKEN"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="IAM Role (instance profile / IRSA)">
+
+When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain - IRSA, EC2 instance profile, or `AWS_*` env vars.
+
+```json
+{
+  "providers": {
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "mantle-iam",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_mantle_key_config": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+To assume an IAM role before requests (works with both inherited and explicit credentials), add `role_arn` (and optionally `external_id` / `session_name`):
+
+```json
+{
+  "bedrock_mantle_key_config": {
+    "region": "us-west-2",
+    "role_arn": "env.AWS_ROLE_ARN",
+    "external_id": "env.AWS_EXTERNAL_ID",
+    "session_name": "bifrost-session"
+  }
+}
+```
+
+</Tab>
+<Tab title="API Key (Bearer)">
+
+Set the top-level `value` to a Bedrock Mantle API key and leave the SigV4 credentials empty (`region` is still required).
+
+```json
+{
+  "providers": {
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "mantle-api-key",
+          "value": "env.BEDROCK_MANTLE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_mantle_key_config": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+</Tab>
+
 <Tab title="Google Vertex AI">
 
 ### Google Vertex AI
