@@ -6039,7 +6039,10 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
 		return
 	}
-	if baseProvider == schemas.Anthropic || baseProvider == schemas.Vertex || baseProvider == schemas.Azure {
+	if baseProvider == schemas.Anthropic ||
+		baseProvider == schemas.Vertex ||
+		baseProvider == schemas.Azure ||
+		baseProvider == schemas.BedrockMantle {
 		return
 	}
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
