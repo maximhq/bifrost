@@ -1061,7 +1061,6 @@ const (
 	ResponsesMessageTypeComputerCallOutput   ResponsesMessageType = "computer_call_output"
 	ResponsesMessageTypeWebSearchCall        ResponsesMessageType = "web_search_call"
 	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
-	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
@@ -1221,68 +1220,6 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 		return str
 	}
 	return string(raw)
-}
-
-// MarshalJSON preserves the OpenAI wire-format distinction for tool-call
-// arguments: function_call emits a JSON string, while tool_search_call emits a
-// JSON object per the OpenAI Responses API spec. All other message types (which
-// carry no arguments) are marshaled as usual.
-func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	type Alias ResponsesMessage
-
-	clone := m
-	var argsValue interface{}
-	var execValue *string
-
-	isToolSearch := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall
-
-	if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Arguments != nil {
-		// Suppress Arguments from the embedded struct so it doesn't appear
-		// twice; we inject it below with the correct JSON type.
-		toolCopy := *clone.ResponsesToolMessage
-		toolCopy.Arguments = nil
-
-		argsStr := *m.ResponsesToolMessage.Arguments
-		if isToolSearch {
-			// tool_search_call.arguments must be a JSON object on the wire.
-			trimmed := strings.TrimSpace(argsStr)
-			if trimmed != "" && json.Valid([]byte(trimmed)) {
-				argsValue = json.RawMessage(trimmed)
-			} else {
-				argsValue = json.RawMessage("{}")
-			}
-		} else {
-			// function_call and all other tool types: emit as a JSON string.
-			argsValue = argsStr
-		}
-
-		if isToolSearch {
-			// Codex requires execution to always be present on tool_search_call.
-			// Suppress from toolCopy to avoid double-emit via the Alias, then
-			// inject via aux struct, defaulting to "client" when not set.
-			toolCopy.Execution = nil
-			if m.ResponsesToolMessage.Execution != nil {
-				execValue = m.ResponsesToolMessage.Execution
-			} else {
-				e := "client"
-				execValue = &e
-			}
-		}
-
-		clone.ResponsesToolMessage = &toolCopy
-	}
-
-	aux := struct {
-		Arguments interface{} `json:"arguments,omitempty"`
-		Execution *string     `json:"execution,omitempty"`
-		*Alias
-	}{
-		Arguments: argsValue,
-		Execution: execValue,
-		Alias:     (*Alias)(&clone),
-	}
-
-	return MarshalSorted(aux)
 }
 
 type ResponsesMessageRoleType string
@@ -1468,6 +1405,13 @@ type ResponsesToolMessage struct {
 	Execution *string                           `json:"execution,omitempty"` // tool_search_call execution mode (e.g. "client")
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
+	// Tools holds the discovered tools array for tool_search_output items.
+	// Uses []ResponsesTool so each entry's "type" field round-trips via the
+	// existing ResponsesTool marshal/unmarshal pipeline (namespace, function, etc.).
+	// Note: tool_search_output is a rawPreserved item type, so this field is not
+	// consulted by MarshalJSON for wire encoding (the verbatim bytes are re-emitted
+	// instead) — it exists for typed introspection/deep-copy of the parsed value.
+	Tools []ResponsesTool `json:"tools,omitempty"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
 

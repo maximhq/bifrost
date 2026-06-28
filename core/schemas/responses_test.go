@@ -258,65 +258,54 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 			if string(encoded) != items[name] {
 				t.Fatalf("[%s] expected item to round-trip verbatim\nwant: %s\ngot:  %s", name, items[name], encoded)
 			}
-			// execution field must survive unmarshal
-			if resp.Item.ResponsesToolMessage.Execution == nil || *resp.Item.ResponsesToolMessage.Execution != "client" {
-				t.Fatalf("[%s] expected execution=\"client\" after unmarshal, got %#v", name, resp.Item.ResponsesToolMessage.Execution)
-			}
+			// Note: Execution is not surfaced as a typed field for rawPreserved
+			// items (only Arguments is, for downstream consumers) — the
+			// byte-identical round-trip check above is what actually proves
+			// "execution" survives on the wire.
 		}
 	})
 }
-// TestResponsesMessageToolSearchCallMarshal verifies the round-trip wire format
-// for tool_search_call items. OpenAI sends arguments as a JSON object; after
-// Bifrost normalizes them into a *string on unmarshal, MarshalJSON must expand
-// them back to an object so the client receives the original wire format.
-// It also verifies that the required "execution" field is always emitted
-// (defaulting to "client" when not set), which Codex requires to execute
-// the tool search.
-func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
-	msgType := ResponsesMessageTypeToolSearchCall
 
-	t.Run("completed frame marshals arguments as json object", func(t *testing.T) {
-		args := `{"query":"observability","limit":10}`
-		msg := ResponsesMessage{
-			Type: &msgType,
-			ResponsesToolMessage: &ResponsesToolMessage{
-				Arguments: &args,
-			},
+// TestResponsesMessageToolSearchCallMarshal verifies the round-trip wire format
+// for tool_search_call items. tool_search_call is a rawPreserved item type (see
+// isRawPreservedItem): Bifrost re-emits the exact bytes it received rather than
+// reconstructing the item field-by-field, so the object-vs-string arguments shape
+// and the "execution" field survive byte-for-byte, whatever Codex originally sent.
+// Arguments is additionally surfaced as a *string on ResponsesToolMessage (see
+// setToolArguments) so downstream consumers that only read the typed field keep
+// working, without affecting the re-emitted wire bytes.
+func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
+	t.Run("completed frame round-trips arguments object and execution verbatim", func(t *testing.T) {
+		raw := []byte(`{"type":"tool_search_call","call_id":"call_1","execution":"client","arguments":{"query":"observability","limit":10}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal tool_search_call: %v", err)
+		}
+		// Arguments is additionally surfaced as a string for typed consumers.
+		if msg.Arguments == nil || *msg.Arguments != `{"query":"observability","limit":10}` {
+			t.Fatalf("expected Arguments surfaced as string, got: %v", msg.Arguments)
 		}
 		encoded, err := MarshalSorted(msg)
 		if err != nil {
 			t.Fatalf("marshal tool_search_call message: %v", err)
 		}
-		// arguments must be a JSON object, not a quoted string
-		if strings.Contains(string(encoded), `"arguments":"`) {
-			t.Fatalf("expected arguments as object, got string form: %s", encoded)
-		}
-		if !strings.Contains(string(encoded), `"arguments":{"query":"observability","limit":10}`) {
-			t.Fatalf("expected arguments object in output, got: %s", encoded)
-		}
-		// execution must always be present (codex requires it)
-		if !strings.Contains(string(encoded), `"execution":"client"`) {
-			t.Fatalf("expected execution=client in output, got: %s", encoded)
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
 		}
 	})
 
-	t.Run("in_progress empty-object frame marshals as empty json object", func(t *testing.T) {
-		args := `{}`
-		msg := ResponsesMessage{
-			Type: &msgType,
-			ResponsesToolMessage: &ResponsesToolMessage{
-				Arguments: &args,
-			},
+	t.Run("in_progress empty-object frame round-trips verbatim", func(t *testing.T) {
+		raw := []byte(`{"type":"tool_search_call","call_id":"call_2","execution":"client","arguments":{}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal in_progress tool_search_call: %v", err)
 		}
 		encoded, err := MarshalSorted(msg)
 		if err != nil {
 			t.Fatalf("marshal in_progress tool_search_call: %v", err)
 		}
-		if !strings.Contains(string(encoded), `"arguments":{}`) {
-			t.Fatalf("expected empty arguments object, got: %s", encoded)
-		}
-		if !strings.Contains(string(encoded), `"execution":"client"`) {
-			t.Fatalf("expected execution=client in in_progress frame, got: %s", encoded)
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
 		}
 	})
 
@@ -329,58 +318,27 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		if msg.Arguments == nil || *msg.Arguments != `{"query":"sentry grafana","limit":10}` {
 			t.Fatalf("unexpected arguments after unmarshal: %v", msg.Arguments)
 		}
-		if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Execution == nil || *msg.ResponsesToolMessage.Execution != "client" {
-			t.Fatalf("expected execution=client after unmarshal, got %#v", msg.ResponsesToolMessage)
-		}
 		encoded, err := MarshalSorted(msg)
 		if err != nil {
 			t.Fatalf("marshal tool_search_call after round-trip: %v", err)
 		}
-		if strings.Contains(string(encoded), `"arguments":"`) {
-			t.Fatalf("expected object form after round-trip, got string: %s", encoded)
-		}
-		if !strings.Contains(string(encoded), `"arguments":{"`) {
-			t.Fatalf("expected arguments object after round-trip, got: %s", encoded)
-		}
-		if !strings.Contains(string(encoded), `"execution":"client"`) {
-			t.Fatalf("expected execution=client preserved in round-trip, got: %s", encoded)
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
 		}
 	})
 
-	t.Run("execution defaults to client when not set on tool_search_call", func(t *testing.T) {
-		args := `{"query":"test"}`
-		msg := ResponsesMessage{
-			Type: &msgType,
-			ResponsesToolMessage: &ResponsesToolMessage{
-				Arguments: &args,
-				// Execution intentionally nil to verify the default
-			},
-		}
-		encoded, err := MarshalSorted(msg)
-		if err != nil {
-			t.Fatalf("marshal tool_search_call without execution: %v", err)
-		}
-		if !strings.Contains(string(encoded), `"execution":"client"`) {
-			t.Fatalf("expected execution to default to client, got: %s", encoded)
-		}
-	})
-
-	t.Run("execution is preserved when set to non-default value", func(t *testing.T) {
-		args := `{"query":"test"}`
-		exec := "server"
-		msg := ResponsesMessage{
-			Type: &msgType,
-			ResponsesToolMessage: &ResponsesToolMessage{
-				Arguments: &args,
-				Execution: &exec,
-			},
+	t.Run("execution value is preserved verbatim, not defaulted", func(t *testing.T) {
+		raw := []byte(`{"type":"tool_search_call","call_id":"call_3","execution":"server","arguments":{"query":"test"}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal tool_search_call: %v", err)
 		}
 		encoded, err := MarshalSorted(msg)
 		if err != nil {
 			t.Fatalf("marshal tool_search_call with custom execution: %v", err)
 		}
-		if !strings.Contains(string(encoded), `"execution":"server"`) {
-			t.Fatalf("expected execution=server to be preserved, got: %s", encoded)
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
 		}
 	})
 
@@ -512,6 +470,120 @@ func TestWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "code_execution_") {
 		t.Errorf("normalized JSON still contains code_execution_* fields:\n%s", encoded)
+	}
+}
+
+// TestResponsesMessageToolSearchOutputRoundTrip verifies that tool_search_output
+// items survive a Bifrost unmarshal → marshal round-trip with the tools array
+// (including the "type" field on each entry) preserved verbatim. This covers the
+// bug reported in GitHub issue #4713 where Bifrost dropped tools[*].type on the
+// inbound request leg.
+func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		raw        string
+		wantFields []string
+		wantAbsent []string
+	}{
+		{
+			name: "namespace tool type is preserved",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-1",
+				"tools": [
+					{
+						"type": "namespace",
+						"name": "mcp__codexself",
+						"description": "Codex self-tools",
+						"tools": [
+							{"type": "function", "name": "codex_reply", "description": "Reply with a message"}
+						]
+					}
+				]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-1"`,
+				`"type":"namespace"`,
+				`"name":"mcp__codexself"`,
+				`"type":"function"`,
+				`"name":"codex_reply"`,
+			},
+		},
+		{
+			name: "multiple tools with different types are preserved",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-2",
+				"tools": [
+					{"type": "namespace", "name": "mcp__tools", "tools": []},
+					{"type": "function", "name": "shell", "description": "Run shell commands"}
+				]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"type":"namespace"`,
+				`"name":"mcp__tools"`,
+				`"type":"function"`,
+				`"name":"shell"`,
+			},
+		},
+		{
+			name: "empty tools array round-trips cleanly",
+			raw:  `{"type":"tool_search_output","call_id":"search-3","tools":[]}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-3"`,
+			},
+		},
+		{
+			name: "tool_search_output preserves execution field verbatim (codex requires it)",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-4",
+				"execution": "client",
+				"tools": [{"type": "function", "name": "shell"}]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"execution":"client"`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var msg ResponsesMessage
+			if err := Unmarshal([]byte(tc.raw), &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			// Verify the type constant parsed correctly.
+			if msg.Type == nil || *msg.Type != ResponsesMessageTypeToolSearchOutput {
+				t.Fatalf("expected type tool_search_output, got %v", msg.Type)
+			}
+
+			encoded, err := MarshalSorted(msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(encoded)
+
+			for _, want := range tc.wantFields {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q in encoded output:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("unexpected %q present in encoded output:\n%s", absent, got)
+				}
+			}
+		})
 	}
 }
 
