@@ -1445,22 +1445,17 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
-	if provider.disableStore || IsChatGPTPassthrough(ctx) {
+	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	url := provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest)
-	if IsChatGPTPassthrough(ctx) {
-		url = ChatGPTCodexURL
-	}
-
 	return HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		url,
+		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
 		request,
 		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -1629,25 +1624,24 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
-	if provider.disableStore || IsChatGPTPassthrough(ctx) {
+	var authHeader map[string]string
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
+	}
+	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	streamURL := provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest)
-	if IsChatGPTPassthrough(ctx) {
-		streamURL = ChatGPTCodexURL
-	}
-
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
-		streamURL,
+		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
 		request,
-		BearerAuthHeader(key),
+		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

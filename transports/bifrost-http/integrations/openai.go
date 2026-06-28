@@ -761,6 +761,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					if _, ok := openai.ParseChatGPTJWT(token); ok {
 						bifrostCtx.SetValue(schemas.BifrostContextKeyChatGPTPassthrough, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyURLPath, openai.ChatGPTCodexURL)
 						existing, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
 						headers := make(map[string][]string, len(existing)+1)
 						for k, v := range existing {
