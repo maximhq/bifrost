@@ -1440,9 +1440,10 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
 
-	// Check if chat completion is allowed for this provider
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
-		return nil, err
+	if !IsChatGPTPassthrough(ctx) {
+		if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+			return nil, err
+		}
 	}
 
 	if provider.disableStore || IsChatGPTPassthrough(ctx) {
@@ -1620,9 +1621,10 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}
 
-	// Check if chat completion stream is allowed for this provider
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
-		return nil, err
+	if !IsChatGPTPassthrough(ctx) {
+		if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+			return nil, err
+		}
 	}
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
