@@ -1021,10 +1021,15 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 				trimmed := strings.TrimSpace(argsStr)
 				if trimmed == "" {
 					argsValue = json.RawMessage("{}")
-				} else if json.Valid([]byte(trimmed)) {
-					argsValue = json.RawMessage(trimmed)
 				} else {
-					return nil, fmt.Errorf("tool_search_call arguments must be valid JSON object text, got %q", argsStr)
+					if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+						return nil, fmt.Errorf("tool_search_call arguments must be valid JSON object text, got %q", argsStr)
+					}
+					var rawObject map[string]json.RawMessage
+					if err := json.Unmarshal([]byte(trimmed), &rawObject); err != nil {
+						return nil, fmt.Errorf("tool_search_call arguments must be valid JSON object text, got %q", argsStr)
+					}
+					argsValue = json.RawMessage(trimmed)
 				}
 			} else {
 				// function_call and all other tool types: emit as a JSON string.

@@ -380,19 +380,20 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 	})
 
 	t.Run("invalid non-empty tool_search_call arguments return error", func(t *testing.T) {
-		args := `{"query":`
-		msg := ResponsesMessage{
-			Type: &msgType,
-			ResponsesToolMessage: &ResponsesToolMessage{
-				Arguments: &args,
-			},
-		}
-		_, err := MarshalSorted(msg)
-		if err == nil {
-			t.Fatal("expected invalid tool_search_call arguments to return error")
-		}
-		if !strings.Contains(err.Error(), "tool_search_call arguments must be valid JSON object text") {
-			t.Fatalf("unexpected error: %v", err)
+		for _, args := range []string{`{"query":`, `[]`, `42`, `null`, `"query"`} {
+			msg := ResponsesMessage{
+				Type: &msgType,
+				ResponsesToolMessage: &ResponsesToolMessage{
+					Arguments: &args,
+				},
+			}
+			_, err := MarshalSorted(msg)
+			if err == nil {
+				t.Fatalf("expected invalid tool_search_call arguments %q to return error", args)
+			}
+			if !strings.Contains(err.Error(), "tool_search_call arguments must be valid JSON object text") {
+				t.Fatalf("unexpected error for %q: %v", args, err)
+			}
 		}
 	})
 
