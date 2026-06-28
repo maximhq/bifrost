@@ -840,13 +840,31 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ and the Claude Fable/Mythos family
-// (Fable post-dates Opus 4.8; the public doc lists Opus 4.8 but Fable supports
-// it as well). No beta header is required.
+// system messages). On Bifrost's built-in providers this is an Anthropic-API
+// feature only (not Bedrock or Vertex), supported on Claude Opus 4.8+ and the
+// Claude Fable/Mythos family (Fable post-dates Opus 4.8; the public doc lists
+// Opus 4.8 but Fable supports it as well). No beta header is required.
+//
+// It is also enabled for any CUSTOM provider (a provider key that is not one of
+// Bifrost's built-in providers) reaching this Anthropic converter. Such a
+// provider exists because the operator set base_provider_type to an
+// Anthropic-compatible base and pointed it at a self-hosted engine (sglang,
+// vLLM, TGI, llama.cpp, ...). Such engines are typically prefix/radix KV-cache
+// based and generally render role:"system" inline at any position via their
+// chat template, so keeping Claude Code's per-turn reminders inline -- rather
+// than hoisting them into the leading system block -- tends to preserve the
+// prefix cache instead of forking it every turn. Built-in non-Anthropic
+// providers (Bedrock, Vertex, Azure, ...) are unaffected: their keys are
+// standard, so they skip the custom-provider branch and are then rejected by
+// the provider != Anthropic guard below, keeping their historical behavior.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func SupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
+	// Custom provider reaching the Anthropic converter => operator chose an
+	// Anthropic-compatible base for a self-hosted engine; assume inline support.
+	if provider != "" && !schemas.IsStandardProvider(provider) {
+		return true
+	}
 	if provider != schemas.Anthropic {
 		return false
 	}

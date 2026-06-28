@@ -81,11 +81,35 @@ func UnregisterKnownProvider(provider ModelProvider) {
 	delete(knownProviders, string(provider))
 }
 
-// IsKnownProvider checks if a provider string is known.
+// IsKnownProvider checks if a provider string is known. This set is dynamic: it
+// includes custom providers registered at runtime via RegisterKnownProvider. For
+// a built-in-only check (excludes custom keys) use IsStandardProvider.
 func IsKnownProvider(provider string) bool {
 	knownProvidersMu.RLock()
 	defer knownProvidersMu.RUnlock()
 	return knownProviders[provider]
+}
+
+// standardProvidersSet is a set of the built-in (non-custom) provider keys,
+// built once from StandardProviders at package init time. Unlike knownProviders
+// it is never updated with custom provider keys, so it answers "is this a
+// built-in provider" rather than "is this a recognized provider".
+var standardProvidersSet = func() map[ModelProvider]struct{} {
+	m := make(map[ModelProvider]struct{}, len(StandardProviders))
+	for _, p := range StandardProviders {
+		m[p] = struct{}{}
+	}
+	return m
+}()
+
+// IsStandardProvider reports whether provider is one of Bifrost's built-in
+// providers. A custom provider's key (e.g. an operator-chosen name pointed at a
+// self-hosted Anthropic-compatible engine via base_provider_type) is NOT a
+// standard provider, even though its base type is. The empty provider ("") is
+// not standard and returns false.
+func IsStandardProvider(provider ModelProvider) bool {
+	_, ok := standardProvidersSet[provider]
+	return ok
 }
 
 // ParseModelString extracts provider and model from a model string.

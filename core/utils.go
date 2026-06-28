@@ -348,18 +348,10 @@ func IsSupportedBaseProvider(providerKey schemas.ModelProvider) bool {
 	return ok
 }
 
-var standardProvidersSet = func() map[schemas.ModelProvider]struct{} {
-	m := make(map[schemas.ModelProvider]struct{}, len(schemas.StandardProviders))
-	for _, p := range schemas.StandardProviders {
-		m[p] = struct{}{}
-	}
-	return m
-}()
-
 // IsStandardProvider reports whether providerKey is a built-in (non-custom) provider.
+// Forwards to schemas.IsStandardProvider so the built-in set has a single source of truth.
 func IsStandardProvider(providerKey schemas.ModelProvider) bool {
-	_, ok := standardProvidersSet[providerKey]
-	return ok
+	return schemas.IsStandardProvider(providerKey)
 }
 
 // IsStreamRequestType returns true if the given request type is a stream request.
