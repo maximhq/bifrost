@@ -391,6 +391,62 @@ func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
 	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
 }
 
+func TestGeminiChatCompletionRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
+func TestGeminiResponsesRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: schemas.Ptr("gs://my-bucket/xxx.png"),
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
 func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
 	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
 	callID := "call_1_ts_" + thoughtSig
