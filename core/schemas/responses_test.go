@@ -252,14 +252,20 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 			if *resp.Item.Arguments != want[name] {
 				t.Fatalf("[%s] expected arguments %q, got %q", name, want[name], *resp.Item.Arguments)
 			}
+			// execution field must survive unmarshal
+			if resp.Item.ResponsesToolMessage.Execution == nil || *resp.Item.ResponsesToolMessage.Execution != "client" {
+				t.Fatalf("[%s] expected execution=\"client\" after unmarshal, got %#v", name, resp.Item.ResponsesToolMessage.Execution)
+			}
 		}
 	})
 }
 // TestResponsesMessageToolSearchCallMarshal verifies the round-trip wire format
-
 // for tool_search_call items. OpenAI sends arguments as a JSON object; after
 // Bifrost normalizes them into a *string on unmarshal, MarshalJSON must expand
 // them back to an object so the client receives the original wire format.
+// It also verifies that the required "execution" field is always emitted
+// (defaulting to "client" when not set), which Codex requires to execute
+// the tool search.
 func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 	msgType := ResponsesMessageTypeToolSearchCall
 
@@ -282,6 +288,10 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		if !strings.Contains(string(encoded), `"arguments":{"query":"observability","limit":10}`) {
 			t.Fatalf("expected arguments object in output, got: %s", encoded)
 		}
+		// execution must always be present (codex requires it)
+		if !strings.Contains(string(encoded), `"execution":"client"`) {
+			t.Fatalf("expected execution=client in output, got: %s", encoded)
+		}
 	})
 
 	t.Run("in_progress empty-object frame marshals as empty json object", func(t *testing.T) {
@@ -299,16 +309,22 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		if !strings.Contains(string(encoded), `"arguments":{}`) {
 			t.Fatalf("expected empty arguments object, got: %s", encoded)
 		}
+		if !strings.Contains(string(encoded), `"execution":"client"`) {
+			t.Fatalf("expected execution=client in in_progress frame, got: %s", encoded)
+		}
 	})
 
 	t.Run("full round-trip from raw openai frame", func(t *testing.T) {
-		raw := []byte(`{"id":"tsc_abc","type":"tool_search_call","status":"completed","call_id":"call_xyz","arguments":{"query":"sentry grafana","limit":10}}`)
+		raw := []byte(`{"id":"tsc_abc","type":"tool_search_call","status":"completed","call_id":"call_xyz","execution":"client","arguments":{"query":"sentry grafana","limit":10}}`)
 		var msg ResponsesMessage
 		if err := Unmarshal(raw, &msg); err != nil {
 			t.Fatalf("unmarshal tool_search_call: %v", err)
 		}
 		if msg.Arguments == nil || *msg.Arguments != `{"query":"sentry grafana","limit":10}` {
 			t.Fatalf("unexpected arguments after unmarshal: %v", msg.Arguments)
+		}
+		if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Execution == nil || *msg.ResponsesToolMessage.Execution != "client" {
+			t.Fatalf("expected execution=client after unmarshal, got %#v", msg.ResponsesToolMessage)
 		}
 		encoded, err := MarshalSorted(msg)
 		if err != nil {
@@ -319,6 +335,46 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		}
 		if !strings.Contains(string(encoded), `"arguments":{"`) {
 			t.Fatalf("expected arguments object after round-trip, got: %s", encoded)
+		}
+		if !strings.Contains(string(encoded), `"execution":"client"`) {
+			t.Fatalf("expected execution=client preserved in round-trip, got: %s", encoded)
+		}
+	})
+
+	t.Run("execution defaults to client when not set on tool_search_call", func(t *testing.T) {
+		args := `{"query":"test"}`
+		msg := ResponsesMessage{
+			Type: &msgType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+				// Execution intentionally nil to verify the default
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call without execution: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"execution":"client"`) {
+			t.Fatalf("expected execution to default to client, got: %s", encoded)
+		}
+	})
+
+	t.Run("execution is preserved when set to non-default value", func(t *testing.T) {
+		args := `{"query":"test"}`
+		exec := "server"
+		msg := ResponsesMessage{
+			Type: &msgType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+				Execution: &exec,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call with custom execution: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"execution":"server"`) {
+			t.Fatalf("expected execution=server to be preserved, got: %s", encoded)
 		}
 	})
 
@@ -338,6 +394,10 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		// function_call arguments must remain a JSON string
 		if !strings.Contains(string(encoded), `"arguments":"{`) {
 			t.Fatalf("expected function_call arguments as string, got: %s", encoded)
+		}
+		// function_call must not emit execution
+		if strings.Contains(string(encoded), `"execution"`) {
+			t.Fatalf("execution must not appear in function_call output, got: %s", encoded)
 		}
 	})
 }

@@ -1000,16 +1000,18 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 
 	clone := m
 	var argsValue interface{}
+	var execValue *string
+
+	isToolSearch := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall
 
 	if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Arguments != nil {
 		// Suppress Arguments from the embedded struct so it doesn't appear
 		// twice; we inject it below with the correct JSON type.
 		toolCopy := *clone.ResponsesToolMessage
 		toolCopy.Arguments = nil
-		clone.ResponsesToolMessage = &toolCopy
 
 		argsStr := *m.ResponsesToolMessage.Arguments
-		if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall {
+		if isToolSearch {
 			// tool_search_call.arguments must be a JSON object on the wire.
 			trimmed := strings.TrimSpace(argsStr)
 			if trimmed != "" && json.Valid([]byte(trimmed)) {
@@ -1021,13 +1023,30 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 			// function_call and all other tool types: emit as a JSON string.
 			argsValue = argsStr
 		}
+
+		if isToolSearch {
+			// Codex requires execution to always be present on tool_search_call.
+			// Suppress from toolCopy to avoid double-emit via the Alias, then
+			// inject via aux struct, defaulting to "client" when not set.
+			toolCopy.Execution = nil
+			if m.ResponsesToolMessage.Execution != nil {
+				execValue = m.ResponsesToolMessage.Execution
+			} else {
+				e := "client"
+				execValue = &e
+			}
+		}
+
+		clone.ResponsesToolMessage = &toolCopy
 	}
 
 	aux := struct {
 		Arguments interface{} `json:"arguments,omitempty"`
+		Execution *string     `json:"execution,omitempty"`
 		*Alias
 	}{
 		Arguments: argsValue,
+		Execution: execValue,
 		Alias:     (*Alias)(&clone),
 	}
 
@@ -1209,6 +1228,7 @@ type ResponsesToolMessage struct {
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
+	Execution *string                           `json:"execution,omitempty"` // tool_search_call execution mode (e.g. "client")
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
 
