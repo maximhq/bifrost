@@ -21,7 +21,19 @@ const (
 	BifrostMCPClientName                = "BifrostClient"   // Name for internal Bifrost MCP client
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
-	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
+	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment (shared-connection startup/reconnect)
+	// MCPPerCallConnectTimeout bounds the PER-CALL ephemeral connect used by
+	// per-user-auth MCPs (AcquireClientConn). Every tool invocation opens a
+	// fresh upstream transport, so a dead/unreachable upstream must fail FAST
+	// here — reusing the 30s startup bound let a single dead per-user MCP add
+	// ~30s to EVERY tool call, stacking to the 90-120s OWUI per-turn stall.
+	MCPPerCallConnectTimeout = 5 * time.Second
+	// MCPPerCallConnectBreakerCooldown is how long a per-user client stays
+	// "circuit-broken" after a connect-acquisition failure: subsequent per-call
+	// connects fail INSTANTLY (skipping the connect attempt) until it elapses,
+	// so a dead upstream costs ~one MCPPerCallConnectTimeout per cooldown window
+	// instead of one per tool call. Auto-recovers (next call after cooldown retries).
+	MCPPerCallConnectBreakerCooldown = 30 * time.Second
 )
 
 // ============================================================================
@@ -32,19 +44,20 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx                  context.Context
-	logger               schemas.Logger                     // Logger instance for this manager
-	credStore            schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
-	toolsManager         *ToolsManager                      // Handler for MCP tools
-	server               *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap            map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
-	mu                   sync.RWMutex                       // Read-write mutex for thread-safe operations
-	serverRunning        bool                               // Track whether local MCP server is running
-	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
-	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
-	reconnectingClients  sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
-	bootClientConfigs    []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
-	connectOnce          sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	ctx                    context.Context
+	logger                 schemas.Logger                     // Logger instance for this manager
+	credStore              schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
+	toolsManager           *ToolsManager                      // Handler for MCP tools
+	server                 *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
+	clientMap              map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	mu                     sync.RWMutex                       // Read-write mutex for thread-safe operations
+	serverRunning          bool                               // Track whether local MCP server is running
+	healthMonitorManager   *HealthMonitorManager              // Manager for client health monitors
+	toolSyncManager        *ToolSyncManager                   // Manager for periodic tool synchronization
+	reconnectingClients    sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
+	perUserConnectFailures sync.Map                           // clientID -> time.Time of last per-call ephemeral connect failure (circuit-breaker for dead/unreachable per-user upstreams)
+	bootClientConfigs      []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
+	connectOnce            sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
