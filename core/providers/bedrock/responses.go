@@ -1519,6 +1519,41 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 	return responses
 }
 
+// buildBedrockTokenUsage maps Responses usage to Bedrock usage. Cached tokens are folded
+// into InputTokens upstream, so they are copied into the cache fields and subtracted back
+// out of InputTokens. Shared by the streaming and non-streaming converters to keep them in sync.
+func buildBedrockTokenUsage(usage *schemas.ResponsesResponseUsage) *BedrockTokenUsage {
+	if usage == nil {
+		return nil
+	}
+	out := &BedrockTokenUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.TotalTokens,
+	}
+	if usage.InputTokensDetails != nil {
+		if usage.InputTokensDetails.CachedReadTokens > 0 {
+			out.CacheReadInputTokens = usage.InputTokensDetails.CachedReadTokens
+			out.InputTokens -= usage.InputTokensDetails.CachedReadTokens
+		}
+		if usage.InputTokensDetails.CachedWriteTokens > 0 {
+			out.CacheWriteInputTokens = usage.InputTokensDetails.CachedWriteTokens
+			if d := usage.InputTokensDetails.CachedWriteTokenDetails; d != nil {
+				var cacheDetails []BedrockCacheWriteDetails
+				if d.CachedWriteTokens5m > 0 {
+					cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{InputTokens: d.CachedWriteTokens5m, TTL: BedrockCacheWriteTTL5m})
+				}
+				if d.CachedWriteTokens1h > 0 {
+					cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{InputTokens: d.CachedWriteTokens1h, TTL: BedrockCacheWriteTTL1h})
+				}
+				out.CacheDetails = &cacheDetails
+			}
+			out.InputTokens -= usage.InputTokensDetails.CachedWriteTokens
+		}
+	}
+	return out
+}
+
 // ToBedrockConverseStreamResponse converts a Bifrost Responses stream response to Bedrock streaming format
 // Returns a BedrockStreamEvent that represents the streaming event in Bedrock's format
 func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse) (*BedrockStreamEvent, error) {
@@ -1735,12 +1770,8 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		event.StopReason = &stopReason
 
 		// Add usage if available
-		if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
-			event.Usage = &BedrockTokenUsage{
-				InputTokens:  bifrostResp.Response.Usage.InputTokens,
-				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
-				TotalTokens:  bifrostResp.Response.Usage.TotalTokens,
-			}
+		if bifrostResp.Response != nil {
+			event.Usage = buildBedrockTokenUsage(bifrostResp.Response.Usage)
 		}
 
 		// Restore guardrail trace from provider extra fields
@@ -2731,37 +2762,8 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 	bedrockResp.StopReason = stopReason
 
 	// Convert usage stats
-	if bifrostResp.Usage != nil {
-		bedrockResp.Usage.InputTokens = bifrostResp.Usage.InputTokens
-		bedrockResp.Usage.OutputTokens = bifrostResp.Usage.OutputTokens
-		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
-
-		if bifrostResp.Usage.InputTokensDetails != nil {
-			if bifrostResp.Usage.InputTokensDetails.CachedReadTokens > 0 {
-				bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedReadTokens
-				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedReadTokens
-			}
-			if bifrostResp.Usage.InputTokensDetails.CachedWriteTokens > 0 {
-				bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
-				if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails != nil {
-					var cacheDetails []BedrockCacheWriteDetails
-					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m > 0 {
-						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
-							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m,
-							TTL:         BedrockCacheWriteTTL5m,
-						})
-					}
-					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h > 0 {
-						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
-							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h,
-							TTL:         BedrockCacheWriteTTL1h,
-						})
-					}
-					bedrockResp.Usage.CacheDetails = &cacheDetails
-				}
-				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
-			}
-		}
+	if bedrockUsage := buildBedrockTokenUsage(bifrostResp.Usage); bedrockUsage != nil {
+		bedrockResp.Usage = bedrockUsage
 	}
 
 	// Set metrics
