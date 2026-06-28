@@ -744,6 +744,8 @@ append_dynamic_mcp_clients_insert() {
     generate_model_parameters_insert_postgres "$now" "$faker_sql"
     generate_routing_targets_insert_postgres "$now" "$faker_sql"
     generate_pricing_overrides_insert_postgres "$now" "$faker_sql"
+    generate_mcp_library_insert_postgres "$now" "$faker_sql"
+    generate_skills_repo_tables_insert_postgres "$now" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
@@ -759,6 +761,8 @@ append_dynamic_mcp_clients_insert() {
     generate_model_parameters_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_routing_targets_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_pricing_overrides_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_mcp_library_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_skills_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
 }
@@ -1801,6 +1805,98 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.9 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # governance_budgets.model_config_id (added in v1.5.9 via add_budget_model_config_id_column)
+  if column_exists_postgres "governance_budgets" "model_config_id"; then
+    echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+    echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+  fi
+
+  # governance_budgets.customer_id (added in v1.5.9 via add_customer_budgets_to_budgets_table)
+  if column_exists_postgres "governance_budgets" "customer_id"; then
+    echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+    echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+  fi
+
+  # governance_customers.calendar_aligned (added in v1.5.9 via add_customer_calendar_aligned_column)
+  if column_exists_postgres "governance_customers" "calendar_aligned"; then
+    echo "UPDATE governance_customers SET calendar_aligned = false WHERE id = 'customer-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_customers SET calendar_aligned = false WHERE id = 'customer-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_model_configs.scope / scope_id (added in v1.5.9 via add_model_config_scope_columns)
+  # scope is set to the column default 'global'; scope_id stays NULL so the seeded rows keep
+  # satisfying the idx_model_scope_provider unique index
+  if column_exists_postgres "governance_model_configs" "scope"; then
+    echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_configs" "scope_id"; then
+    echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_model_configs.calendar_aligned (added in v1.5.9 via add_model_config_calendar_aligned_column)
+  if column_exists_postgres "governance_model_configs" "calendar_aligned"; then
+    echo "UPDATE governance_model_configs SET calendar_aligned = false WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_model_configs SET calendar_aligned = false WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.9 columns - log store tables
+  # -------------------------------------------------------------------------
+
+  # logs multi-team/BU/customer JSON-array columns (added in v1.5.9 via
+  # logs_add_multi_team_business_unit_columns and logs_add_customer_array_columns)
+  for arr_col in team_ids team_names customer_ids customer_names business_unit_ids business_unit_names; do
+    if column_exists_postgres "logs" "$arr_col"; then
+      echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+      echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+      echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+    fi
+  done
+
+  # -------------------------------------------------------------------------
+  # v1.5.10+ columns
+  # -------------------------------------------------------------------------
+
+  # framework_configs.mcp_library_url, mcp_library_sync_interval (added via add_mcp_library_config_columns)
+  # Seed the current version's defaults (modelcatalog.DefaultMCPLibraryURL / DefaultSyncInterval=24h)
+  # because the current version backfills these on startup; a NULL seed would diff before vs after.
+  if column_exists_postgres "framework_configs" "mcp_library_url"; then
+    echo "UPDATE framework_configs SET mcp_library_url = 'https://getbifrost.ai/mcp-library' WHERE id = 1;" >> "$output_file"
+  fi
+  if column_exists_postgres "framework_configs" "mcp_library_sync_interval"; then
+    echo "UPDATE framework_configs SET mcp_library_sync_interval = 86400 WHERE id = 1;" >> "$output_file"
+  fi
+
+  # governance_model_pricing.input_cost_per_token_fast, output_cost_per_token_fast (added via add_fast_mode_pricing_columns)
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_fast"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_fast"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # logs.canonical_model_name, alias_model_family (added via logs_add_canonical_model_columns)
+  if column_exists_postgres "logs" "canonical_model_name"; then
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_postgres "logs" "alias_model_family"; then
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2792,6 +2888,97 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.5.9 columns
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # governance_budgets.model_config_id (added in v1.5.9 via add_budget_model_config_id_column)
+    if column_exists_sqlite "$config_db" "governance_budgets" "model_config_id"; then
+      echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+      echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+    fi
+
+    # governance_budgets.customer_id (added in v1.5.9 via add_customer_budgets_to_budgets_table)
+    if column_exists_sqlite "$config_db" "governance_budgets" "customer_id"; then
+      echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+      echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+    fi
+
+    # governance_customers.calendar_aligned (added in v1.5.9 via add_customer_calendar_aligned_column)
+    if column_exists_sqlite "$config_db" "governance_customers" "calendar_aligned"; then
+      echo "UPDATE governance_customers SET calendar_aligned = 0 WHERE id = 'customer-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_customers SET calendar_aligned = 0 WHERE id = 'customer-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_model_configs.scope / scope_id (added in v1.5.9 via add_model_config_scope_columns)
+    # scope is set to the column default 'global'; scope_id stays NULL so the seeded rows keep
+    # satisfying the idx_model_scope_provider unique index
+    if column_exists_sqlite "$config_db" "governance_model_configs" "scope"; then
+      echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_configs" "scope_id"; then
+      echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_model_configs.calendar_aligned (added in v1.5.9 via add_model_config_calendar_aligned_column)
+    if column_exists_sqlite "$config_db" "governance_model_configs" "calendar_aligned"; then
+      echo "UPDATE governance_model_configs SET calendar_aligned = 0 WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_model_configs SET calendar_aligned = 0 WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+    fi
+
+    # -----------------------------------------------------------------------
+    # v1.5.10+ columns - config store tables
+    # -----------------------------------------------------------------------
+
+    # framework_configs.mcp_library_url, mcp_library_sync_interval (added via add_mcp_library_config_columns)
+    # Seed the current version's defaults (modelcatalog.DefaultMCPLibraryURL / DefaultSyncInterval=24h)
+    # because the current version backfills these on startup; a NULL seed would diff before vs after.
+    if column_exists_sqlite "$config_db" "framework_configs" "mcp_library_url"; then
+      echo "UPDATE framework_configs SET mcp_library_url = 'https://getbifrost.ai/mcp-library' WHERE id = 1;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "framework_configs" "mcp_library_sync_interval"; then
+      echo "UPDATE framework_configs SET mcp_library_sync_interval = 86400 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # governance_model_pricing fast-mode pricing columns (added via add_fast_mode_pricing_columns)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_fast"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_fast"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_fast = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  fi
+
+  # logs multi-team/BU/customer JSON-array columns (added in v1.5.9 via
+  # logs_add_multi_team_business_unit_columns and logs_add_customer_array_columns)
+  # Emitted unconditionally - logs table is in logs_db; fails silently on config_db
+  for arr_col in team_ids team_names customer_ids customer_names business_unit_ids business_unit_names; do
+    echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  done
+
+  # logs.canonical_model_name, alias_model_family (added via logs_add_canonical_model_columns).
+  # Guarded on the logs_db schema (in dynamic scope from the SQLite test runner) since these
+  # columns are newer than the oldest tested version, unlike the array columns above.
+  if column_exists_sqlite "$logs_db" "logs" "canonical_model_name"; then
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET canonical_model_name = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$logs_db" "logs" "alias_model_family"; then
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # ============================================================================
@@ -3345,6 +3532,95 @@ generate_prompt_repo_tables_insert_sqlite() {
   echo "INSERT INTO prompt_session_messages (prompt_id, session_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 0, '{\"role\":\"user\",\"content\":\"Test message in session\"}' FROM prompt_sessions WHERE prompt_id = 'prompt-migration-test-001' LIMIT 1 ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
+# Generate skills repository tables INSERTs for PostgreSQL
+# Tables (skills, skill_versions, skill_file_blobs, skill_files) were added via
+# migrationAddSkillsRepoTables. Files belong to versions; blobs are reused across versions.
+# FK order: skills -> skill_versions -> skill_file_blobs -> skill_files.
+generate_skills_repo_tables_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Check if skills table exists (indicator that skills repo tables exist)
+  if ! column_exists_postgres "skills" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+  echo "-- Skills Repository Tables (added via migrationAddSkillsRepoTables, dynamically generated)" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+
+  # skills (base table, no FK; name is unique)
+  echo "" >> "$output_file"
+  echo "-- skills (skill entity; every save creates a version snapshot)" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-001', 'migration-test-skill', 'A test skill for migration testing', 'MIT', '>=1.0.0', '{\"category\":\"test\"}', '{\"x-custom\":\"val\"}', 'Read,Write', '# Migration Test Skill\nDoes things.', '1.0.0', 'migration-tester', 'skill-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-002', 'migration-test-skill-2', 'Second test skill', NULL, NULL, NULL, NULL, NULL, '# Migration Test Skill 2', '2.0.0', NULL, 'skill-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_versions (references skills via skill_id; (skill_id, version) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_versions (immutable snapshot of a skill save)" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-001', 'skill-migration-test-001', '1.0.0', '# Migration Test Skill\nDoes things.', '{\"name\":\"migration-test-skill\"}', 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-002', 'skill-migration-test-002', '2.0.0', '# Migration Test Skill 2', NULL, NULL, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_file_blobs (fallback file bytes; no FK; data is bytea)
+  echo "" >> "$output_file"
+  echo "-- skill_file_blobs (fallback file bytes when object storage is unavailable)" >> "$output_file"
+  echo "INSERT INTO skill_file_blobs (id, data, created_at) VALUES ('skill-blob-migration-001', decode('48656c6c6f2c206d6967726174696f6e21', 'hex'), $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_files (references skill_versions via skill_version_id and optionally skill_file_blobs via blob_id; (skill_version_id, path) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_files (a file pointer for a skill version; points to a blob or external storage)" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-001', 'skill-version-migration-001', 'scripts/run.sh', 'blob', NULL, NULL, 'skill-blob-migration-001', 'text/x-shellscript', 18, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-002', 'skill-version-migration-002', 'reference/doc.md', 'url', 'https://example.com/doc.md', 'skills/skill-002/doc.md', NULL, 'text/markdown', 0, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate skills repository tables INSERTs for SQLite
+generate_skills_repo_tables_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  # Check if the table exists in the database
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  local table_exists
+  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skills';" 2>/dev/null || echo "0")
+
+  if [ "$table_exists" != "1" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+  echo "-- Skills Repository Tables (added via migrationAddSkillsRepoTables, dynamically generated)" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+
+  # skills (base table, no FK; name is unique)
+  echo "" >> "$output_file"
+  echo "-- skills (skill entity; every save creates a version snapshot)" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-001', 'migration-test-skill', 'A test skill for migration testing', 'MIT', '>=1.0.0', '{\"category\":\"test\"}', '{\"x-custom\":\"val\"}', 'Read,Write', '# Migration Test Skill\nDoes things.', '1.0.0', 'migration-tester', 'skill-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skills (id, name, description, license, compatibility, metadata, extra_frontmatter, allowed_tools, skill_md_body, latest_version, created_by, config_hash, created_at, updated_at) VALUES ('skill-migration-test-002', 'migration-test-skill-2', 'Second test skill', NULL, NULL, NULL, NULL, NULL, '# Migration Test Skill 2', '2.0.0', NULL, 'skill-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_versions (references skills via skill_id; (skill_id, version) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_versions (immutable snapshot of a skill save)" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-001', 'skill-migration-test-001', '1.0.0', '# Migration Test Skill\nDoes things.', '{\"name\":\"migration-test-skill\"}', 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_versions (id, skill_id, version, skill_md_body, frontmatter_snapshot, created_by, created_at) VALUES ('skill-version-migration-002', 'skill-migration-test-002', '2.0.0', '# Migration Test Skill 2', NULL, NULL, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_file_blobs (fallback file bytes; no FK; data is a BLOB)
+  echo "" >> "$output_file"
+  echo "-- skill_file_blobs (fallback file bytes when object storage is unavailable)" >> "$output_file"
+  echo "INSERT INTO skill_file_blobs (id, data, created_at) VALUES ('skill-blob-migration-001', X'48656c6c6f2c206d6967726174696f6e21', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # skill_files (references skill_versions via skill_version_id and optionally skill_file_blobs via blob_id; (skill_version_id, path) is unique)
+  echo "" >> "$output_file"
+  echo "-- skill_files (a file pointer for a skill version; points to a blob or external storage)" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-001', 'skill-version-migration-001', 'scripts/run.sh', 'blob', NULL, NULL, 'skill-blob-migration-001', 'text/x-shellscript', 18, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-002', 'skill-version-migration-002', 'reference/doc.md', 'url', 'https://example.com/doc.md', 'skills/skill-002/doc.md', NULL, 'text/markdown', 0, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
 # Generate per-user OAuth tables INSERTs for PostgreSQL
 # These tables were added in v1.5.0-prerelease4 via migrationAddPerUserOAuthTables
 generate_per_user_oauth_tables_insert_postgres() {
@@ -3727,6 +4003,68 @@ generate_pricing_overrides_insert_sqlite() {
   echo "-- governance_pricing_overrides (scoped pricing overrides - added in v1.5.0, dynamically generated)" >> "$output_file"
   echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-001', 'Migration Test Override Global', 'global', NULL, NULL, NULL, 'exact', 'gpt-4', '[]', '{\"input_cost_per_token\": 0.00001}', 'po-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
   echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-002', 'Migration Test Override VK', 'virtual_key', 'vk-migration-test-1', NULL, NULL, 'prefix', 'claude', '[]', '{\"output_cost_per_token\": 0.00002}', 'po-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate mcp_library INSERT for PostgreSQL (table added via add_mcp_library_table).
+# source/deleted_at are added later by add_mcp_library_source_columns, so they are
+# only included when present in the schema being tested.
+generate_mcp_library_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Skip if the table doesn't exist in this version's schema
+  if ! column_exists_postgres "mcp_library" "id"; then
+    return
+  fi
+
+  local cols="slug, name, description, category, connection_type, connection_url, stdio_config, auth_type, required_header_keys, icon_url, docs_url, publisher, tags, metadata, created_at, updated_at"
+  local vals="'migration-test-mcp-lib-001', 'Migration Test MCP Server', 'A test MCP library entry for migration testing', 'testing', 'http', 'https://mcp.example.com/sse', NULL, 'none', NULL, 'https://example.com/icon.png', 'https://example.com/docs', 'Migration Test Publisher', NULL, NULL, $now, $now"
+
+  # source/deleted_at added in add_mcp_library_source_columns. source='custom' so the
+  # remote sync never overwrites or prunes the test row.
+  if column_exists_postgres "mcp_library" "source"; then
+    cols="$cols, source"
+    vals="$vals, 'custom'"
+  fi
+  if column_exists_postgres "mcp_library" "deleted_at"; then
+    cols="$cols, deleted_at"
+    vals="$vals, NULL"
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- mcp_library (MCP server catalog - added via add_mcp_library_table, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO mcp_library ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate mcp_library INSERT for SQLite (table added via add_mcp_library_table).
+generate_mcp_library_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  if ! column_exists_sqlite "$config_db" "mcp_library" "id"; then
+    return
+  fi
+
+  local cols="slug, name, description, category, connection_type, connection_url, stdio_config, auth_type, required_header_keys, icon_url, docs_url, publisher, tags, metadata, created_at, updated_at"
+  local vals="'migration-test-mcp-lib-001', 'Migration Test MCP Server', 'A test MCP library entry for migration testing', 'testing', 'http', 'https://mcp.example.com/sse', NULL, 'none', NULL, 'https://example.com/icon.png', 'https://example.com/docs', 'Migration Test Publisher', NULL, NULL, $now, $now"
+
+  if column_exists_sqlite "$config_db" "mcp_library" "source"; then
+    cols="$cols, source"
+    vals="$vals, 'custom'"
+  fi
+  if column_exists_sqlite "$config_db" "mcp_library" "deleted_at"; then
+    cols="$cols, deleted_at"
+    vals="$vals, NULL"
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- mcp_library (MCP server catalog - added via add_mcp_library_table, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO mcp_library ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Validate faker column coverage for SQLite

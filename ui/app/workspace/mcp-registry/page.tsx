@@ -62,7 +62,7 @@ export default function MCPServersPage() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">
 			<MCPClientsTable
 				mcpClients={mcpClients}
 				totalCount={totalCount}

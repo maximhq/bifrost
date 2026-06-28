@@ -24,6 +24,10 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// testMigrationLogger is shared by migration tests that exercise migration
+// functions directly.
+var testMigrationLogger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
 // framework/docker-compose.yml.
 const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
@@ -728,7 +732,7 @@ func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
 					// Insert a provider with the old schema (no store_raw_request_response column)
 					err := db.Exec(`
 						INSERT INTO config_providers (
-							name, send_back_raw_request, send_back_raw_response, 
+							name, send_back_raw_request, send_back_raw_response,
 							config_hash, created_at, updated_at, encryption_status
 						) VALUES (?, ?, ?, ?, ?, ?, ?)
 					`, providerName, tt.sendBackRawRequest, tt.sendBackRawResponse, staleHash, now, now, "plain_text").Error
@@ -739,7 +743,7 @@ func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
 					assert.False(t, hasColumn, "store_raw_request_response column should not exist before migration")
 
 					// Run the migration
-					err = migrationAddStoreRawRequestResponseColumn(ctx, db)
+					err = migrationAddStoreRawRequestResponseColumn(ctx, db, testMigrationLogger)
 					require.NoError(t, err, "Migration should succeed")
 
 					// Verify column exists after migration
@@ -808,7 +812,7 @@ func TestMigrationAddStoreRawRequestResponseColumn_MultipleProviders(t *testing.
 			for _, p := range providers {
 				err := db.Exec(`
 					INSERT INTO config_providers (
-						name, send_back_raw_request, send_back_raw_response, 
+						name, send_back_raw_request, send_back_raw_response,
 						config_hash, created_at, updated_at, encryption_status
 					) VALUES (?, ?, ?, ?, ?, ?, ?)
 				`, p.name, p.sendBackRawRequest, p.sendBackRawResponse, "stale_hash", now, now, "plain_text").Error
@@ -816,7 +820,7 @@ func TestMigrationAddStoreRawRequestResponseColumn_MultipleProviders(t *testing.
 			}
 
 			// Run the migration
-			err := migrationAddStoreRawRequestResponseColumn(ctx, db)
+			err := migrationAddStoreRawRequestResponseColumn(ctx, db, testMigrationLogger)
 			require.NoError(t, err, "Migration should succeed")
 
 			// Verify each provider
@@ -854,14 +858,14 @@ func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
 			// Insert a provider
 			err := db.Exec(`
 				INSERT INTO config_providers (
-					name, send_back_raw_request, send_back_raw_response, 
+					name, send_back_raw_request, send_back_raw_response,
 					config_hash, created_at, updated_at, encryption_status
 				) VALUES (?, ?, ?, ?, ?, ?, ?)
 			`, providerName, true, false, "stale_hash", now, now, "plain_text").Error
 			require.NoError(t, err, "Failed to insert test provider")
 
 			// Run the migration first time
-			err = migrationAddStoreRawRequestResponseColumn(ctx, db)
+			err = migrationAddStoreRawRequestResponseColumn(ctx, db, testMigrationLogger)
 			require.NoError(t, err, "First migration should succeed")
 
 			// Get the hash after first migration
@@ -873,7 +877,7 @@ func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
 			require.NoError(t, err)
 
 			// Run the migration second time (should be idempotent)
-			err = migrationAddStoreRawRequestResponseColumn(ctx, db)
+			err = migrationAddStoreRawRequestResponseColumn(ctx, db, testMigrationLogger)
 			require.NoError(t, err, "Second migration should succeed (idempotent)")
 
 			// Verify hash is unchanged after second run
@@ -1020,7 +1024,7 @@ func TestMigrationDropDeploymentColumnsAndAddAliases_EncryptedRows(t *testing.T)
 	require.NoError(t, err)
 
 	// Run the aliases migration — this should NOT crash with base64 decode error.
-	err = migrationDropDeploymentColumnsAndAddAliases(ctx, db)
+	err = migrationDropDeploymentColumnsAndAddAliases(ctx, db, testMigrationLogger)
 	require.NoError(t, err, "migration should not crash on encrypted rows with plaintext deployment data")
 
 	// Verify aliases_json was populated and is readable via GORM hooks
@@ -1075,7 +1079,7 @@ func TestMigrationDropDeploymentColumnsAndAddAliases_BedrockEncrypted(t *testing
 	require.NoError(t, err)
 
 	// Run the aliases migration — should detect already-encrypted data and skip re-encryption
-	err = migrationDropDeploymentColumnsAndAddAliases(ctx, db)
+	err = migrationDropDeploymentColumnsAndAddAliases(ctx, db, testMigrationLogger)
 	require.NoError(t, err, "migration should handle already-encrypted bedrock deployments")
 
 	// Verify aliases_json was populated and is readable via GORM hooks (AfterFind decrypts)
@@ -1090,8 +1094,8 @@ func TestMigrationDropDeploymentColumnsAndAddAliases_BedrockEncrypted(t *testing
 	// Verify the aliases contain the original deployment data (not double-encrypted)
 	aliases := keys[0].Aliases
 	assert.Contains(t, aliases, "claude")
-	assert.Equal(t, "dep-claude", aliases["claude"])
-	assert.Equal(t, "dep-instant", aliases["claude-instant"])
+	assert.Equal(t, "dep-claude", aliases["claude"].ModelID)
+	assert.Equal(t, "dep-instant", aliases["claude-instant"].ModelID)
 }
 
 // ============================================================================
@@ -1119,7 +1123,7 @@ func setupFullMigrationDB(t *testing.T) (*RDBConfigStore, *gorm.DB) {
 	require.NoError(t, err, "Failed to create test database")
 
 	ctx := context.Background()
-	err = triggerMigrations(ctx, db)
+	err = triggerMigrations(ctx, db, testMigrationLogger)
 	require.NoError(t, err, "triggerMigrations should succeed on a fresh DB")
 
 	store := &RDBConfigStore{logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
@@ -1174,11 +1178,11 @@ func TestTriggerMigrations_Idempotent(t *testing.T) {
 	ctx := context.Background()
 
 	// First run
-	err = triggerMigrations(ctx, db)
+	err = triggerMigrations(ctx, db, testMigrationLogger)
 	require.NoError(t, err, "first triggerMigrations should succeed")
 
 	// Second run – must be a no-op, not an error.
-	err = triggerMigrations(ctx, db)
+	err = triggerMigrations(ctx, db, testMigrationLogger)
 	require.NoError(t, err, "second triggerMigrations should succeed (idempotent)")
 
 	// Tables should still be intact
@@ -1200,7 +1204,7 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 			{
 				ID:     "key-uuid-1",
 				Name:   "openai-primary",
-				Value:  *schemas.NewEnvVar("sk-test-secret-key-12345"),
+				Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			},
@@ -1293,7 +1297,7 @@ func TestFullMigration_MCPClientCRUD(t *testing.T) {
 		ID:               "mcp-client-001",
 		Name:             "test_mcp_server",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.example.com/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.example.com/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	}
 
@@ -1386,7 +1390,7 @@ func TestFullMigration_EncryptPlaintextRows(t *testing.T) {
 	var key tables.TableKey
 	err = db.Where("key_id = ?", "pk-1").First(&key).Error
 	require.NoError(t, err)
-	assert.Equal(t, "sk-plaintext-secret", key.Value.GetValue())
+	assert.Equal(t, "sk-plaintext-secret", key.Value.Val)
 
 	var vk tables.TableVirtualKey
 	err = db.Where("id = ?", "vk-plain-1").First(&vk).Error
@@ -1417,7 +1421,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 			Keys: []schemas.Key{{
 				ID:     p.keyID,
 				Name:   p.keyName,
-				Value:  *schemas.NewEnvVar(p.keyValue),
+				Value:  *schemas.NewSecretVar(p.keyValue),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			}},
@@ -1444,7 +1448,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		ID:               "mcp-e2e-1",
 		Name:             "e2e_mcp_client",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.e2e.test/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.e2e.test/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	})
 	require.NoError(t, err)
@@ -1504,11 +1508,11 @@ func setupPreEncryptionDB(t *testing.T) *gorm.DB {
 
 	ctx := context.Background()
 	// Run the initial migration to create core tables
-	err = migrationInit(ctx, db)
+	err = migrationInit(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 	// Sessions table is created by a later migration, but required by the
 	// encryption columns migration.
-	err = migrationAddSessionsTable(ctx, db)
+	err = migrationAddSessionsTable(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	return db
@@ -1544,7 +1548,7 @@ func TestMigrationAddEncryptionColumns(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run the encryption columns migration
-	err = migrationAddEncryptionColumns(ctx, db)
+	err = migrationAddEncryptionColumns(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// Verify encryption_status column exists and is backfilled on all 9 tables
@@ -1593,7 +1597,7 @@ func TestMigrationAddEncryptionColumns(t *testing.T) {
 	assert.Nil(t, tokenHash, "token_hash should be NULL, not empty string")
 
 	// Idempotency: running again should not error
-	err = migrationAddEncryptionColumns(ctx, db)
+	err = migrationAddEncryptionColumns(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 }
 
@@ -1639,7 +1643,7 @@ func TestMigrationCleanupMCPClientToolsConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run the cleanup migration
-	err = migrationCleanupMCPClientToolsConfig(ctx, db)
+	err = migrationCleanupMCPClientToolsConfig(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// Verify: empty/null → ["*"], existing values preserved
@@ -1720,7 +1724,7 @@ func TestMigrationAddConfigHashColumn(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run the migration
-	err = migrationAddConfigHashColumn(ctx, db)
+	err = migrationAddConfigHashColumn(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// Verify config_hash column exists
@@ -1771,7 +1775,7 @@ func TestMigrationBackfillEmptyVirtualKeyConfigs(t *testing.T) {
 	assert.Equal(t, int64(0), provConfigCount, "should have no provider configs before migration")
 
 	// Run the migration
-	err = migrationBackfillEmptyVirtualKeyConfigs(ctx, db)
+	err = migrationBackfillEmptyVirtualKeyConfigs(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// Verify provider configs were created for the VK
@@ -1791,6 +1795,54 @@ func TestMigrationBackfillEmptyVirtualKeyConfigs(t *testing.T) {
 		Where("id = ?", "vk-backfill-1").Scan(&vkHash).Error
 	require.NoError(t, err)
 	assert.NotEmpty(t, vkHash, "VK config_hash should be recomputed after backfill")
+}
+
+func TestTriggerMigrationsAddsVKProviderConfigBlacklistColumnBeforeBackfill(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Simulate an existing DB that has provider configs but predates the
+	// provider-config blacklisted_models migration. This matches upgrades where
+	// backfill_empty_virtual_key_configs has not run yet.
+	require.NoError(t, db.Exec(`DELETE FROM migrations WHERE id IN (
+		'add_vk_provider_config_blacklisted_models_column',
+		'backfill_vk_provider_config_blacklisted_models',
+		'backfill_empty_virtual_key_configs'
+	)`).Error)
+
+	if db.Migrator().HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"))
+	}
+	require.False(t, db.Migrator().HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"))
+
+	err := db.Exec(`INSERT INTO config_providers (name, encryption_status, created_at, updated_at)
+		VALUES ('legacy-openai', 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	err = db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, is_active, encryption_status, created_at, updated_at)
+		VALUES ('vk-legacy-missing-blacklist', 'legacy-vk', 'vk-value', true, 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	err = triggerMigrations(ctx, db, testMigrationLogger)
+	require.NoError(t, err)
+
+	require.True(t, db.Migrator().HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"))
+
+	var providerConfigCount int64
+	err = db.Table("governance_virtual_key_provider_configs").
+		Where("virtual_key_id = ?", "vk-legacy-missing-blacklist").
+		Count(&providerConfigCount).Error
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), providerConfigCount)
+
+	var blacklistedModels string
+	err = db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").
+		Where("virtual_key_id = ?", "vk-legacy-missing-blacklist").
+		Scan(&blacklistedModels).Error
+	require.NoError(t, err)
+	assert.Equal(t, "[]", blacklistedModels)
 }
 
 func TestMigrationBackfillAllowedModelsWildcard(t *testing.T) {
@@ -1828,7 +1880,7 @@ func TestMigrationBackfillAllowedModelsWildcard(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run the migration
-	err = migrationBackfillAllowedModelsWildcard(ctx, db)
+	err = migrationBackfillAllowedModelsWildcard(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// Verify provider config allowed_models changed to ["*"]
@@ -1870,7 +1922,7 @@ func TestMigrationRemoveServerPrefixFromMCPTools(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run the migration
-	err = migrationRemoveServerPrefixFromMCPTools(ctx, db)
+	err = migrationRemoveServerPrefixFromMCPTools(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// Verify tools had prefixes stripped
@@ -1918,7 +1970,7 @@ func TestMigrationRemoveServerPrefixFromMCPTools_Collision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run the migration — should not error, collision is handled
-	err = migrationRemoveServerPrefixFromMCPTools(ctx, db)
+	err = migrationRemoveServerPrefixFromMCPTools(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// The collision drops the duplicate, keeping "read" once
@@ -1974,7 +2026,7 @@ func TestMigrationReplaceEnableLiteLLMWithCompatColumns(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run the migration
-	err = migrationReplaceEnableLiteLLMWithCompatColumns(ctx, db)
+	err = migrationReplaceEnableLiteLLMWithCompatColumns(ctx, db, testMigrationLogger)
 	require.NoError(t, err)
 
 	// Verify new columns exist
@@ -2162,7 +2214,7 @@ func TestMigrationCalendarAligned_AddColumnsAndBackfill(t *testing.T) {
 	insertBudgetRaw(t, db, "budget-orphan", nil)
 
 	// Run the migration.
-	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db, testMigrationLogger),
 		"migration should succeed")
 
 	// Post-condition: columns exist.
@@ -2240,7 +2292,7 @@ func TestMigrationCalendarAligned_StaleRateLimitID(t *testing.T) {
 	insertBudgetRaw(t, db, "budget-ok", &vkOKID)
 
 	// Migration must NOT return an error despite the stale reference.
-	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db, testMigrationLogger),
 		"stale rate_limit_id should be skipped, not abort the migration")
 
 	// The VK with the stale ref still has its budgets backfilled.
@@ -2271,9 +2323,9 @@ func TestMigrationCalendarAligned_Idempotent(t *testing.T) {
 	insertVKRaw(t, db, vkID, "vk-1", "vk-1-value", &rl, true)
 	insertBudgetRaw(t, db, "budget-1", &vkID)
 
-	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db, testMigrationLogger),
 		"first run should succeed")
-	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db, testMigrationLogger),
 		"second run should be a no-op")
 }
 
@@ -2294,7 +2346,7 @@ func TestMigrationAddMultiBudgetTables_DropsLegacyBudgetColumnsAndBackfillsOwner
 	require.True(t, mig.HasColumn("governance_virtual_keys", "budget_id"))
 	require.True(t, mig.HasColumn("governance_virtual_key_provider_configs", "budget_id"))
 
-	require.NoError(t, migrationAddMultiBudgetTables(ctx, db))
+	require.NoError(t, migrationAddMultiBudgetTables(ctx, db, testMigrationLogger))
 
 	assert.False(t, mig.HasColumn("governance_virtual_keys", "budget_id"), "vk budget_id should be dropped by migration")
 	assert.False(t, mig.HasColumn("governance_virtual_key_provider_configs", "budget_id"), "provider config budget_id should be dropped by migration")
@@ -2323,7 +2375,7 @@ func TestMigrationAddTeamBudgetsToBudgetsTable_DropsLegacyBudgetColumnAndBackfil
 
 	require.True(t, mig.HasColumn("governance_teams", "budget_id"))
 
-	require.NoError(t, migrationAddTeamBudgetsToBudgetsTable(ctx, db))
+	require.NoError(t, migrationAddTeamBudgetsToBudgetsTable(ctx, db, testMigrationLogger))
 
 	assert.False(t, mig.HasColumn("governance_teams", "budget_id"), "team budget_id should be dropped by migration")
 
@@ -2348,7 +2400,7 @@ func TestMigrationAddModelConfigBudgetsFKConstraint_CascadesOnDelete(t *testing.
 	dsn := fmt.Sprintf("file:fkcascade_%d?mode=memory&cache=shared&_foreign_keys=on", n)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
-	require.NoError(t, triggerMigrations(ctx, db))
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger))
 
 	require.True(t, db.Migrator().HasConstraint(&tables.TableModelConfig{}, "Budgets"),
 		"model_config -> budgets FK should exist after the migration chain")
@@ -2391,7 +2443,7 @@ func TestMigrationAddModelConfigBudgetsFKConstraint_PreCleansOrphans(t *testing.
 	ghost := "mc-ghost"
 	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-orphan", MaxLimit: 1, ResetDuration: "1h", LastReset: now, ModelConfigID: &ghost, CreatedAt: now, UpdatedAt: now}).Error)
 
-	require.NoError(t, migrationAddModelConfigBudgetsFKConstraint(ctx, db))
+	require.NoError(t, migrationAddModelConfigBudgetsFKConstraint(ctx, db, testMigrationLogger))
 
 	var orphan, liveB int64
 	require.NoError(t, db.Model(&tables.TableBudget{}).Where("id = ?", "b-orphan").Count(&orphan).Error)
@@ -2484,7 +2536,7 @@ func TestMigrationAddModelConfigScopeColumns(t *testing.T) {
 	assert.False(t, db.Migrator().HasColumn(mc, "scope_id"), "scope_id column should not exist yet")
 	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_provider"), "old index should exist before migration")
 
-	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db))
+	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db, testMigrationLogger))
 
 	// Post-migration state.
 	assert.True(t, db.Migrator().HasColumn(mc, "scope"), "scope column should exist after migration")
@@ -2503,7 +2555,7 @@ func TestMigrationAddModelConfigScopeColumns(t *testing.T) {
 	assert.Nil(t, scopeID, "global scope rows must have NULL scope_id")
 
 	// Idempotency: running again must be a no-op (no error, state unchanged).
-	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db))
+	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db, testMigrationLogger))
 	assert.True(t, db.Migrator().HasColumn(mc, "scope"))
 	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_scope_provider"))
 	assert.False(t, db.Migrator().HasIndex(mc, "idx_model_provider"))
@@ -2524,7 +2576,7 @@ func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
 	require.NoError(t, db.Create(&tables.TableRateLimit{ID: "rl1", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), TokenLastReset: now, RequestLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
 	require.NoError(t, db.Create(&tables.TableProvider{Name: "openai", BudgetID: schemas.Ptr("b1"), RateLimitID: schemas.Ptr("rl1"), CreatedAt: now, UpdatedAt: now}).Error)
 
-	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db, testMigrationLogger))
 
 	// A (global, openai, '*') model config now exists reusing the same budget/rate-limit IDs.
 	var mc tables.TableModelConfig
@@ -2541,7 +2593,7 @@ func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
 	assert.Nil(t, prov.RateLimitID, "provider rate_limit_id should be cleared")
 
 	// Idempotency: re-run creates no duplicate wildcard row.
-	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db, testMigrationLogger))
 	var count int64
 	require.NoError(t, db.Model(&tables.TableModelConfig{}).
 		Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").

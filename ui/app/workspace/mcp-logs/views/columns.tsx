@@ -96,6 +96,15 @@ export const createMCPColumns = (
 			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
 		},
 	},
+	{
+		id: "virtual_key",
+		header: "Virtual Key",
+		size: 170,
+		cell: ({ row }) => {
+			const value = row.original.virtual_key?.name ?? row.original.virtual_key_name ?? row.original.virtual_key_id;
+			return <div className="max-w-[180px] truncate font-mono text-xs">{value || "-"}</div>;
+		},
+	},
 	...(hasDeleteAccess
 		? [
 				{

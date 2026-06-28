@@ -12,27 +12,15 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
 // AnthropicRouter handles Anthropic-compatible API endpoints
 type AnthropicRouter struct {
 	*GenericRouter
-}
-
-// anthropicModelGetter extracts the model field from any Anthropic integration request type.
-// It is called after body parsing, so req is fully populated.
-func anthropicModelGetter(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
-	switch r := req.(type) {
-	case *anthropic.AnthropicTextRequest:
-		return r.Model, nil
-	case *anthropic.AnthropicMessageRequest:
-		return r.Model, nil
-	}
-	return "", nil
 }
 
 // createAnthropicCompleteRouteConfig creates a route configuration for the `/v1/complete` endpoint.
@@ -47,7 +35,6 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
-		GetRequestModel: anthropicModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 				return &schemas.BifrostRequest{
@@ -88,7 +75,6 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
-			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
@@ -320,19 +306,9 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		// Check if model parameter explicitly has `anthropic/` prefix
-		if provider == schemas.Anthropic {
-			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
-			r.Model = model
-		}
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		// Check if model parameter explicitly has `anthropic/` prefix
-		if provider == schemas.Anthropic {
-			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
-			r.Model = model
-		}
 	}
 
 	headers := extractHeadersFromRequest(ctx)
@@ -376,6 +352,7 @@ func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelPro
 func isClaudeModel(model, alias, provider string) bool {
 	return (provider == string(schemas.Anthropic) ||
 		(provider == "" && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))) ||
+		(provider == string(schemas.BedrockMantle) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
 		(provider == string(schemas.Vertex) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
 		(provider == string(schemas.Azure) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))
 }
@@ -425,7 +402,6 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
-			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)

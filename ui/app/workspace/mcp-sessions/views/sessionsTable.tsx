@@ -208,10 +208,7 @@ export default function SessionsTable({
 							<TableRow>
 								<TableCell colSpan={7} className="h-24 text-center">
 									{hasActiveFilters ? (
-										<div className="text-muted-foreground text-sm">
-										No sessions match these filters.
-								
-										</div>
+										<div className="text-muted-foreground text-sm">No sessions match these filters.</div>
 									) : (
 										<span className="text-muted-foreground text-sm">
 											No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication

@@ -1,0 +1,276 @@
+---
+title: "Migrating from LiteLLM"
+description: "Automatically migrate models, keys, organizations, teams, users, and virtual keys from a LiteLLM proxy to Bifrost."
+icon: "right-left"
+---
+
+## Overview
+
+The LiteLLM migration tool reads the entities from a running LiteLLM proxy and recreates them in Bifrost through the management API. It is a one-time, operator-run migration: point it at your LiteLLM deployment and your Bifrost gateway, and it will provision the equivalent providers, keys, governance entities, and virtual keys.
+
+It is distributed as an npx package:
+
+```bash
+npx @maximhq/bifrost-migration-cli
+```
+
+- Read from LiteLLM APIs - reads from the LiteLLM management API, the LiteLLM `config.yaml`, and (optionally) the LiteLLM Postgres database. Both files and the database are needed because the management API masks secrets.
+- **Dry-run first** - set `DRY_RUN=1` to print a full migration plan and report without writing anything to Bifrost.
+- **Idempotent** - re-running is safe. Entities that already exist (HTTP 409) are treated as success, and custom-provider names are deterministic.
+- **Fault tolerant** - a single bad record is logged and counted, but does not abort the rest of the migration.
+
+<Note>
+This page covers the data migration tool, which moves your LiteLLM configuration and governance entities into Bifrost. If you instead want to keep using the LiteLLM SDK and point it at Bifrost, see the [LiteLLM SDK integration](/integrations/litellm-sdk).
+</Note>
+
+---
+
+## What gets migrated
+
+The tool migrates five entity types. They are processed in dependency order so that owner links resolve correctly:
+
+| Order | LiteLLM source | Bifrost target | Notes |
+|-------|----------------|----------------|-------|
+| 1 | Model deployments | Providers, provider keys, global model configs | Resolves credentials, structured Azure/Bedrock/Vertex creds, vllm/ollama per-key URLs, and custom providers |
+| 2 | Organizations | Customers | `organization_alias` becomes name |
+| 3 | Teams | Teams | Linked to the migrated customer via the org alias |
+| 4 | Internal users | Users + team memberships | Email required |
+| 5 | Virtual keys | Virtual keys | Owner is a team **or** customer; model allow-lists folded onto the VK |
+
+Models are migrated first so that virtual keys can attach to concrete provider keys by ID. Organizations are migrated before teams (a team links to its customer), and teams before users (a user links to its teams).
+
+---
+
+## Prerequisites
+
+<Steps>
+<Step title="A running LiteLLM proxy">
+You need the proxy URL and its admin/master key. To migrate encrypted secrets (model credentials stored in the database), you also need the LiteLLM `config.yaml` path and, for database-stored deployments, the Postgres connection URL and the salt key used to encrypt them.
+</Step>
+
+<Step title="A running Bifrost gateway">
+Bifrost must be reachable with its management API enabled. You need the gateway URL and a Bifrost API key with permission to create providers, keys, and governance entities.
+</Step>
+
+<Step title="Node.js">
+Required to run the tool via `npx`.
+</Step>
+</Steps>
+
+<Info>
+The migration only **reads** from LiteLLM. It never modifies your LiteLLM deployment.
+</Info>
+
+---
+
+## Configuration
+
+The tool is configured entirely through environment variables.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `LITELLM_URL` | Yes | — | Base URL of the LiteLLM proxy (e.g. `http://localhost:4000`). |
+| `LITELLM_MASTER_KEY` | Yes | — | LiteLLM admin/master key used to read entities from the management API. |
+| `LITELLM_CONFIG` | Yes | — | Path to the LiteLLM `config.yaml`. Read directly for unredacted credential references (env refs and literals). |
+| `BIFROST_URL` | Yes | — | Base URL of the Bifrost gateway (e.g. `http://localhost:8080`). |
+| `BIFROST_API_KEY` | Yes | — | Bifrost API key (sent as a bearer token) for the management API. |
+| `LITELLM_DB_URL` | No | — | LiteLLM Postgres connection URL. Needed to decrypt credentials and budgets for deployments stored in the database. Omit if all models live in `config.yaml`. |
+| `LITELLM_SALT_KEY` | No | `LITELLM_MASTER_KEY` | Salt key used to decrypt database-stored secrets. Falls back to the master key when unset. |
+| `DEFAULT_PROVIDER` | No | `openai` | Provider assumed for a bare model name with no prefix and no `custom_llm_provider` (mirrors LiteLLM's own default). |
+| `MAX_BUDGET_PERIOD` | No | `10Y` | Reset window applied to a budget that has a spend cap but no `budget_duration`. LiteLLM allows never-resetting budgets; Bifrost requires a window, so this long default stands in for "effectively never". |
+| `DRY_RUN` | No | `0` | Set to `1` to plan and report without writing to Bifrost. |
+
+---
+
+## Running the migration
+
+<Steps>
+<Step title="Set the environment variables">
+
+```bash
+export LITELLM_URL="http://localhost:4000"
+export LITELLM_MASTER_KEY="sk-1234"
+export LITELLM_CONFIG="/path/to/litellm/config.yaml"
+
+# Only when models are stored in the LiteLLM database:
+export LITELLM_DB_URL="postgresql://user:pass@localhost:5432/litellm"
+export LITELLM_SALT_KEY="your-litellm-salt-key"
+
+export BIFROST_URL="http://localhost:8080"
+export BIFROST_API_KEY="your-bifrost-api-key"
+```
+
+</Step>
+
+<Step title="Run a dry run and review the plan">
+
+```bash
+DRY_RUN=1 npx @maximhq/bifrost-migration-cli
+```
+
+This prints what would be created and a report of everything that could not be carried over faithfully (skipped providers, unmapped models, dropped fields). Sample output:
+
+```text
+fetched 12 model deployment(s) from LiteLLM; resolved 3 named credential(s) and 12 deployment param set(s)
+PLAN provider "openai" (custom=false, base_url=""): 1 key(s)
+       key "openai/OPENAI_API_KEY" models=[*]
+PLAN model config source="gpt-4o" provider="openai" model="gpt-4o" budgets=1 rateLimit=true
+dry-run: 4 provider(s), 6 model config(s) planned, no writes performed
+REPORT skipped providers (1):
+  - cohere (custom api_base is not supported for model "cohere/command-r")
+```
+
+</Step>
+
+<Step title="Run the migration">
+
+Once the plan looks correct, run without `DRY_RUN`:
+
+```bash
+npx @maximhq/bifrost-migration-cli
+```
+
+The tool logs each write with an `OK` / `FAIL` / `SKIP` / `WARN` prefix and a per-entity summary:
+
+```text
+OK   provider "openai" (custom=false, base_url="")
+OK   key "openai/OPENAI_API_KEY" (models=[*])
+OK   org "org-123" -> customer "Acme"
+OK   team "team-abc" -> team "Platform" (customer=true)
+OK   user "alice@acme.com" -> "usr_..."
+OK   vkey "prod-key" (owner=team:Platform, providers=2)
+done: 4 provider(s), 5 key(s), 6 model config(s) written, 0 failed
+```
+
+</Step>
+
+<Step title="Verify in Bifrost">
+Check the migrated entities in the Bifrost UI or via the management API - providers and keys, customers, teams, users, and virtual keys. Pay attention to any `REPORT` and `WARN` lines from the run (see [Mapping details and limitations](#mapping-details-and-limitations)).
+</Step>
+</Steps>
+
+---
+
+## How credentials are resolved
+
+The LiteLLM management API masks secrets: `/credentials` shows values like `os****KE` and `/model/info` omits the `api_key` entirely. The tool therefore reads real credential material from two unredacted sources:
+
+- **`config.yaml`** - `credential_list` and `model_list` entries carry plaintext values: environment references like `os.environ/FOO` and literal keys.
+- **The LiteLLM Postgres database** (`LITELLM_CredentialsTable`, `LITELLM_ProxyModelTable`) - values are encrypted with the salt key and decrypted by the tool using `LITELLM_SALT_KEY`.
+
+Credential values map onto Bifrost key values as follows:
+
+| LiteLLM value | Bifrost key value | Meaning |
+|---------------|-------------------|---------|
+| `os.environ/OPENAI_API_KEY` | `env.OPENAI_API_KEY` | Resolved from the environment at runtime |
+| `sk-abc...` (literal) | `sk-abc...` | Stored as a literal value |
+
+<Warning>
+For environment-reference keys (`env.FOO`), the tool migrates the **reference**, not the resolved value. The corresponding environment variables must be set wherever Bifrost runs.
+</Warning>
+
+---
+
+## Mapping details and limitations
+
+### Budgets and rate limits
+
+| LiteLLM | Bifrost | Notes |
+|---------|---------|-------|
+| `max_budget` | `budgets[].max_limit` | Omitted when `<= 0` (LiteLLM "no cap"). |
+| `budget_duration` | `budgets[].reset_duration` | `mo` → `M`; other units (`s`, `m`, `h`, `d`, `w`) are identical. |
+| `max_budget` with no duration | `reset_duration: MAX_BUDGET_PERIOD` | Defaults to `10Y`. |
+| `tpm_limit` | `rate_limit.token_max_limit` | Reset window `1m`. |
+| `rpm_limit` | `rate_limit.request_max_limit` | Reset window `1m`. |
+
+When the same actual model appears in multiple LiteLLM deployments, their model-level limits are folded into a single Bifrost model config using the lowest limit per dimension.
+
+### Provider name normalization
+
+LiteLLM provider slugs are normalized to Bifrost standard provider names:
+
+| LiteLLM | Bifrost |
+|---------|---------|
+| `vertex_ai`, `vertex_ai_beta` | `vertex` |
+| `hosted_vllm` | `vllm` |
+| `ollama_chat` | `ollama` |
+| `cohere_chat` | `cohere` |
+| `text-completion-openai` | `openai` |
+| `azure_ai` | `azure` |
+| `fireworks_ai` | `fireworks` |
+
+### Models and providers that are skipped
+
+- **Partial wildcards** (e.g. `openai/gpt-4*`) are not representable in Bifrost and are skipped.
+- **Unsupported or unresolvable providers** (including provider globs like `*/...`) are skipped and reported.
+- **Custom `api_base` on an unsupported base provider** (anything outside `openai`, `anthropic`, `gemini`, `bedrock`) is skipped.
+- **Deployments with no resolvable credential** skip key creation but still create a model config for rate limits.
+
+<Note>
+Bifrost has no organization-level model gates. Any model restriction a LiteLLM organization imposes is folded onto the virtual keys that belong to it, mirroring LiteLLM's layered enforcement (a request must satisfy the key, team, and org restrictions).
+</Note>
+
+### Ownership and links
+
+- A team inside a LiteLLM organization is linked to the migrated customer (resolved via the org alias). If the customer cannot be resolved, the team is created unlinked and a warning is logged.
+- A user is linked to the Bifrost teams matching its LiteLLM team memberships. Unresolvable links are warned and skipped.
+- A virtual key's owner resolves to a Bifrost **team** (preferred) or **customer** - the two are mutually exclusive. If the owner cannot be resolved, the VK is created unlinked.
+
+---
+
+## Provider compatibility
+
+Bifrost natively supports the standard providers that also exist in LiteLLM, applying the [name normalization](#provider-name-normalization) above. These include `anthropic`, `azure`, `bedrock`, `cerebras`, `cohere`, `elevenlabs`, `fireworks`, `gemini`, `groq`, `huggingface`, `mistral`, `nebius`, `ollama`, `openai`, `openrouter`, `perplexity`, `replicate`, `runway`, `vertex`, `vllm`, and `xai`.
+
+LiteLLM also supports many OpenAI-compatible providers that are not Bifrost standard providers (for example `deepseek`, `together_ai`, `sambanova`, `nvidia_nim`, `moonshot`, `hyperbolic`). These can generally be modeled as Bifrost custom providers with the `openai` base provider and the provider's OpenAI-compatible base URL.
+
+---
+
+## Idempotency and re-running
+
+The migration is safe to run multiple times:
+
+- Entities that already exist return HTTP 409 and are treated as success.
+- Custom-provider names are a deterministic hash of `(base provider, api_base)`, so the same deployment always maps to the same provider.
+- Virtual keys whose allow-list covers "all proxy models" are expanded to **all** providers currently in Bifrost - not just those found during the run - so providers added between runs are also covered.
+
+<Warning>
+Re-running creates **new** virtual keys for any VK that was previously created unlinked or skipped, but it does not reconcile or update entities that already exist. Review the report after each run.
+</Warning>
+
+---
+
+## Troubleshooting
+
+**Secrets not decrypting / empty key values**
+
+Database-stored credentials need `LITELLM_DB_URL` and the correct `LITELLM_SALT_KEY`. If the salt key differs from the master key, set it explicitly. Keys that resolve to empty are reported and skipped (model configs are still created).
+
+**Providers showing up as skipped**
+
+Check the `REPORT skipped providers` section. Common causes: a partial wildcard model, an unsupported provider, or a custom `api_base` on a base provider Bifrost cannot wrap.
+
+**Teams or virtual keys created but are not linked**
+
+Owner resolution depends on migration order and on aliases. Ensure organizations have an `organization_alias` and teams have a `team_alias`, and that the dependency chain (orgs → teams → users → VKs) completed without failures.
+
+**Users skipped**
+
+Bifrost requires an email. LiteLLM users with no `user_email` are skipped and listed in the report.
+
+**Virtual keys work in Bifrost but old tokens fail**
+
+VK token values are not migrated - Bifrost generates new ones. Re-issue the new `sk-bf-*` values to your callers.
+
+**Provider create rejected during VK migration**
+
+A virtual key can only reference providers that exist in Bifrost. If a provider's migration failed, its allow-list entries are dropped and reported. Fix the provider migration and re-run.
+
+---
+
+## Next steps
+
+- **[Virtual Keys](/features/governance/virtual-keys)** - Manage the migrated virtual keys, their provider configs, and ownership.
+- **[Budget and Limits](/features/governance/budget-and-limits)** - Review and adjust the migrated budgets and rate limits.
+- **[Provider Configuration](/quickstart/gateway/provider-configuration)** - Configure the migrated providers and keys.
+- **[LiteLLM SDK integration](/integrations/litellm-sdk)** - Keep using the LiteLLM SDK against Bifrost.

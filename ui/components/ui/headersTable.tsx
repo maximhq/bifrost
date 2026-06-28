@@ -1,14 +1,14 @@
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EnvVar } from "@/lib/types/mcp";
+import { SecretVar } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
 import React, { useRef, useState } from "react";
 
-// Support both plain string values and EnvVar objects
-type HeaderValue = string | EnvVar;
+// Support both plain string values and SecretVar objects
+type HeaderValue = string | SecretVar;
 
 export interface CellRenderParams {
 	value: string;
@@ -25,24 +25,31 @@ interface HeadersTableProps<T extends HeaderValue> {
 	valuePlaceholder?: string;
 	label?: string;
 	disabled?: boolean;
-	useEnvVarInput?: boolean;
+	useSecretVarInput?: boolean;
+	/**
+	 * When provided, the table renders exactly these keys as read-only,
+	 * non-deletable rows (no trailing "add" row). Values stay editable unless
+	 * `disabled` is set. Use this for fixed-schema key sets like a stdio
+	 * server's required environment variables.
+	 */
+	fixedKeys?: string[];
 	/** Optional custom renderer for the key (name) cell input */
 	renderKeyInput?: (params: CellRenderParams) => React.ReactNode;
 	/** Optional custom renderer for the value cell input */
 	renderValueInput?: (params: CellRenderParams) => React.ReactNode;
 }
 
-// Empty EnvVar for new rows
-const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
+// Empty SecretVar for new rows
+const emptySecretVar: SecretVar = { value: "", ref: "" };
 
-// Helper to check if a value is an EnvVar object
-const isEnvVar = (val: HeaderValue): val is EnvVar => {
+// Helper to check if a value is an SecretVar object
+const isSecretVar = (val: HeaderValue): val is SecretVar => {
 	return typeof val === "object" && val !== null && "value" in val;
 };
 
 // Helper to get display value from HeaderValue
 const getDisplayValue = (val: HeaderValue): string => {
-	if (isEnvVar(val)) {
+	if (isSecretVar(val)) {
 		return val.value || "";
 	}
 	return val;
@@ -50,8 +57,8 @@ const getDisplayValue = (val: HeaderValue): string => {
 
 // Helper to check if a HeaderValue is empty
 const isValueEmpty = (val: HeaderValue): boolean => {
-	if (isEnvVar(val)) {
-		return !val.value && !val.env_var;
+	if (isSecretVar(val)) {
+		return !val.value && !val.ref;
 	}
 	return !val;
 };
@@ -63,12 +70,13 @@ export function HeadersTable<T extends HeaderValue>({
 	valuePlaceholder = "Header value",
 	label = "Headers",
 	disabled = false,
-	useEnvVarInput,
+	useSecretVarInput,
+	fixedKeys,
 	renderKeyInput,
 	renderValueInput,
 }: HeadersTableProps<T>) {
 	// Use explicit prop if provided, otherwise detect from existing values
-	const isEnvVarMode = useEnvVarInput ?? Object.values(value || {}).some((v) => isEnvVar(v));
+	const isSecretVarMode = useSecretVarInput ?? Object.values(value || {}).some((v) => isSecretVar(v));
 
 	// Track duplicate key conflicts: maps rowIndex -> attempted duplicate key
 	const [duplicateConflicts, setDuplicateConflicts] = useState<Map<number, string>>(new Map());
@@ -79,17 +87,22 @@ export function HeadersTable<T extends HeaderValue>({
 
 	// Get the empty value based on mode
 	const getEmptyValue = (): T => {
-		if (isEnvVarMode) {
-			return emptyEnvVar as T;
+		if (isSecretVarMode) {
+			return emptySecretVar as T;
 		}
 		return "" as T;
 	};
 
+	const isFixedKeys = Array.isArray(fixedKeys);
+
 	// Convert headers object to array format for table display
 	// Filter out any empty string keys from stored headers
 	const headerEntries = Object.entries(value || {});
-	// Always show at least one empty row at the bottom
-	const rows: [string, T][] = [...headerEntries, ["", getEmptyValue()]];
+	// In fixed-keys mode the rows are exactly the supplied keys (read-only,
+	// no trailing add-row). Otherwise always show one empty row at the bottom.
+	const rows: [string, T][] = fixedKeys
+		? fixedKeys.map((key) => [key, value?.[key] ?? getEmptyValue()] as [string, T])
+		: [...headerEntries, ["", getEmptyValue()]];
 
 	const handleKeyChange = (oldKey: string, newKey: string, currentValue: T, rowIndex: number) => {
 		// Check if newKey already exists (and it's not the current row's original key)
@@ -130,16 +143,16 @@ export function HeadersTable<T extends HeaderValue>({
 		onChange(newHeaders);
 	};
 
-	const handleValueChange = (currentKey: string, newValue: string | EnvVar, rowIndex: number) => {
+	const handleValueChange = (currentKey: string, newValue: string | SecretVar, rowIndex: number) => {
 		const newHeaders = { ...value };
 
-		if (isEnvVarMode) {
-			// If newValue is already an EnvVar, use it directly
+		if (isSecretVarMode) {
+			// If newValue is already an SecretVar, use it directly
 			if (typeof newValue === "object") {
 				newHeaders[currentKey] = newValue as T;
 			} else {
-				// When user types, create a new EnvVar with the typed value
-				newHeaders[currentKey] = { value: newValue, env_var: "", from_env: false } as T;
+				// When user types, create a new SecretVar with the typed value
+				newHeaders[currentKey] = { value: newValue, ref: "" } as T;
 			}
 		} else {
 			newHeaders[currentKey] = (typeof newValue === "string" ? newValue : newValue.value) as T;
@@ -203,14 +216,16 @@ export function HeadersTable<T extends HeaderValue>({
 						<TableRow>
 							<TableHead className="w-[40%] px-4 py-2">Name</TableHead>
 							<TableHead className="px-4 py-2">Value</TableHead>
-							<TableHead className="w-10 p-0">
-								<span className="sr-only">Actions</span>
-							</TableHead>
+							{!isFixedKeys && (
+								<TableHead className="w-10 p-0">
+									<span className="sr-only">Actions</span>
+								</TableHead>
+							)}
 						</TableRow>
 					</TableHeader>
 					<TableBody>
 						{rows.map(([key, headerValue], index) => {
-							const isHeaderEnvVar = isEnvVar(headerValue);
+							const isHeaderSecretVar = isSecretVar(headerValue);
 							const hasConflict = duplicateConflicts.has(index);
 							const conflictKey = duplicateConflicts.get(index);
 							const isHighlighted = highlightedRow === index;
@@ -237,6 +252,14 @@ export function HeadersTable<T extends HeaderValue>({
 													disabled,
 													rowKey: key,
 												})
+											) : isFixedKeys ? (
+												<Input
+													value={key}
+													readOnly
+													data-row={index}
+													data-column="key"
+													className="border-0 font-mono text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
+												/>
 											) : (
 												<Input
 													placeholder={keyPlaceholder}
@@ -261,13 +284,13 @@ export function HeadersTable<T extends HeaderValue>({
 												disabled,
 												rowKey: key,
 											})
-										) : isHeaderEnvVar ? (
-											<EnvVarInput
+										) : isHeaderSecretVar ? (
+											<SecretVarInput
 												placeholder={valuePlaceholder}
-												value={headerValue as EnvVar}
+												value={headerValue as SecretVar}
 												data-row={index}
 												data-column="value"
-												onChange={(envVar) => handleValueChange(key, envVar, index)}
+												onChange={(secretVar) => handleValueChange(key, secretVar, index)}
 												onKeyDown={(e) => handleKeyDown(e, index, "value")}
 												className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
 												disabled={disabled}
@@ -285,13 +308,15 @@ export function HeadersTable<T extends HeaderValue>({
 											/>
 										)}
 									</TableCell>
-									<TableCell className="p-0">
-										{!disabled && !isEmptyTrailingRow && (
-											<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8">
-												<Trash className="h-4 w-4" />
-											</Button>
-										)}
-									</TableCell>
+									{!isFixedKeys && (
+										<TableCell className="p-0">
+											{!disabled && !isEmptyTrailingRow && (
+												<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8">
+													<Trash className="h-4 w-4" />
+												</Button>
+											)}
+										</TableCell>
+									)}
 								</TableRow>
 							);
 						})}

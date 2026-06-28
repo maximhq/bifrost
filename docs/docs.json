@@ -110,7 +110,8 @@
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
-              "migration-guides/v1.5.0"
+              "migration-guides/v1.5.0",
+              "migration-guides/litellm"
             ]
           },
           {
@@ -132,6 +133,7 @@
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/bedrock",
+                  "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
@@ -143,11 +145,13 @@
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
+                  "providers/supported-providers/opencode",
                   "providers/supported-providers/openai",
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
                   "providers/supported-providers/replicate",
+                  "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
@@ -229,12 +233,14 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers"
+                  "features/governance/required-headers",
+                  "features/governance/complexity-router"
                 ]
               },
               "features/telemetry",
               "features/otel",
               "features/semantic-caching",
+              "features/skills-repository",
               {
                 "group": "Prompt Repository",
                 "icon": "folder",
@@ -320,6 +326,7 @@
               "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
           },
@@ -328,6 +335,51 @@
             "icon": "shield",
             "pages": [
               "security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Edge",
+        "icon": "globe",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "edge/overview",
+              "edge/how-it-works"
+            ]
+          },
+          {
+            "group": "Governance & Control",
+            "icon": "shield-halved",
+            "pages": [
+              "edge/app-governance",
+              "edge/mcp-governance",
+              "edge/security"
+            ]
+          },
+          {
+            "group": "Admin controls",
+            "icon": "sliders",
+            "pages": [
+              "edge/admin-devices",
+              "edge/admin-approvals",
+              "edge/admin-configurations"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "icon": "cloud-arrow-up",
+            "pages": [
+              "edge/deployment-mdm"
+            ]
+          },
+          {
+            "group": "Reference",
+            "icon": "list",
+            "pages": [
+              "edge/supported-applications"
             ]
           }
         ]
@@ -344,6 +396,7 @@
               "cli-agents/cursor",
               "cli-agents/librechat",
               "cli-agents/claude-code",
+              "cli-agents/claude-desktop",
               "cli-agents/claude-for-office",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
@@ -480,6 +533,7 @@
                 "icon": "file-code",
                 "pages": [
                   "deployment-guides/config-json",
+                  "deployment-guides/config-json/source-of-truth",
                   "deployment-guides/config-json/schema-reference",
                   "deployment-guides/config-json/client",
                   "deployment-guides/config-json/providers",
@@ -585,6 +639,13 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.0",
+              "changelogs/v1.5.16",
+              "changelogs/v1.5.15",
+              "changelogs/v1.5.14",
+              "changelogs/v1.5.13",
+              "changelogs/v1.5.12",
+              "changelogs/v1.5.11",
               "changelogs/v1.5.10",
               "changelogs/v1.5.9",
               "changelogs/v1.5.8",
@@ -763,6 +824,13 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.0",
+              "changelogs/ent-v1.4.13",
+              "changelogs/ent-v1.4.12",
+              "changelogs/ent-v1.4.11",
+              "changelogs/ent-v1.4.10",
+              "changelogs/ent-v1.4.9",
+              "changelogs/ent-v1.4.8",
               "changelogs/ent-v1.4.7",
               "changelogs/ent-v1.4.7-rc1",
               "changelogs/ent-v1.4.6",
@@ -773,59 +841,49 @@
               "changelogs/ent-v1.4.1",
               "changelogs/ent-v1.4.0",
               "changelogs/ent-v1.4.0-prerelease7",
-              {
-                "group": "April 2026",
-                "pages": [
-                  "changelogs/ent-v1.3.21",
-                  "changelogs/ent-v1.4.0-prerelease6",
-                  "changelogs/ent-v1.4.0-prerelease5",
-                  "changelogs/ent-v1.3.20",
-                  "changelogs/ent-v1.4.0-prerelease4",
-                  "changelogs/ent-v1.3.19",
-                  "changelogs/ent-v1.4.0-prerelease3",
-                  "changelogs/ent-v1.3.18",
-                  "changelogs/ent-v1.4.0-prerelease2",
-                  "changelogs/ent-v1.3.17",
-                  "changelogs/ent-v1.4.0-prerelease1"
-                ]
-              },
-              {
-                "group": "March 2026",
-                "pages": [
-                  "changelogs/ent-v1.3.16",
-                  "changelogs/ent-v1.3.15",
-                  "changelogs/ent-v1.3.14",
-                  "changelogs/ent-v1.3.13",
-                  "changelogs/ent-v1.3.12",
-                  "changelogs/ent-v1.3.11",
-                  "changelogs/ent-v1.3.10",
-                  "changelogs/ent-v1.3.9",
-                  "changelogs/ent-v1.3.8"
-                ]
-              }
+              "changelogs/ent-v1.3.21",
+              "changelogs/ent-v1.4.0-prerelease6",
+              "changelogs/ent-v1.4.0-prerelease5",
+              "changelogs/ent-v1.3.20",
+              "changelogs/ent-v1.4.0-prerelease4",
+              "changelogs/ent-v1.3.19",
+              "changelogs/ent-v1.4.0-prerelease3",
+              "changelogs/ent-v1.3.18",
+              "changelogs/ent-v1.4.0-prerelease2",
+              "changelogs/ent-v1.3.17",
+              "changelogs/ent-v1.4.0-prerelease1",
+              "changelogs/ent-v1.3.16",
+              "changelogs/ent-v1.3.15",
+              "changelogs/ent-v1.3.14",
+              "changelogs/ent-v1.3.13",
+              "changelogs/ent-v1.3.12",
+              "changelogs/ent-v1.3.11",
+              "changelogs/ent-v1.3.10",
+              "changelogs/ent-v1.3.9",
+              "changelogs/ent-v1.3.8"
             ]
           },
           {
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
+              "changelogs/cli-v0.10.6",
               "changelogs/cli-v0.10.5",
               "changelogs/cli-v0.10.4",
-              {
-                "group": "March 2026",
-                "pages": [
-                  "changelogs/cli-v0.10.3",
-                  "changelogs/cli-v0.10.2",
-                  "changelogs/cli-v0.10.1",
-                  "changelogs/cli-v0.10.0"
-                ]
-              }
+              "changelogs/cli-v0.10.3",
+              "changelogs/cli-v0.10.2",
+              "changelogs/cli-v0.10.1",
+              "changelogs/cli-v0.10.0"
             ]
           },
           {
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.25",
+              "changelogs/helm-v2.1.24",
+              "changelogs/helm-v2.1.23",
+              "changelogs/helm-v2.1.22",
               "changelogs/helm-v2.1.21",
               "changelogs/helm-v2.1.20",
               "changelogs/helm-v2.1.19",

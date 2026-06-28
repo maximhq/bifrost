@@ -1054,6 +1054,88 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	assert.Equal(t, 100.0, status.BudgetPercentUsed)
 }
 
+// TestGetBudgetAndRateLimitStatus_VKScopedModelConfig tests that a VK-scoped model config
+// budget (scope=virtual_key, model="*", provider="openai") is visible to GetBudgetAndRateLimitStatus.
+// This is the regression introduced when the provider-governance migration relocated per-VK
+// provider budgets from vk.ProviderConfigs into governance_model_configs; the status reader
+// was not updated to look in the new location and always returned 0.0%.
+func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-test-id"
+	vkValue := "vk-test-value"
+	providerName := "openai"
+
+	// Budget at 120% (exceeded) — mirrors the real bug scenario.
+	budget := buildBudgetWithUsage("vk-model-budget", 0.001, 0.0012, "1h")
+
+	// VK-scoped wildcard model config: scope=virtual_key, model="*", provider="openai".
+	// This is exactly the shape the provider-governance migration writes.
+	mc := buildVKScopedModelConfig("mc-vk-openai", configstoreTables.ModelConfigAllModels, &providerName, vkID, budget, nil)
+
+	vk := buildVirtualKey(vkID, vkValue, "test-vk", true)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	store.virtualKeys.Store(vkValue, vk)
+
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), vk, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Greater(t, status.BudgetPercentUsed, 100.0, "VK-scoped model budget at 120%% must be visible to routing status")
+}
+
+// TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider tests that a
+// VK-scoped model config for one provider does not bleed into status for another provider.
+func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-test-id"
+	vkValue := "vk-test-value"
+	providerName := "openai"
+
+	budget := buildBudgetWithUsage("vk-model-budget", 0.001, 0.0012, "1h") // exceeded for openai
+	mc := buildVKScopedModelConfig("mc-vk-openai", configstoreTables.ModelConfigAllModels, &providerName, vkID, budget, nil)
+	vk := buildVirtualKey(vkID, vkValue, "test-vk", true)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	store.virtualKeys.Store(vkValue, vk)
+
+	// Query for anthropic — should not see the openai-scoped budget.
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "claude-3-5-sonnet", schemas.ModelProvider("anthropic"), vk, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Equal(t, 0.0, status.BudgetPercentUsed, "openai VK-scoped budget must not appear for anthropic requests")
+}
+
+// TestGetBudgetAndRateLimitStatus_GlobalModelConfig tests that a global model+provider
+// config budget is visible to GetBudgetAndRateLimitStatus.
+func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
+	logger := NewMockLogger()
+	providerName := "openai"
+
+	budget := buildBudgetWithUsage("global-model-budget", 100.0, 75.0, "1h") // 75%
+	mc := buildModelConfig("mc-global-openai", "gpt-5", &providerName, budget, nil)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), nil, nil, nil, nil)
+
+	require.NotNil(t, status)
+	assert.Equal(t, 75.0, status.BudgetPercentUsed, "global model+provider budget must be visible to routing status")
+}
+
 // TestGovernanceStore_RoutingRules_MultipleScopes tests rules with multiple scopes
 func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 	logger := NewMockLogger()
@@ -1241,6 +1323,26 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 	assert.Equal(t, program, program2)
+}
+
+// TestGetTeamNameAndGetCustomerName verifies the display-name accessors the
+// enterprise layer uses as the log-stamping fallback when its edge-driven name
+// caches miss: known entities return their name, unknown/empty ids return "".
+func TestGetTeamNameAndGetCustomerName(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	store.CreateTeamInMemory(context.Background(), buildTeam("team-1", "Platform", nil))
+	store.CreateCustomerInMemory(context.Background(), buildCustomer("cust-1", "ACME", nil))
+
+	assert.Equal(t, "Platform", store.GetTeamName(context.Background(), "team-1"))
+	assert.Equal(t, "ACME", store.GetCustomerName(context.Background(), "cust-1"))
+
+	assert.Empty(t, store.GetTeamName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetCustomerName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetTeamName(context.Background(), ""))
+	assert.Empty(t, store.GetCustomerName(context.Background(), ""))
 }
 
 // TestGovernanceStore_Customer_CalendarAligned_CreateInMemory verifies that

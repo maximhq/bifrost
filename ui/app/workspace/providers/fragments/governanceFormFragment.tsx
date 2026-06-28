@@ -5,6 +5,7 @@ import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets"
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import {
 	getErrorMessage,
 	useDeleteProviderGovernanceMutation,
@@ -87,6 +88,8 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 	const watchedBudgets = form.watch("budgets");
 	const watchedCalendarAligned = form.watch("calendarAligned");
+	const configuredBudgets = watchedBudgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
+	const showCalendarAlignment = configuredBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
 
 	useEffect(() => {
 		if (providerGovernance && !form.formState.isDirty) {
@@ -100,9 +103,18 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 		form.reset(governanceToFormValues(newProvGov));
 	}, [provider.name, form]);
 
+	// Drop a stale calendarAligned when no configured budget supports alignment, so the
+	// toggle never reappears pre-enabled if an alignable budget is added back later.
+	useEffect(() => {
+		if (!showCalendarAlignment && watchedCalendarAligned) {
+			form.setValue("calendarAligned", false, { shouldDirty: true });
+		}
+	}, [showCalendarAlignment, watchedCalendarAligned, form]);
+
 	const onSubmit = async (data: FormData) => {
 		try {
 			const validBudgets = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
+			const hasAlignableBudget = validBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
 			const hadBudgets = (providerGovernance?.budgets?.length ?? 0) > 0;
 			const hadRateLimit = !!providerGovernance?.rate_limit;
 			const hasRateLimit = data.tokenMaxLimit !== undefined || data.requestMaxLimit !== undefined;
@@ -141,7 +153,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				provider: provider.name,
 				data: {
 					budgets: budgetsPayload,
-					...(budgetsPayload !== undefined ? { calendar_aligned: data.calendarAligned } : {}),
+					...(budgetsPayload !== undefined ? { calendar_aligned: hasAlignableBudget && data.calendarAligned } : {}),
 					rate_limit: rateLimitPayload,
 				},
 			}).unwrap();
@@ -177,8 +189,8 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 				/>
 
-				{/* Calendar Alignment — only shown when there are budgets */}
-				{watchedBudgets.length > 0 && (
+				{/* Calendar Alignment — only shown when a budget uses a calendar-alignable period (day/week/month/year) */}
+				{showCalendarAlignment && (
 					<div className="flex items-center justify-between gap-4">
 						<div className="space-y-1">
 							<Label className="text-sm" htmlFor="provider-calendar-aligned">

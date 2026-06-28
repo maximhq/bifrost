@@ -40,6 +40,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `protocol` | `string` | ✅ Yes | Transport protocol: `http` or `grpc` |
 | `headers` | `object` | ❌ No | Custom headers for authentication — values support `env.VAR_NAME` |
 | `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
+| `group_traces_by_session` | `boolean` | ❌ No | Group requests sharing the same `x-bf-session-id` into one trace (default: `false`). See [Grouping Traces by Session](#grouping-traces-by-session) |
 
 ### Environment Variable Substitution
 
@@ -83,6 +84,30 @@ This is useful for:
 - **Service versioning** - Track which version of your service generated the trace
 - **Team attribution** - Tag traces with team ownership for filtering and alerting
 - **Custom metadata** - Add any key-value pairs relevant to your observability needs
+
+### Session Tracking
+
+Whenever a request carries the [`x-bf-session-id`](/providers/request-options) header, Bifrost tags the trace's root span with the OTEL-conventional `session.id` attribute. This happens **regardless** of the `group_traces_by_session` setting, so you can always filter and correlate traces by session in your backend even when each request remains its own trace.
+
+### Grouping Traces by Session
+
+By default, each request Bifrost handles becomes its own OTEL trace (still tagged with `session.id` as described above). Enable `group_traces_by_session` to instead group every request that carries the same `x-bf-session-id` header into a **single trace**, with each request's root span appearing as a top-level sibling under that trace. This is useful for viewing a multi-turn conversation or agent run as one trace in your backend.
+
+```json
+{
+  "group_traces_by_session": true
+}
+```
+
+When enabled, requests sharing a session ID adopt a deterministic trace ID derived from that session ID, so they land in the same trace regardless of which Bifrost node handled them.
+
+<Note>
+An inbound [W3C `traceparent`](https://www.w3.org/TR/trace-context/) always takes precedence: a request that arrives on a distributed trace stays on that trace and is **not** regrouped by session. Session grouping only applies to requests that have a session ID but no incoming trace context.
+
+Because all requests in a session share one trace, very long-lived sessions produce large traces. Use a session scope that matches how you want to view activity in your backend.
+</Note>
+
+To send a session ID, pass the [`x-bf-session-id`](/providers/request-options) header on each request you want grouped together.
 
 ---
 
@@ -704,6 +729,7 @@ Each trace includes comprehensive LLM operation metadata following OpenTelemetry
 - **Span Name**: Based on request type (`gen_ai.chat`, `gen_ai.text`, `gen_ai.embedding`, etc.)
 - **Service Info**: `service.name=bifrost`, `service.version`
 - **Provider & Model**: `gen_ai.provider.name`, `gen_ai.request.model`
+- **Session**: `session.id` on the root span when the request carries an `x-bf-session-id` header (see [Session Tracking](#session-tracking))
 
 ### Request Parameters
 
@@ -941,6 +967,10 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
 | `http_requests_total` | Counter | Total HTTP requests |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
+| `http_request_size_bytes` | Histogram | HTTP request body size |
+| `http_response_size_bytes` | Histogram | HTTP response body size |
+
+> **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
 
 ### OTEL Collector Configuration
 
@@ -1056,7 +1086,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 }
 ```
 
-**Via the UI**: Open the Plugins page and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+**Via the UI**: Open the **Observability** page, select the **Open Telemetry** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
 
 **Filter modes:**
 
@@ -1065,7 +1095,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 | `exclude` | Export spans for all plugins **except** those listed |
 | `include` | Export spans **only** for the listed plugins |
 
-**Built-in plugin names** (for reference): `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, `maxim`.
+**Plugin names:** list each plugin using the exact name shown for it in the **Configure Plugin Tracing** sheet — this is the same name that appears in the span (`plugin.<name>.<stage>`), and it is what the filter matches against. The built-in OSS plugins are `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, and `maxim`. In enterprise deployments some plugins are registered under a different name than their config key — for example the prompts and governance plugins appear as `enterprise-prompts` and `enterprise-governance` — so always copy the name from the tracing sheet rather than assuming the config key.
 
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
 

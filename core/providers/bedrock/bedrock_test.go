@@ -188,7 +188,7 @@ func TestBedrock(t *testing.T) {
 		PromptCachingModel:       "claude-4.5-sonnet",
 		ImageEditModel:           "amazon.nova-canvas-v1:0",
 		ImageVariationModel:      "amazon.nova-canvas-v1:0",
-		InterleavedThinkingModel: "global.anthropic.claude-opus-4-5-20251101-v1:0",
+		InterleavedThinkingModel: "claude-opus-4-5",
 		BatchExtraParams:         batchExtraParams,
 		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
@@ -2792,6 +2792,80 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 	assert.Equal(t, "get_weather", bedrockReq.ToolConfig.Tools[1].ToolSpec.Name)
 }
 
+// TestToBedrockResponsesRequest_DropsMCPToolKeepsFunction is the regression
+// guard for issue #3795: a /v1/responses request to Bedrock carrying a
+// Bifrost-hosted `mcp` server tool alongside function tools must no longer fail
+// conversion ("tool type 'mcp' is not supported by provider 'bedrock'"). The
+// unsupported mcp tool is silently dropped; function tools survive; and the
+// inbound request's tool slice is never mutated.
+func TestToBedrockResponsesRequest_DropsMCPToolKeepsFunction(t *testing.T) {
+	toolParams := schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("city", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		),
+	}
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/eu.anthropic.claude-sonnet-4-6",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:        schemas.ResponsesToolTypeFunction,
+					Name:        schemas.Ptr("get_weather"),
+					Description: schemas.Ptr("Get weather information"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &toolParams,
+					},
+				},
+				{
+					// Bifrost-hosted MCP server tool — server_url points back at
+					// Bifrost itself; Bedrock's Converse API can't consume it.
+					Type: schemas.ResponsesToolTypeMCP,
+					ResponsesToolMCP: &schemas.ResponsesToolMCP{
+						ServerLabel: "mongodb",
+						ServerURL:   schemas.Ptr("https://bifrost.example.com/mcp/mongodb"),
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err, "mcp tool must be dropped, not error the conversion (issue #3795)")
+	require.NotNil(t, bedrockReq)
+	require.NotNil(t, bedrockReq.ToolConfig, "function tool must still produce a tool_config")
+	require.Len(t, bedrockReq.ToolConfig.Tools, 1, "only the function tool should reach Bedrock; mcp dropped")
+	assert.Equal(t, "get_weather", bedrockReq.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// The inbound request must not be mutated by the filtering.
+	require.Len(t, req.Params.Tools, 2, "inbound Params.Tools must be left untouched")
+	assert.Equal(t, schemas.ResponsesToolTypeMCP, req.Params.Tools[1].Type)
+}
+
+// TestToBedrockResponsesRequest_AllToolsDroppedNoToolConfig verifies that when
+// every tool is provider-unsupported (e.g. a lone mcp tool), conversion still
+// succeeds and simply emits no tool_config.
+func TestToBedrockResponsesRequest_AllToolsDroppedNoToolConfig(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/eu.anthropic.claude-sonnet-4-6",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeMCP, ResponsesToolMCP: &schemas.ResponsesToolMCP{ServerLabel: "mongodb"}},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+	assert.Nil(t, bedrockReq.ToolConfig, "no supported tools means no tool_config")
+}
+
 // TestToolResultJSONParsingResponsesAPI tests that tool results are correctly parsed and wrapped based on JSON type
 // Tests only Responses API.
 func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
@@ -2884,7 +2958,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 				},
 			}
 
-			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
 			require.NoError(t, err)
 			require.Len(t, messages, 1)
 
@@ -4008,6 +4082,86 @@ func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
 	assert.False(t, hasThinking, "Nova models should NOT use thinking field")
 }
 
+// TestNovaReasoningEffortClamped verifies efforts above Nova's enum (xhigh/max)
+// are clamped to "high" so Nova doesn't 400 on an invalid maxReasoningEffort.
+func TestNovaReasoningEffortClamped(t *testing.T) {
+	cases := map[string]string{
+		"xhigh":   "high",
+		"max":     "high",
+		"high":    "high",
+		"medium":  "medium",
+		"minimal": "low",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: "amazon.nova-pro-v1",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(in)}},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			cfg, ok := result.AdditionalModelRequestFields.Get("reasoningConfig")
+			require.True(t, ok, "expected reasoningConfig")
+			cfgMap, ok := cfg.(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, want, cfgMap["maxReasoningEffort"], "effort %q should map to %q", in, want)
+		})
+	}
+}
+
+// TestReasoningSignatureEchoedOnlyWhenNonEmpty verifies that an empty reasoning
+// signature is dropped before sending to Bedrock (MiniMax emits ""), while a real
+// signature is preserved (Anthropic requires it). Keyed on the value, not the model.
+func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
+	cases := map[string]struct {
+		in   *string
+		want *string
+	}{
+		"empty signature dropped":  {in: schemas.Ptr(""), want: nil},
+		"nil signature dropped":    {in: nil, want: nil},
+		"real signature preserved": {in: schemas.Ptr("ErUBCkYI"), want: schemas.Ptr("ErUBCkYI")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: "anthropic.claude-sonnet-4-5",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+					{
+						Role:    schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ok")},
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ReasoningDetails: []schemas.ChatReasoningDetails{
+								{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("thinking"), Signature: tc.in},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			var got *string
+			for _, m := range result.Messages {
+				for _, b := range m.Content {
+					if b.ReasoningContent != nil && b.ReasoningContent.ReasoningText != nil {
+						got = b.ReasoningContent.ReasoningText.Signature
+					}
+				}
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // TestStandaloneCachePointBlockHandling tests that standalone cachePoint content blocks
 // (those with only cachePoint field and no type) are properly converted.
 func TestStandaloneCachePointBlockHandling(t *testing.T) {
@@ -4772,6 +4926,63 @@ func TestDocumentFormatResponseMapping(t *testing.T) {
 	}
 }
 
+// TestDocumentFormatResponsesPathRoundTrip verifies that the Bedrock Converse
+// responses path (Bedrock -> Bifrost -> Bedrock) preserves the document format
+// for every Bedrock-supported format. This guards against the regression where
+// xlsx/xls/doc/docx (and md/html/csv) collapsed to "pdf"/"txt" because the
+// responses-path converters lagged behind the chat path. See issue #4622.
+func TestDocumentFormatResponsesPathRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	formats := []string{"pdf", "txt", "md", "html", "csv", "doc", "docx", "xls", "xlsx"}
+
+	for _, format := range formats {
+		t.Run(format, func(t *testing.T) {
+			docBytes := "UEsDBA==" // arbitrary base64; only the format mapping is under test
+			bedrockMessages := []bedrock.BedrockMessage{
+				{
+					Role: bedrock.BedrockMessageRoleUser,
+					Content: []bedrock.BedrockContentBlock{
+						{
+							Document: &bedrock.BedrockDocumentSource{
+								Format: format,
+								Name:   "testdoc",
+								Source: &bedrock.BedrockDocumentSourceData{
+									Bytes: &docBytes,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			// Inbound: Bedrock -> Bifrost responses messages
+			bifrostMessages := bedrock.ConvertBedrockMessagesToBifrostMessages(ctx, bedrockMessages, nil, false)
+			require.NotEmpty(t, bifrostMessages, "expected at least one Bifrost message")
+
+			// Outbound: Bifrost responses messages -> Bedrock
+			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages, false)
+			require.NoError(t, err)
+			require.NotEmpty(t, roundTripped, "expected at least one Bedrock message after round-trip")
+
+			// Locate the document block in the round-tripped output.
+			var doc *bedrock.BedrockDocumentSource
+			for _, msg := range roundTripped {
+				for _, block := range msg.Content {
+					if block.Document != nil {
+						doc = block.Document
+					}
+				}
+			}
+			require.NotNil(t, doc, "document block should survive the round-trip")
+			assert.Equal(t, format, doc.Format,
+				"format %q should be preserved through the responses path, got %q", format, doc.Format)
+		})
+	}
+}
+
 // TestBedrockToolInputKeyOrderPreservation verifies that multiple parallel tool calls
 // preserve the client's original key ordering after conversion to Bedrock format.
 func TestBedrockToolInputKeyOrderPreservation(t *testing.T) {
@@ -4950,7 +5161,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -4994,7 +5205,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5027,7 +5238,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -6040,4 +6251,492 @@ func TestBedrockMixedBlockToolResultRoundTrip(t *testing.T) {
 	assert.Equal(t, "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost", got.Content[0].Text)
 	require.NotNil(t, got.Citations)
 	assert.True(t, got.Citations.Enabled)
+}
+
+// systemReminderTextMsg builds a role=system message with a single text block.
+func systemReminderTextMsg(text string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(text)},
+			},
+		},
+	}
+}
+
+// userReminderTextMsg builds a role=user message with a single text block.
+func userReminderTextMsg(text string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(text)},
+			},
+		},
+	}
+}
+
+// TestMidConversationSystemReminderStaysInline verifies that only the leading run of
+// role=system messages is hoisted into Bedrock's top-level system block. Reminders that
+// Claude Code injects mid-conversation (also role=system) must stay inline as user
+// messages, otherwise they grow the system block in front of the cached conversation
+// prefix and break Bedrock prompt caching (collapsing reads to the tools/system floor).
+func TestMidConversationSystemReminderStaysInline(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."), // leading system prompt
+		userReminderTextMsg("first user turn"),
+		systemReminderTextMsg("The task tools haven't been used recently."), // injected reminder
+		userReminderTextMsg("second user turn"),
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+
+	// Only the leading system prompt should be hoisted into the system block.
+	require.Len(t, systemMessages, 1, "only the leading system prompt belongs in the system block")
+	require.NotNil(t, systemMessages[0].Text)
+	assert.Equal(t, "You are Claude Code.", *systemMessages[0].Text)
+
+	// The injected reminder stays inline as user content. Because it is rendered as a user
+	// message between two user turns, the consecutive-same-role merge folds all three into a
+	// single user message — preserving order. The key invariant is that the reminder text is
+	// NOT in the system block and appears in chronological order in the conversation.
+	require.Len(t, messages, 1, "three consecutive user-role messages merge into one")
+	assert.Equal(t, bedrock.BedrockMessageRoleUser, messages[0].Role)
+	require.Len(t, messages[0].Content, 3)
+	require.NotNil(t, messages[0].Content[0].Text)
+	assert.Equal(t, "first user turn", *messages[0].Content[0].Text)
+	require.NotNil(t, messages[0].Content[1].Text)
+	assert.Equal(t, "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>\n",
+		*messages[0].Content[1].Text, "reminder must stay inline at its position, wrapped")
+	require.NotNil(t, messages[0].Content[2].Text)
+	assert.Equal(t, "second user turn", *messages[0].Content[2].Text)
+}
+
+// TestMidConversationSystemReminderHoistedForNonAnthropic verifies the Anthropic-only gating:
+// for a non-Anthropic Bedrock model (e.g. Nova), the historical behavior is preserved — every
+// role=system message, including mid-conversation ones, is hoisted into the top-level system
+// block and nothing is inlined as a <system-reminder>. The inlining is a prompt-cache workaround
+// specific to Anthropic-on-Bedrock and must not change the wire shape for other models.
+func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are a helpful assistant."), // leading system prompt
+		userReminderTextMsg("first user turn"),
+		systemReminderTextMsg("Mid-conversation reminder."), // would be inlined for Anthropic
+		userReminderTextMsg("second user turn"),
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	require.NoError(t, err)
+
+	// Both system messages are hoisted (historical behavior), not just the leading one.
+	require.Len(t, systemMessages, 2, "non-Anthropic models hoist every system message")
+	assert.Equal(t, "You are a helpful assistant.", *systemMessages[0].Text)
+	assert.Equal(t, "Mid-conversation reminder.", *systemMessages[1].Text)
+
+	// No reminder is inlined into the conversation, and nothing is <system-reminder>-wrapped.
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if b.Text != nil {
+				assert.NotContains(t, *b.Text, "<system-reminder>", "non-Anthropic path must not wrap reminders")
+			}
+		}
+	}
+}
+
+// TestMultipleLeadingSystemMessagesAllHoisted verifies that a leading run of more than one
+// system message is fully hoisted, and the boundary closes at the first non-system message.
+func TestMultipleLeadingSystemMessagesAllHoisted(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("System prompt part one."),
+		systemReminderTextMsg("System prompt part two."),
+		userReminderTextMsg("hello"),
+		systemReminderTextMsg("Injected reminder."),
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+
+	require.Len(t, systemMessages, 2, "both leading system messages belong in the system block")
+	assert.Equal(t, "System prompt part one.", *systemMessages[0].Text)
+	assert.Equal(t, "System prompt part two.", *systemMessages[1].Text)
+
+	// Consecutive same-role merge folds the inlined reminder into the preceding user message.
+	require.Len(t, messages, 1)
+	assert.Equal(t, bedrock.BedrockMessageRoleUser, messages[0].Role)
+	require.Len(t, messages[0].Content, 2)
+	assert.Equal(t, "hello", *messages[0].Content[0].Text)
+	assert.Equal(t, "<system-reminder>\nInjected reminder.\n</system-reminder>\n", *messages[0].Content[1].Text)
+}
+
+// TestSystemReminderAfterToolResultPreservesPairing verifies that a reminder arriving after a
+// tool result does not split the tool_use/tool_result pairing and ends up correctly ordered
+// after the tool result (both are user-role and merge). This is the dominant production shape.
+func TestSystemReminderAfterToolResultPreservesPairing(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."),
+		userReminderTextMsg("do a thing"),
+		{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("tooluse_1"), Name: schemas.Ptr("read")},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("tooluse_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("file contents")},
+			},
+		},
+		systemReminderTextMsg("The task tools haven't been used recently."), // reminder right after tool result
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+	require.Len(t, systemMessages, 1)
+
+	// Find the assistant tool_use and assert it is immediately followed by a user tool_result.
+	toolUseIdx := -1
+	for i, m := range messages {
+		for _, b := range m.Content {
+			if b.ToolUse != nil {
+				toolUseIdx = i
+			}
+		}
+	}
+	require.GreaterOrEqual(t, toolUseIdx, 0, "tool_use must be present")
+	require.Less(t, toolUseIdx+1, len(messages), "tool_use must be followed by a message")
+	next := messages[toolUseIdx+1]
+	assert.Equal(t, bedrock.BedrockMessageRoleUser, next.Role)
+	var hasToolResult bool
+	for _, b := range next.Content {
+		if b.ToolResult != nil {
+			hasToolResult = true
+		}
+	}
+	assert.True(t, hasToolResult, "tool_use must be immediately followed by its tool_result")
+
+	// The reminder must NOT be hoisted into the system block.
+	for _, sm := range systemMessages {
+		if sm.Text != nil {
+			assert.NotContains(t, *sm.Text, "task tools haven't been used", "reminder must not be hoisted")
+		}
+	}
+
+	// The reminder text appears inline, wrapped, somewhere after the tool result.
+	var foundReminder bool
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if b.Text != nil && *b.Text == "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>\n" {
+				foundReminder = true
+			}
+		}
+	}
+	assert.True(t, foundReminder, "reminder must be inlined as wrapped user text")
+}
+
+// developerReminderTextMsg builds a role=developer message with a single text block.
+func developerReminderTextMsg(text string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(text)},
+			},
+		},
+	}
+}
+
+// TestMidConversationDeveloperReminderStaysInline mirrors the system-reminder test for the
+// developer role, which the converter treats identically (both are hoisted only when leading,
+// inlined otherwise). Without coverage, a future change special-casing developer could regress.
+func TestMidConversationDeveloperReminderStaysInline(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."), // leading system prompt
+		userReminderTextMsg("first user turn"),
+		developerReminderTextMsg("Developer note injected mid-conversation."),
+		userReminderTextMsg("second user turn"),
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+
+	// Only the leading system prompt is hoisted; the developer reminder is NOT.
+	require.Len(t, systemMessages, 1)
+	assert.Equal(t, "You are Claude Code.", *systemMessages[0].Text)
+	for _, sm := range systemMessages {
+		if sm.Text != nil {
+			assert.NotContains(t, *sm.Text, "Developer note", "developer reminder must not be hoisted")
+		}
+	}
+
+	// It appears inline, wrapped, in chronological order.
+	var found bool
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if b.Text != nil && *b.Text == "<system-reminder>\nDeveloper note injected mid-conversation.\n</system-reminder>\n" {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "developer reminder must be inlined as wrapped user text")
+}
+
+// TestMidConversationReminderContentStrInlined covers the ContentStr branch of the helper
+// (simple string content) rather than ContentBlocks, which all the other tests use. A
+// regression in that branch (e.g. forgetting to wrap) would otherwise pass CI.
+func TestMidConversationReminderContentStrInlined(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."),
+		userReminderTextMsg("hello"),
+		{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Reminder via ContentStr.")},
+		},
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+	require.Len(t, systemMessages, 1, "only the leading prompt is hoisted")
+
+	var found bool
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if b.Text != nil && *b.Text == "<system-reminder>\nReminder via ContentStr.\n</system-reminder>\n" {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "ContentStr reminder must be inlined as wrapped user text")
+}
+
+// TestMidConversationReminderEmptyContentDropped pins the nil-return contract: a mid-conversation
+// reminder with no text content produces no Bedrock message (the helper returns nil and the
+// caller skips it), rather than an empty user message that Bedrock would reject.
+func TestMidConversationReminderEmptyContentDropped(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."),
+		userReminderTextMsg("hello"),
+		{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{}},
+		},
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+	require.Len(t, systemMessages, 1)
+
+	// No empty content blocks anywhere; the empty reminder was dropped, not emitted.
+	for _, m := range messages {
+		require.NotEmpty(t, m.Content, "no message should have empty content")
+		for _, b := range m.Content {
+			if b.Text != nil {
+				assert.NotEqual(t, "<system-reminder>\n\n</system-reminder>\n", *b.Text, "empty reminder must not be emitted as a wrapped blank")
+			}
+		}
+	}
+}
+
+// TestSystemReminderBetweenToolCallAndResult covers a reminder arriving BETWEEN a function_call
+// and its output — a defensive edge case (Claude Code never interleaves reminders into a tool
+// exchange). Asserts the tool_use/tool_result pair is preserved. Known quirk, not asserted: the
+// merged user turn places the reminder text before the tool_result block; revisit if real traffic
+// ever interleaves this way.
+func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."),
+		userReminderTextMsg("do a thing"),
+		{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("tooluse_x"), Name: schemas.Ptr("read")},
+		},
+		systemReminderTextMsg("Injected between call and result."), // the interleaved reminder
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("tooluse_x"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("contents")},
+			},
+		},
+	}
+
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+
+	// Locate the assistant message carrying the tool_use.
+	toolUseMsgIdx := -1
+	for i, m := range messages {
+		for _, b := range m.Content {
+			if b.ToolUse != nil {
+				toolUseMsgIdx = i
+			}
+		}
+	}
+	require.GreaterOrEqual(t, toolUseMsgIdx, 0, "tool_use must be present")
+
+	// No reminder text may share the tool_use assistant message (that would split the pair).
+	for _, b := range messages[toolUseMsgIdx].Content {
+		assert.Nil(t, b.Text, "tool_use message must not contain an inlined reminder text block")
+	}
+
+	// The pair invariant: the next message is the user turn and it contains the matching
+	// tool_result (block order within that turn is not asserted — see the known limitation above).
+	require.Less(t, toolUseMsgIdx+1, len(messages), "tool_use must be followed by a message")
+	next := messages[toolUseMsgIdx+1]
+	assert.Equal(t, bedrock.BedrockMessageRoleUser, next.Role)
+	var hasResult bool
+	for _, b := range next.Content {
+		if b.ToolResult != nil && b.ToolResult.ToolUseID == "tooluse_x" {
+			hasResult = true
+		}
+	}
+	assert.True(t, hasResult, "user message after tool_use must contain the matching tool_result")
+}
+
+// TestSystemReminderDoesNotCarryCachePoint pins the deliberate omission flagged in review: an
+// inlined mid-conversation reminder must NOT emit a CachePoint, even if its block carries
+// CacheControl. A breakpoint at the moving conversation tail would shift every turn and defeat
+// the prefix caching this whole change exists to preserve.
+func TestSystemReminderDoesNotCarryCachePoint(t *testing.T) {
+	reminder := systemReminderTextMsg("Reminder that happens to carry a breakpoint.")
+	reminder.Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."),
+		userReminderTextMsg("hello"),
+		reminder,
+	}
+
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+
+	for _, m := range messages {
+		for _, b := range m.Content {
+			assert.Nil(t, b.CachePoint, "inlined reminder must not introduce a CachePoint block")
+		}
+	}
+}
+
+// TestToolCacheControlBecomesCachePointWithTTL is the positive counterpart to
+// TestSystemReminderDoesNotCarryCachePoint: a cache_control breakpoint Claude Code places on a
+// tool call / tool result must survive into Bedrock as a CachePoint block adjacent to the
+// ToolUse/ToolResult, AND must carry the requested TTL ("1h"). This pins the bug review caught
+// where the breakpoints were emitted with the default TTL dropped.
+func TestToolCacheControlBecomesCachePointWithTTL(t *testing.T) {
+	ttl := "1h"
+	toolMsgs := func() []schemas.ResponsesMessage {
+		return []schemas.ResponsesMessage{
+			userReminderTextMsg("call the tool"),
+			{
+				Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl},
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("tooluse_ttl"),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(`{"location":"NYC"}`),
+				},
+			},
+			{
+				Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl},
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("tooluse_ttl"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("sunny")},
+				},
+			},
+		}
+	}
+
+	assertTTLPreserved := func(t *testing.T, input []schemas.ResponsesMessage) {
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+		require.NoError(t, err)
+
+		var afterToolUse, afterToolResult bool
+		for _, m := range messages {
+			for i, b := range m.Content {
+				if b.ToolUse != nil && b.ToolUse.ToolUseID == "tooluse_ttl" {
+					require.Greater(t, len(m.Content), i+1, "a CachePoint block must follow the ToolUse")
+					cp := m.Content[i+1].CachePoint
+					require.NotNil(t, cp, "ToolUse with cache_control must be followed by a CachePoint")
+					require.NotNil(t, cp.TTL, "CachePoint must carry the requested TTL, not drop it")
+					assert.Equal(t, "1h", *cp.TTL)
+					afterToolUse = true
+				}
+				if b.ToolResult != nil && b.ToolResult.ToolUseID == "tooluse_ttl" {
+					require.Greater(t, len(m.Content), i+1, "a CachePoint block must follow the ToolResult")
+					cp := m.Content[i+1].CachePoint
+					require.NotNil(t, cp, "ToolResult with cache_control must be followed by a CachePoint")
+					require.NotNil(t, cp.TTL, "CachePoint must carry the requested TTL, not drop it")
+					assert.Equal(t, "1h", *cp.TTL)
+					afterToolResult = true
+				}
+			}
+		}
+		assert.True(t, afterToolUse, "expected a TTL-carrying CachePoint after the tool_use")
+		assert.True(t, afterToolResult, "expected a TTL-carrying CachePoint after the tool_result")
+	}
+
+	// End-of-sequence flush: the tool call/result are the last messages (isLastResultInSequence).
+	t.Run("end of sequence", func(t *testing.T) {
+		assertTTLPreserved(t, toolMsgs())
+	})
+	// Flush-before-message: a following user message triggers the flush while tool results are
+	// pending (the path this PR added inside case ResponsesMessageTypeMessage).
+	t.Run("followed by a message", func(t *testing.T) {
+		assertTTLPreserved(t, append(toolMsgs(), userReminderTextMsg("and then continue")))
+	})
+}
+
+// TestLoneSystemMessageReturnsUserMessage covers the single-element early return: a lone
+// system/developer message is converted to a user message and returned, with no system block,
+// regardless of the inlineSystemReminders gate.
+func TestLoneSystemMessageReturnsUserMessage(t *testing.T) {
+	// Both system and developer roles take the single-message early return.
+	roles := map[string]schemas.ResponsesMessage{
+		"system":    systemReminderTextMsg("You are Claude Code."),
+		"developer": developerReminderTextMsg("You are Claude Code."),
+	}
+	for role, msg := range roles {
+		for _, inline := range []bool{true, false} {
+			input := []schemas.ResponsesMessage{msg}
+			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, inline)
+			require.NoError(t, err)
+			assert.Empty(t, systemMessages, "lone %s message must not populate the system block (inline=%v)", role, inline)
+			require.Len(t, messages, 1, "lone %s message must yield exactly one message (inline=%v)", role, inline)
+			assert.Equal(t, bedrock.BedrockMessageRoleUser, messages[0].Role)
+		}
+	}
+}
+
+// TestNoLeadingSystemBlockReminderInlined covers the seenNonSystemMessage gate when the
+// conversation does NOT start with a system message: the first message is a user turn, so a later
+// role=system reminder is mid-conversation and must be inlined (nothing hoisted into system).
+func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		userReminderTextMsg("hello"),
+		systemReminderTextMsg("Reminder with no leading system block."),
+		userReminderTextMsg("continue"),
+	}
+
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+
+	assert.Empty(t, systemMessages, "no leading system block means nothing should be hoisted")
+	var inlined bool
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if b.Text != nil && strings.Contains(*b.Text, "<system-reminder>") &&
+				strings.Contains(*b.Text, "Reminder with no leading system block.") {
+				assert.Equal(t, bedrock.BedrockMessageRoleUser, m.Role, "inlined reminder must be a user message")
+				inlined = true
+			}
+		}
+	}
+	assert.True(t, inlined, "the mid-conversation reminder must be inlined as a wrapped user message")
 }

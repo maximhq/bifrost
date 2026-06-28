@@ -364,7 +364,11 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 	start := time.Now()
 
 	resp, bErr := m.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-		detailed, opErr := retrieveExternalToolsDetailed(ctx, conn, clientName, m.logger)
+		// Use gateCtx (not the outer ctx) so values a PreMCPHook wrote during the
+		// gate — notably BifrostContextKeyMCPExtraHeaders — are visible to the wire
+		// call. BifrostContext.Value walks parent-ward only, so the outer ctx cannot
+		// see writes made to its gateCtx child.
+		detailed, opErr := retrieveExternalToolsDetailed(gateCtx, conn, clientName, m.logger)
 		if opErr != nil {
 			return nil, opErr
 		}
@@ -405,7 +409,9 @@ func (chm *ClientHealthMonitor) runPingWithHooks(ctx context.Context, conn *clie
 	gateCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	start := time.Now()
 	_, bErr := chm.manager.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-		if pingErr := conn.Ping(ctx); pingErr != nil {
+		// Use gateCtx so a PreMCPHook's context writes (e.g. BifrostContextKeyMCPExtraHeaders)
+		// reach the transport headerFunc on this ping. See runListToolsWithHooks for details.
+		if pingErr := conn.Ping(gateCtx); pingErr != nil {
 			return nil, pingErr
 		}
 		return &schemas.BifrostMCPResponse{

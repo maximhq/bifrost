@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd" role="img" aria-label="Runware">
+  <title>Runware</title>
+  <style>
+    .rw { fill: #71717a; }
+    @media (prefers-color-scheme: dark) { .rw { fill: #a1a1aa; } }
+  </style>
+  <path class="rw" d="M5.22 1 L19.61 1.09 L22.73 7.42 L8.24 7.33 Z M1.28 8.88 L7.78 8.88 L11.08 15.12 L4.3 15.03 Z M16.12 8.88 L22.73 8.88 L19.52 15.21 L12.92 15.21 Z M13.01 16.68 L19.61 16.77 L22.73 23 L16.12 23 Z"></path>
+</svg>

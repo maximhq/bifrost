@@ -2,8 +2,8 @@ apiVersion: v2
 name: bifrost
 description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
 type: application
-version: 2.1.21
-appVersion: "1.5.3"
+version: 2.1.25
+appVersion: "1.5.12"
 keywords:
   - ai
   - gateway

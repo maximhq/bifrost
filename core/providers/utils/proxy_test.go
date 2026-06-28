@@ -13,7 +13,7 @@ func TestConfigureProxy_HTTPProxy_WithLiteralURL_ConfiguresDialer(t *testing.T) 
 	logger := testLogger{}
 	cfg := &schemas.ProxyConfig{
 		Type: schemas.HTTPProxy,
-		URL:  schemas.NewEnvVar("http://127.0.0.1:1"),
+		URL:  schemas.NewSecretVar("http://127.0.0.1:1"),
 	}
 
 	ConfigureProxy(client, cfg, logger)
@@ -37,7 +37,7 @@ func TestConfigureProxy_HTTPProxy_WithEnvURL_ConfiguresDialer(t *testing.T) {
 	logger := testLogger{}
 	cfg := &schemas.ProxyConfig{
 		Type: schemas.HTTPProxy,
-		URL:  schemas.NewEnvVar("env.BIFROST_TEST_PROXY_URL"),
+		URL:  schemas.NewSecretVar("env.BIFROST_TEST_PROXY_URL"),
 	}
 
 	ConfigureProxy(client, cfg, logger)
@@ -61,7 +61,7 @@ func TestConfigureProxy_HTTPProxy_WithEmptyEnvValue_FailsFast(t *testing.T) {
 	logger := testLogger{}
 	cfg := &schemas.ProxyConfig{
 		Type: schemas.HTTPProxy,
-		URL:  schemas.NewEnvVar("env.BIFROST_TEST_PROXY_URL_EMPTY"),
+		URL:  schemas.NewSecretVar("env.BIFROST_TEST_PROXY_URL_EMPTY"),
 	}
 
 	ConfigureProxy(client, cfg, logger)

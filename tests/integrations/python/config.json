@@ -1,5 +1,6 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "env_label":"Development",
   "mcp": {
     "client_configs": [
       {
@@ -111,7 +112,18 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "blacklisted_models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
+        },
+        {
+          "name": "Vertex Global (Claude)",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "global",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "weight": 1,
+          "models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
         }
       ],
       "network_config": {
@@ -302,6 +314,13 @@
     "type": "sqlite",
     "config": {
       "path": "../../tests/integrations/python/logs.db"
+    },
+    "writer": {
+      "max_batch_size":  100,
+      "batch_interval": "1s",
+      "max_batch_bytes": 10485760,
+      "write_queue_capacity": 1000,
+      "deferred_usage_concurrency": 10
     }
   },
   "governance": {
@@ -331,6 +350,9 @@
         ]
       }
     ]
+  },
+  "server": {
+    "read_buffer_size": 65536
   },
   "client": {
     "drop_excess_requests": false,

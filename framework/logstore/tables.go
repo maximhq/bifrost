@@ -132,7 +132,9 @@ type Log struct {
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
-	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"` // Set when model was resolved via alias mapping; the original name the caller used
+	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
+	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
+	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
@@ -194,7 +196,7 @@ type Log struct {
 	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
 	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
-	ContentSummary          string    `gorm:"type:text" json:"-"`
+	ContentSummary          string    `gorm:"type:text" json:"content_summary,omitempty"` // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
 	RawRequest              string    `gorm:"type:text" json:"raw_request"`                         // Populated when `send-back-raw-request` is on
 	RawResponse             string    `gorm:"type:text" json:"raw_response"`                        // Populated when `send-back-raw-response` is on
 	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
@@ -910,6 +912,18 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = strings.Split(*l.RoutingEnginesUsedStr, ",")
 	} else {
 		l.RoutingEnginesUsed = []string{}
+	}
+
+	// Hybrid log store offloads token_usage to object storage but keeps denormalized
+	// prompt/completion/total columns in the DB for analytics. Rebuild the virtual
+	// field so list APIs and the UI can render tokens without hydrating from S3 —
+	// same role content_summary plays for message previews.
+	if l.TokenUsage == "" && l.TokenUsageParsed == nil && (l.PromptTokens != 0 || l.CompletionTokens != 0 || l.TotalTokens != 0) {
+		l.TokenUsageParsed = &schemas.BifrostLLMUsage{
+			PromptTokens:     l.PromptTokens,
+			CompletionTokens: l.CompletionTokens,
+			TotalTokens:      l.TotalTokens,
+		}
 	}
 
 	return nil
@@ -1644,6 +1658,7 @@ const (
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
 	RankingDimensionUser         RankingDimension = "user"
+	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 )
 
 var ValidRankingDimensions = map[RankingDimension]bool{
@@ -1651,6 +1666,7 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
 	RankingDimensionUser:         true,
+	RankingDimensionVirtualKey:   true,
 }
 
 type dimensionColumnDef struct {
@@ -1663,6 +1679,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
+	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 }
 
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
@@ -1700,6 +1717,65 @@ type DimensionRankingResult struct {
 	// over the same attributed population. Zero/omitted when not computed.
 	TotalActualRequests     int64 `json:"total_actual_requests,omitempty"`
 	TotalAttributedRequests int64 `json:"total_attributed_requests,omitempty"`
+}
+
+// ==================== CONSOLIDATED DASHBOARD RESULT ====================
+// The types below back the GET /api/logs/dashboard endpoint, which returns
+// every metric shown on the /workspace/dashboard page in a single response.
+// Each section reuses the same struct returned by its dedicated endpoint, so
+// the consolidated payload stays byte-for-byte consistent with the per-tab
+// endpoints. This is a stable, public-facing contract: add fields, do not
+// rename or remove existing ones.
+
+// DashboardMeta describes the parameters the dashboard data was computed with,
+// so consumers can interpret the buckets and rankings without re-deriving them.
+type DashboardMeta struct {
+	GeneratedAt       time.Time  `json:"generated_at"`         // UTC time the response was assembled
+	BucketSizeSeconds int64      `json:"bucket_size_seconds"`  // Width of every histogram bucket, derived from the time range
+	StartTime         *time.Time `json:"start_time,omitempty"` // Resolved start of the queried range (from start_time/end_time or period)
+	EndTime           *time.Time `json:"end_time,omitempty"`   // Resolved end of the queried range
+}
+
+// DashboardOverview holds the Overview tab metrics.
+type DashboardOverview struct {
+	Stats    *SearchStats            `json:"stats"`    // Totals + success/cache rates
+	Requests *HistogramResult        `json:"requests"` // Request volume over time
+	Tokens   *TokenHistogramResult   `json:"tokens"`   // Token usage over time
+	Cost     *CostHistogramResult    `json:"cost"`     // Cost over time, broken down by model
+	Models   *ModelHistogramResult   `json:"models"`   // Per-model usage over time
+	Latency  *LatencyHistogramResult `json:"latency"`  // Latency percentiles over time
+}
+
+// DashboardProviderUsage holds the Provider Usage tab metrics.
+type DashboardProviderUsage struct {
+	Cost    *ProviderCostHistogramResult    `json:"cost"`
+	Tokens  *ProviderTokenHistogramResult   `json:"tokens"`
+	Latency *ProviderLatencyHistogramResult `json:"latency"`
+}
+
+// DashboardModelRankings holds the Model Rankings tab data.
+type DashboardModelRankings struct {
+	Rankings  *ModelRankingResult   `json:"rankings"`  // Ranked table with trends
+	Histogram *ModelHistogramResult `json:"histogram"` // Backs the "Top Models" stacked bar chart
+}
+
+// DashboardMCP holds the MCP usage tab metrics.
+type DashboardMCP struct {
+	Volume   *MCPHistogramResult     `json:"volume"`    // Tool call volume over time
+	Cost     *MCPCostHistogramResult `json:"cost"`      // MCP cost over time
+	TopTools *MCPTopToolsResult      `json:"top_tools"` // Top tools by call count
+}
+
+// DashboardResult is the full consolidated payload for GET /api/logs/dashboard.
+// DimensionRankings is keyed by RankingDimension ("team", "user", "virtual_key",
+// "customer", "business_unit"); each value is that dimension's ranking table.
+type DashboardResult struct {
+	Meta              DashboardMeta                      `json:"meta"`
+	Overview          DashboardOverview                  `json:"overview"`
+	ProviderUsage     DashboardProviderUsage             `json:"provider_usage"`
+	ModelRankings     DashboardModelRankings             `json:"model_rankings"`
+	DimensionRankings map[string]*DimensionRankingResult `json:"dimension_rankings"`
+	MCP               DashboardMCP                       `json:"mcp"`
 }
 
 // NodeUsageCursor identifies the last log row included in a node usage scan.

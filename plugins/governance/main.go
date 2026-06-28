@@ -6,22 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/maximhq/bifrost/core/network"
-	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 // PluginName is the name of the governance plugin
@@ -88,6 +86,8 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+
+	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -236,6 +236,7 @@ func Init(
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
 	}
+	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, governanceConfig))
 	return plugin, nil
 }
 
@@ -330,12 +331,59 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 	}
+	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, nil))
 	return plugin, nil
 }
 
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
+func (p *GovernancePlugin) ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
+	p.storeComplexityAnalyzerConfig(config)
+}
+
+func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
+	resolved, err := complexity.ValidateAndNormalize(config)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("invalid complexity analyzer config, using defaults: %v", err)
+		}
+		defaults := complexity.DefaultAnalyzerConfig()
+		resolved = &defaults
+	}
+	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
+}
+
+func resolveAnalyzerConfigFromStoreOrArg(
+	ctx context.Context,
+	logger schemas.Logger,
+	configStore configstore.ConfigStore,
+	governanceConfig *configstore.GovernanceConfig,
+) *complexity.AnalyzerConfig {
+	if governanceConfig != nil && governanceConfig.ComplexityAnalyzerConfig != nil {
+		cfg, err := complexity.ValidateAndNormalize(governanceConfig.ComplexityAnalyzerConfig)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("invalid complexity analyzer config from governance config: %v", err)
+			}
+		} else if cfg != nil {
+			return cfg
+		}
+	}
+	if configStore != nil {
+		cfg, err := configStore.GetComplexityAnalyzerConfig(ctx)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("failed to load complexity analyzer config from store: %v", err)
+			}
+		} else if cfg != nil {
+			return cfg
+		}
+	}
+	return nil
 }
 
 // UpdateEnforceAuthOnInference updates the enforce auth on inference config
@@ -345,331 +393,64 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 	p.isVkMandatory = new(enforceAuthOnInference)
 }
 
-// HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
-// It modifies the request in-place and returns nil to continue, or an HTTPResponse to short-circuit.
-// Optimized to skip unnecessary operations: only unmarshals/marshals when needed
+// HTTPTransportPreHook is retained as a no-op so governance still satisfies the
+// HTTPTransportPlugin interface (used by the enterprise wrapper's 503 gate delegation).
+// All routing now flows through PreRequestHook: body-having requests via handleRequest,
+// large-payload requests via PreRequestHook reading LargePayloadMetadata, and realtime WS
+// upgrades via the realtime handler's explicit RunPreRequestHooks call.
 func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
-	hasRoutingRules := p.store.HasRoutingRules(ctx)
+	return nil, nil
+}
 
-	if strings.Contains(req.Path, "passthrough") {
-		return nil, nil
+// runPreRequestRouting wraps a model string in a synthetic BifrostRequest, runs the same
+// applyRoutingRules + loadBalanceProvider helpers used by the main PreRequestHook path, and
+// returns the resolved model (provider-prefixed when a provider was selected, plain model
+// otherwise). Used by PreRequestHook's large-payload branch where req.Model is empty because
+// the body wasn't parsed.
+func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, hasRoutingRules bool, modelIn string, requestType schemas.RequestType) (string, error) {
+	// Parse a provider-prefixed model string the same way the transport does for
+	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
+	// ChatRequest.Provider and load balancing honors the caller's routing intent.
+	providerIn, parsedModel := schemas.ParseModelString(modelIn, "")
+	synthetic := &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: providerIn, Model: parsedModel},
 	}
 
-	// If no virtual key and no routing rules configured, skip all processing
-	if virtualKeyValue == nil && !hasRoutingRules {
-		return nil, nil
-	}
-
-	// If no body, check if the request carries a model via query params (e.g. realtime
-	// WebSocket upgrades: GET /v1/realtime?model=... or Azure preview ?deployment=...)
-	// or if large payload mode is active.
-	// For query-param-based models we build a synthetic payload so routing rules and VK
-	// load-balancing can rewrite provider/model, then propagate changes back to the query.
-	if len(req.Body) == 0 {
-		if modelParam := realtimeModelQueryParam(req); modelParam != "" {
-			return p.governRealtimeQueryParam(ctx, req, virtualKeyValue, hasRoutingRules)
-		}
-		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
-		if !isLargePayload {
-			return nil, nil
-		}
-		return p.governLargePayload(ctx, req, virtualKeyValue, hasRoutingRules)
-	}
-
-	// Only unmarshal if we have VK or routing rules
-	var payload map[string]any
-	var virtualKey *configstoreTables.TableVirtualKey
-	var ok bool
-	var needsMarshal bool
-
-	contentType := req.CaseInsensitiveHeaderLookup("Content-Type")
-	lowerCT := strings.ToLower(contentType)
-	// Strip parameters (e.g., "; charset=utf-8") for clean media type comparison
-	mediaType := lowerCT
-	if idx := strings.IndexByte(mediaType, ';'); idx >= 0 {
-		mediaType = strings.TrimSpace(mediaType[:idx])
-	}
-	isMultipart := strings.HasPrefix(mediaType, "multipart/form-data")
-	isJSON := mediaType == "" || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
-
-	if !isMultipart && !isJSON {
-		// Non-parseable body (e.g., application/sdp for WebRTC signaling) — skip governance
-		return nil, nil
-	}
-
-	var err error
-	if isMultipart {
-		payload, err = network.ParseMultipartFormFields(contentType, req.Body)
-		if err != nil {
-			p.logger.Warn("failed to parse multipart form in governance plugin: %v", err)
-			return nil, nil
-		}
-	} else {
-		err = sonic.Unmarshal(req.Body, &payload)
-		if err != nil {
-			p.logger.Error("failed to unmarshal request body: %v", err)
-			return nil, nil
-		}
-	}
-
-	// Process virtual key if provided
-	if virtualKeyValue != nil {
-		virtualKey, ok = p.store.GetVirtualKey(ctx, *virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() {
-			return nil, nil
-		}
-	}
-
-	// Attaching team and customer based on the virtual key
-	if virtualKey != nil {
-		if virtualKey.TeamID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
-		}
-		if virtualKey.Team != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
-		}
-		if virtualKey.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
-		}
-		if virtualKey.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
-		}
-	}
-
-	//1. Apply routing rules only if we have rules or matched decision
-	var routingDecision *RoutingDecision
 	if hasRoutingRules {
-		var err error
-		payload, routingDecision, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
-		if err != nil {
-			return nil, err
-		}
-		// Mark for marshal if a routing rule matched
-		if routingDecision != nil {
-			needsMarshal = true
+		if _, err := p.applyRoutingRules(ctx, synthetic, virtualKey); err != nil {
+			return modelIn, err
 		}
 	}
 
-	// Process virtual key if provided
 	if virtualKey != nil {
-		//2. Load balance provider
-		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
-		if err != nil {
-			return nil, err
+		if err := p.loadBalanceProvider(ctx, synthetic, virtualKey); err != nil {
+			return modelIn, err
 		}
-		//3. Add MCP tools only when auto-inject is enabled and header not already set by the caller
+
+		// A caller-provided include-tools list can only narrow the virtual key's
+		// tool grant, never expand it — prune entries the key does not allow.
+		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+
 		p.cfgMutex.RLock()
 		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
 		p.cfgMutex.RUnlock()
-		if !autoInjectDisabled {
-			// Treat an explicitly-present (even empty) x-bf-mcp-include-tools header as "present"
-			// so that callers can block auto-injection by sending an empty header value.
-			headerPresent := false
-			for k := range req.Headers {
-				if strings.EqualFold(k, "x-bf-mcp-include-tools") {
-					headerPresent = true
-					break
-				}
-			}
-			if !headerPresent {
-				req.Headers, err = p.addMCPIncludeTools(req.Headers, virtualKey)
-				if err != nil {
-					p.logger.Error("failed to add MCP include tools: %v", err)
-					return nil, nil
-				}
-			}
-		}
-		needsMarshal = true
-	}
-
-	// Only marshal if something changed (VK processing or routing decision matched)
-	if needsMarshal {
-		if err := network.SerializePayloadToRequest(req, payload, isMultipart, contentType); err != nil {
-			p.logger.Error("failed to serialize request body in governance plugin: %v", err)
-			return nil, nil
-		}
-	}
-
-	return nil, nil
-}
-
-// governLargePayload handles read-only governance for large payload requests.
-// The request body is streaming and cannot be modified, so we build a synthetic payload
-// from pre-extracted metadata and run VK validation, routing rules, and load balancing.
-// Any model changes are propagated via the metadata in context (not body rewriting).
-func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, virtualKeyValue *string, hasRoutingRules bool) (*schemas.HTTPResponse, error) {
-	metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata)
-	if metadata == nil || metadata.Model == "" {
-		return nil, nil
-	}
-
-	// Build synthetic payload from metadata — only the model field is needed
-	payload := map[string]any{
-		"model": metadata.Model,
-	}
-	originalModel := metadata.Model
-
-	// Process virtual key if provided
-	var virtualKey *configstoreTables.TableVirtualKey
-	if virtualKeyValue != nil {
-		vk, ok := p.store.GetVirtualKey(ctx, *virtualKeyValue)
-		if !ok || vk == nil || !vk.IsActiveValue() {
-			return nil, nil
-		}
-		virtualKey = vk
-	}
-
-	// Attaching team and customer based on the virtual key
-	if virtualKey != nil {
-		if virtualKey.TeamID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
-		}
-		if virtualKey.Team != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
-		}
-		if virtualKey.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
-		}
-		if virtualKey.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
-		}
-	}
-
-	// Apply routing rules (read-only: decisions still affect downstream evaluation)
-	if hasRoutingRules {
-		var err error
-		payload, _, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Process virtual key: load balance + MCP tool headers
-	if virtualKey != nil {
-		var err error
-		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
-		if err != nil {
-			return nil, err
-		}
-		// MCP tool headers — apply the same auto-inject guard as the normal path:
-		// skip when DisableAutoToolInject is set or the caller already sent the header.
-		p.cfgMutex.RLock()
-		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
-		p.cfgMutex.RUnlock()
-		if !autoInjectDisabled {
-			headerPresent := false
-			for k := range req.Headers {
-				if strings.EqualFold(k, "x-bf-mcp-include-tools") {
-					headerPresent = true
-					break
-				}
-			}
-			if !headerPresent {
-				req.Headers, err = p.addMCPIncludeTools(req.Headers, virtualKey)
-				if err != nil {
-					p.logger.Error("failed to add MCP include tools: %v", err)
-					return nil, nil
-				}
+		// An include-clients filter opts the request into tool injection even when
+		// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
+		// the key's allowlist must be stamped on every path where injection can run.
+		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
+		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
+			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 			}
 		}
 	}
 
-	// Propagate model changes to metadata so downstream hydration picks up
-	// the load-balanced/routed model (e.g., provider prefix added by LB).
-	if newModel, ok := payload["model"].(string); ok && newModel != originalModel {
-		metadata.Model = newModel
+	provider, model, _ := synthetic.GetRequestFields()
+	if provider != "" {
+		return string(provider) + "/" + model, nil
 	}
-
-	// No body serialization — large payload body streams through unchanged
-	return nil, nil
-}
-
-// realtimeModelQueryParam returns the query parameter used as the realtime model selector.
-// Azure preview realtime uses `deployment`, while GA/OpenAI-compatible paths use `model`.
-func realtimeModelQueryParam(req *schemas.HTTPRequest) string {
-	if req == nil || req.Query == nil {
-		return ""
-	}
-	if modelParam := req.Query["model"]; modelParam != "" {
-		return modelParam
-	}
-	return req.Query["deployment"]
-}
-
-// governRealtimeQueryParam handles governance for bodyless realtime requests
-// (e.g. WebSocket upgrade GET /v1/realtime?model=... or Azure preview
-// /realtime?deployment=...) where the model lives in a query parameter instead
-// of the JSON body. We build a synthetic payload so routing rules and VK
-// load-balancing can evaluate normally, then propagate any model rewrite back
-// to the original query param for the downstream handler to pick up.
-func (p *GovernancePlugin) governRealtimeQueryParam(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, virtualKeyValue *string, hasRoutingRules bool) (*schemas.HTTPResponse, error) {
-	modelQueryKey := "model"
-	modelParam := req.Query[modelQueryKey]
-	if modelParam == "" {
-		modelQueryKey = "deployment"
-		modelParam = req.Query[modelQueryKey]
-	}
-	if modelParam == "" {
-		return nil, nil
-	}
-
-	payload := map[string]any{
-		"model": modelParam,
-	}
-	originalModel := modelParam
-
-	// Process virtual key if provided
-	var virtualKey *configstoreTables.TableVirtualKey
-	if virtualKeyValue != nil {
-		vk, ok := p.store.GetVirtualKey(ctx, *virtualKeyValue)
-		if !ok || vk == nil || !vk.IsActiveValue() {
-			return nil, nil
-		}
-		virtualKey = vk
-	}
-
-	// Attaching team and customer based on the virtual key
-	if virtualKey != nil {
-		if virtualKey.TeamID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
-		}
-		if virtualKey.Team != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
-		}
-		if virtualKey.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
-		}
-		if virtualKey.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
-		}
-	}
-
-	// Apply routing rules
-	if hasRoutingRules {
-		var err error
-		payload, _, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Process virtual key: load balance provider
-	if virtualKey != nil {
-		var err error
-		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Propagate model changes back to the original query param so the downstream
-	// realtime handler sees the routed/load-balanced model.
-	if newModel, ok := payload["model"].(string); ok && newModel != originalModel {
-		req.Query[modelQueryKey] = newModel
-	}
-
-	return nil, nil
+	return model, nil
 }
 
 // HTTPTransportPostHook intercepts requests after they are processed (governance decision point)
@@ -683,77 +464,18 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
-// loadBalanceProvider loads balances the provider for the request
-// Parameters:
-//   - req: The HTTP request
-//   - body: The request body
-//   - virtualKey: The virtual key configuration
-//
-// Returns:
-//   - map[string]any: The updated request body
-//   - error: Any error that occurred during processing
-func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, error) {
-	// Check if the request has a model field
-	modelValue, hasModel := body["model"]
-	isGeminiPath := strings.Contains(req.Path, "/genai")
-	isBedrockPath := strings.Contains(req.Path, "/bedrock")
-	if !hasModel {
-		// For genai integration, model is present in URL path instead of the request body
-		if isGeminiPath {
-			// Prefer context value set by a routing rule (format: "provider/model:suffix")
-			if ctxModel, ok := ctx.Value("model").(string); ok && ctxModel != "" {
-				modelValue = ctxModel
-			} else {
-				modelValue = req.CaseInsensitivePathParamLookup("model")
-			}
-		} else if isBedrockPath {
-			// For bedrock integration, model is present in URL path as modelId
-			// Prefer context value set by a routing rule (format: "provider/model")
-			if ctxModelID, ok := ctx.Value("modelId").(string); ok && ctxModelID != "" {
-				modelValue = ctxModelID
-			} else {
-				rawModelID := req.CaseInsensitivePathParamLookup("modelId")
-				if rawModelID == "" {
-					return body, nil
-				}
-				// URL-decode the modelId (Bedrock model IDs may be URL-encoded, e.g. anthropic%2Fclaude-3-5-sonnet)
-				decoded, err := url.PathUnescape(rawModelID)
-				if err != nil {
-					decoded = rawModelID
-				}
-				modelValue = decoded
-			}
-		} else {
-			return body, nil
-		}
+// loadBalanceProvider picks a weighted provider from the VK's configs for req.Model
+// and mutates req.Provider/req.Model with the refined provider/model. Also populates req.Fallbacks
+// from the remaining weighted providers if no fallbacks were configured by the caller.
+func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error {
+	provider, modelStr, existingFallbacks := req.GetRequestFields()
+	if modelStr == "" {
+		return nil
 	}
-	modelStr, ok := modelValue.(string)
-	if !ok || modelStr == "" {
-		return body, nil
-	}
-	var genaiRequestSuffix string
-	// Remove Google GenAI API endpoint suffixes if present
-	if isGeminiPath {
-		for _, sfx := range gemini.GeminiRequestSuffixPaths {
-			if before, ok := strings.CutSuffix(modelStr, sfx); ok {
-				modelStr = before
-				genaiRequestSuffix = sfx
-				break
-			}
-		}
-	}
-	// Check if model already has provider prefix (contains "/")
-	if strings.Contains(modelStr, "/") {
-		provider, _ := schemas.ParseModelString(modelStr, "")
-		// Checking valid provider when store is available; if store is nil,
-		// assume the prefixed model should be left unchanged.
-		if p.inMemoryStore != nil {
-			if _, ok := p.inMemoryStore.GetConfiguredProviders()[provider]; ok {
-				return body, nil
-			}
-		} else {
-			return body, nil
-		}
+
+	if provider != "" {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Skipping load balancing for model %s: provider %s already set", modelStr, provider))
+		return nil
 	}
 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing provider for model %s", modelStr))
@@ -761,10 +483,9 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Get provider configs for this virtual key
 	providerConfigs := virtualKey.ProviderConfigs
 	if len(providerConfigs) == 0 {
-		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
 		// No provider configs, continue without modification
-		return body, nil
+		return nil
 	}
 
 	var configuredProviders []string
@@ -777,7 +498,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Pre-pass: if any config for a provider blacklists the model, that provider is fully blocked.
 	blacklistedProviders := make(map[string]bool)
 	for _, config := range providerConfigs {
-		if isModelBlockedByList(config.BlacklistedModels, modelStr) {
+		if config.BlacklistedModels.IsBlocked(modelStr) {
 			blacklistedProviders[config.Provider] = true
 		}
 	}
@@ -825,12 +546,9 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 
 	var allowedProviders []string
-	allowedModelProviders := make([]schemas.ModelProvider, 0, len(allowedProviderConfigs))
 	for _, pc := range allowedProviderConfigs {
 		allowedProviders = append(allowedProviders, pc.Provider)
-		allowedModelProviders = append(allowedModelProviders, schemas.ModelProvider(pc.Provider))
 	}
-	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, allowedModelProviders)
 	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
 
@@ -838,9 +556,9 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No eligible providers remaining after filtering for model %s, skipping load balancing", modelStr))
 		// TODO: Send proper error if (overall VK budget/rate limit) or (all provider budgets/rate limits) are violated
 		// No allowed provider configs, continue without modification
-		return body, nil
+		return nil
 	}
-	// Separate providers with weight set (participate in routing) from those without (nil weight = excluded from routing)
+
 	weightedConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0, len(allowedProviderConfigs))
 	for _, config := range allowedProviderConfigs {
 		if config.Weight != nil {
@@ -848,268 +566,244 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		}
 	}
 
-	var selectedProvider schemas.ModelProvider
+	if len(weightedConfigs) == 0 {
+		// All allowed configs survived the model-allowance / budget / rate-limit filters,
+		// but none of them have a Weight set — there's nothing to feed weighted selection.
+		// Emit an explicit log so the routing trail explains why governance stops here
+		// instead of trailing off after "Allowed providers after filtering: [...]".
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No weighted configs for model %s — none of the allowed VK provider configs have a weight assigned; skipping load balancing", modelStr))
+		return nil
+	}
 
-	if len(weightedConfigs) > 0 {
-		// Weighted random selection from providers that have weight set
-		totalWeight := 0.0
-		for _, config := range weightedConfigs {
-			totalWeight += getWeight(config.Weight)
+	var selectedProvider schemas.ModelProvider
+	totalWeight := 0.0
+	for _, config := range weightedConfigs {
+		totalWeight += getWeight(config.Weight)
+	}
+	// Generate random number between 0 and totalWeight
+	randomValue := rand.Float64() * totalWeight
+	// Select provider based on weighted random selection
+	currentWeight := 0.0
+	for _, config := range weightedConfigs {
+		currentWeight += getWeight(config.Weight)
+		if randomValue <= currentWeight {
+			selectedProvider = schemas.ModelProvider(config.Provider)
+			break
 		}
-		// Generate random number between 0 and totalWeight
-		randomValue := rand.Float64() * totalWeight
-		// Select provider based on weighted random selection
-		currentWeight := 0.0
-		for _, config := range weightedConfigs {
-			currentWeight += getWeight(config.Weight)
-			if randomValue <= currentWeight {
-				selectedProvider = schemas.ModelProvider(config.Provider)
-				break
-			}
-		}
-		// Fallback: if no provider was selected (shouldn't happen but guard against FP issues)
-		if selectedProvider == "" {
-			selectedProvider = schemas.ModelProvider(weightedConfigs[0].Provider)
-		}
-	} else {
-		// No providers have weight set
-		return body, nil
+	}
+	// Fallback: if no provider was selected (shouldn't happen but guard against FP issues)
+	if selectedProvider == "" {
+		selectedProvider = schemas.ModelProvider(weightedConfigs[0].Provider)
 	}
 
 	p.logger.Debug("[governance] Selected provider: %s", selectedProvider)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))
 
-	// For genai integration, model is present in URL path instead of the request body
-	if isGeminiPath {
-		newModelWithRequestSuffix := string(selectedProvider) + "/" + modelStr + genaiRequestSuffix
-		ctx.SetValue("model", newModelWithRequestSuffix)
-	} else if isBedrockPath {
-		// For bedrock integration, model is present in URL path as modelId
-		ctx.SetValue("modelId", string(selectedProvider)+"/"+modelStr)
-	} else {
+	refinedModel := modelStr
+	// Refine the model for the selected provider
+	if p.modelCatalog != nil {
 		var err error
-		refinedModel := modelStr
-		// Refine the model for the selected provider
-		if p.modelCatalog != nil {
-			refinedModel, err = p.modelCatalog.RefineModelForProvider(selectedProvider, modelStr)
-			if err != nil {
-				return body, err
-			}
+		refinedModel, err = p.modelCatalog.RefineModelForProvider(selectedProvider, modelStr)
+		if err != nil {
+			return err
 		}
-		// Update the model field in the request body
-		body["model"] = string(selectedProvider) + "/" + refinedModel
 	}
-	// Append governance to routing engines used
+
+	req.SetProvider(selectedProvider)
+	req.SetModel(refinedModel)
+
 	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineGovernance)
 
-	// Check if fallbacks field is already present
-	_, hasFallbacks := body["fallbacks"]
-	// Use the same candidate set that was used for primary selection
-	fallbackConfigs := weightedConfigs
-	if !hasFallbacks && len(fallbackConfigs) > 1 {
-		// Sort fallback configs by weight (descending)
+	if len(existingFallbacks) == 0 && len(weightedConfigs) > 1 {
+		fallbackConfigs := append([]configstoreTables.TableVirtualKeyProviderConfig(nil), weightedConfigs...)
 		sort.Slice(fallbackConfigs, func(i, j int) bool {
 			return getWeight(fallbackConfigs[i].Weight) > getWeight(fallbackConfigs[j].Weight)
 		})
 
 		// Filter out the selected provider and create fallbacks array
-		fallbacks := make([]string, 0, len(fallbackConfigs)-1)
+		fallbacks := make([]schemas.Fallback, 0, len(fallbackConfigs)-1)
 		for _, config := range fallbackConfigs {
-			if config.Provider != string(selectedProvider) {
-				var err error
-				refinedModel := modelStr
-				if p.modelCatalog != nil {
-					refinedModel, err = p.modelCatalog.RefineModelForProvider(schemas.ModelProvider(config.Provider), modelStr)
-					if err != nil {
-						// Skip fallback if model refinement fails
-						p.logger.Warn("failed to refine model for fallback, skipping fallback in governance plugin: %v", err)
-						continue
-					}
-				}
-				fallbacks = append(fallbacks, string(schemas.ModelProvider(config.Provider))+"/"+refinedModel)
+			if config.Provider == string(selectedProvider) {
+				continue
 			}
+			fbProvider := schemas.ModelProvider(config.Provider)
+			fbModel := modelStr
+			if p.modelCatalog != nil {
+				refined, err := p.modelCatalog.RefineModelForProvider(fbProvider, modelStr)
+				if err != nil {
+					p.logger.Warn("failed to refine model for fallback, skipping fallback in governance plugin: %v", err)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("Fallback provider %s skipped: failed to refine model %s for this provider", fbProvider, modelStr))
+					continue
+				}
+				fbModel = refined
+			}
+			fallbacks = append(fallbacks, schemas.Fallback{Provider: fbProvider, Model: fbModel})
 		}
-
-		// Add fallbacks to request body
-		body["fallbacks"] = fallbacks
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Added %d fallback providers: %v", len(fallbacks), fallbacks))
+		req.SetFallbacks(fallbacks)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Added %d fallback providers", len(fallbacks)))
 	}
 
-	return body, nil
+	return nil
 }
 
-// applyRoutingRules evaluates routing rules and returns both the modified payload AND the routing decision
-// This allows the caller to determine if marshaling is necessary (only if decision != nil or payload changed)
-// Parameters:
-//   - ctx: Bifrost context
-//   - req: HTTP request
-//   - body: Request body (may be modified if routing rule matches)
-//   - virtualKey: Virtual key configuration (may be nil)
+// publishRoutingAllowlist records, for downstream routing layers, which of the VK's configured
+// providers permit modelStr according to the VK's own allowed_models / blocked_models. It is a
+// coarse provider gate (BifrostContextKeyRoutingAllowedProviders) layered on top of the model
+// catalog checks those layers already run — its purpose is to stop a later routing layer (load
+// balancing, model-catalog resolution) from selecting a provider the VK forbids for this model,
+// even when governance itself couldn't pick one. An empty slice means "no provider is permitted"
+// (fail-closed via the empty-provider validation in handleRequest); a nil VK publishes nothing.
 //
-// Returns:
-//   - map[string]any: The potentially modified request body
-//   - *RoutingDecision: The matched routing decision (nil if no rule matched)
-//   - error: Any error that occurred during evaluation
-func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, *RoutingDecision, error) {
-	// Check if the request has a model field
-	modelValue, hasModel := body["model"]
-	isGeminiPath := strings.Contains(req.Path, "/genai")
-	isBedrockPath := strings.Contains(req.Path, "/bedrock")
-	if !hasModel {
-		// For genai integration, model is present in URL path
-		if isGeminiPath {
-			modelValue = req.CaseInsensitivePathParamLookup("model")
-		} else if isBedrockPath {
-			// For bedrock integration, model is present in URL path as modelId
-			rawModelID := req.CaseInsensitivePathParamLookup("modelId")
-			if rawModelID == "" {
-				return body, nil, nil
+// Provider prefixes on the request model are already split into req.Provider + bare model at the
+// HTTP layer (resolveModelAndProvider), so VK allowed_models / blocked_models are matched against
+// bare names and plain membership checks are sufficient here.
+func (p *GovernancePlugin) publishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string) {
+	if virtualKey == nil {
+		return
+	}
+	allowed := make([]schemas.ModelProvider, 0, len(virtualKey.ProviderConfigs))
+	for _, pc := range virtualKey.ProviderConfigs {
+		// No model to filter on → keep the provider so we don't over-restrict.
+		if modelStr == "" ||
+			(pc.AllowedModels.IsAllowed(modelStr) && !pc.BlacklistedModels.IsBlocked(modelStr)) {
+			allowed = append(allowed, schemas.ModelProvider(pc.Provider))
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, allowed)
+}
+
+// applyRoutingRules evaluates routing rules against req and mutates
+// req.Provider/req.Model/req.Fallbacks when a rule matches. Returns the matched RoutingDecision
+// (nil if no rule matched). Integrations normalize req.Model (and Provider when applicable) before
+// the BifrostRequest reaches this point.
+func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) (*RoutingDecision, error) {
+	provider, model, _ := req.GetRequestFields()
+	if model == "" {
+		return nil, nil
+	}
+
+	requestType := string(req.RequestType)
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
+
+	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
+	var computeComplexity func() *complexity.ComplexityResult
+	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
+		computeComplexity = func() *complexity.ComplexityResult {
+			input, ok := buildComplexityInput(req)
+			if !ok {
+				if p.logger != nil {
+					p.logger.Debug("[Governance] Complexity analysis skipped: unsupported request type")
+				}
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
+				return nil
 			}
-			// URL-decode the modelId (Bedrock model IDs may be URL-encoded)
-			decoded, err := url.PathUnescape(rawModelID)
-			if err != nil {
-				decoded = rawModelID
+
+			result := analyzer.Analyze(input)
+			if p.logger != nil {
+				p.logger.Debug(
+					"[Governance] Complexity analysis details: tier=%s score=%.2f words=%d",
+					result.Tier,
+					result.Score,
+					result.WordCount,
+				)
 			}
-			modelValue = decoded
-		} else {
-			return body, nil, nil
+			ctx.AppendRoutingEngineLog(
+				schemas.RoutingEngineRoutingRule,
+				schemas.LogLevelInfo,
+				fmt.Sprintf("Complexity: tier=%s score=%.2f words=%d", result.Tier, result.Score, result.WordCount),
+			)
+			return result
 		}
 	}
 
-	modelStr, ok := modelValue.(string)
-	if !ok || modelStr == "" {
-		return body, nil, nil
-	}
-
-	var genaiRequestSuffix string
-	if strings.Contains(req.Path, "/genai") {
-		for _, sfx := range gemini.GeminiRequestSuffixPaths {
-			if before, ok := strings.CutSuffix(modelStr, sfx); ok {
-				modelStr = before
-				genaiRequestSuffix = sfx
-				break
-			}
-		}
-	}
-
-	// Parse provider and model from modelStr (format: "provider/model" or just "model")
-	provider, model := schemas.ParseModelString(modelStr, "")
-
-	// Extract normalized request type from context (set by HTTP middleware)
-	requestType := ""
-	if val := ctx.Value(schemas.BifrostContextKeyHTTPRequestType); val != nil {
-		if requestTypeEnum, ok := val.(schemas.RequestType); ok {
-			requestType = string(requestTypeEnum)
-		} else if requestTypeStr, ok := val.(string); ok {
-			requestType = requestTypeStr
-		}
-	}
-
-	// Build routing context
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
 		Provider:                 provider,
 		Model:                    model,
 		RequestType:              requestType,
-		Headers:                  req.Headers,
-		QueryParams:              req.Query,
+		Headers:                  headers,
+		QueryParams:              queryParams,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
+		computeComplexity:        computeComplexity,
 	}
 
-	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",
-		provider, model, requestType, virtualKey != nil, len(req.Headers), len(req.Query))
+	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
+		provider, model, requestType, virtualKey != nil)
 
 	// Evaluate routing rules
 	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
 	if err != nil {
 		p.logger.Error("failed to evaluate routing rules: %v", err)
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Routing rule evaluation error: %v", err))
-		return body, nil, nil
+		return nil, nil
+	}
+	if decision == nil {
+		return nil, nil
 	}
 
-	// If a routing rule matched, apply the decision
-	if decision != nil {
-		p.logger.Debug("[Governance] Routing rule matched: %s", decision.MatchedRuleName)
+	p.logger.Debug("[Governance] Routing rule matched: %s", decision.MatchedRuleName)
 
-		// Update model in request body
-		if strings.Contains(req.Path, "/genai") {
-			// For genai, model is in URL path
-			newModel := decision.Model + genaiRequestSuffix
-			// Add provider prefix if present (because there can be other routing rules down stream that can add the provider)
-			if decision.Provider != "" {
-				newModel = decision.Provider + "/" + newModel
-			}
-			ctx.SetValue("model", newModel)
-		} else if isBedrockPath {
-			// For bedrock, model is in URL path as modelId
-			// Set new modelId in context so bedrockPreCallback picks it up via ctx.UserValue("modelId")
-			newModel := decision.Model
-			if decision.Provider != "" {
-				newModel = decision.Provider + "/" + newModel
-			}
-			ctx.SetValue("modelId", newModel)
-		} else {
-			// For regular requests, update in body
-			newModel := decision.Model
-			// Add provider prefix if present (because there can be other routing rules down stream that can add the provider)
-			if decision.Provider != "" {
-				newModel = decision.Provider + "/" + newModel
-			}
-			body["model"] = newModel
-		}
-		// Append routing-rule to routing engines used
-		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
-
-		// Add fallbacks if present; fill in the incoming model for fallbacks that omit it
-		if len(decision.Fallbacks) > 0 {
-			resolvedFallbacks := make([]string, 0, len(decision.Fallbacks))
-			for _, fb := range decision.Fallbacks {
-				fbProvider, fbModel := schemas.ParseModelString(fb, "")
-				trimmedFbProvider := strings.TrimSpace(string(fbProvider))
-				trimmedFbModel := strings.TrimSpace(fbModel)
-				if trimmedFbProvider == "" {
-					continue
-				}
-				if trimmedFbModel == "" && model != "" {
-					resolvedFallbacks = append(resolvedFallbacks, trimmedFbProvider+"/"+model)
-				} else {
-					resolvedFallbacks = append(resolvedFallbacks, trimmedFbProvider+"/"+trimmedFbModel)
-				}
-			}
-			body["fallbacks"] = resolvedFallbacks
-		}
-
-		// Pin specific API key by ID if the routing rule specifies one
-		if decision.KeyID != "" {
-			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
-		}
-
-		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
+	if decision.Provider != "" {
+		req.SetProvider(schemas.ModelProvider(decision.Provider))
+	}
+	if decision.Model != "" {
+		req.SetModel(decision.Model)
 	}
 
-	return body, decision, nil
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
+
+	// Add fallbacks if present; fill in the incoming model for fallbacks that omit it
+	if len(decision.Fallbacks) > 0 {
+		resolvedFallbacks := make([]schemas.Fallback, 0, len(decision.Fallbacks))
+		for _, fb := range decision.Fallbacks {
+			fbProvider, fbModel := schemas.ParseModelString(fb, "")
+			trimmedFbProvider := strings.TrimSpace(string(fbProvider))
+			trimmedFbModel := strings.TrimSpace(fbModel)
+			if trimmedFbProvider == "" {
+				continue
+			}
+			if trimmedFbModel == "" && model != "" {
+				trimmedFbModel = model
+			}
+			resolvedFallbacks = append(resolvedFallbacks, schemas.Fallback{
+				Provider: schemas.ModelProvider(trimmedFbProvider),
+				Model:    trimmedFbModel,
+			})
+		}
+		req.SetFallbacks(resolvedFallbacks)
+	}
+
+	// Pin specific API key by ID if the routing rule specifies one. This uses a dedicated,
+	// non-reserved context key (not BifrostContextKeyAPIKeyID): routing runs inside
+	// PreRequestHook, where core blocks writes to reserved key-selection keys, so a write to
+	// the caller-pin key would be silently dropped. Key selection reads this routing pin first
+	// and resolves it against the configured key pool.
+	if decision.KeyID != "" {
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, decision.KeyID)
+	}
+
+	p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
+	return decision, nil
 }
 
-// addMCPIncludeTools adds the x-bf-mcp-include-tools header to the request headers
-// Parameters:
-//   - headers: The request headers
-//   - virtualKey: The virtual key configuration
-//
-// Returns:
-//   - map[string]string: The updated request headers
-//   - error: Any error that occurred during processing
-func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtualKey *configstoreTables.TableVirtualKey) (map[string]string, error) {
-	if headers == nil {
-		headers = make(map[string]string)
-	}
-
-	executeOnlyTools := make([]string, 0)
-
-	// Build a lookup of AllowOnAllVirtualKeys clients: clientID -> clientName
+// computeMCPIncludeTools builds the MCP include-tools list for a virtual key. Returns the list
+// directly; callers store it via ctx.SetValue(schemas.MCPContextKeyIncludeTools, ...). VK-specific
+// MCP configs take precedence over AllowOnAllVirtualKeys clients.
+func (p *GovernancePlugin) computeMCPIncludeTools(virtualKey *configstoreTables.TableVirtualKey) []string {
 	var allowAllVKsClients map[string]string
 	if p.inMemoryStore != nil {
 		allowAllVKsClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
 	}
+	return p.computeMCPIncludeToolsWith(virtualKey, allowAllVKsClients)
+}
+
+// computeMCPIncludeToolsWith is the computeMCPIncludeTools variant taking a pre-fetched
+// AllowOnAllVirtualKeys map (clientID → clientName), so callers that make multiple
+// grant decisions per request can evaluate them all against one consistent snapshot.
+func (p *GovernancePlugin) computeMCPIncludeToolsWith(virtualKey *configstoreTables.TableVirtualKey, allowAllVKsClients map[string]string) []string {
+	executeOnlyTools := make([]string, 0)
+
 	if allowAllVKsClients == nil {
 		allowAllVKsClients = make(map[string]string)
 	}
@@ -1145,39 +839,68 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 		}
 	}
 
-	// Set even when empty to exclude tools when no tools are present in the virtual key config
-	headers["x-bf-mcp-include-tools"] = strings.Join(executeOnlyTools, ",")
-
-	return headers, nil
+	return executeOnlyTools
 }
 
-// validateRequiredHeaders checks that all configured required headers are present in the request.
-// Headers are compared case-insensitively (both sides lowercased).
-// Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.
-func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
-	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
-		return nil
+// pruneMCPIncludeToolsFromContext narrows a caller-provided include-tools list (stamped on ctx
+// from the x-bf-mcp-include-tools header in lib/ctx.go) down to the tools the virtual key
+// allows, and writes the pruned list back to ctx. Returns true when a caller list was present,
+// regardless of how many entries survived. Entries the key does not grant are dropped; a
+// "client-*" wildcard is kept only when the key itself is unrestricted for that client,
+// otherwise it is replaced by the key's specific grants for that client (passing the wildcard
+// through would read downstream as "all tools of this client").
+func (p *GovernancePlugin) pruneMCPIncludeToolsFromContext(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) bool {
+	existing := ctx.Value(schemas.MCPContextKeyIncludeTools)
+	if existing == nil {
+		return false
 	}
-	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	if headers == nil {
-		headers = map[string]string{}
+	requested, _ := existing.([]string)
+
+	// Fetch the AllowOnAllVirtualKeys snapshot once so the wildcard checks (via vkSet)
+	// and the per-tool checks (via isMCPToolAllowedByVKWith) can't observe different
+	// states across a concurrent config reload.
+	var allowAllClients map[string]string
+	if p.inMemoryStore != nil {
+		allowAllClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
 	}
-	var missing []string
-	for _, h := range *p.requiredHeaders {
-		if _, ok := headers[strings.ToLower(h)]; !ok {
-			missing = append(missing, h)
+
+	vkTools := p.computeMCPIncludeToolsWith(virtualKey, allowAllClients)
+	vkSet := make(map[string]struct{}, len(vkTools))
+	for _, tool := range vkTools {
+		vkSet[tool] = struct{}{}
+	}
+
+	pruned := make([]string, 0, len(requested))
+	seen := make(map[string]struct{}, len(requested))
+	add := func(tool string) {
+		if _, dup := seen[tool]; !dup {
+			seen[tool] = struct{}{}
+			pruned = append(pruned, tool)
 		}
 	}
-	if len(missing) > 0 {
-		return &schemas.BifrostError{
-			Type:       bifrost.Ptr("missing_required_headers"),
-			StatusCode: bifrost.Ptr(400),
-			Error: &schemas.ErrorField{
-				Message: fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")),
-			},
+	for _, pattern := range requested {
+		if pattern == "" {
+			continue
+		}
+		if clientName, isWildcard := strings.CutSuffix(pattern, "-*"); isWildcard {
+			if _, ok := vkSet[pattern]; ok {
+				add(pattern)
+				continue
+			}
+			for _, tool := range vkTools {
+				if strings.HasPrefix(tool, clientName+"-") {
+					add(tool)
+				}
+			}
+			continue
+		}
+		if p.isMCPToolAllowedByVKWith(virtualKey, pattern, allowAllClients) {
+			add(pattern)
 		}
 	}
-	return nil
+
+	ctx.SetValue(schemas.MCPContextKeyIncludeTools, pruned)
+	return true
 }
 
 // EvaluateGovernanceRequest is a common function that handles virtual key validation
@@ -1263,6 +986,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// pointer columns still participate in customer-level enforcement.
 	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow && hierarchyVK != nil {
 		var customerID string
+		customerFromTeam := false
 		switch {
 		case hierarchyVK.CustomerID != nil:
 			customerID = *hierarchyVK.CustomerID
@@ -1270,10 +994,18 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			customerID = hierarchyVK.Customer.ID
 		case hierarchyVK.Team != nil && hierarchyVK.Team.CustomerID != nil:
 			customerID = *hierarchyVK.Team.CustomerID
+			customerFromTeam = true
 		case hierarchyVK.Team != nil && hierarchyVK.Team.Customer != nil:
 			customerID = hierarchyVK.Team.Customer.ID
+			customerFromTeam = true
 		}
-		if customerID != "" {
+		// When the request is scoped to a specific customer (header-driven, team-VK
+		// path; stamped by the enterprise plugin), skip enforcing the scalar
+		// team.CustomerID customer if it is not the scoped one — the enterprise layer
+		// enforces the scoped customer instead. Mirrors collectBudgetsFromHierarchy.
+		scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
+		scopedAway := customerFromTeam && scopedCustomerID != "" && scopedCustomerID != customerID
+		if customerID != "" && !scopedAway {
 			result = p.resolver.EvaluateCustomerRequest(ctx, customerID, evaluationRequest)
 		}
 	}
@@ -1440,6 +1172,93 @@ func (p *GovernancePlugin) isMCPToolAllowedByVKWith(vk *configstoreTables.TableV
 	return false
 }
 
+// PreRequestHook is the per-request governance phase. It runs for both normal body-having
+// requests (route on req.Model) and large-payload streaming requests (route on
+// LargePayloadMetadata.Model from ctx — the body is opaque mid-stream, so routing is
+// constrained to same-protocol-family targets that the upstream provider can hydrate
+// from the rewritten metadata).
+//
+// Realtime + generic streaming bypass handleRequest (see core/bifrost.go
+// RunRealtimeTurnPreHooks / RunStreamPreHooks) and are still handled at HTTPTransportPreHook.
+func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
+		return nil
+	}
+
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	hasRoutingRules := p.store.HasRoutingRules(ctx)
+	if virtualKeyValue == "" && !hasRoutingRules {
+		return nil
+	}
+
+	var virtualKey *configstoreTables.TableVirtualKey
+	if virtualKeyValue != "" {
+		var ok bool
+		virtualKey, ok = p.store.GetVirtualKey(ctx, virtualKeyValue)
+		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() {
+			return nil
+		}
+	}
+
+	stampGovernanceCtxFromVK(ctx, virtualKey)
+
+	// Large-payload mode: the body streams to the provider unparsed, so req.Model is
+	// empty for routes where the model lives in the body (OpenAI/Anthropic chat,
+	// responses, etc.). Route on LargePayloadMetadata.Model — the provider's
+	// streaming body rewriter (ApplyLargePayloadRequestBodyWithModelNormalization)
+	// reads metadata.Model when it rewrites the model field in the body prefix, so
+	// mutating it here is what propagates the routing decision to the upstream call.
+	if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil && metadata.Model != "" {
+		newModel, err := p.runPreRequestRouting(ctx, virtualKey, hasRoutingRules, metadata.Model, req.RequestType)
+		if err != nil {
+			return err
+		}
+		if newModel != "" && newModel != metadata.Model {
+			metadata.Model = newModel
+		}
+		_, routedModel := schemas.ParseModelString(metadata.Model, "")
+		p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
+		return nil
+	}
+
+	if hasRoutingRules {
+		if _, err := p.applyRoutingRules(ctx, req, virtualKey); err != nil {
+			return err
+		}
+	}
+
+	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
+	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
+	// candidates with it — a later layer must not select a provider the VK forbids for this model.
+	_, routedModel, _ := req.GetRequestFields()
+	p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
+
+	if virtualKey != nil {
+		if err := p.loadBalanceProvider(ctx, req, virtualKey); err != nil {
+			return err
+		}
+
+		// A caller-provided include-tools list can only narrow the virtual key's
+		// tool grant, never expand it — prune entries the key does not allow.
+		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+
+		p.cfgMutex.RLock()
+		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
+		p.cfgMutex.RUnlock()
+		// An include-clients filter opts the request into tool injection even when
+		// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
+		// the key's allowlist must be stamped on every path where injection can run.
+		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
+		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
+			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
+			}
+		}
+	}
+
+	return nil
+}
+
 // PreLLMHook intercepts requests before they are processed (governance decision point)
 // Parameters:
 //   - ctx: The Bifrost context
@@ -1450,16 +1269,14 @@ func (p *GovernancePlugin) isMCPToolAllowedByVKWith(vk *configstoreTables.TableV
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	// If its skip key selection - in that case we need to skip virtual key selection too
-	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
-		return req, nil, nil
-	}
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
-	// Extract governance headers and virtual key using utility functions
+
+	// Extract virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
@@ -1539,11 +1356,23 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
 		}
 
+		// Attempt number distinguishes physical provider calls within one
+		// logical request so each token-consuming attempt bills exactly once.
+		// Set by core on every retry iteration.
+		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			// Recover so a billing panic (e.g. an unexpected nil deref) can never
+			// crash the process and lose in-memory counters.
+			defer func() {
+				if r := recover(); r != nil {
+					p.logger.Error("recovered from panic in governance postHookWorker: %v", r)
+				}
+			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, attemptNumber, pricingScopes)
 		}()
 	}
 
@@ -1795,9 +1624,10 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, pricingScopes *modelcatalog.PricingLookupScopes) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes) {
 	// Determine if request was successful
 	success := (result != nil)
+	billedReason := "success"
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
@@ -1808,6 +1638,17 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
 		}
 		tokensUsed := 0
+		// The request failed/was cancelled but the provider still
+		// processed tokens (carried on BifrostError.ExtraFields.BilledUsage).
+		// Bill those tokens — Anthropic charges us for them regardless.
+		if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+			billedUsage := bifrostErr.ExtraFields.BilledUsage
+			tokensUsed = billedUsage.TotalTokens
+			billedReason = "partial_usage_on_error"
+			if p.modelCatalog != nil {
+				cost = p.modelCatalog.CalculateCostForUsage(billedUsage, provider, model, requestType, pricingScopes)
+			}
+		}
 		if result != nil {
 			switch {
 			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
@@ -1837,17 +1678,19 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
-			VirtualKey:   virtualKey,
-			Provider:     provider,
-			Model:        model,
-			Success:      success,
-			TokensUsed:   int64(tokensUsed),
-			Cost:         cost,
-			RequestID:    requestID,
-			UserID:       userID,
-			IsStreaming:  isStreaming,
-			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0 || cost > 0,
+			VirtualKey:    virtualKey,
+			Provider:      provider,
+			Model:         model,
+			Success:       success,
+			TokensUsed:    int64(tokensUsed),
+			Cost:          cost,
+			RequestID:     requestID,
+			UserID:        userID,
+			IsStreaming:   isStreaming,
+			IsFinalChunk:  isFinalChunk,
+			HasUsageData:  tokensUsed > 0 || cost > 0,
+			AttemptNumber: attemptNumber,
+			BilledReason:  billedReason,
 		}
 
 		// Queue usage update asynchronously using tracker

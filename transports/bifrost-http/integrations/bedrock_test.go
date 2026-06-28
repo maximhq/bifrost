@@ -1,9 +1,14 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
@@ -23,10 +28,6 @@ type mockHandlerStore struct {
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return m.headerMatcher
-}
-
-func (m *mockHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
-	return m.availableProviders
 }
 
 func (m *mockHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
@@ -179,6 +180,7 @@ func Test_createBedrockConverseStreamRouteConfig(t *testing.T) {
 	assert.Equal(t, "POST", route.Method)
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.StreamConfig)
+	assert.NotNil(t, route.StreamConfig.ErrorConverter)
 	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
 	// Verify request instance type
@@ -211,6 +213,7 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	assert.Equal(t, "POST", route.Method)
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.StreamConfig)
+	assert.NotNil(t, route.StreamConfig.ErrorConverter)
 	assert.NotNil(t, route.StreamConfig.TextStreamResponseConverter)
 	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
@@ -218,6 +221,114 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	reqInstance := route.GetRequestTypeInstance(context.Background())
 	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
+}
+
+func Test_bedrockStreamErrorConverterEncodesEventStreamException(t *testing.T) {
+	errType := "PluginDenied"
+	statusCode := fasthttp.StatusForbidden
+	bifrostErr := &schemas.BifrostError{
+		Type:       &errType,
+		StatusCode: &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "blocked by policy",
+		},
+	}
+
+	converted := bedrockStreamErrorConverter(nil, bifrostErr)
+	exception, ok := converted.(*bedrockEventStreamException)
+	require.True(t, ok)
+
+	reader := lib.NewSSEStreamReader()
+	require.True(t, sendBedrockEventStreamException(reader, eventstream.NewEncoder(), exception, bifrost.NewNoOpLogger()))
+	reader.Done()
+
+	body, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.False(t, bytes.HasPrefix(body, []byte("data: ")), "Bedrock streaming errors must not be plain SSE")
+
+	msg, err := eventstream.NewDecoder().Decode(bytes.NewReader(body), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
+	assert.Equal(t, "PluginDenied", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
+	assert.JSONEq(t, `{"__type":"PluginDenied","message":"blocked by policy"}`, string(msg.Payload))
+	assert.False(t, strings.Contains(string(body), "data:"), "AWS EventStream bytes must not contain SSE framing")
+}
+
+func Test_toBedrockEventStreamExceptionAcceptsBedrockError(t *testing.T) {
+	exception, ok := toBedrockEventStreamException(&bedrock.BedrockError{
+		Type:    "ValidationException",
+		Message: "invalid request",
+	})
+	require.True(t, ok)
+
+	reader := lib.NewSSEStreamReader()
+	require.True(t, sendBedrockEventStreamException(reader, eventstream.NewEncoder(), exception, bifrost.NewNoOpLogger()))
+	reader.Done()
+
+	body, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.False(t, bytes.HasPrefix(body, []byte("data: ")), "Bedrock streaming errors must not be plain SSE")
+
+	msg, err := eventstream.NewDecoder().Decode(bytes.NewReader(body), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
+	assert.Equal(t, "ValidationException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
+	assert.JSONEq(t, `{"__type":"ValidationException","message":"invalid request"}`, string(msg.Payload))
+}
+
+func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamException(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	statusCode := fasthttp.StatusInternalServerError
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{
+			StatusCode: &statusCode,
+			Error: &schemas.ErrorField{
+				Message: "plugin returned an unsupported error envelope",
+			},
+		},
+	}
+	close(stream)
+
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	cancelCalled := false
+	router.handleStreaming(ctx, nil, RouteConfig{
+		Type: RouteConfigTypeBedrock,
+		StreamConfig: &StreamConfig{
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return map[string]interface{}{
+					"unexpected": "shape",
+				}
+			},
+		},
+	}, stream, func() {
+		cancelCalled = true
+	})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	require.NotEmpty(t, body)
+	require.False(t, bytes.HasPrefix(body, []byte("data: ")), "Bedrock fallback errors must not be plain SSE")
+
+	msg, err := eventstream.NewDecoder().Decode(bytes.NewReader(body), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
+	assert.Equal(t, "InternalServerException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
+	assert.JSONEq(t, `{"__type":"InternalServerException","message":"An error occurred while processing your request"}`, string(msg.Payload))
+	assert.False(t, cancelCalled, "fallback write should not cancel unless the client disconnects")
+}
+
+func eventStreamHeaderString(t *testing.T, headers eventstream.Headers, name string) string {
+	t.Helper()
+	for _, header := range headers {
+		if header.Name == name {
+			value, ok := header.Value.Get().(string)
+			require.True(t, ok, "%s header must be a string", name)
+			return value
+		}
+	}
+	t.Fatalf("missing EventStream header %s", name)
+	return ""
 }
 
 func Test_createBedrockRerankRouteConfig(t *testing.T) {

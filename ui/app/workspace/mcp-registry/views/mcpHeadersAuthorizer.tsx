@@ -20,6 +20,7 @@ interface MCPHeadersAuthorizerProps {
 	onClose: () => void;
 	onSuccess: () => void;
 	onError: (error: string) => void;
+	onConflict?: (error: string) => void;
 	// Full payload the parent has already assembled. The dialog adds
 	// user_headers (collected inline) and POSTs once.
 	payload: CreateMCPClientRequest;
@@ -34,6 +35,7 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 	onClose,
 	onSuccess,
 	onError,
+	onConflict,
 	payload,
 	perUserHeaderKeys,
 }) => {
@@ -70,6 +72,12 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 		} catch (err) {
 			if (cancelledRef.current) return;
 			const errMsg = getErrorMessage(err);
+			if ((err as any)?.status === 409) {
+				setStatus("input");
+				setErrorMessage(null);
+				onConflict?.(errMsg);
+				return;
+			}
 			setStatus("failed");
 			setErrorMessage(errMsg);
 			onError(errMsg);
@@ -125,8 +133,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 									To set up this MCP server, we need to verify that your header configuration is correct and discover the available tools.
 								</p>
 								<p>
-									You will be asked to provide sample values for the required headers. This is a <strong>one-time test</strong> to confirm the
-									setup works. Your sample values will <strong>not</strong> be stored or used for any other purpose.
+									You will be asked to provide sample values for the required headers. This is a <strong>one-time test</strong> to confirm
+									the setup works. Your sample values will <strong>not</strong> be stored or used for any other purpose.
 								</p>
 								<p>Once verified, each user will submit their own header values when they use this MCP server.</p>
 							</div>

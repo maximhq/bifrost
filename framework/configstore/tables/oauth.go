@@ -13,8 +13,8 @@ import (
 // This stores the OAuth client configuration and flow state
 type TableOauthConfig struct {
 	ID                  string          `gorm:"type:varchar(255);primaryKey" json:"id"`          // UUID
-	ClientID            *schemas.EnvVar `gorm:"type:varchar(512)" json:"client_id"`              // OAuth provider's client ID (optional for public clients)
-	ClientSecret        *schemas.EnvVar `gorm:"type:text" json:"-"`                              // Encrypted OAuth client secret (optional for public clients)
+	ClientID            *schemas.SecretVar `gorm:"type:varchar(512)" json:"client_id"`              // OAuth provider's client ID (optional for public clients)
+	ClientSecret        *schemas.SecretVar `gorm:"type:text" json:"-"`                              // Encrypted OAuth client secret (optional for public clients)
 	AuthorizeURL        string          `gorm:"type:text" json:"authorize_url"`                  // Provider's authorization endpoint (optional, can be discovered)
 	TokenURL            string          `gorm:"type:text" json:"token_url"`                      // Provider's token endpoint (optional, can be discovered)
 	RegistrationURL     *string         `gorm:"type:text" json:"registration_url,omitempty"`     // Provider's dynamic registration endpoint (optional, can be discovered)
@@ -46,10 +46,9 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	// Encrypt sensitive fields (skip if value is an env var reference — the reference itself is not sensitive)
 	if encrypt.IsEnabled() {
 		encrypted := false
-		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && c.ClientSecret.Val != "" {
+		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
 			if err := encryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 			}
@@ -70,8 +69,9 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 
 // AfterFind hook to decrypt sensitive fields
 func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
-	if c.EncryptionStatus == EncryptionStatusEncrypted {
-		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && c.ClientSecret.Val != "" {
+	switch c.EncryptionStatus {
+	case EncryptionStatusEncrypted:
+		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
 			if err := decryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
 			}
@@ -83,6 +83,10 @@ func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
+// VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
+// callback can compute the vault base path for this model automatically.
+func (c *TableOauthConfig) VaultPathKey() string { return c.ID }
+
 // GetResolvedClientID returns the resolved ClientID value, expanding env var references at runtime.
 func (c *TableOauthConfig) GetResolvedClientID() string {
 	return c.ClientID.GetValue()
@@ -93,8 +97,8 @@ func (c *TableOauthConfig) GetResolvedClientSecret() string {
 	return c.ClientSecret.GetValue()
 }
 
-// GetClientSecretAsEnvVar returns ClientSecret as an EnvVar (preserves env var reference metadata).
-func (c *TableOauthConfig) GetClientSecretAsEnvVar() *schemas.EnvVar {
+// GetClientSecretAsSecretVar returns ClientSecret as an SecretVar (preserves env var reference metadata).
+func (c *TableOauthConfig) GetClientSecretAsSecretVar() *schemas.SecretVar {
 	return c.ClientSecret
 }
 
@@ -124,8 +128,6 @@ func (t *TableOauthToken) BeforeSave(tx *gorm.DB) error {
 	if t.TokenType == "" {
 		t.TokenType = "Bearer"
 	}
-
-	// Encrypt sensitive fields
 	if encrypt.IsEnabled() {
 		if err := encryptString(&t.AccessToken); err != nil {
 			return fmt.Errorf("failed to encrypt oauth access token: %w", err)

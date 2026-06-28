@@ -55,7 +55,6 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -397,10 +396,6 @@ type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp in
 // returns a schemas.RequestType indicating the HTTP request type derived from the context.
 type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 
-// RequestModelGetter is a function type that accepts only a *fasthttp.RequestCtx and
-// returns a string indicating the model derived from the context.
-type RequestModelGetter func(ctx *fasthttp.RequestCtx, req interface{}) (string, error)
-
 // ShortCircuit is a function that determines if the request should be short-circuited.
 type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
 
@@ -444,14 +439,6 @@ const (
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
 )
 
-var RouteConfigTypeToProvider = map[RouteConfigType]schemas.ModelProvider{
-	RouteConfigTypeOpenAI:    schemas.OpenAI,
-	RouteConfigTypeAnthropic: schemas.Anthropic,
-	RouteConfigTypeGenAI:     schemas.Gemini,
-	RouteConfigTypeBedrock:   schemas.Bedrock,
-	RouteConfigTypeCohere:    schemas.Cohere,
-}
-
 // RouteConfig defines the configuration for a single route in an integration.
 // It specifies the path, method, and handlers for request/response conversion.
 type RouteConfig struct {
@@ -459,7 +446,6 @@ type RouteConfig struct {
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
 	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
-	GetRequestModel                        RequestModelGetter                     // Function to get the model from the context (SHOULD NOT BE NIL)
 	GetRequestTypeInstance                 func(ctx context.Context) interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter                       RequestConverter                       // Function to convert request to BifrostRequest (for inference requests)
@@ -644,6 +630,8 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			r.PUT(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodDelete:
 			r.DELETE(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
+		case fasthttp.MethodPatch:
+			r.PATCH(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodHead:
 			r.HEAD(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		default:
@@ -690,7 +678,9 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}()
 
-		// Set integration type to context
+		// Set integration type to context. Used by the ModelCatalogResolver built-in
+		// PreRequestHook (last routing layer) to prefer this integration's canonical
+		// provider when the model is unprefixed and the catalog returns multiple options.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
 		// Async retrieve: check x-bf-async-id header early (before body parsing)
@@ -778,75 +768,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 			if handled {
 				return
-			}
-		}
-
-		// Set available providers to context
-		if config.GetRequestModel != nil {
-			model, err := config.GetRequestModel(ctx, req)
-			if err != nil {
-				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to get model from context"))
-				return
-			}
-			extractedProvider, extractedModel := schemas.ParseModelString(model, "")
-			// Skip model-catalog when governance already made a routing decision.
-			// Governance uses dot-notation aliases (e.g. "anthropic.claude-sonnet-4-6") which
-			// ParseModelString cannot extract a provider from (it only handles slash separators),
-			// causing a spurious model-catalog lookup that can override governance's selection.
-			skipModelCatalogProviderSelection, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipModelCatalogProviderSelection).(bool)
-			if extractedProvider == "" && !skipModelCatalogProviderSelection {
-				availableProviders := g.handlerStore.GetProvidersForModel(extractedModel)
-				existingProviders, hasExistingProviders := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
-				if hasExistingProviders {
-					if len(existingProviders) == 0 {
-						availableProviders = []schemas.ModelProvider{}
-					} else if len(availableProviders) == 0 {
-						availableProviders = existingProviders
-					} else {
-						availableProviders = slices.DeleteFunc(availableProviders, func(provider schemas.ModelProvider) bool {
-							return !slices.Contains(existingProviders, provider)
-						})
-					}
-				}
-				availableProvidersStrs := make([]string, len(availableProviders))
-				for i, p := range availableProviders {
-					availableProvidersStrs[i] = string(p)
-				}
-				bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-					"No provider specified for model %s, found %d options in model catalog: [%s]",
-					extractedModel, len(availableProviders), strings.Join(availableProvidersStrs, ", "),
-				))
-				if len(availableProviders) > 0 {
-					if slices.Contains(availableProviders, RouteConfigTypeToProvider[config.Type]) {
-						availableProviders = []schemas.ModelProvider{RouteConfigTypeToProvider[config.Type]}
-						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-							"Integration route default provider %s is found in the available providers list, selecting it",
-							RouteConfigTypeToProvider[config.Type],
-						))
-					} else {
-						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-							"Integration route default provider %s is not found in the available providers list, selecting first: %s",
-							RouteConfigTypeToProvider[config.Type], availableProviders[0],
-						))
-						// For Anthropic-type routes, raw request body passthrough is only valid for
-						// providers that speak the Anthropic Messages API natively. When the model
-						// catalog falls back to a provider that doesn't (e.g. Bedrock), clear the
-						// flag so the provider performs its own format conversion.
-						firstProvider := availableProviders[0]
-						if config.Type == RouteConfigTypeAnthropic &&
-							firstProvider != schemas.Anthropic &&
-							firstProvider != schemas.Vertex &&
-							firstProvider != schemas.Azure {
-							bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
-							bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
-							bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
-						}
-					}
-					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
-				} else if hasExistingProviders {
-					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
-				}
-				schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
 			}
 		}
 
@@ -2667,12 +2588,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Handle errors
 			if chunk.BifrostError != nil {
 				var errorResponse interface{}
+				bifrostErr := lib.SanitizeBifrostErrorForClient(chunk.BifrostError)
+				if bifrostErr == nil {
+					bifrostErr = newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError)
+				}
 
 				// Use stream error converter if available, otherwise fallback to regular error converter
 				if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
-					errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, chunk.BifrostError)
+					errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, bifrostErr)
 				} else if config.ErrorConverter != nil {
-					errorResponse = config.ErrorConverter(bifrostCtx, chunk.BifrostError)
+					errorResponse = config.ErrorConverter(bifrostCtx, bifrostErr)
 				} else {
 					// Default error response
 					errorResponse = map[string]interface{}{
@@ -2688,6 +2613,22 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
 					// This is used by providers like Anthropic that need custom event types
 					reader.Send([]byte(sseErrorString))
+				} else if config.Type == RouteConfigTypeBedrock && eventStreamEncoder != nil {
+					if bedrockException, ok := toBedrockEventStreamException(errorResponse); ok {
+						if !sendBedrockEventStreamException(reader, eventStreamEncoder, bedrockException, g.logger) {
+							cancel()
+						}
+						return
+					}
+					if bedrockEvent, ok := errorResponse.(*bedrock.BedrockStreamEvent); ok {
+						if !sendBedrockEventStream(reader, eventStreamEncoder, bedrockEvent, g.logger) {
+							cancel()
+						}
+						return
+					}
+					if !sendBedrockEventStreamException(reader, eventStreamEncoder, newBedrockEventStreamException("", ""), g.logger) {
+						cancel()
+					}
 				} else {
 					// STANDARD SSE FORMAT: The converter returned an object
 					errorJSON, err := sonic.Marshal(errorResponse)
@@ -2778,49 +2719,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				if config.Type == RouteConfigTypeBedrock && eventStreamEncoder != nil {
 					// We need to cast to BedrockStreamEvent to determine event type and structure
 					if bedrockEvent, ok := convertedResponse.(*bedrock.BedrockStreamEvent); ok {
-						// Convert to sequence of specific Bedrock events
-						events := bedrockEvent.ToEncodedEvents()
-
-						// Send all collected events
-						for _, evt := range events {
-							jsonData, err := sonic.Marshal(evt.Payload)
-							if err != nil {
-								g.logger.Warn("Failed to marshal bedrock payload: %v", err)
-								continue
-							}
-
-							headers := eventstream.Headers{
-								{
-									Name:  ":content-type",
-									Value: eventstream.StringValue("application/json"),
-								},
-								{
-									Name:  ":event-type",
-									Value: eventstream.StringValue(evt.EventType),
-								},
-								{
-									Name:  ":message-type",
-									Value: eventstream.StringValue("event"),
-								},
-							}
-
-							message := eventstream.Message{
-								Headers: headers,
-								Payload: jsonData,
-							}
-
-							var msgBuf bytes.Buffer
-							if err := eventStreamEncoder.Encode(&msgBuf, message); err != nil {
-								g.logger.Warn("[Bedrock Stream] Failed to encode message: %v", err)
-								cancel()
-								return
-							}
-
-							if !reader.Send(msgBuf.Bytes()) {
-								g.logger.Warn("[Bedrock Stream] Client disconnected")
-								cancel()
-								return
-							}
+						if !sendBedrockEventStream(reader, eventStreamEncoder, bedrockEvent, g.logger) {
+							cancel()
+							return
 						}
 					}
 					// Continue to next chunk (we handled sending internally)
@@ -2882,6 +2783,126 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 	}()
+}
+
+type bedrockEventStreamException struct {
+	exceptionType string
+	payload       []byte
+}
+
+func toBedrockEventStreamException(errorResponse interface{}) (*bedrockEventStreamException, bool) {
+	switch response := errorResponse.(type) {
+	case *bedrockEventStreamException:
+		return response, true
+	case *bedrock.BedrockError:
+		return newBedrockEventStreamException(response.Type, response.Message), true
+	default:
+		return nil, false
+	}
+}
+
+func newBedrockEventStreamException(exceptionType, message string) *bedrockEventStreamException {
+	if message == "" {
+		message = "An error occurred while processing your request"
+	}
+	if exceptionType == "" {
+		exceptionType = "InternalServerException"
+	}
+
+	payloadJSON, err := sonic.Marshal(map[string]string{
+		"__type":  exceptionType,
+		"message": message,
+	})
+	if err != nil {
+		payloadJSON = []byte(fmt.Sprintf(`{"__type":%q,"message":"An error occurred while processing your request"}`, exceptionType))
+	}
+
+	return &bedrockEventStreamException{
+		exceptionType: exceptionType,
+		payload:       payloadJSON,
+	}
+}
+
+func sendBedrockEventStream(reader *lib.SSEStreamReader, encoder *eventstream.Encoder, bedrockEvent *bedrock.BedrockStreamEvent, logger schemas.Logger) bool {
+	// Convert to sequence of specific Bedrock events
+	events := bedrockEvent.ToEncodedEvents()
+
+	// Send all collected events
+	for _, evt := range events {
+		jsonData, err := sonic.Marshal(evt.Payload)
+		if err != nil {
+			logger.Warn("Failed to marshal bedrock payload: %v", err)
+			continue
+		}
+
+		headers := eventstream.Headers{
+			{
+				Name:  ":content-type",
+				Value: eventstream.StringValue("application/json"),
+			},
+			{
+				Name:  ":event-type",
+				Value: eventstream.StringValue(evt.EventType),
+			},
+			{
+				Name:  ":message-type",
+				Value: eventstream.StringValue("event"),
+			},
+		}
+
+		message := eventstream.Message{
+			Headers: headers,
+			Payload: jsonData,
+		}
+
+		var msgBuf bytes.Buffer
+		if err := encoder.Encode(&msgBuf, message); err != nil {
+			logger.Warn("[Bedrock Stream] Failed to encode message: %v", err)
+			return false
+		}
+
+		if !reader.Send(msgBuf.Bytes()) {
+			logger.Warn("[Bedrock Stream] Client disconnected")
+			return false
+		}
+	}
+
+	return true
+}
+
+func sendBedrockEventStreamException(reader *lib.SSEStreamReader, encoder *eventstream.Encoder, exception *bedrockEventStreamException, logger schemas.Logger) bool {
+	headers := eventstream.Headers{
+		{
+			Name:  ":content-type",
+			Value: eventstream.StringValue("application/json"),
+		},
+		{
+			Name:  ":exception-type",
+			Value: eventstream.StringValue(exception.exceptionType),
+		},
+		{
+			Name:  ":message-type",
+			Value: eventstream.StringValue("exception"),
+		},
+	}
+
+	message := eventstream.Message{
+		Headers: headers,
+		Payload: exception.payload,
+	}
+
+	var msgBuf bytes.Buffer
+	if err := encoder.Encode(&msgBuf, message); err != nil {
+		logger.Warn("[Bedrock Stream] Failed to encode exception: %v", err)
+		return false
+	}
+
+	if !reader.Send(msgBuf.Bytes()) {
+		logger.Warn("[Bedrock Stream] Client disconnected")
+		return false
+	}
+
+	return true
 }
 
 // extractPassthroughModel extracts the model from the passthrough request path and/or body.

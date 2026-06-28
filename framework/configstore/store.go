@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
@@ -37,6 +38,23 @@ type ModelConfigsQueryParams struct {
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
 }
 
+// SkillListQueryParams holds pagination, filtering, and search parameters for skill repository queries.
+type SkillListQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+	SortBy string // name, updated_at, created_at (default: created_at)
+	Order  string // asc, desc (default: desc)
+}
+
+type SkillVersionListQueryParams struct {
+	Limit  int
+	Offset int
+	SortBy string // version, created_at (default: created_at)
+	Order  string // asc, desc (default: desc)
+	Search string // substring match on the version string (optional)
+}
+
 // RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
 type RoutingRulesQueryParams struct {
 	Limit  int
@@ -49,6 +67,30 @@ type MCPClientsQueryParams struct {
 	Limit  int
 	Offset int
 	Search string
+}
+
+// MCPLibraryQueryParams holds pagination, filtering, search, and sort
+// parameters for MCP library catalog queries. All fields are optional — an
+// empty struct returns the first default-sized page ordered by name.
+type MCPLibraryQueryParams struct {
+	Limit           int
+	Offset          int
+	Search          string   // matches name/description/publisher (case-insensitive)
+	Categories      []string // exact category filter(s), OR semantics
+	ConnectionTypes []string // exact connection_type filter(s) (http | stdio | sse)
+	AuthTypes       []string // exact auth_type filter(s)
+	Tags            []string // match rows carrying any of these tags
+	SortBy          string   // name, category, publisher, created_at, updated_at (default: name)
+	Order           string   // asc, desc (default: asc)
+}
+
+// MCPLibraryFilterData holds the distinct facet values surfaced by the filter
+// sidebar on the MCP library page. Populated via GetMCPLibraryFilterData.
+type MCPLibraryFilterData struct {
+	Categories      []string `json:"categories"`
+	ConnectionTypes []string `json:"connection_types"`
+	AuthTypes       []string `json:"auth_types"`
+	Tags            []string `json:"tags"`
 }
 
 // TeamsQueryParams holds pagination, filtering, and search parameters for team queries.
@@ -166,6 +208,23 @@ type ConfigStore interface {
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
+	// MCP library catalog (synced + org-custom)
+	GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error)
+	GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error)
+	UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error
+	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+	// Returns ErrAlreadyExists when the slug collides with an existing entry.
+	CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error
+	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
+	// so it is hidden from listings and never resurrected by the remote sync.
+	SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// DeleteMCPLibraryEntry removes a library row by ID, hard-deleting "custom"
+	// rows (freeing their slug for re-add) and tombstoning "remote" rows.
+	DeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must not
+	// overwrite or recreate: custom rows and soft-deleted (tombstoned) rows.
+	GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error)
+
 	// Vector store config CRUD
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
 	GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error)
@@ -177,6 +236,10 @@ type ConfigStore interface {
 	// Config CRUD
 	GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error)
 	UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error
+	// GetComplexityAnalyzerConfig retrieves the persisted analyzer config, if configured.
+	GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error)
+	// UpdateComplexityAnalyzerConfig persists the normalized analyzer config.
+	UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
@@ -536,6 +599,23 @@ type ConfigStore interface {
 	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
 	CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error
 	DeletePromptVersion(ctx context.Context, id uint) error
+
+	// Skills Repository
+	CreateSkill(ctx context.Context, skill *tables.TableSkill, version string, objectStore objectstore.ObjectStore) error
+	GetSkill(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillLean(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillByName(ctx context.Context, name string) (*tables.TableSkill, error)
+	GetSkillVersion(ctx context.Context, skillID, version string) (*tables.TableSkillVersion, error)
+	ListSkillVersions(ctx context.Context, skillID string, params SkillVersionListQueryParams) ([]tables.TableSkillVersion, int64, error)
+	UpdateSkill(ctx context.Context, skill *tables.TableSkill, version string, serve bool, objectStore objectstore.ObjectStore) error
+	DeleteSkill(ctx context.Context, id string, objectStore objectstore.ObjectStore) error
+	ListSkills(ctx context.Context, params SkillListQueryParams) ([]tables.TableSkill, int64, error)
+	ShiftSkillVersion(ctx context.Context, skillID string, targetVersion string, objectStore objectstore.ObjectStore) error
+	GetAllSkillsVersion(ctx context.Context) (string, error)
+	BumpAllSkillsVersion(ctx context.Context, bump string) (string, error)
+	CreateSkillFileBlob(ctx context.Context, blob *tables.TableSkillFileBlob) error
+	CleanupOrphanSkillFileBlobs(ctx context.Context, force bool) (int64, error)
+	UpdateSkillConfigHash(ctx context.Context, skillID string, configHash string) error
 
 	// Prompt Repository - Sessions
 	GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error)

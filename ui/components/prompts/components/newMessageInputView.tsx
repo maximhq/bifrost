@@ -169,11 +169,11 @@ export function NewMessageInputView() {
 			className="group relative max-h-[500px] shrink-0 overflow-y-auto border-t px-4 py-2"
 			{...(supportsVision
 				? {
-					onDragEnter: handleDragEnter,
-					onDragLeave: handleDragLeave,
-					onDragOver: handleDragOver,
-					onDrop: handleDrop,
-				}
+						onDragEnter: handleDragEnter,
+						onDragLeave: handleDragLeave,
+						onDragOver: handleDragOver,
+						onDrop: handleDrop,
+					}
 				: {})}
 		>
 			{supportsVision && isDragging && (

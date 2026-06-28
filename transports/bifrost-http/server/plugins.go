@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -10,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -120,6 +122,9 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		}
 		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
 
+	case modelcatalogresolver.PluginName:
+		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
+
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
 	}
@@ -194,6 +199,9 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			DisableContentLogging: &s.Config.ClientConfig.DisableContentLogging,
 			LoggingHeaders:        &s.Config.ClientConfig.LoggingHeaders,
 		}
+		if s.Config.LogsStoreConfig != nil {
+			config.Writer = s.Config.LogsStoreConfig.Writer
+		}
 		s.registerPluginWithStatus(ctx, logging.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(logging.PluginName)
@@ -251,6 +259,20 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		s.markPluginDisabled(maxim.PluginName)
 	}
 	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(8))
+
+	// 9. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
+	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
+	// already set one. CEL rules can still match on provider == "" because this runs last.
+	// Requires a model catalog; only register when one is configured.
+	if s.Config.ModelCatalog != nil {
+		s.registerPluginWithStatus(ctx, modelcatalogresolver.PluginName, nil, nil, false)
+	} else {
+		s.markPluginDisabled(modelcatalogresolver.PluginName)
+	}
+	// Place it in post_builtin with a max order so it runs after every other routing plugin,
+	// including post_builtin ones like the enterprise load balancer (which would otherwise run
+	// after this builtin and never get a chance to pick the provider first).
+	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt))
 
 	return nil
 }

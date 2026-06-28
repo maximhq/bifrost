@@ -24,14 +24,14 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
-	ID                uint                `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID      string              `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider          string              `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight            *float64            `json:"weight"`
-	AllowedModels     schemas.WhiteList   `gorm:"type:text;serializer:json" json:"allowed_models"`         // ["*"] allows all models; empty denies all (deny-by-default)
-	BlacklistedModels schemas.BlackList   `gorm:"type:text;serializer:json" json:"blacklisted_models"`     // ["*"] blocks all models; empty blocks none
-	AllowAllKeys      bool                `gorm:"default:false" json:"allow_all_keys"`                     // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
-	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	ID                uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID      string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider          string            `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight            *float64          `json:"weight"`
+	AllowedModels     schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"`     // ["*"] allows all models; empty denies all (deny-by-default)
+	BlacklistedModels schemas.BlackList `gorm:"type:text;serializer:json" json:"blacklisted_models"` // ["*"] blocks all models; empty blocks none
+	AllowAllKeys      bool              `gorm:"default:false" json:"allow_all_keys"`                 // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	RateLimitID       *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
@@ -122,7 +122,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key := &pc.Keys[i]
 
 			// Clear the actual API key value
-			key.Value = *schemas.NewEnvVar("")
+			key.Value = *schemas.NewSecretVar("")
 
 			// Clear all Azure-related sensitive fields
 			key.AzureEndpoint = nil
@@ -209,7 +209,7 @@ type TableVirtualKey struct {
 	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
 	Description     string                          `gorm:"type:text" json:"description,omitempty"`
-	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`           // The virtual key value
+	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
 	IsActive        *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
@@ -266,6 +266,7 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	// Hash must be computed before encryption (from plaintext value)
 	if vk.Value != "" {
 		vk.ValueHash = encrypt.HashSHA256(vk.Value)
+
 	}
 	if encrypt.IsEnabled() && vk.Value != "" {
 		if err := encryptString(&vk.Value); err != nil {
@@ -282,7 +283,8 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 // The reset path reads the stamped value; Update*InMemory paths re-stamp on
 // every VK update.
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
-	if vk.EncryptionStatus == EncryptionStatusEncrypted {
+	switch vk.EncryptionStatus {
+	case EncryptionStatusEncrypted:
 		if err := decryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
 		}

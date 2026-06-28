@@ -31,6 +31,9 @@ type ModelsManager interface {
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 }
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
@@ -383,6 +386,21 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		return
+	}
+
+	// Reject `keys` in the request body. This endpoint manages provider-level
+	// configuration only; keys are managed via the dedicated /keys endpoints
+	// (POST/PUT/DELETE /api/providers/{provider}/keys[/{key_id}]). Accepting
+	// the field silently would discard the caller's intent — the construction
+	// below ignores `payload.Keys` and reuses `oldConfigRaw.Keys`. Failing
+	// fast keeps the API contract honest.
+	if len(payload.Keys) > 0 {
+		SendError(
+			ctx,
+			fasthttp.StatusBadRequest,
+			"keys are not accepted on this endpoint; use POST/PUT /api/providers/{provider}/keys[/{key_id}] to manage keys",
+		)
 		return
 	}
 

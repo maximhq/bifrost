@@ -136,6 +136,24 @@ flowchart TB
 
 ---
 
+## Streaming Output Guardrails
+
+When an output guardrail is used with a streaming response, Bifrost accumulates the response until the model is done generating it, then checks the full response. If the response passes, Bifrost sends it to the client. If a guardrail blocks or changes the response, Bifrost applies that result instead.
+
+This adds time before the client receives output: Bifrost waits for response generation and guardrail evaluation to finish. The added wait depends on the model's generation time and the configured guardrail profiles.
+
+Input guardrails check the request before Bifrost sends it to the LLM provider.
+
+<Note>
+  GraySwan is a tool-call-specific exception. Text-only streams are delivered directly to the client and are not sent to Cygnal. See [GraySwan Cygnal](/integrations/guardrails/grayswan#streaming-output-and-tool-calls) for the full behavior.
+</Note>
+
+<Note>
+  If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. GraySwan's text-only behavior only skips the GraySwan call; it does not bypass the other profile.
+</Note>
+
+---
+
 ## Guardrail Rules
 
 Guardrail Rules are custom policies that define when and how content validation occurs. Rules use CEL (Common Expression Language) expressions to evaluate requests and can be linked to one or more profiles for execution.

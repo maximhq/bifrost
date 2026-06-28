@@ -44,13 +44,16 @@ The agent handles batching, retries, and provides lower latency. This is the rec
 
 ### Agentless Mode
 
-In agentless mode, the plugin sends data directly to Datadog's intake APIs:
+In agentless mode, the plugin sends data directly to Datadog's intake APIs (`{site}` is your configured Datadog site, e.g. `datadoghq.com`):
 
-- **APM Traces** → `https://trace.agent.{site}`
-- **LLM Observability** → Direct API submission
-- **Metrics** → Datadog Metrics API
+- **LLM Observability** → `https://api.{site}/api/intake/llm-obs/v1/trace/spans`
+- **Metrics** → `https://api.{site}` Metrics API (series to `/api/v2/series`, distributions to `/api/v1/distribution_points`)
 
 This mode requires an API key but simplifies deployment by eliminating the need for a local agent. Ideal for serverless environments, Kubernetes pods, or quick testing.
+
+<Note>
+Datadog officially supports agentless submission for [LLM Observability](https://docs.datadoghq.com/llm_observability/instrumentation/api/) and [metrics](https://docs.datadoghq.com/api/latest/metrics/), but **not** for general APM tracing - the [dd-trace-go setup](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/) assumes a running Agent (or the serverless extension). The plugin points the tracer at the public trace intake so APM spans are still emitted, but if you need fully-supported APM, run the Datadog Agent (agent mode). LLM Observability and metrics are unaffected.
+</Note>
 
 ---
 
@@ -62,30 +65,62 @@ This mode requires an API key but simplifies deployment by eliminating the need 
 |-------|------|----------|---------|-------------|
 | `service_name` | `string` | No | `bifrost` | Service name displayed in Datadog APM |
 | `ml_app` | `string` | No | (uses `service_name`) | ML application name for LLM Observability grouping |
-| `agent_addr` | `string` | No | `localhost:8126` | Datadog Agent address (agent mode only) |
-| `dogstatsd_addr` | `string` | No | `localhost:8125` | DogStatsD server address (agent mode only) |
+| `agent_addr` | `string` | No | `localhost:8126` | Datadog Agent address as combined `host:port` (agent mode only, supports `env.VAR_NAME`). Overridden by `agent_host` when set |
+| `agent_host` | `string` | No | - | Datadog Agent host, set separately from the port (agent mode only, supports `env.VAR_NAME`). Takes precedence over `agent_addr` |
+| `agent_port` | `string` | No | `8126` | Datadog Agent port, used with `agent_host` (agent mode only, supports `env.VAR_NAME`) |
+| `dogstatsd_addr` | `string` | No | `localhost:8125` | DogStatsD server address as combined `host:port` (agent mode only, supports `env.VAR_NAME`). Overridden by `dogstatsd_host` when set |
+| `dogstatsd_host` | `string` | No | - | DogStatsD server host, set separately from the port (agent mode only, supports `env.VAR_NAME`). Takes precedence over `dogstatsd_addr` |
+| `dogstatsd_port` | `string` | No | `8125` | DogStatsD server port, used with `dogstatsd_host` (agent mode only, supports `env.VAR_NAME`) |
 | `env` | `string` | No | - | Environment tag (e.g., `production`, `staging`) |
 | `version` | `string` | No | - | Service version tag |
 | `custom_tags` | `object` | No | - | Additional tags for all traces and metrics |
 | `enable_metrics` | `bool` | No | `true` | Enable metrics emission |
 | `enable_traces` | `bool` | No | `true` | Enable APM traces |
 | `enable_llm_obs` | `bool` | No | `true` | Enable LLM Observability |
+| `group_traces_by_session` | `bool` | No | `false` | Group requests sharing the same `x-bf-session-id` into one APM trace (agent mode only). See [Grouping APM Traces by Session](#grouping-apm-traces-by-session) |
 | `agentless` | `bool` | No | `false` | Use agentless mode (direct API) |
-| `api_key` | `EnvVar` | Agentless only | - | Datadog API key (supports `env.VAR_NAME`) |
+| `api_key` | `string` | Agentless only | - | Datadog API key (supports `env.VAR_NAME`) |
 | `site` | `string` | No | `datadoghq.com` | Datadog site/region |
 
 ### Environment Variable Substitution
 
-The `api_key` and `custom_tags` fields support environment variable substitution using the `env.` prefix:
+The `api_key`, `agent_addr`, `agent_host`, `agent_port`, `dogstatsd_addr`, `dogstatsd_host`, `dogstatsd_port`, and `custom_tags` fields support environment variable substitution using the `env.` prefix:
 
 ```json
 {
   "api_key": "env.DD_API_KEY",
+  "agent_addr": "env.DD_AGENT_ADDR",
+  "dogstatsd_addr": "env.DD_DOGSTATSD_ADDR",
   "custom_tags": {
     "team": "env.TEAM_NAME",
     "cost_center": "env.COST_CENTER"
   }
 }
+```
+
+<Note>
+Substitution is **whole-value only** — `"env.DD_HOST:8125"` does not work, because the entire field is treated as one variable reference. If your environment exposes the agent host and port as separate variables (common in Kubernetes, where the host is injected from the downward API `status.hostIP` and the port is fixed), use the separate `agent_host` / `agent_port` and `dogstatsd_host` / `dogstatsd_port` fields instead of `agent_addr` / `dogstatsd_addr`. When a `*_host` field is set it takes precedence over the combined `*_addr`, and the matching `*_port` defaults to `8126` (agent) / `8125` (DogStatsD).
+</Note>
+
+#### Separate host and port (Kubernetes)
+
+```json
+{
+  "dogstatsd_host": "env.DD_AGENT_HOST",
+  "agent_host": "env.DD_AGENT_HOST"
+}
+```
+
+The ports are omitted here because they default to `8126` (agent) and `8125` (DogStatsD). Set `agent_port` / `dogstatsd_port` (literal or `env.` reference) only if your agent listens on non-standard ports.
+
+With the Kubernetes downward API injecting the node IP:
+
+```yaml
+env:
+  - name: DD_AGENT_HOST
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
 ```
 
 ---
@@ -101,7 +136,7 @@ The `api_key` and `custom_tags` fields support environment variable substitution
 
 Configure the Datadog plugin through the Bifrost UI:
 
-1. Navigate to **Settings** → **Plugins**
+1. Navigate to **Plugins**
 2. Enable the **Datadog** plugin
 3. Configure the required fields based on your deployment mode
 
@@ -261,6 +296,7 @@ The plugin supports all Datadog regional sites. Set the `site` field to match yo
 | AP1 | Asia Pacific (Japan) | `ap1.datadoghq.com` |
 | AP2 | Asia Pacific (Australia) | `ap2.datadoghq.com` |
 | US1-FED | US Government | `ddog-gov.com` |
+| US2-FED | US Government | `us2.ddog-gov.com` |
 
 <Note>
 Ensure your API key corresponds to the selected site. API keys from one region will not work with another.
@@ -305,6 +341,30 @@ curl -X POST https://your-bifrost-gateway/v1/chat/completions \
 
 Sessions appear in Datadog LLM Observability, allowing you to trace entire conversation flows.
 
+### Grouping APM Traces by Session
+
+By default, every request is its own APM trace, so a multi-turn conversation appears as many separate traces in the APM trace view. (Cross-trace grouping normally lives in [LLM Observability sessions](#session-tracking), a separate product from APM.) Enable `group_traces_by_session` to instead group every request sharing the same `x-bf-session-id` into a **single APM trace**, where each request renders as a top-level sibling span:
+
+```json
+{
+  "group_traces_by_session": true
+}
+```
+
+```bash
+# Both requests below land in the same APM trace
+curl ... -H "x-bf-session-id: user-123-session-456" -d '{...}'
+curl ... -H "x-bf-session-id: user-123-session-456" -d '{...}'
+```
+
+Bifrost derives a stable Datadog trace ID from the `x-bf-session-id` value, so all requests carrying that header resolve to the same trace.
+
+<Note>
+  - **Agent mode only.** APM spans are emitted only in agent mode. In agentless mode the plugin emits LLM Observability spans only, which already group via [session tracking](#session-tracking).
+  - **W3C traceparent takes precedence.** If a request carries an inbound [`traceparent`](#w3c-distributed-tracing) header, it stays on that distributed trace and is not regrouped by session.
+  - **APM traces are not built for long-lived sessions.** Datadog has practical limits on spans-per-trace and trace-assembly windows; very long sessions may render with large time gaps or be truncated. For long conversations, prefer LLM Observability sessions.
+</Note>
+
 ### W3C Distributed Tracing
 
 The plugin supports [W3C Trace Context](https://www.w3.org/TR/trace-context/) for distributed tracing across services. When your upstream service sends a `traceparent` header, Bifrost automatically links its spans as children of the parent trace.
@@ -347,25 +407,42 @@ The plugin emits the following metrics to Datadog:
 
 | Metric | Type | Description | Tags |
 |--------|------|-------------|------|
-| `bifrost.requests.total` | Counter | Total LLM requests | provider, model, request_type |
-| `bifrost.success.total` | Counter | Successful requests | provider, model, request_type |
-| `bifrost.errors.total` | Counter | Failed requests | provider, model, request_type, reason |
-| `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, request_type |
+| `bifrost.requests.total` | Counter | Total LLM requests | provider, model, method |
+| `bifrost.success.total` | Counter | Successful requests | provider, model, method |
+| `bifrost.errors.total` | Counter | Failed requests | provider, model, method, reason |
+| `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, method |
 | `bifrost.tokens.input` | Counter | Input/prompt tokens consumed | provider, model |
 | `bifrost.tokens.output` | Counter | Output/completion tokens generated | provider, model |
 | `bifrost.tokens.total` | Counter | Total tokens (input + output) | provider, model |
-| `bifrost.cost.usd` | Gauge | Request cost in USD | provider, model |
+| `bifrost.request.cost.usd` | Distribution | Per-request cost in USD | provider, model |
 | `bifrost.cache.hits` | Counter | Cache hits | provider, model, cache_type |
 | `bifrost.stream.first_token_latency` | Histogram | Time to first token (streaming) | provider, model |
 | `bifrost.stream.inter_token_latency` | Histogram | Inter-token latency (streaming) | provider, model |
+
+### Migrating from `bifrost.cost.usd`
+
+The cost metric was renamed from `bifrost.cost.usd` to `bifrost.request.cost.usd`, and its type changed from **Gauge** to **Distribution**. The gauge was last-write-wins per flush window, so concurrent requests with the same tags collapsed to a single value and no query could recover the true total spend. The new name is required because Datadog permanently associates a metric name with its first-seen type per organization — orgs that previously received the gauge cannot receive the same name as a distribution.
+
+**Affected assets:** any dashboards, monitors, saved views, or alerts that query `bifrost.cost.usd`.
+
+**To migrate:**
+
+1. Replace `bifrost.cost.usd` with `bifrost.request.cost.usd` in all queries.
+2. Update aggregations for Distribution semantics — each sample is one request's cost:
+   - Total spend: `sum:bifrost.request.cost.usd{*}` (do **not** append `.as_count()` or `.rollup(sum)`; the `sum:` aggregator already returns the additive total)
+   - Per-request statistics: `avg:`, `max:`, or percentile aggregators
+3. Recreate monitors and alerts on the new metric, adjusting thresholds if they assumed gauge behavior (the gauge systematically under-reported under concurrent load).
+
+`bifrost.cost.usd` stops receiving data once the upgrade completes; during a rolling deploy both metrics receive data, so update dashboards at or shortly after the upgrade. Historical gauge data remains queryable under the old name for Datadog's standard retention window.
 
 ### Custom Tags
 
 All metrics include your configured `custom_tags` plus automatic tags for:
 - `provider` - LLM provider (openai, anthropic, etc.)
 - `model` - Model name
-- `request_type` - Type of request (chat, embedding, etc.)
-- `env` - Environment from configuration
+- `method` - Type of request (chat, embedding, etc.)
+- `bifrost_node` - Per-instance identity (`BIFROST_NODE_ID` if set, otherwise `hostname-pid`)
+- plus Bifrost-context tags when available (virtual key, selected key, team, customer, fallback index)
 
 ---
 
@@ -376,7 +453,7 @@ Each APM trace includes comprehensive LLM operation metadata:
 ### Span Attributes
 
 - **Span Name** - Based on request type (`genai.chat`, `genai.embedding`, etc.)
-- **Service Info** - `service.name`, `service.version`, `env`
+- **Service Info** - `service.name`, `service.version`, `env` (Datadog's [unified service tagging](https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/): `service`, `version`, `env`)
 - **Provider & Model** - `gen_ai.provider.name`, `gen_ai.request.model`
 
 ### Request Parameters
@@ -409,6 +486,51 @@ Each APM trace includes comprehensive LLM operation metadata:
 - Team ID and name
 - Customer ID and name
 - Retry count and fallback index
+
+---
+
+## Plugin Span Filtering
+
+By default every plugin's pre- and post-hook execution generates a span, which can bloat APM traces when many plugins are active (e.g. 8 built-in plugins × 2 hooks = 16 plugin spans per request). Use `plugin_span_filter` inside the Datadog plugin config to control which plugin spans are exported. This affects only the exported APM trace spans — plugin execution and metrics are unchanged.
+
+**Via config.json** (inside the Datadog plugin config):
+
+```json
+{
+  "plugins": [
+    {
+      "name": "datadog",
+      "enabled": true,
+      "config": {
+        "service_name": "bifrost",
+        "agent_addr": "localhost:8126",
+        "enable_traces": true,
+        "plugin_span_filter": {
+          "mode": "exclude",
+          "plugins": ["logging", "compat", "telemetry"]
+        }
+      }
+    }
+  ]
+}
+```
+
+**Via the UI**: Open the **Observability** page, select the **Datadog** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+
+**Filter modes:**
+
+| Mode | Behaviour |
+|------|-----------|
+| `exclude` | Export spans for all plugins **except** those listed |
+| `include` | Export spans **only** for the listed plugins |
+
+**Plugin names:** list each plugin using the exact name shown for it in the **Configure Plugin Tracing** sheet — this is the same name that appears in the span (`plugin.<name>.<stage>`), and it is what the filter matches against. Note that some plugins are registered under a different name than their config key: the enterprise prompts and governance plugins appear as `enterprise-prompts` and `enterprise-governance` (not `prompts`/`governance`). Common names include `telemetry`, `logging`, `otel`, `semantic_cache`, `compat`, `maxim`, `enterprise-prompts`, `enterprise-governance`, `datadog`, `bigquery`, `guardrails`, `adaptive-loadbalancer`, and `model-catalog-resolver`. The exact set depends on which plugins are loaded in your deployment.
+
+When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected. The filter applies to APM trace spans only; it does not change DogStatsD metrics, which are never derived from plugin spans.
+
+<Note>
+  Each observability connector has its own independent `plugin_span_filter` — filtering plugin spans for Datadog does not affect OTEL, BigQuery, or any other connector. `plugin_span_filter` follows the standard plugin config precedence rules; to make a config.json value override UI-saved DB settings on restart, set a higher `version` on the Datadog plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+</Note>
 
 ---
 

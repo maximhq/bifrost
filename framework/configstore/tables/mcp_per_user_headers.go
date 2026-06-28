@@ -66,17 +66,17 @@ func (f *TableMCPPerUserHeaderFlow) BeforeSave(tx *gorm.DB) error {
 // oauth_user_tokens). Schema (i.e. the set of allowed header names) lives on
 // TableMCPClient.PerUserHeaderKeysJSON; this table holds the values only.
 type TableMCPPerUserHeaderCredential struct {
-	ID               string     `gorm:"type:varchar(255);primaryKey" json:"id"`                   // UUID
-	SessionID        string     `gorm:"type:varchar(255);index" json:"session_id,omitempty"`      // Session-mode identity: client-asserted x-bf-mcp-session-id. Empty for vk/user mode rows.
-	VirtualKeyID     *string    `gorm:"type:varchar(255);index" json:"virtual_key_id"`            // VK identity (vk-mode rows)
-	UserID           *string    `gorm:"type:varchar(255);index" json:"user_id"`                   // User identity (user-mode rows)
-	MCPClientID      string     `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`    // Which MCP server
-	AuthMode         string     `gorm:"type:varchar(20);not null" json:"auth_mode"`               // 'user' | 'vk' | 'session' — which identity column keys this row
-	Status           string     `gorm:"type:varchar(20);not null;default:'active'" json:"status"` // 'active' | 'orphaned' | 'needs_update'
-	HeadersJSON      string     `gorm:"type:text;not null" json:"-"`                              // Encrypted JSON map[string]string of user-supplied header values
-	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
-	CreatedAt        time.Time  `gorm:"index;not null" json:"created_at"`
-	UpdatedAt        time.Time  `gorm:"index;not null" json:"updated_at"`
+	ID               string    `gorm:"type:varchar(255);primaryKey" json:"id"`                   // UUID
+	SessionID        string    `gorm:"type:varchar(255);index" json:"session_id,omitempty"`      // Session-mode identity: client-asserted x-bf-mcp-session-id. Empty for vk/user mode rows.
+	VirtualKeyID     *string   `gorm:"type:varchar(255);index" json:"virtual_key_id"`            // VK identity (vk-mode rows)
+	UserID           *string   `gorm:"type:varchar(255);index" json:"user_id"`                   // User identity (user-mode rows)
+	MCPClientID      string    `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`    // Which MCP server
+	AuthMode         string    `gorm:"type:varchar(20);not null" json:"auth_mode"`               // 'user' | 'vk' | 'session' — which identity column keys this row
+	Status           string    `gorm:"type:varchar(20);not null;default:'active'" json:"status"` // 'active' | 'orphaned' | 'needs_update'
+	HeadersJSON      string    `gorm:"type:text;not null" json:"-"`                              // Encrypted JSON map[string]string of user-supplied header values
+	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Display-only relations (no DB-level FK constraint; preloaded for sessions UI).
 	MCPClient  *TableMCPClient  `gorm:"foreignKey:MCPClientID;references:ClientID" json:"-"`
