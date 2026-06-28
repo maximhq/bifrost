@@ -314,6 +314,11 @@
               "minimum": 1,
               "default": 600,
               "description": "Lifetime of the issued JWT Bearer token in seconds (default: 600)."
+            },
+            "disable_vk_identity": {
+              "type": "boolean",
+              "default": false,
+              "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
             }
           },
           "additionalProperties": false,

@@ -35,11 +35,18 @@ import (
 type OAuth2IssuanceHandler struct {
 	store      *lib.Config
 	tempTokens *temptoken.Service // optional; nil = no consent temp-token minted
+	// identityResolver mirrors the consent handler's resolver. It is consulted
+	// only to decide whether DisableVKIdentity is in effect (it is honored only
+	// when user identity is available). May be nil — VK refresh is never blocked
+	// then, matching availableModes which keeps offering vk without a resolver.
+	identityResolver OAuth2IdentityResolver
 }
 
-// NewOAuth2IssuanceHandler creates a new issuance handler.
-func NewOAuth2IssuanceHandler(store *lib.Config, tempTokens *temptoken.Service) *OAuth2IssuanceHandler {
-	return &OAuth2IssuanceHandler{store: store, tempTokens: tempTokens}
+// NewOAuth2IssuanceHandler creates a new issuance handler. identityResolver may
+// be nil — the VK-refresh cutoff degrades to a no-op, consistent with the
+// consent handler offering vk when no resolver is present.
+func NewOAuth2IssuanceHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver) *OAuth2IssuanceHandler {
+	return &OAuth2IssuanceHandler{store: store, tempTokens: tempTokens, identityResolver: identityResolver}
 }
 
 // RegisterRoutes wires the three OAuth2 issuance routes.
@@ -419,6 +426,20 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 	if rt.ClientID != clientID {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "client_id mismatch")
 		return
+	}
+
+	// VK identity cutoff (refresh side): when virtual-key identity has been
+	// disabled, vk-mode grants must not refresh. Live /mcp requests are already
+	// rejected at request time (see getMCPServerForRequest); denying refresh here
+	// closes the second path so a disabled grant can neither be used nor renewed.
+	// Gated on user identity being available, identical to the consent flow's
+	// availableModes — so this can never fire where vk is still the offered path.
+	if schemas.MCPAuthMode(rt.BfMode) == schemas.MCPAuthModeVK {
+		userModeAvailable := h.identityResolver != nil && h.identityResolver.IsUserModeAvailable()
+		if userModeAvailable && oauth2ServerCfg(h.store).DisableVKIdentity {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "virtual-key identity is no longer accepted; re-authenticate")
+			return
+		}
 	}
 
 	// bf_sub liveness check: for VK-mode tokens, verify the VK still exists
