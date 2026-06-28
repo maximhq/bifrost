@@ -71,12 +71,12 @@ func (r *BifrostCompactionRequest) GetRawRequestBody() []byte {
 // BifrostCompactionResponse is the response from the context compaction endpoint.
 // object is always "response.compaction". output contains user messages plus one encrypted compaction item.
 type BifrostCompactionResponse struct {
-	ID        *string            `json:"id,omitempty"`
-	Object    string             `json:"object"` // always "response.compaction"
-	Model     string             `json:"model,omitempty"`
-	CreatedAt int                `json:"created_at"`
-	Output    []ResponsesMessage `json:"output"`
-	Usage     *ResponsesResponseUsage    `json:"usage,omitempty"`
+	ID          *string                    `json:"id,omitempty"`
+	Object      string                     `json:"object"` // always "response.compaction"
+	Model       string                     `json:"model,omitempty"`
+	CreatedAt   int                        `json:"created_at"`
+	Output      []ResponsesMessage         `json:"output"`
+	Usage       *ResponsesResponseUsage    `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
@@ -130,9 +130,9 @@ type BifrostResponsesResponse struct {
 	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
 	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
-	Speed                *string                             `json:"speed,omitempty"` // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	Speed                *string                             `json:"speed,omitempty"`       // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
-	Status               *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
+	Status               *string                             `json:"status,omitempty"`      // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason           *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
 	Store                *bool                               `json:"store,omitempty"`
@@ -1019,10 +1019,12 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 			if isToolSearchCall {
 				// tool_search_call.arguments must be a JSON object on the wire.
 				trimmed := strings.TrimSpace(argsStr)
-				if trimmed != "" && json.Valid([]byte(trimmed)) {
+				if trimmed == "" {
+					argsValue = json.RawMessage("{}")
+				} else if json.Valid([]byte(trimmed)) {
 					argsValue = json.RawMessage(trimmed)
 				} else {
-					argsValue = json.RawMessage("{}")
+					return nil, fmt.Errorf("tool_search_call arguments must be valid JSON object text, got %q", argsStr)
 				}
 			} else {
 				// function_call and all other tool types: emit as a JSON string.
@@ -1264,8 +1266,8 @@ type ResponsesToolMessage struct {
 // ResponsesAdvisorCall carries the Anthropic advisor_tool_result content
 // (a discriminated union) alongside an advisor_call. Anthropic-only.
 type ResponsesAdvisorCall struct {
-	ResultType       string  `json:"result_type,omitempty"`       // "advisor_result" | "advisor_redacted_result" | "advisor_tool_result_error"
-	Text             *string `json:"advisor_text,omitempty"`      // advisor_result variant
+	ResultType       string  `json:"result_type,omitempty"`               // "advisor_result" | "advisor_redacted_result" | "advisor_tool_result_error"
+	Text             *string `json:"advisor_text,omitempty"`              // advisor_result variant
 	EncryptedContent *string `json:"advisor_encrypted_content,omitempty"` // advisor_redacted_result variant
 	ErrorCode        *string `json:"advisor_error_code,omitempty"`        // advisor_tool_result_error variant
 	StopReason       *string `json:"advisor_stop_reason,omitempty"`       // present when max_tokens is set on the tool

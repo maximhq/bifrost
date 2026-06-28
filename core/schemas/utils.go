@@ -1234,6 +1234,25 @@ func deepCopySchemaValue(original interface{}) interface{} {
 	}
 }
 
+// DeepCopyResponsesTool deep-copies a ResponsesTool, including nested union
+// payloads such as namespace sub-tools, MCP header maps, and function
+// parameter schemas. The ResponsesTool union has many provider-specific
+// embedded structs, so round-tripping through the schema JSON shape is the
+// most reliable way to preserve concrete nested types without aliasing.
+func DeepCopyResponsesTool(original ResponsesTool) ResponsesTool {
+	encoded, err := MarshalSorted(original)
+	if err != nil {
+		return original
+	}
+
+	var copied ResponsesTool
+	if err := Unmarshal(encoded, &copied); err != nil {
+		return original
+	}
+
+	return copied
+}
+
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
 // to prevent shared data mutation between different plugin accumulators
 func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
@@ -1328,7 +1347,7 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		if original.ResponsesToolMessage.Tools != nil {
 			copy.ResponsesToolMessage.Tools = make([]ResponsesTool, len(original.ResponsesToolMessage.Tools))
 			for i, tool := range original.ResponsesToolMessage.Tools {
-				copy.ResponsesToolMessage.Tools[i] = tool
+				copy.ResponsesToolMessage.Tools[i] = DeepCopyResponsesTool(tool)
 			}
 		}
 

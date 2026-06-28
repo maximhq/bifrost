@@ -294,7 +294,7 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 		if original.ResponsesToolMessage.Tools != nil {
 			copy.ResponsesToolMessage.Tools = make([]schemas.ResponsesTool, len(original.ResponsesToolMessage.Tools))
 			for i, tool := range original.ResponsesToolMessage.Tools {
-				copy.ResponsesToolMessage.Tools[i] = tool
+				copy.ResponsesToolMessage.Tools[i] = schemas.DeepCopyResponsesTool(tool)
 			}
 		}
 

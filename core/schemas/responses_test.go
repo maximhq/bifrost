@@ -259,6 +259,7 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 		}
 	})
 }
+
 // TestResponsesMessageToolSearchCallMarshal verifies the round-trip wire format
 // for tool_search_call items. OpenAI sends arguments as a JSON object; after
 // Bifrost normalizes them into a *string on unmarshal, MarshalJSON must expand
@@ -378,6 +379,23 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid non-empty tool_search_call arguments return error", func(t *testing.T) {
+		args := `{"query":`
+		msg := ResponsesMessage{
+			Type: &msgType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+			},
+		}
+		_, err := MarshalSorted(msg)
+		if err == nil {
+			t.Fatal("expected invalid tool_search_call arguments to return error")
+		}
+		if !strings.Contains(err.Error(), "tool_search_call arguments must be valid JSON object text") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("function_call still marshals arguments as json string", func(t *testing.T) {
 		fcType := ResponsesMessageTypeFunctionCall
 		args := `{"param":"value"}`
@@ -432,10 +450,10 @@ func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		raw         string
-		wantFields  []string
-		wantAbsent  []string
+		name       string
+		raw        string
+		wantFields []string
+		wantAbsent []string
 	}{
 		{
 			name: "namespace tool type is preserved",
