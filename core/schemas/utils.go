@@ -1586,9 +1586,41 @@ func IsNova2Model(model string) bool {
 	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
 }
 
+// IsGLMModel checks if the model is a Z.AI GLM model.
+func IsGLMModel(model string) bool {
+	return strings.Contains(model, "glm")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
+}
+
+// IsOpenAIModel checks if the model is an OpenAI model.
+func IsOpenAIModel(model string) bool {
+	if strings.Contains(model, "gpt-") || strings.Contains(model, "text-embedding-") {
+		return true
+	}
+	// OpenAI reasoning families (o1, o3, o4, ...). Match the bare id or a
+	// version-suffixed variant (e.g. "o3", "o4-mini", "o1-preview") while
+	// avoiding false matches on substrings like "co1" or "model-o3x".
+	return isOpenAIReasoningModel(model)
+}
+
+// isOpenAIReasoningModel reports whether model names an OpenAI o-series
+// reasoning model. It strips any provider prefix (e.g. "openai/o3") and matches
+// an "o" followed by a single digit, where the next character is either end of
+// string or a "-" separator, so "o3" and "o4-mini" match but "co1" and "o3x"
+// do not.
+func isOpenAIReasoningModel(model string) bool {
+	name := model
+	if idx := strings.LastIndexAny(name, "/:"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if len(name) < 2 || name[0] != 'o' || name[1] < '0' || name[1] > '9' {
+		return false
+	}
+	return len(name) == 2 || name[2] == '-'
 }
 
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports

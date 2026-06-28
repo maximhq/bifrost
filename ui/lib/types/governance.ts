@@ -1,15 +1,6 @@
 // Governance types that match the Go backend structures
 
 import { ModelProviderName, RequestType } from "./config";
-import { SecretVar } from "./schemas";
-
-// resolveVirtualKeyValue returns the display/usable string for a virtual key value, which the API
-// may return either as a bare string (legacy) or a SecretVar object (value sourced from env/vault).
-export function resolveVirtualKeyValue(value: string | SecretVar | undefined): string {
-	if (value == null) return "";
-	if (typeof value === "string") return value;
-	return value.value ?? "";
-}
 
 export interface Budget {
 	id: string;
@@ -75,7 +66,7 @@ export interface RedactedDBKey {
 export interface VirtualKey {
 	id: string;
 	name: string;
-	value: string | SecretVar; // The key value; a SecretVar object when sourced from env/vault
+	value: string; // The actual key value
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
@@ -165,7 +156,6 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 export interface CreateVirtualKeyRequest {
 	name: string;
 	description?: string;
-	value?: string | SecretVar; // Optional; a literal, "env.X"/"vault.X" string, or SecretVar object. Generated server-side when omitted
 	provider_configs?: VirtualKeyProviderConfigRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
@@ -227,7 +217,7 @@ export interface CreateCustomerRequest {
 export interface UpdateCustomerRequest {
 	name?: string;
 	budgets?: CreateBudgetRequest[]; // nil=no change, []=remove all
-	budget?: UpdateBudgetRequest;   // deprecated: use budgets
+	budget?: UpdateBudgetRequest; // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
 }
@@ -431,7 +421,7 @@ export interface PricingOverridePatch {
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
 	input_cost_per_token_fast?: number;
-	output_cost_per_token_fast?:number;
+	output_cost_per_token_fast?: number;
 	// 128k tier
 	input_cost_per_token_above_128k_tokens?: number;
 	output_cost_per_token_above_128k_tokens?: number;

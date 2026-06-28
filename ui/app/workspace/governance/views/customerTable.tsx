@@ -124,7 +124,7 @@ interface CustomersTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
-	isFetching?: boolean
+	isFetching?: boolean;
 }
 
 export default function CustomersTable({
@@ -138,7 +138,7 @@ export default function CustomersTable({
 	offset,
 	limit,
 	onOffsetChange,
-	isFetching
+	isFetching,
 }: CustomersTableProps) {
 	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -228,8 +228,8 @@ export default function CustomersTable({
 					customer={viewingCustomer}
 				/>
 
-				<div className="flex flex-col grow">
-					<div className="flex items-center justify-between mb-4">
+				<div className="flex grow flex-col">
+					<div className="mb-4 flex items-center justify-between">
 						<div>
 							<h2 className="text-lg font-semibold">Customers</h2>
 							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
@@ -240,7 +240,7 @@ export default function CustomersTable({
 						</Button>
 					</div>
 
-					<div className="flex items-center gap-3 mb-4">
+					<div className="mb-4 flex items-center gap-3">
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
@@ -254,7 +254,7 @@ export default function CustomersTable({
 						</div>
 					</div>
 
-					<div className="overflow-auto rounded-sm border grow mb-2" data-testid="customer-table-container">
+					<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="customer-table-container">
 						<Table className="min-w-[1100px]">
 							<TableHeader>
 								<TableRow>
@@ -280,9 +280,7 @@ export default function CustomersTable({
 
 										// Budget calculations (most-exhausted budget drives the row highlight)
 										const budgets = customer.budgets ?? [];
-										const isBudgetExhausted = budgets.some(
-											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
-										);
+										const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -354,9 +352,7 @@ export default function CustomersTable({
 													{budgets.length > 0 ? (
 														<div className="space-y-2">
 															{budgets.map((budget) => {
-																const pct = budget.max_limit > 0
-																	? Math.min((budget.current_usage / budget.max_limit) * 100, 100)
-																	: 0;
+																const pct = budget.max_limit > 0 ? Math.min((budget.current_usage / budget.max_limit) * 100, 100) : 0;
 																const exhausted = budget.max_limit > 0 && budget.current_usage >= budget.max_limit;
 																return (
 																	<Tooltip key={budget.id}>
@@ -516,7 +512,8 @@ export default function CustomersTable({
 					{totalCount > 0 && (
 						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 							<div className="text-muted-foreground flex items-center gap-2">
-								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+								entries
 							</div>
 
 							<div className="flex items-center gap-2">

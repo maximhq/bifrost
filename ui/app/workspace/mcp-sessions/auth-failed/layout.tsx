@@ -6,6 +6,6 @@ import MCPSessionsAuthFailedPage from "./page";
 // upstream denied the request or the token exchange failed. publicShell makes
 // it MinimalShell-only with no API calls — works without a dashboard cookie.
 export const Route = createFileRoute("/workspace/mcp-sessions/auth-failed")({
-  staticData: { publicShell: true },
-  component: MCPSessionsAuthFailedPage,
+	staticData: { publicShell: true },
+	component: MCPSessionsAuthFailedPage,
 });

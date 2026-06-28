@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"maps"
+	"io"
 	"net/http"
 	"strings"
 
@@ -13,40 +13,92 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// isMantleModel reports whether a model should be routed via the Bedrock Mantle endpoint.
-// Accepts "gpt-*", "openai.gpt-*", or region-prefixed variants.
-func isMantleModel(model string) bool {
-	return strings.Contains(model, "gpt-")
+// isMantleModel reports whether a model should be routed via the Bedrock Mantle
+// OpenAI-compatible endpoint. OpenAI-family (gpt-*) and Gemma 4 models are mantle-only
+// (they have no Converse equivalent). Gemma 3 is intentionally excluded: it only supports
+// Chat (not Responses) on mantle, and the Converse path serves both APIs, so forcing it to
+// mantle would break Responses.
+//
+// Deprecated: in-provider Bedrock Mantle routing is retained for backwards compatibility.
+// New configurations should use the "bedrock_mantle" provider, which owns the Bedrock Mantle
+// surface (Claude native-Anthropic, OpenAI-compatible, and Gemma).
+func isMantleModel(ctx *schemas.BifrostContext, model string) bool {
+	return schemas.IsOpenAIModelFamily(ctx, model) || strings.Contains(model, "gemma-4")
 }
 
-// mantleURL builds the Bedrock Mantle endpoint URL for the given region and API path.
-func mantleURL(region, path string) string {
-	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/v1/%s", region, path)
+// mantleOpenAIURL builds the Bedrock Mantle OpenAI-compatible endpoint URL for the given
+// region, model, and API path (e.g. "chat/completions", "responses"). Pass the canonical
+// (capability-resolved) model for correct path gating; the request body still carries the
+// wire request.Model. Frontier families (closed gpt-5.x, Gemma 4) live under the "openai/v1"
+// base path; gpt-oss uses the bare "v1" path.
+func mantleOpenAIURL(region, model, path string) string {
+	base := "v1"
+	if strings.Contains(model, "gpt-5") || strings.Contains(model, "gemma-4") {
+		base = "openai/v1"
+	}
+	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s/%s", region, base, path)
 }
 
-// mantleSigV4Headers computes SigV4 auth headers for a mantle request by signing a dummy
+// SignMantleV4Headers computes SigV4 auth headers for a mantle request by signing a dummy
 // net/http.Request. jsonData must be the exact bytes that will be sent. accept must match
 // the Accept header the actual request will send, since SigV4 signs all request headers.
-func (provider *BedrockProvider) mantleSigV4Headers(
+// extraHeaders are the static headers the actual request will carry; any x-amz-* among them
+// are added to the canonical request before signing so the signature covers them (AWS requires
+// every x-amz-* header on the wire to be signed, otherwise verification fails).
+func SignMantleV4Headers(
 	ctx *schemas.BifrostContext,
 	jsonData []byte,
 	requestURL, accept string,
 	key schemas.Key,
 	region string,
+	extraHeaders map[string]string,
 ) (map[string]string, *schemas.BifrostError) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
+	method := http.MethodPost
+	if jsonData == nil {
+		method = http.MethodGet
+	}
+	var body io.Reader
+	if jsonData != nil {
+		body = bytes.NewReader(jsonData)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to create signing request", err)
 	}
 	req.Header.Set("Accept", accept)
-	if bifrostErr := signAWSRequestFromKey(ctx, req, key.BedrockKeyConfig, region, bedrockMantleSigningService); bifrostErr != nil {
+	for k, v := range extraHeaders {
+		if strings.HasPrefix(strings.ToLower(k), "x-amz-") {
+			req.Header.Set(k, v)
+		}
+	}
+
+	keyCfg := key.BedrockKeyConfig
+	// Create a synthetic BedrockKeyConfig in case of bedrock_mantle: its
+	// BedrockMantleKeyConfig carries the same credential fields, so map them across
+	// (Region is passed separately; ARN/batch config are not used for signing).
+	if key.BedrockMantleKeyConfig != nil && key.BedrockKeyConfig == nil {
+		keyCfg = &schemas.BedrockKeyConfig{
+			AccessKey:       key.BedrockMantleKeyConfig.AccessKey,
+			SecretKey:       key.BedrockMantleKeyConfig.SecretKey,
+			SessionToken:    key.BedrockMantleKeyConfig.SessionToken,
+			RoleARN:         key.BedrockMantleKeyConfig.RoleARN,
+			ExternalID:      key.BedrockMantleKeyConfig.ExternalID,
+			RoleSessionName: key.BedrockMantleKeyConfig.RoleSessionName,
+		}
+	}
+	if bifrostErr := signAWSRequest(ctx, req, keyCfg, region, bedrockMantleSigningService); bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Return the headers exactly as signed: signAWSRequest defaults an empty Accept/Content-Type
+	// to "application/json" and includes them in SignedHeaders, so the caller must send those same
+	// values (not the original, possibly-empty, accept) or the signature won't match.
 	headers := map[string]string{
 		"Authorization":        req.Header.Get("Authorization"),
 		"X-Amz-Date":           req.Header.Get("X-Amz-Date"),
 		"x-amz-content-sha256": req.Header.Get("x-amz-content-sha256"),
-		"Accept":               accept,
+		"Accept":               req.Header.Get("Accept"),
+		"Content-Type":         req.Header.Get("Content-Type"),
 	}
 	if token := req.Header.Get("X-Amz-Security-Token"); token != "" {
 		headers["X-Amz-Security-Token"] = token
@@ -54,33 +106,23 @@ func (provider *BedrockProvider) mantleSigV4Headers(
 	return headers, nil
 }
 
-// chatCompletionViaMantle handles non-streaming chat completions for mantle (gpt-oss) models.
-func (provider *BedrockProvider) chatCompletionViaMantle(
+// mantleChatCompletions handles non-streaming chat completions for mantle models (gpt-*
+// and Gemma 4) via the Bedrock Mantle OpenAI-compatible endpoint.
+func (provider *BedrockProvider) mantleChatCompletions(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
 	request *schemas.BifrostChatRequest,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "chat/completions")
+	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 
-	// Build extraHeaders: always start with network-config headers, then overlay SigV4 if needed.
-	// Allocate explicitly so maps.Copy never writes into a nil map.
-	extraHeaders := make(map[string]string, len(provider.networkConfig.ExtraHeaders))
-	maps.Copy(extraHeaders, provider.networkConfig.ExtraHeaders)
+	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
+	// Bearer (key has a value): no signer; auth flows through the Authorization header.
+	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
-		// SigV4: pre-build body for signing. HandleOpenAIChatCompletionRequest rebuilds the
-		// same bytes (deterministic marshaling), so the signature stays valid.
-		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return openai.ToOpenAIChatRequest(ctx, request), nil
-		})
-		if bifrostErr != nil {
-			return nil, bifrostErr
+		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
+			return SignMantleV4Headers(ctx, body, url, "application/json", key, region, provider.networkConfig.ExtraHeaders)
 		}
-		sigHeaders, bifrostErr := provider.mantleSigV4Headers(ctx, jsonData, url, "application/json", key, region)
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-		maps.Copy(extraHeaders, sigHeaders)
 	}
 
 	return openai.HandleOpenAIChatCompletionRequest(
@@ -88,18 +130,21 @@ func (provider *BedrockProvider) chatCompletionViaMantle(
 		provider.mantleClient,
 		url,
 		request,
-		key,
-		extraHeaders,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
-		nil, nil,
+		nil,
+		nil,
+		signer,
 		provider.logger,
 	)
 }
 
-// chatCompletionStreamViaMantle handles streaming chat completions for mantle (gpt-oss) models.
-func (provider *BedrockProvider) chatCompletionStreamViaMantle(
+// mantleChatCompletionsStream handles streaming chat completions for mantle models (gpt-*
+// and Gemma 4) via the Bedrock Mantle OpenAI-compatible endpoint.
+func (provider *BedrockProvider) mantleChatCompletionsStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	postHookSpanFinalizer func(context.Context),
@@ -107,78 +152,52 @@ func (provider *BedrockProvider) chatCompletionStreamViaMantle(
 	request *schemas.BifrostChatRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "chat/completions")
+	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 
-	// Bearer: identical to Groq / any OpenAI-compatible provider.
-	if key.Value.GetValue() != "" {
-		authHeader := map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-		return openai.HandleOpenAIChatCompletionStreaming(
-			ctx, provider.mantleStreamingClient, url, request,
-			authHeader, provider.networkConfig.ExtraHeaders,
-			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-			provider.GetProviderKey(), postHookRunner,
-			nil, nil, nil, nil, nil,
-			provider.logger, postHookSpanFinalizer,
-		)
-	}
-
-	// SigV4: pre-build body to sign, then pass it via customRequestConverter so the handler
-	// sends the exact same bytes we signed.
-	openaiReq := openai.ToOpenAIChatRequest(ctx, request)
-	openaiReq.Stream = schemas.Ptr(true)
-	openaiReq.StreamOptions = &schemas.ChatStreamOptions{IncludeUsage: schemas.Ptr(true)}
-
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
-		return openaiReq, nil
-	})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	authHeader, bifrostErr := provider.mantleSigV4Headers(ctx, jsonData, url, "text/event-stream", key, region)
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
+	// Bearer (key has a value): no signer; auth flows through the Authorization header.
+	var signer providerUtils.BodySigner
+	if key.Value.GetValue() == "" {
+		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
+			return SignMantleV4Headers(ctx, body, url, "text/event-stream", key, region, provider.networkConfig.ExtraHeaders)
+		}
 	}
 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		authHeader, provider.networkConfig.ExtraHeaders,
+		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(), postHookRunner,
-		func(_ *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
-			return openaiReq, nil
-		},
-		nil, nil, nil, nil,
-		provider.logger, postHookSpanFinalizer,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		signer,
+		provider.logger,
+		postHookSpanFinalizer,
 	)
 }
 
-// responsesViaMantle handles non-streaming Responses API requests for mantle (gpt-oss) models.
-func (provider *BedrockProvider) responsesViaMantle(
+// mantleResponses handles non-streaming Responses API requests for mantle models (gpt-*
+// and Gemma 4) via the Bedrock Mantle OpenAI-compatible endpoint.
+func (provider *BedrockProvider) mantleResponses(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
 	request *schemas.BifrostResponsesRequest,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "responses")
+	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 
-	extraHeaders := make(map[string]string, len(provider.networkConfig.ExtraHeaders))
-	maps.Copy(extraHeaders, provider.networkConfig.ExtraHeaders)
+	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
+	// Bearer (key has a value): no signer; auth flows through the Authorization header.
+	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
-		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return openai.ToOpenAIResponsesRequest(ctx, request), nil
-		})
-		if bifrostErr != nil {
-			return nil, bifrostErr
+		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
+			return SignMantleV4Headers(ctx, body, url, "application/json", key, region, provider.networkConfig.ExtraHeaders)
 		}
-		sigHeaders, bifrostErr := provider.mantleSigV4Headers(ctx, jsonData, url, "application/json", key, region)
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-		maps.Copy(extraHeaders, sigHeaders)
 	}
 
 	return openai.HandleOpenAIResponsesRequest(
@@ -186,18 +205,21 @@ func (provider *BedrockProvider) responsesViaMantle(
 		provider.mantleClient,
 		url,
 		request,
-		key,
-		extraHeaders,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
-		nil, nil,
+		nil,
+		nil,
+		signer,
 		provider.logger,
 	)
 }
 
-// responsesStreamViaMantle handles streaming Responses API requests for mantle (gpt-oss) models.
-func (provider *BedrockProvider) responsesStreamViaMantle(
+// mantleResponsesStream handles streaming Responses API requests for mantle models (gpt-*
+// and Gemma 4) via the Bedrock Mantle OpenAI-compatible endpoint.
+func (provider *BedrockProvider) mantleResponsesStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	postHookSpanFinalizer func(context.Context),
@@ -205,50 +227,30 @@ func (provider *BedrockProvider) responsesStreamViaMantle(
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleURL(region, "responses")
+	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 
-	// Bearer: identical to Groq / any OpenAI-compatible provider.
-	if key.Value.GetValue() != "" {
-		authHeader := map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-		return openai.HandleOpenAIResponsesStreaming(
-			ctx, provider.mantleStreamingClient, url, request,
-			authHeader, provider.networkConfig.ExtraHeaders,
-			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-			provider.GetProviderKey(), postHookRunner,
-			nil, nil, nil, nil,
-			provider.logger, postHookSpanFinalizer,
-		)
-	}
-
-	// SigV4: pre-build body to sign.
-	openaiReq := openai.ToOpenAIResponsesRequest(ctx, request)
-	openaiReq.Stream = schemas.Ptr(true)
-
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
-		return openaiReq, nil
-	})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	authHeader, bifrostErr := provider.mantleSigV4Headers(ctx, jsonData, url, "text/event-stream", key, region)
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
+	// Bearer (key has a value): no signer; auth flows through the Authorization header.
+	var signer providerUtils.BodySigner
+	if key.Value.GetValue() == "" {
+		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
+			return SignMantleV4Headers(ctx, body, url, "text/event-stream", key, region, provider.networkConfig.ExtraHeaders)
+		}
 	}
 
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		authHeader, provider.networkConfig.ExtraHeaders,
+		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(), postHookRunner,
-		nil, nil,
-		func(_ *openai.OpenAIResponsesRequest) *openai.OpenAIResponsesRequest {
-			return openaiReq
-		},
 		nil,
-		provider.logger, postHookSpanFinalizer,
+		nil,
+		nil,
+		nil,
+		signer,
+		provider.logger,
+		postHookSpanFinalizer,
 	)
 }

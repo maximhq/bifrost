@@ -942,6 +942,10 @@ bifrost:
   # Load balancer configuration for intelligent request routing
   loadBalancer:
     enabled: false
+    # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
+    # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
+    # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
+    # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
     trackerConfig: {}
     bootstrap: {}
 
@@ -1039,6 +1043,27 @@ bifrost:
   #     idleTimeoutSeconds: 600
   #     maxConnectionLifetimeSeconds: 7200
 
+  # Circuit breaker configuration: automatic failover when a provider endpoint degrades.
+  # Each policy monitors a primary provider+model and redirects traffic to a fallback
+  # when the circuit opens based on response header signals.
+  # circuitBreakerConfig:
+  #   policies:
+  #     - name: "azure-gpt4-ptu-failover"
+  #       enabled: true
+  #       primary_provider: "azure"
+  #       primary_model: "gpt-4-ptu"
+  #       primary_key_ids: []          # leave empty for a single shared circuit
+  #       fallback_provider: "openai"
+  #       fallback_model: "gpt-4o"
+  #       condition:
+  #         operator: "OR"             # OR (default) | AND
+  #         signals:
+  #           - source: "response_header"
+  #             header_name: "x-ms-throttle-reason"
+  #             header_value: "ModelCapacityExceeded"
+  #       default_cooldown: "30s"      # Go duration; used when no header-based cooldown
+  #       cooldown_header: "retry-after-ms"  # header whose value (ms) overrides default_cooldown
+
 # Storage configuration
 storage:
   # Default storage mode: sqlite or postgres
@@ -1061,6 +1086,37 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+
+    # Vault store for external secret management (enterprise).
+    # Resolves "vault.<path>" references in config fields at load time.
+    # vaultStore:
+    #   enabled: true
+    #   type: aws-secrets-manager  # Options: aws-secrets-manager, gcp-secret-manager, hashicorp-vault
+    #   prefix: bifrost             # Path prefix applied to every secret (default: bifrost)
+    #   accessMode: read_only       # read_only or read_and_write
+    #
+    #   # AWS Secrets Manager
+    #   aws:
+    #     region: us-east-1
+    #     accessKeyId: ""           # Leave empty to use default AWS credential chain
+    #     secretAccessKey: ""
+    #     sessionToken: ""          # AWS STS session token (optional)
+    #     roleArn: ""               # IAM role ARN to assume via STS
+    #     kmsKeyId: ""              # Customer-managed KMS key for encryption
+    #
+    #   # GCP Secret Manager
+    #   gcp:
+    #     projectId: ""
+    #     credentialsJson: ""       # Service account JSON; omit for default credentials
+    #
+    #   # HashiCorp Vault (KV v2)
+    #   hashicorp:
+    #     address: https://vault.example.com
+    #     token: ""                 # Static token; omit to use AppRole auth
+    #     namespace: ""             # Vault namespace (HCP Vault / Enterprise)
+    #     mountPath: secret         # KV v2 mount path
+    #     roleId: ""                # AppRole role_id
+    #     secretId: ""              # AppRole secret_id
 
   # Logs store settings
   logsStore:

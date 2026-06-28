@@ -914,6 +914,18 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = []string{}
 	}
 
+	// Hybrid log store offloads token_usage to object storage but keeps denormalized
+	// prompt/completion/total columns in the DB for analytics. Rebuild the virtual
+	// field so list APIs and the UI can render tokens without hydrating from S3 —
+	// same role content_summary plays for message previews.
+	if l.TokenUsage == "" && l.TokenUsageParsed == nil && (l.PromptTokens != 0 || l.CompletionTokens != 0 || l.TotalTokens != 0) {
+		l.TokenUsageParsed = &schemas.BifrostLLMUsage{
+			PromptTokens:     l.PromptTokens,
+			CompletionTokens: l.CompletionTokens,
+			TotalTokens:      l.TotalTokens,
+		}
+	}
+
 	return nil
 }
 

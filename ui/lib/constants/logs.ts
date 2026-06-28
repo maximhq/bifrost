@@ -3,6 +3,7 @@ export const KnownProvidersNames = [
 	"anthropic",
 	"azure",
 	"bedrock",
+	"bedrock_mantle",
 	"cerebras",
 	"cohere",
 	"gemini",
@@ -24,6 +25,7 @@ export const KnownProvidersNames = [
 	"replicate",
 	"vllm",
 	"runway",
+	"runware",
 	"fireworks",
 ] as const;
 
@@ -106,6 +108,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	anthropic: "Anthropic",
 	azure: "Azure",
 	bedrock: "AWS Bedrock",
+	bedrock_mantle: "AWS Bedrock Mantle",
 	cohere: "Cohere",
 	vertex: "Vertex AI",
 	mistral: "Mistral AI",
@@ -126,6 +129,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	replicate: "Replicate",
 	vllm: "vLLM",
 	runway: "Runway",
+	runware: "Runware",
 	fireworks: "Fireworks AI",
 } as const;
 

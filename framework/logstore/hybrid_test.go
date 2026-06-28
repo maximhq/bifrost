@@ -721,6 +721,54 @@ func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	require.Len(t, found.ResponsesInputHistoryParsed, 2, "full responses history should be hydrated from S3")
 }
 
+func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
+	// token_usage is offloaded to object storage and cleared from the DB row. The
+	// denormalized prompt/completion/total columns must remain so list queries can
+	// rebuild token_usage for the UI without hydrating from S3 (same pattern as
+	// content_summary for message previews).
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &Log{
+		ID:        "chat-tokens-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-4",
+		Status:    "success",
+		Object:    "chat.completion",
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     120,
+			CompletionTokens: 45,
+			TotalTokens:      165,
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "chat-tokens-1")
+	require.NoError(t, err)
+	assert.Empty(t, dbLog.TokenUsage, "token_usage should be offloaded to object storage")
+	assert.Equal(t, 120, dbLog.PromptTokens)
+	assert.Equal(t, 45, dbLog.CompletionTokens)
+	assert.Equal(t, 165, dbLog.TotalTokens)
+
+	result, err := hybrid.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	listLog := result.Logs[0]
+	require.NotNil(t, listLog.TokenUsageParsed, "list query should rebuild token_usage from denormalized columns")
+	assert.Equal(t, 120, listLog.TokenUsageParsed.PromptTokens)
+	assert.Equal(t, 45, listLog.TokenUsageParsed.CompletionTokens)
+	assert.Equal(t, 165, listLog.TokenUsageParsed.TotalTokens)
+
+	found, err := hybrid.FindByID(ctx, "chat-tokens-1")
+	require.NoError(t, err)
+	require.NotNil(t, found.TokenUsageParsed, "detail view should hydrate full token_usage from S3")
+	assert.Equal(t, 165, found.TokenUsageParsed.TotalTokens)
+}
+
 func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {
 	// /audio/speech (TTS) requests carry their text in speech_input, which is
 	// offloaded to object storage and cleared from the DB row. The DB must still

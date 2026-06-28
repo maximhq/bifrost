@@ -66,10 +66,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Publish a custom (org-internal) MCP server into the library
-		createMCPLibraryEntry: builder.mutation<
-			{ status: string; message: string; entry: MCPLibraryEntry },
-			CreateMCPLibraryEntryRequest
-		>({
+		createMCPLibraryEntry: builder.mutation<{ status: string; message: string; entry: MCPLibraryEntry }, CreateMCPLibraryEntryRequest>({
 			query: (data) => ({
 				url: "/mcp/library",
 				method: "POST",

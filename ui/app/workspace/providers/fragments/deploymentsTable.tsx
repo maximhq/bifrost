@@ -225,10 +225,7 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 function ReplicateSection({ config, onChange, disabled }: ProviderSectionProps) {
 	return (
 		<div className="space-y-4">
-			<SectionHeader
-				title="Replicate overrides"
-				description="Override key-level Replicate defaults for this deployment."
-			/>
+			<SectionHeader title="Replicate overrides" description="Override key-level Replicate defaults for this deployment." />
 			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
 				<div className="space-y-0.5">
 					<label className="text-sm font-medium">Use deployments endpoint</label>
@@ -275,10 +272,7 @@ function ExpandedConfigPanel({
 	return (
 		<div className="space-y-6 border-t p-4">
 			<div className="space-y-4">
-				<FieldRow
-					label="Canonical model name"
-					hint="The canonical name used for routing and pricing. Defaults to the model ID when blank."
-				>
+				<FieldRow label="Canonical model name" hint="The canonical name used for routing and pricing. Defaults to the model ID when blank.">
 					<StringField
 						value={config.model_name}
 						onChange={(v) => onChange({ model_name: v })}
@@ -394,8 +388,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 		// Backend alias validation is case-insensitive and rejects leading/trailing
 		// whitespace, so collision detection mirrors that to avoid UI-passes /
 		// server-rejects splits.
-		const collides =
-			normalizedName !== "" && rows.some((r) => r.name !== oldName && r.name.trim().toLowerCase() === normalizedName);
+		const collides = normalizedName !== "" && rows.some((r) => r.name !== oldName && r.name.trim().toLowerCase() === normalizedName);
 		if (collides || trimmed === "") {
 			setPendingNames((p) => ({ ...p, [rowId]: newName }));
 			return;
@@ -521,13 +514,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 					<div className={cn(draftExpanded && "bg-muted/20")}>
 						<div className="grid grid-cols-[28px_1fr_1fr_28px] items-center gap-2 px-2 py-1.5">
 							<CollapsibleTrigger asChild>
-								<Button
-									variant="ghost"
-									size="icon"
-									className="h-7 w-7"
-									disabled={disabled}
-									data-testid="draft-deployment-expand"
-								>
+								<Button variant="ghost" size="icon" className="h-7 w-7" disabled={disabled} data-testid="draft-deployment-expand">
 									{draftExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
 								</Button>
 							</CollapsibleTrigger>
@@ -569,12 +556,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 								</p>
 							)}
 						<CollapsibleContent>
-							<ExpandedConfigPanel
-								config={draftRow.config}
-								onChange={patchDraftConfig}
-								providerName={providerName}
-								disabled={disabled}
-							/>
+							<ExpandedConfigPanel config={draftRow.config} onChange={patchDraftConfig} providerName={providerName} disabled={disabled} />
 						</CollapsibleContent>
 					</div>
 				</Collapsible>

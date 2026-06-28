@@ -26,6 +26,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -36,7 +37,7 @@ type BedrockProvider struct {
 	logger                schemas.Logger                // Logger for provider operations
 	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
 	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
-	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle (OpenAI-compatible) requests
+	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
 	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
 	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
 	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
@@ -124,7 +125,9 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 	streamingClient := providerUtils.BuildStreamingHTTPClient(client)
 
-	// fasthttp clients for Bedrock Mantle (OpenAI-compatible endpoint)
+	// fasthttp clients for Bedrock Mantle (shared by OpenAI-compatible and native-Anthropic paths).
+	// ReadTimeout is the shared provider request timeout, not an OpenAI-specific value; oversized
+	// Anthropic responses are handled by PrepareResponseStreaming, not by these static settings.
 	mantleFasthttpClient := &fasthttp.Client{
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
@@ -234,11 +237,18 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, config, region, bedrockSigningService); err != nil {
 			return nil, 0, nil, err
 		}
 	}
 
+	return provider.executeBedrockRequest(req)
+}
+
+// executeBedrockRequest sends an already-built (and authenticated) request via the
+// unary HTTP client, measures latency, and parses a Bedrock error envelope on non-200
+// responses. Used by completeRequest for the bedrock-runtime (Converse) path.
+func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Execute the request and measure latency
 	startTime := time.Now()
 	resp, err := provider.client.Do(req)
@@ -361,7 +371,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, config, region, bedrockSigningService); err != nil {
 			return nil, 0, nil, err
 		}
 	}
@@ -462,7 +472,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
-		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 			return nil, err
 		}
 	}
@@ -522,45 +532,25 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	return resp, nil
 }
 
-// signAWSRequest signs an HTTP request using AWS Signature Version 4.
-// It is used in providers like Bedrock.
-// It sets required headers, calculates the request body hash, and signs the request
-// using the provided AWS credentials.
-// signAWSRequestFromKey is a convenience wrapper around signAWSRequest that reads
-// credentials from a BedrockKeyConfig. When cfg is nil (no explicit key configured),
-// all credential fields are zero-valued, causing signAWSRequest to fall back to the
-// default AWS credential chain (IAM role, env vars, instance profile, etc.).
-func signAWSRequestFromKey(
-	ctx *schemas.BifrostContext,
-	req *http.Request,
-	cfg *schemas.BedrockKeyConfig,
-	region, service string,
-) *schemas.BifrostError {
-	if cfg != nil {
-		return signAWSRequest(ctx, req,
-			cfg.AccessKey, cfg.SecretKey,
-			cfg.SessionToken, cfg.RoleARN,
-			cfg.ExternalID, cfg.RoleSessionName,
-			region, service)
-	}
-	// No config: pass zero SecretVar values so signAWSRequest uses the default chain.
-	return signAWSRequest(ctx, req,
-		schemas.SecretVar{}, schemas.SecretVar{},
-		nil, nil, nil, nil,
-		region, service)
-}
-
 // Returns a BifrostError if signing fails.
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
-	accessKey, secretKey schemas.SecretVar,
-	sessionToken *schemas.SecretVar,
-	roleARN *schemas.SecretVar,
-	externalID *schemas.SecretVar,
-	sessionName *schemas.SecretVar,
+	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
 ) *schemas.BifrostError {
+	var accessKey, secretKey schemas.SecretVar
+	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
+
+	if keyCfg != nil {
+		accessKey = keyCfg.AccessKey
+		secretKey = keyCfg.SecretKey
+		sessionToken = keyCfg.SessionToken
+		roleARN = keyCfg.RoleARN
+		externalID = keyCfg.ExternalID
+		sessionName = keyCfg.RoleSessionName
+	}
+
 	// Set required headers before signing (only if not already set)
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -687,6 +677,52 @@ func signAWSRequest(
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.
 // It retrieves all foundation models available in Amazon Bedrock for a specific key.
+// listMantleModels lists models from the Bedrock Mantle (OpenAI-compatible) /v1/models
+// endpoint, converted to a Bifrost response with the same allow/blacklist/alias gating as
+// the foundation-model path. The bare /v1/models path returns the full mantle catalog
+// (including the mantle-only gpt-5.x / gemma-4 models that ListFoundationModels omits).
+// The request is signed as it is sent (mantleSigV4Headers signs POST and can't be reused
+// for this GET). Best-effort: returns nil on any failure so the foundation-model list is
+// still returned.
+func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
+	mURL := mantleOpenAIURL(region, "", "models")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
+	if err != nil {
+		provider.logger.Warn("failed to build mantle list-models request: %v", err)
+		return nil
+	}
+	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
+	} else if bifrostErr := signAWSRequest(ctx, req, key.BedrockKeyConfig, region, bedrockMantleSigningService); bifrostErr != nil {
+		provider.logger.Warn("failed to sign mantle list-models request: %v", bifrostErr.Error.Message)
+		return nil
+	}
+
+	resp, err := provider.client.Do(req)
+	if err != nil {
+		provider.logger.Warn("mantle list-models request failed: %v", err)
+		return nil
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		provider.logger.Warn("failed to read mantle list-models response: %v", err)
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		provider.logger.Warn("mantle list-models returned status %d: %s", resp.StatusCode, string(responseBody))
+		return nil
+	}
+
+	mantleResponse := &openai.OpenAIListModelsResponse{}
+	if err := sonic.Unmarshal(responseBody, mantleResponse); err != nil {
+		provider.logger.Warn("failed to parse mantle list-models response: %v", err)
+		return nil
+	}
+	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
+}
+
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	config := key.BedrockKeyConfig
@@ -736,7 +772,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
 
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, config, region, bedrockSigningService); err != nil {
 			return nil, err
 		}
 	}
@@ -813,6 +849,22 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil)
+	}
+
+	// Merge in the mantle catalog: ListFoundationModels omits the mantle-only models
+	// (gpt-5.x, gemma-4, ...) served on the OpenAI-compatible endpoint. Same gating, dedup by id.
+	if mantleResponse := provider.listMantleModels(ctx, key, region, request.Unfiltered); mantleResponse != nil {
+		seen := make(map[string]struct{}, len(response.Data))
+		for _, m := range response.Data {
+			seen[m.ID] = struct{}{}
+		}
+		for _, m := range mantleResponse.Data {
+			if _, ok := seen[m.ID]; ok {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			response.Data = append(response.Data, m)
+		}
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
@@ -1069,18 +1121,19 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 }
 
 // ChatCompletion performs a chat completion request to Bedrock's API.
-// It formats the request, sends it to Bedrock, and processes the response.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.chatCompletionViaMantle(ctx, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleChatCompletions(ctx, key, request)
 	}
 
-	// Use centralized Bedrock converter
+	// Use Bedrock Converse API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1090,8 +1143,6 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	// Format the path with proper model identifier
 	path, _ := provider.getModelPathAndRegion(ctx, "converse", request.Model, key)
 
 	// Create the signed request
@@ -1103,7 +1154,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// pool the response
+	// Parse Bedrock Converse API response
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
@@ -1118,8 +1169,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// Override finish reason for structured output
-	// When structured output is used, tool_use is expected but should appear as "stop" to the client
+	// Override finish reason for structured output (Converse API only)
 	if _, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 		if len(bifrostResponse.Choices) > 0 && bifrostResponse.Choices[0].FinishReason != nil {
 			if *bifrostResponse.Choices[0].FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
@@ -1132,12 +1182,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
-	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
-
-	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponse interface{}
 		if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
@@ -1161,17 +1208,19 @@ func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 }
 
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
-// It formats the request, sends it to Bedrock, and processes the streaming response.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse streaming API.
 // Returns a channel for streaming BifrostStreamChunk objects or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.chatCompletionStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleChatCompletionsStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
+	// Use Bedrock Converse streaming API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1183,6 +1232,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	}
 
 	startTime := time.Now()
+
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1256,13 +1306,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
-		var structuredOutputBuilder strings.Builder
-		var isAccumulatingStructuredOutput bool
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
+		var isAccumulatingStructuredOutput bool
+		var structuredOutputBuilder strings.Builder
 
 		for {
-			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
 				return
 			}
@@ -1326,7 +1375,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
-				// Parse the JSON event into our typed structure
+				// Converse API path: parse Bedrock Converse-specific stream events
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
@@ -1474,7 +1523,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 		normalizeUsage()
 
-		// Send final response
+		// Send final chunk with accumulated usage
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, request.Model, 0)
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1488,19 +1537,20 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return responseChan, nil
 }
 
-// Responses performs a chat completion request to Anthropic's API.
-// It formats the request, sends it to Anthropic, and processes the response.
+// Responses performs a responses request to Bedrock's API.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.responsesViaMantle(ctx, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleResponses(ctx, key, request)
 	}
 
-	// Use centralized Bedrock converter
+	// Use Bedrock Converse API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1510,8 +1560,6 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	// Format the path with proper model identifier
 	path, _ := provider.getModelPathAndRegion(ctx, "converse", request.Model, key)
 
 	// Create the signed request
@@ -1523,7 +1571,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// pool the response
+	// Parse Bedrock Converse API response
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
@@ -1568,10 +1616,11 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.responsesStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
+	// Use Bedrock Converse streaming API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1583,6 +1632,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	}
 
 	startTime := time.Now()
+
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1622,7 +1672,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		var streamTrace *BedrockConverseTrace
 		chunkIndex := 0
 
-		// Create stream state for stateful conversions
+		// Create stream state for stateful conversions (used by Converse API path)
 		streamState := acquireBedrockResponsesStreamState()
 		streamState.Model = &request.Model
 		streamState.Ctx = ctx
@@ -1653,7 +1703,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					return
 				}
 				if err == io.EOF {
-					// End of stream - finalize any open items
+					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -1729,7 +1779,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
-				// Parse the JSON event into our typed structure
+				// Converse API path: parse Bedrock Converse-specific stream events
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
@@ -2382,7 +2432,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 	httpReq.ContentLength = int64(len(request.File))
 
 	// Sign request for S3
-	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 		provider.logger.Error("error signing request: %s", err.Error.Message)
 		return nil, err
 	}
@@ -2512,7 +2562,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	// Sign request for S3
-	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); bifrostErr != nil {
+	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -2623,7 +2673,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		}
 
 		// Sign request for S3
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 			lastErr = err
 			continue
 		}
@@ -2721,7 +2771,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		}
 
 		// Sign request for S3
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 			lastErr = err
 			continue
 		}
@@ -2802,7 +2852,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Sign request for S3
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 			lastErr = err
 			continue
 		}
@@ -3008,7 +3058,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Sign request
-	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
@@ -3133,7 +3183,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	}
 
 	// Sign request
-	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); bifrostErr != nil {
+	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -3252,7 +3302,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 	}
 
 	// Sign request for S3
-	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 		provider.logger.Error("failed to sign manifest request: %v", err)
 		return nil
 	}
@@ -3312,7 +3362,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		// Sign request
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 			lastErr = err
 			continue
 		}
@@ -3456,7 +3506,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Sign request
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 			lastErr = err
 			continue
 		}

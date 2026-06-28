@@ -12,6 +12,10 @@ Use it when your safety and data protection policies are managed in Google Cloud
 
 Google owns the Model Armor template. Bifrost owns the gateway enforcement path: it selects when to call Model Armor, sends the relevant text to the template, then blocks or rewrites the Bifrost request/response based on the sanitize result.
 
+<Note>
+  **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
+</Note>
+
 ## When To Use It
 
 Google Model Armor is useful for:

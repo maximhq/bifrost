@@ -289,8 +289,7 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.MCPServer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	vkValue := vk.Value.GetValue()
-	vkServer, ok := h.vkMCPServers[vkValue]
+	vkServer, ok := h.vkMCPServers[vk.Value]
 	if !ok {
 		// Add new server
 		vkServer = server.NewMCPServer(
@@ -299,11 +298,11 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.M
 			server.WithToolCapabilities(true),
 		)
 		server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
-		h.vkMCPServers[vkValue] = vkServer
+		h.vkMCPServers[vk.Value] = vkServer
 	}
 	availableTools, toolFilter := h.fetchToolsForVK(vk)
 	h.syncServer(vkServer, availableTools, toolFilter)
-	h.vkMCPServers[vkValue] = vkServer
+	h.vkMCPServers[vk.Value] = vkServer
 	logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
 	return vkServer
 }

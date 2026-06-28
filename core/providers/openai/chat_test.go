@@ -111,6 +111,9 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	// itself so ParseModelString can strip its prefix from "deepseek/deepseek-v4-pro".
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
 	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
 
 	tests := []struct {
 		name     string
@@ -191,6 +194,20 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			name:     "preserves max for provider-prefixed deepseek-v4",
 			provider: schemas.ModelProvider("deepseek"),
 			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.2",
 			effort:   "max",
 			expected: "max",
 		},
@@ -314,6 +331,9 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
 	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
 
 	tests := []struct {
 		name     string
@@ -390,6 +410,18 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 		{
 			name:     "preserves max for provider-prefixed deepseek-v4",
 			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.2",
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			model:    "zai/glm-5.2",
 			effort:   "max",
 			expected: "max",
 		},
@@ -647,6 +679,73 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	}
 	if got, ok := assistantMessage["reasoning_content"].(string); !ok || got != reasoning {
 		t.Fatalf("expected reasoning_content %q in assistant payload, got %#v", reasoning, assistantMessage["reasoning_content"])
+	}
+}
+
+func TestToOpenAIChatRequest_CerebrasStripsAssistantReasoningContent(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	assistantContent := "The weather in Paris is mild today."
+	userContent := "What is the weather in Paris?"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Cerebras,
+		Model:    "gpt-oss-120b",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
+		t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
+	}
+	if result.Messages[1].OpenAIChatAssistantMessage.Reasoning != nil {
+		t.Fatalf("expected assistant reasoning_content to be stripped for cerebras, got %#v", result.Messages[1].OpenAIChatAssistantMessage.Reasoning)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, bifrostReq), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var jsonMap map[string]interface{}
+	if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled request body: %v", err)
+	}
+
+	messages, ok := jsonMap["messages"].([]interface{})
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
+	}
+	assistantMessage, ok := messages[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected assistant message object, got %#v", messages[1])
+	}
+	if _, ok := assistantMessage["reasoning_content"]; ok {
+		t.Fatalf("expected reasoning_content to be absent from cerebras assistant payload, got %#v", assistantMessage["reasoning_content"])
 	}
 }
 

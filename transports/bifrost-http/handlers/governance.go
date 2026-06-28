@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -143,12 +144,8 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 
 // CreateVirtualKeyRequest represents the request body for creating a virtual key
 type CreateVirtualKeyRequest struct {
-	Name        string `json:"name" validate:"required"`
-	Description string `json:"description,omitempty"`
-	// Value optionally sets the virtual key value. Accepts a literal, an "env.X"/"vault.X" string,
-	// or a SecretVar object. When unset, a value is generated server-side. References resolve to
-	// plaintext while the source is preserved for API responses.
-	Value           *schemas.SecretVar `json:"value,omitempty"`
+	Name            string `json:"name" validate:"required"`
+	Description     string `json:"description,omitempty"`
 	ProviderConfigs []struct {
 		Provider          string                  `json:"provider" validate:"required"`
 		Weight            *float64                `json:"weight,omitempty"`
@@ -1294,20 +1291,12 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
-			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
+			Value:           governance.GenerateVirtualKey(),
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
-		}
-		// If the caller supplied a value (literal or env/vault reference), use it; the SecretVar
-		// resolves the reference and the source round-trips through persistence and API responses.
-		// Only override the generated key when the value resolves to a non-empty plaintext: an
-		// unresolved env/vault reference (e.g. the env var is unset) would otherwise replace the
-		// generated credential with an empty, unusable value.
-		if req.Value.IsSet() && req.Value.GetValue() != "" {
-			vk.Value = *req.Value
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1915,9 +1904,9 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, err
 	}
-	oldValue := vk.Value.GetValue()
-	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
-	if vk.Value.GetValue() == oldValue {
+	oldValue := vk.Value
+	vk.Value = governance.GenerateVirtualKey()
+	if vk.Value == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
@@ -3526,7 +3515,11 @@ func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 // updateProviderGovernance handles PUT /api/governance/providers/{provider_name} - Update provider governance
 func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	var req UpdateProviderGovernanceRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
@@ -3768,7 +3761,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 // deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - removes
 // provider-level governance by deleting the all-models model config for that provider.
 func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
 	if err != nil {
 		if err == configstore.ErrNotFound {
@@ -4675,6 +4672,9 @@ func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *con
 		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
+			if b.CreatedAt.After(start) {
+				start = b.CreatedAt
+			}
 			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
 				VirtualKeyIDs: []string{vk.ID},
 				StartTime:     &start,

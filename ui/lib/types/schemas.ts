@@ -65,8 +65,7 @@ export const _secretVarBase = z.object({
 
 // Extending the base schema
 export const secretVarSchema = Object.assign(_secretVarBase, {
-	required: (message: string) =>
-		_secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
+	required: (message: string) => _secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
 });
 
 // Helper to check if a secretVar field has a value or secret reference
@@ -193,6 +192,41 @@ export const bedrockKeyConfigSchema = z
 		},
 	);
 
+// Bedrock Mantle key config schema (SigV4 credentials; no ARN / batch S3 config)
+export const bedrockMantleKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			// Explicit auth must carry both keys; a region-only config fails at request time.
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			// If either access_key or secret_key is set, both must be set.
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// IAM-role path: both keys empty is valid, but a lone session token cannot sign SigV4.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
 // VLLM key config schema
 export const vllmKeyConfigSchema = z
 	.object({
@@ -303,6 +337,7 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -314,6 +349,14 @@ export const modelProviderKeySchema = z
 		(data) => {
 			// Providers with dedicated config that never need a top-level API key
 			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
+			// a top-level API key when the user explicitly chose the api_key auth method.
+			if (data.bedrock_mantle_key_config) {
+				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
 				return true;
 			}
 			// Azure requires API key only when using api_key auth
@@ -454,7 +497,8 @@ export const proxyConfigSchema = z
 	.refine(
 		(data) =>
 			!(data.type === "http" || data.type === "socks5") ||
-			data.url?.type === "env" || data.url?.type === "vault" ||
+			data.url?.type === "env" ||
+			data.url?.type === "vault" ||
 			(data.url?.value && data.url.value.trim().length > 0),
 		{
 			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",

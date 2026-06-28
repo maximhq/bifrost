@@ -1,1 +1,1 @@
-- fix: include allow_all_keys and blacklisted_models in virtual key hash (closes #4640)
+[fix]: rebuild token usage from denormalized columns in hybrid log list [@G-XD](https://github.com/G-XD)

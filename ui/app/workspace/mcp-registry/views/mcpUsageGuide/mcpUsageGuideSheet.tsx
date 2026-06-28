@@ -13,7 +13,6 @@ import { HARNESSES } from "./harnesses";
 import { PlatformSelect } from "./platformSelect";
 import type { HarnessID, HarnessPlatform, ServerScope, VirtualKeyOption } from "./types";
 import { isClientAllowedForVirtualKey, maskSecret } from "./utils";
-import { resolveVirtualKeyValue } from "@/lib/types/governance";
 
 // Literal value sets driving the URL-persisted enums.
 const HARNESS_IDS = HARNESSES.map((h) => h.id);
@@ -125,12 +124,7 @@ export function MCPUsageGuideSheet() {
 	// ── Render ───────────────────────────────────────────────────────────
 	return (
 		<>
-			<Button type="button"
-				onClick={() => setOpen(true)}
-				data-testid="mcp-usage-guide-trigger"
-				variant="outline"
-				className="h-8"
-			>
+			<Button type="button" onClick={() => setOpen(true)} data-testid="mcp-usage-guide-trigger" variant="outline" className="h-8">
 				<SquareTerminal />
 				<span className="hidden sm:inline">Connect agent</span>
 			</Button>
@@ -196,7 +190,7 @@ export function MCPUsageGuideSheet() {
 										<span className="truncate">{selectedVirtualKey?.name ?? "Search virtual keys"}</span>
 										{selectedVirtualKey && (
 											<span className="text-muted-foreground ml-auto hidden font-mono text-xs sm:inline">
-												{maskSecret(resolveVirtualKeyValue(selectedVirtualKey.value))}
+												{maskSecret(selectedVirtualKey.value)}
 											</span>
 										)}
 									</Button>
@@ -205,7 +199,7 @@ export function MCPUsageGuideSheet() {
 									<div className="flex min-w-0 flex-1 items-center gap-2">
 										<div className="flex min-w-0 flex-col">
 											<span className="truncate font-medium">{option.label}</span>
-											<span className="text-muted-foreground text-xs">{maskSecret(resolveVirtualKeyValue(option.virtualKey.value))}</span>
+											<span className="text-muted-foreground text-xs">{maskSecret(option.virtualKey.value)}</span>
 										</div>
 										{selectedVirtualKey?.id === option.virtualKey.id && <Check className="ml-auto size-4 text-green-600" />}
 									</div>

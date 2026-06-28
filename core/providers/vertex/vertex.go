@@ -402,6 +402,11 @@ func inlineRemoteURLSources(ctx context.Context, request *schemas.BifrostChatReq
 	if request == nil || request.Input == nil {
 		return nil
 	}
+	// When the caller is bypassing the converter via a pre-built raw body,
+	// the request struct isn't what gets sent — skip the fetch.
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		return nil
+	}
 	for mi := range request.Input {
 		msg := &request.Input[mi]
 		if msg.Content == nil || msg.Content.ContentBlocks == nil {
@@ -448,53 +453,120 @@ func inlineRemoteURLSources(ctx context.Context, request *schemas.BifrostChatReq
 	return nil
 }
 
+// inlineDocumentURLsResponses is the Responses-API analogue of inlineDocumentURLs.
+// File blocks live on ResponsesMessageContentBlock.ResponsesInputMessageContentBlockFile
+// rather than the chat ContentBlock.File, so this walks the responses-shape input.
+func inlineDocumentURLsResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) error {
+	if request == nil || request.Input == nil {
+		return nil
+	}
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		return nil
+	}
+	for mi := range request.Input {
+		msg := &request.Input[mi]
+		if msg.Content == nil || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for bi := range msg.Content.ContentBlocks {
+			block := &msg.Content.ContentBlocks[bi]
+
+			// Inline url-source files.
+			if f := block.ResponsesInputMessageContentBlockFile; f != nil && f.FileURL != nil && *f.FileURL != "" {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *f.FileURL)
+				if err != nil {
+					return err
+				}
+				f.FileData = &encoded
+				if mediaType != "" && f.FileType == nil {
+					f.FileType = &mediaType
+				}
+				f.FileURL = nil
+			}
+
+			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
+			// accepts base64 image sources only. Skip data: URIs (already inline).
+			if img := block.ResponsesInputMessageContentBlockImage; img != nil && img.ImageURL != nil && *img.ImageURL != "" && !strings.HasPrefix(*img.ImageURL, "data:") {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *img.ImageURL)
+				if err != nil {
+					return err
+				}
+				if mediaType != "" {
+					dataURI := "data:" + mediaType + ";base64," + encoded
+					img.ImageURL = &dataURI
+				} else {
+					// Content-Type header absent; sniff the media type from the
+					// fetched bytes so we never emit a malformed "data:;base64,..."
+					// URI, which Anthropic-on-Vertex rejects.
+					sanitized, sErr := schemas.SanitizeImageURL(encoded)
+					if sErr != nil {
+						return sErr
+					}
+					img.ImageURL = &sanitized
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // ChatCompletion performs a chat completion request to the Vertex API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			// Format messages for Vertex API, preserving key order for prompt caching
-			var rawBody []byte
-			var extraParams map[string]interface{}
-			var err error
+	var jsonBody []byte
+	var bifrostErr *schemas.BifrostError
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		// Anthropic-on-Vertex doesn't accept URL-source document or image blocks.
+		// Inline any URL documents/images to base64 before the converter runs.
+		if err := inlineRemoteURLSources(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex/claude", err)
+		}
+		jsonBody, bifrostErr = anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
+	} else {
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				// Format messages for Vertex API, preserving key order for prompt caching
+				var rawBody []byte
+				var extraParams map[string]interface{}
+				var err error
 
-			if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-				// Anthropic-on-Vertex doesn't accept URL-source document or image blocks.
-				// Inline any URL documents/images to base64 before the converter runs.
-				if err := inlineRemoteURLSources(ctx, request); err != nil {
-					return nil, fmt.Errorf("failed to inline remote URL sources for vertex/claude: %w", err)
-				}
-				// Use centralized Anthropic converter
-				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
-				if convErr != nil {
-					return nil, convErr
-				}
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				// Add provider-aware beta headers for Vertex
-				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
-				// Marshal to JSON bytes, preserving struct field order
-				rawBody, err = providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				// Add anthropic_version if not present (using sjson to preserve order)
-				if !providerUtils.JSONFieldExists(rawBody, "anthropic_version") {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
+				if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+					reqBody, err := gemini.ToGeminiChatCompletionRequest(ctx, request)
 					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
+						return nil, err
 					}
-				}
-				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
+					if reqBody == nil {
+						return nil, fmt.Errorf("chat completion input is not provided")
+					}
+					extraParams = reqBody.GetExtraParams()
+					// Strip unsupported fields for Vertex Gemini
+					stripVertexGeminiUnsupportedFields(reqBody)
+					// Marshal to JSON bytes
+					rawBody, err = providerUtils.MarshalSorted(reqBody)
 					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
+						return nil, fmt.Errorf("failed to marshal request body: %w", err)
+					}
+				} else {
+					// Use centralized OpenAI converter for non-Claude models
+					reqBody := openai.ToOpenAIChatRequest(ctx, request)
+					if reqBody == nil {
+						return nil, fmt.Errorf("chat completion input is not provided")
+					}
+					extraParams = reqBody.GetExtraParams()
+					// Marshal to JSON bytes
+					rawBody, err = providerUtils.MarshalSorted(reqBody)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal request body: %w", err)
 					}
 				}
 				// Remove model field (it's in URL for Vertex)
@@ -527,19 +599,15 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				extraParams = reqBody.GetExtraParams()
 				// Marshal to JSON bytes
 				rawBody, err = providerUtils.MarshalSorted(reqBody)
+				// Remove region field if present
+				rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
 				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
+					return nil, fmt.Errorf("failed to delete region field: %w", err)
 				}
-			}
-
-			// Remove region field if present
-			rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
-			if err != nil {
-				return nil, fmt.Errorf("failed to delete region field: %w", err)
-			}
-			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
-		},
-	)
+				return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+			},
+		)
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -781,62 +849,20 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	}
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Use Anthropic-style streaming for Claude models
-		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				var extraParams map[string]interface{}
-				// Anthropic-on-Vertex doesn't accept URL-source document or image blocks.
-				// Inline any URL documents/images to base64 before the converter runs.
-				if err := inlineRemoteURLSources(ctx, request); err != nil {
-					return nil, fmt.Errorf("failed to inline remote URL sources for vertex/claude: %w", err)
-				}
-				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
-				if convErr != nil {
-					return nil, convErr
-				}
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				reqBody.Stream = new(true)
-				// Add provider-aware beta headers for Vertex
-				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
-
-				// Marshal to JSON bytes, preserving struct field order for prompt caching
-				rawBody, err := providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-
-				// Add anthropic_version if not present (using sjson to preserve order)
-				if !providerUtils.JSONFieldExists(rawBody, "anthropic_version") {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
-					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
-					}
-				}
-				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
-					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
-					}
-				}
-
-				// Remove model and region fields (using sjson to preserve order)
-				rawBody, err = providerUtils.DeleteJSONField(rawBody, "model")
-				if err != nil {
-					return nil, fmt.Errorf("failed to delete model field: %w", err)
-				}
-				rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
-				if err != nil {
-					return nil, fmt.Errorf("failed to delete region field: %w", err)
-				}
-				return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
-			},
-		)
+		// Use Anthropic-style streaming for Claude models.
+		// Anthropic-on-Vertex doesn't accept URL-source document or image blocks; inline first.
+		if err := inlineRemoteURLSources(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex/claude", err)
+		}
+		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			IsStreaming:               true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -892,6 +918,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
 			postHookRunner,
+			nil,
 			nil,
 			provider.logger,
 			postHookSpanFinalizer,
@@ -1038,6 +1065,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			nil,
 			nil,
 			nil,
+			nil,
 			provider.logger,
 			postHookSpanFinalizer,
 		)
@@ -1047,7 +1075,20 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+		// Inline any URL documents to base64 before the converter runs.
+		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
+		}
+		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1338,7 +1379,21 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
 
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+		// Inline any URL documents to base64 before the converter runs.
+		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
+		}
+		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			IsStreaming:               true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1377,6 +1432,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			postHookRunner,
+			nil,
 			nil,
 			provider.logger,
 			postHookSpanFinalizer,
@@ -4006,7 +4062,21 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	)
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, true, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+		// Inline any URL documents to base64 before the converter runs.
+		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
+		}
+		jsonBody, bifrostErr = anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			IsCountTokens:             true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -4497,7 +4567,11 @@ func (provider *VertexProvider) PassthroughStream(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+		// Request failed before the first response byte (server closed an idle/pooled connection,
+		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
+		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
+		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err)
 	}
 
 	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
