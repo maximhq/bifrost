@@ -429,6 +429,47 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 		}
 	}
 
+	if updateKey.BedrockMantleKeyConfig != nil && oldRedactedKey.BedrockMantleKeyConfig != nil && oldRawKey.BedrockMantleKeyConfig != nil {
+		if updateKey.BedrockMantleKeyConfig.AccessKey.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.AccessKey.Equals(&oldRedactedKey.BedrockMantleKeyConfig.AccessKey) {
+			mergedKey.BedrockMantleKeyConfig.AccessKey = oldRawKey.BedrockMantleKeyConfig.AccessKey
+		}
+		if updateKey.BedrockMantleKeyConfig.SecretKey.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.SecretKey.Equals(&oldRedactedKey.BedrockMantleKeyConfig.SecretKey) {
+			mergedKey.BedrockMantleKeyConfig.SecretKey = oldRawKey.BedrockMantleKeyConfig.SecretKey
+		}
+		if updateKey.BedrockMantleKeyConfig.SessionToken != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.SessionToken != nil &&
+			updateKey.BedrockMantleKeyConfig.SessionToken.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.SessionToken.Equals(oldRedactedKey.BedrockMantleKeyConfig.SessionToken) {
+			mergedKey.BedrockMantleKeyConfig.SessionToken = oldRawKey.BedrockMantleKeyConfig.SessionToken
+		}
+		if updateKey.BedrockMantleKeyConfig.Region != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.Region != nil &&
+			updateKey.BedrockMantleKeyConfig.Region.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.Region.Equals(oldRedactedKey.BedrockMantleKeyConfig.Region) {
+			mergedKey.BedrockMantleKeyConfig.Region = oldRawKey.BedrockMantleKeyConfig.Region
+		}
+		if updateKey.BedrockMantleKeyConfig.RoleARN != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.RoleARN != nil &&
+			updateKey.BedrockMantleKeyConfig.RoleARN.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.RoleARN.Equals(oldRedactedKey.BedrockMantleKeyConfig.RoleARN) {
+			mergedKey.BedrockMantleKeyConfig.RoleARN = oldRawKey.BedrockMantleKeyConfig.RoleARN
+		}
+		if updateKey.BedrockMantleKeyConfig.ExternalID != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.ExternalID != nil &&
+			updateKey.BedrockMantleKeyConfig.ExternalID.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.ExternalID.Equals(oldRedactedKey.BedrockMantleKeyConfig.ExternalID) {
+			mergedKey.BedrockMantleKeyConfig.ExternalID = oldRawKey.BedrockMantleKeyConfig.ExternalID
+		}
+		if updateKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
+			updateKey.BedrockMantleKeyConfig.RoleSessionName.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockMantleKeyConfig.RoleSessionName) {
+			mergedKey.BedrockMantleKeyConfig.RoleSessionName = oldRawKey.BedrockMantleKeyConfig.RoleSessionName
+		}
+	}
+
 	if updateKey.VLLMKeyConfig != nil && oldRedactedKey.VLLMKeyConfig != nil && oldRawKey.VLLMKeyConfig != nil {
 		if updateKey.VLLMKeyConfig.URL.IsRedacted() &&
 			updateKey.VLLMKeyConfig.URL.Equals(&oldRedactedKey.VLLMKeyConfig.URL) {
