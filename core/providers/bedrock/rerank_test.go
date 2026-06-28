@@ -262,3 +262,40 @@ func TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsage(t *te
 	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
 	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
 }
+
+// TestBedrockRerankResponseToBifrostRerankResponseUsageIsolated confirms the
+// converter sets only the synthesized query count and no spurious token fields,
+// so the unconditional Usage assignment has nothing to clobber. The Bedrock
+// header-token backfill (#3917) is the only path that adds PromptTokens, and it
+// merges in (guarded on PromptTokens == 0) rather than replacing Usage.
+func TestBedrockRerankResponseToBifrostRerankResponseUsageIsolated(t *testing.T) {
+	response := (&BedrockRerankResponse{
+		Results: []BedrockRerankResult{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+	}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	// Only the per-query count is synthesized; token fields stay zero so a later
+	// header-token backfill can populate them without being overwritten.
+	assert.Equal(t, 0, response.Usage.PromptTokens)
+	assert.Equal(t, 0, response.Usage.CompletionTokens)
+	assert.Equal(t, 0, response.Usage.TotalTokens)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
+}
+
+// TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsageEmptyResults
+// confirms one billable query is recorded even when the response carries no
+// results, since Bedrock bills per call regardless of result count.
+func TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsageEmptyResults(t *testing.T) {
+	response := (&BedrockRerankResponse{}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
+}

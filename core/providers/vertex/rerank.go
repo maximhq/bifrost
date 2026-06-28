@@ -265,7 +265,7 @@ func (response *VertexRankResponse) ToBifrostRerankResponse(documents []schemas.
 		Results: results,
 		Usage: &schemas.BifrostLLMUsage{
 			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-				NumSearchQueries: schemas.Ptr(1),
+				NumSearchQueries: new(1),
 			},
 		},
 	}, nil

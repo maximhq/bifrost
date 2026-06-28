@@ -128,7 +128,7 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 	// tokens are backfilled separately from response headers (#3917).
 	bifrostResponse.Usage = &schemas.BifrostLLMUsage{
 		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: schemas.Ptr(1),
+			NumSearchQueries: new(1),
 		},
 	}
 
