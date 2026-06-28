@@ -261,6 +261,92 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 		}
 	})
 }
+// TestResponsesMessageToolSearchCallMarshal verifies the round-trip wire format
+
+// for tool_search_call items. OpenAI sends arguments as a JSON object; after
+// Bifrost normalizes them into a *string on unmarshal, MarshalJSON must expand
+// them back to an object so the client receives the original wire format.
+func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
+	msgType := ResponsesMessageTypeToolSearchCall
+
+	t.Run("completed frame marshals arguments as json object", func(t *testing.T) {
+		args := `{"query":"observability","limit":10}`
+		msg := ResponsesMessage{
+			Type: &msgType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call message: %v", err)
+		}
+		// arguments must be a JSON object, not a quoted string
+		if strings.Contains(string(encoded), `"arguments":"`) {
+			t.Fatalf("expected arguments as object, got string form: %s", encoded)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{"query":"observability","limit":10}`) {
+			t.Fatalf("expected arguments object in output, got: %s", encoded)
+		}
+	})
+
+	t.Run("in_progress empty-object frame marshals as empty json object", func(t *testing.T) {
+		args := `{}`
+		msg := ResponsesMessage{
+			Type: &msgType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal in_progress tool_search_call: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{}`) {
+			t.Fatalf("expected empty arguments object, got: %s", encoded)
+		}
+	})
+
+	t.Run("full round-trip from raw openai frame", func(t *testing.T) {
+		raw := []byte(`{"id":"tsc_abc","type":"tool_search_call","status":"completed","call_id":"call_xyz","arguments":{"query":"sentry grafana","limit":10}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal tool_search_call: %v", err)
+		}
+		if msg.Arguments == nil || *msg.Arguments != `{"query":"sentry grafana","limit":10}` {
+			t.Fatalf("unexpected arguments after unmarshal: %v", msg.Arguments)
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call after round-trip: %v", err)
+		}
+		if strings.Contains(string(encoded), `"arguments":"`) {
+			t.Fatalf("expected object form after round-trip, got string: %s", encoded)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{"`) {
+			t.Fatalf("expected arguments object after round-trip, got: %s", encoded)
+		}
+	})
+
+	t.Run("function_call still marshals arguments as json string", func(t *testing.T) {
+		fcType := ResponsesMessageTypeFunctionCall
+		args := `{"param":"value"}`
+		msg := ResponsesMessage{
+			Type: &fcType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal function_call message: %v", err)
+		}
+		// function_call arguments must remain a JSON string
+		if !strings.Contains(string(encoded), `"arguments":"{`) {
+			t.Fatalf("expected function_call arguments as string, got: %s", encoded)
+		}
+	})
+}
 
 // TestResponsesMessagePreservesAdditionalTools verifies that codex
 // `additional_tools` input items (sent for code-mode models such as

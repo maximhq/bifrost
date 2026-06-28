@@ -1061,6 +1061,7 @@ const (
 	ResponsesMessageTypeComputerCallOutput   ResponsesMessageType = "computer_call_output"
 	ResponsesMessageTypeWebSearchCall        ResponsesMessageType = "web_search_call"
 	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
+	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
@@ -1220,6 +1221,49 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 		return str
 	}
 	return string(raw)
+}
+
+// MarshalJSON preserves the OpenAI wire-format distinction for tool-call
+// arguments: function_call emits a JSON string, while tool_search_call emits a
+// JSON object per the OpenAI Responses API spec. All other message types (which
+// carry no arguments) are marshaled as usual.
+func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	type Alias ResponsesMessage
+
+	clone := m
+	var argsValue interface{}
+
+	if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Arguments != nil {
+		// Suppress Arguments from the embedded struct so it doesn't appear
+		// twice; we inject it below with the correct JSON type.
+		toolCopy := *clone.ResponsesToolMessage
+		toolCopy.Arguments = nil
+		clone.ResponsesToolMessage = &toolCopy
+
+		argsStr := *m.ResponsesToolMessage.Arguments
+		if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall {
+			// tool_search_call.arguments must be a JSON object on the wire.
+			trimmed := strings.TrimSpace(argsStr)
+			if trimmed != "" && json.Valid([]byte(trimmed)) {
+				argsValue = json.RawMessage(trimmed)
+			} else {
+				argsValue = json.RawMessage("{}")
+			}
+		} else {
+			// function_call and all other tool types: emit as a JSON string.
+			argsValue = argsStr
+		}
+	}
+
+	aux := struct {
+		Arguments interface{} `json:"arguments,omitempty"`
+		*Alias
+	}{
+		Arguments: argsValue,
+		Alias:     (*Alias)(&clone),
+	}
+
+	return MarshalSorted(aux)
 }
 
 type ResponsesMessageRoleType string
