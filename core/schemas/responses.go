@@ -897,6 +897,7 @@ const (
 	ResponsesMessageTypeWebSearchCall        ResponsesMessageType = "web_search_call"
 	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
 	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
+	ResponsesMessageTypeToolSearchOutput     ResponsesMessageType = "tool_search_output"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
@@ -995,6 +996,7 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 // arguments: function_call emits a JSON string, while tool_search_call emits a
 // JSON object per the OpenAI Responses API spec. All other message types (which
 // carry no arguments) are marshaled as usual.
+// tool_search_output items also require execution (same as tool_search_call).
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	type Alias ResponsesMessage
 
@@ -1002,32 +1004,36 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	var argsValue interface{}
 	var execValue *string
 
-	isToolSearch := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall
+	isToolSearchCall := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall
+	isToolSearchOutput := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput
+	needsExecution := isToolSearchCall || isToolSearchOutput
 
-	if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Arguments != nil {
-		// Suppress Arguments from the embedded struct so it doesn't appear
-		// twice; we inject it below with the correct JSON type.
+	if m.ResponsesToolMessage != nil {
 		toolCopy := *clone.ResponsesToolMessage
-		toolCopy.Arguments = nil
 
-		argsStr := *m.ResponsesToolMessage.Arguments
-		if isToolSearch {
-			// tool_search_call.arguments must be a JSON object on the wire.
-			trimmed := strings.TrimSpace(argsStr)
-			if trimmed != "" && json.Valid([]byte(trimmed)) {
-				argsValue = json.RawMessage(trimmed)
+		if toolCopy.Arguments != nil {
+			// Suppress Arguments from the embedded struct so it doesn't appear
+			// twice; we inject it below with the correct JSON type.
+			toolCopy.Arguments = nil
+			argsStr := *m.ResponsesToolMessage.Arguments
+			if isToolSearchCall {
+				// tool_search_call.arguments must be a JSON object on the wire.
+				trimmed := strings.TrimSpace(argsStr)
+				if trimmed != "" && json.Valid([]byte(trimmed)) {
+					argsValue = json.RawMessage(trimmed)
+				} else {
+					argsValue = json.RawMessage("{}")
+				}
 			} else {
-				argsValue = json.RawMessage("{}")
+				// function_call and all other tool types: emit as a JSON string.
+				argsValue = argsStr
 			}
-		} else {
-			// function_call and all other tool types: emit as a JSON string.
-			argsValue = argsStr
 		}
 
-		if isToolSearch {
-			// Codex requires execution to always be present on tool_search_call.
-			// Suppress from toolCopy to avoid double-emit via the Alias, then
-			// inject via aux struct, defaulting to "client" when not set.
+		if needsExecution {
+			// Codex requires execution to always be present on tool_search_call and
+			// tool_search_output. Suppress from toolCopy to avoid double-emit via the
+			// Alias, then inject via aux struct, defaulting to "client" when not set.
 			toolCopy.Execution = nil
 			if m.ResponsesToolMessage.Execution != nil {
 				execValue = m.ResponsesToolMessage.Execution
@@ -1231,6 +1237,12 @@ type ResponsesToolMessage struct {
 	Execution *string                           `json:"execution,omitempty"` // tool_search_call execution mode (e.g. "client")
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
+	// Tools holds the discovered tools array for tool_search_output items.
+	// Preserved as raw JSON so nested "type" fields (e.g. "namespace") and
+	// sub-tool arrays survive the Bifrost round-trip unchanged.
+	// Uses []ResponsesTool so each entry's "type" field round-trips via the
+	// existing ResponsesTool marshal/unmarshal pipeline (namespace, function, etc.).
+	Tools []ResponsesTool `json:"tools,omitempty"`
 
 	// Tool calls and outputs
 	*ResponsesFileSearchToolCall

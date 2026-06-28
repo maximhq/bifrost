@@ -422,3 +422,119 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 		t.Fatalf("expected encoded message to contain phase, got %s", encoded)
 	}
 }
+
+// TestResponsesMessageToolSearchOutputRoundTrip verifies that tool_search_output
+// items survive a Bifrost unmarshal → marshal round-trip with the tools array
+// (including the "type" field on each entry) preserved verbatim. This covers the
+// bug reported in GitHub issue #4713 where Bifrost dropped tools[*].type on the
+// inbound request leg.
+func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		raw         string
+		wantFields  []string
+		wantAbsent  []string
+	}{
+		{
+			name: "namespace tool type is preserved",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-1",
+				"tools": [
+					{
+						"type": "namespace",
+						"name": "mcp__codexself",
+						"description": "Codex self-tools",
+						"tools": [
+							{"type": "function", "name": "codex_reply", "description": "Reply with a message"}
+						]
+					}
+				]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-1"`,
+				`"type":"namespace"`,
+				`"name":"mcp__codexself"`,
+				`"type":"function"`,
+				`"name":"codex_reply"`,
+			},
+		},
+		{
+			name: "multiple tools with different types are preserved",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-2",
+				"tools": [
+					{"type": "namespace", "name": "mcp__tools", "tools": []},
+					{"type": "function", "name": "shell", "description": "Run shell commands"}
+				]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"type":"namespace"`,
+				`"name":"mcp__tools"`,
+				`"type":"function"`,
+				`"name":"shell"`,
+			},
+		},
+		{
+			name: "empty tools array round-trips cleanly",
+			raw:  `{"type":"tool_search_output","call_id":"search-3","tools":[]}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-3"`,
+			},
+		},
+		{
+			name: "tool_search_output emits execution field (codex requires it)",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-4",
+				"tools": [{"type": "function", "name": "shell"}]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"execution":"client"`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var msg ResponsesMessage
+			if err := Unmarshal([]byte(tc.raw), &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			// Verify the type constant parsed correctly.
+			if msg.Type == nil || *msg.Type != ResponsesMessageTypeToolSearchOutput {
+				t.Fatalf("expected type tool_search_output, got %v", msg.Type)
+			}
+
+			// Tools must be non-nil for any non-empty tools array.
+			// (empty-array case is allowed to be nil or empty slice after round-trip)
+
+			encoded, err := MarshalSorted(msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(encoded)
+
+			for _, want := range tc.wantFields {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q in encoded output:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("unexpected %q present in encoded output:\n%s", absent, got)
+				}
+			}
+		})
+	}
+}
