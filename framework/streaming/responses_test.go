@@ -405,3 +405,65 @@ func TestDeepCopyResponsesStreamResponsePreservesAllFields(t *testing.T) {
 		t.Errorf("Item.Phase aliased original: got %q", *copied.Item.Phase)
 	}
 }
+
+func TestDeepCopyResponsesStreamResponsePreservesToolSearchFields(t *testing.T) {
+	toolSearchType := schemas.ResponsesMessageTypeToolSearchOutput
+	const wantNamespace = "mcp__codexself"
+	const wantExecution = "client"
+	namespace := wantNamespace
+	execution := wantExecution
+	functionName := "codex_reply"
+
+	original := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		Item: &schemas.ResponsesMessage{
+			Type: &toolSearchType,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Namespace: &namespace,
+				Execution: &execution,
+				Tools: []schemas.ResponsesTool{
+					{
+						Type: schemas.ResponsesToolType("namespace"),
+						Name: schemas.Ptr(namespace),
+						ResponsesToolNamespace: &schemas.ResponsesToolNamespace{
+							Tools: []schemas.ResponsesTool{
+								{
+									Type: schemas.ResponsesToolType("function"),
+									Name: schemas.Ptr(functionName),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	copied := deepCopyResponsesStreamResponse(original)
+	if copied == nil || copied.Item == nil || copied.Item.ResponsesToolMessage == nil {
+		t.Fatal("expected non-nil deep copy with tool message")
+	}
+	if copied.Item.ResponsesToolMessage.Namespace == nil || *copied.Item.ResponsesToolMessage.Namespace != wantNamespace {
+		t.Fatalf("Namespace: want %q, got %#v", wantNamespace, copied.Item.ResponsesToolMessage.Namespace)
+	}
+	if copied.Item.ResponsesToolMessage.Execution == nil || *copied.Item.ResponsesToolMessage.Execution != wantExecution {
+		t.Fatalf("Execution: want %q, got %#v", wantExecution, copied.Item.ResponsesToolMessage.Execution)
+	}
+	if len(copied.Item.ResponsesToolMessage.Tools) != 1 || copied.Item.ResponsesToolMessage.Tools[0].Type != schemas.ResponsesToolType("namespace") {
+		t.Fatalf("Tools: unexpected copy %#v", copied.Item.ResponsesToolMessage.Tools)
+	}
+
+	*original.Item.ResponsesToolMessage.Namespace = "mutated-namespace"
+	*original.Item.ResponsesToolMessage.Execution = "server"
+	original.Item.ResponsesToolMessage.Tools[0].Type = schemas.ResponsesToolType("mutated")
+
+	if *copied.Item.ResponsesToolMessage.Namespace != wantNamespace {
+		t.Fatalf("Namespace aliased original: got %q", *copied.Item.ResponsesToolMessage.Namespace)
+	}
+	if *copied.Item.ResponsesToolMessage.Execution != wantExecution {
+		t.Fatalf("Execution aliased original: got %q", *copied.Item.ResponsesToolMessage.Execution)
+	}
+	if copied.Item.ResponsesToolMessage.Tools[0].Type != schemas.ResponsesToolType("namespace") {
+		t.Fatalf("Tools aliased original: got %#v", copied.Item.ResponsesToolMessage.Tools)
+	}
+}

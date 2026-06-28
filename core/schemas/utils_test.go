@@ -50,3 +50,56 @@ func TestSanitizeImageURLDataURLUnaffectedByAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, dataURL, got)
 }
+
+func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
+	t.Parallel()
+
+	msgType := ResponsesMessageTypeToolSearchOutput
+	callID := "search-1"
+	const wantNamespace = "mcp__codexself"
+	const wantExecution = "client"
+	namespace := wantNamespace
+	execution := wantExecution
+	functionName := "codex_reply"
+
+	original := ResponsesMessage{
+		Type: &msgType,
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID:    &callID,
+			Namespace: &namespace,
+			Execution: &execution,
+			Tools: []ResponsesTool{
+				{
+					Type: ResponsesToolType("namespace"),
+					Name: Ptr(namespace),
+					ResponsesToolNamespace: &ResponsesToolNamespace{
+						Tools: []ResponsesTool{
+							{
+								Type: ResponsesToolType("function"),
+								Name: Ptr(functionName),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	require.NotNil(t, copied.ResponsesToolMessage)
+	require.NotNil(t, copied.ResponsesToolMessage.Namespace)
+	require.NotNil(t, copied.ResponsesToolMessage.Execution)
+	require.Len(t, copied.ResponsesToolMessage.Tools, 1)
+
+	assert.Equal(t, wantNamespace, *copied.ResponsesToolMessage.Namespace)
+	assert.Equal(t, wantExecution, *copied.ResponsesToolMessage.Execution)
+	assert.Equal(t, ResponsesToolType("namespace"), copied.ResponsesToolMessage.Tools[0].Type)
+
+	*original.ResponsesToolMessage.Namespace = "mutated-namespace"
+	*original.ResponsesToolMessage.Execution = "server"
+	original.ResponsesToolMessage.Tools[0].Type = ResponsesToolType("mutated")
+
+	assert.Equal(t, wantNamespace, *copied.ResponsesToolMessage.Namespace)
+	assert.Equal(t, wantExecution, *copied.ResponsesToolMessage.Execution)
+	assert.Equal(t, ResponsesToolType("namespace"), copied.ResponsesToolMessage.Tools[0].Type)
+}

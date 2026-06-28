@@ -1312,14 +1312,31 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Name = &copyName
 		}
 
+		if original.ResponsesToolMessage.Namespace != nil {
+			copyNamespace := *original.ResponsesToolMessage.Namespace
+			copy.ResponsesToolMessage.Namespace = &copyNamespace
+		}
+
 		if original.ResponsesToolMessage.Arguments != nil {
 			copyArguments := *original.ResponsesToolMessage.Arguments
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
 
+		if original.ResponsesToolMessage.Execution != nil {
+			copyExecution := *original.ResponsesToolMessage.Execution
+			copy.ResponsesToolMessage.Execution = &copyExecution
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
 			copyError := *original.ResponsesToolMessage.Error
 			copy.ResponsesToolMessage.Error = &copyError
+		}
+
+		if original.ResponsesToolMessage.Tools != nil {
+			copy.ResponsesToolMessage.Tools = make([]ResponsesTool, len(original.ResponsesToolMessage.Tools))
+			for i, tool := range original.ResponsesToolMessage.Tools {
+				copy.ResponsesToolMessage.Tools[i] = tool
+			}
 		}
 
 		// Deep copy Output
