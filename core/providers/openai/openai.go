@@ -1445,7 +1445,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
-	if provider.disableStore {
+	if provider.disableStore || IsChatGPTPassthrough(ctx) {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
@@ -1628,7 +1628,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
-	if provider.disableStore {
+	if provider.disableStore || IsChatGPTPassthrough(ctx) {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
