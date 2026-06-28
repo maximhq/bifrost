@@ -187,3 +187,71 @@ tests/cmd/seedvks/seedvks
 
 # routing harness ledgers (local run journals, never committed)
 tests/e2e/api/routing/ledger-*
+
+
+# Build artifacts
+*/build/
+*.so
+*.dll
+*.dylib
+
+# Go build cache
+*.exe
+*.exe~
+*.test
+*.out
+
+# Dependency directories
+vendor/
+
+reports/*
+!reports/.keep
+
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# build output
+ui/.next/
+ui/out/
+
+# production
+ui/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+
+# auto-generated TanStack Router route tree
+ui/app/routeTree.gen.ts
+
+
+bifrost-migration-cli
+
+tests/e2e/clis/reports
