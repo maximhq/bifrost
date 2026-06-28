@@ -96,7 +96,7 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 	// types and leak into the web-search pricing path. An explicit
 	// search_context_cost_per_query value always wins.
 	if p.Mode == "rerank" && p.SearchContextCostPerQuery == nil && raw.InputCostPerQuery != nil {
-		p.SearchContextCostPerQuery = raw.InputCostPerQuery
+		p.SearchContextCostPerQuery = schemas.Ptr(*raw.InputCostPerQuery)
 	}
 	return nil
 }

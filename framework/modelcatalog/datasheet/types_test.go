@@ -26,7 +26,7 @@ func TestEntryUnmarshalInputCostPerQuery(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, entry.SearchContextCostPerQuery)
-	assert.Equal(t, 0.002, *entry.SearchContextCostPerQuery)
+	assert.InDelta(t, 0.002, *entry.SearchContextCostPerQuery, 1e-9)
 }
 
 // TestEntryUnmarshalInputCostPerQueryIgnoredForNonRerankModes verifies that
@@ -60,5 +60,5 @@ func TestEntryUnmarshalTieredSearchContextCostTakesPrecedence(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, entry.SearchContextCostPerQuery)
-	assert.Equal(t, 0.01, *entry.SearchContextCostPerQuery)
+	assert.InDelta(t, 0.01, *entry.SearchContextCostPerQuery, 1e-9)
 }
