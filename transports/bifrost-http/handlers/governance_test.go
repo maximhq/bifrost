@@ -232,7 +232,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		body string
 		want string
 	}{
-		{name: "unknown field", body: strings.TrimSuffix(validBody, "}") + `,"extra":true}`, want: "unknown field"},
+		{name: "unknown field", body: strings.TrimSuffix(validBody, "}") + `,"extra":true}`, want: "Invalid request payload"},
 		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
