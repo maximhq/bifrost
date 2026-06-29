@@ -1,2 +1,0 @@
-- fix: rebuild token_usage from denormalized columns in hybrid log list (thanks [@G-XD](https://github.com/G-XD)!)
-- chore: upgraded core to v1.6.1
