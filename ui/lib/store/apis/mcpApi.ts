@@ -26,6 +26,7 @@ export const mcpApi = baseApi.injectEndpoints({
 					...(params?.limit !== undefined && { limit: params.limit }),
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
+					...(params?.server && { server: params.server }),
 				},
 			}),
 			providesTags: ["MCPClients"],
