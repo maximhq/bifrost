@@ -185,6 +185,13 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
+	// Sound-effects models hit a different upstream API (/v1/sound-generation) with
+	// no voice. Dispatch internally so they ride the existing speech request type
+	// (and thus the existing virtual-key governance keyed on provider+model).
+	if schemas.IsElevenlabsSoundModelFamily(ctx, request.Model) {
+		return provider.soundGeneration(ctx, key, request)
+	}
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

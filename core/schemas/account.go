@@ -449,6 +449,15 @@ func IsOpenAIModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyOpenAI
 }
 
+// IsElevenlabsSoundModelFamily reports whether the current attempt resolves to
+// an ElevenLabs sound-effects (text-to-sound) model. It honors aliases by
+// resolving the canonical model name first, so an alias whose ModelName/ModelID
+// is a sound model is detected the same as a raw model id. See
+// IsAnthropicModelFamily for usage notes.
+func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
+	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
