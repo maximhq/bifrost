@@ -22,7 +22,7 @@ import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutat
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -125,7 +125,9 @@ interface MCPClientsTableProps {
 	refetch?: () => void;
 	search: string;
 	debouncedSearch: string;
+	server: string;
 	onSearchChange: (value: string) => void;
+	onServerFilterClear: () => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -137,7 +139,9 @@ export default function MCPClientsTable({
 	refetch,
 	search,
 	debouncedSearch,
+	server,
 	onSearchChange,
+	onServerFilterClear,
 	offset,
 	limit,
 	onOffsetChange,
@@ -286,7 +290,7 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const hasActiveFilters = debouncedSearch;
+	const hasActiveFilters = debouncedSearch || server;
 
 	// True empty state: no servers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -372,6 +376,18 @@ export default function MCPClientsTable({
 						data-testid="mcp-clients-search-input"
 					/>
 				</div>
+				{server && (
+					<Button
+						variant="outline"
+						size="sm"
+						className="h-8 gap-2"
+						onClick={onServerFilterClear}
+						data-testid="mcp-client-server-filter-clear-btn"
+					>
+						Server filter
+						<X className="size-3" />
+					</Button>
+				)}
 			</div>
 
 			<div className="flex grow flex-col overflow-auto">

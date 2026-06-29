@@ -160,6 +160,7 @@ export interface GetMCPClientsParams {
 	limit?: number;
 	offset?: number;
 	search?: string;
+	server?: string;
 }
 
 // Paginated response for MCP clients list

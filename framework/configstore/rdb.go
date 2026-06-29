@@ -1581,6 +1581,9 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
 	}
+	if params.ClientID != "" {
+		baseQuery = baseQuery.Where("client_id = ?", params.ClientID)
+	}
 
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {
