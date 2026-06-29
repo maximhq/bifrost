@@ -2474,6 +2474,59 @@ func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.
 	return nil
 }
 
+// pricingUpsertBatchSize bounds rows per multi-row INSERT on the PostgreSQL
+// pricing-sync path, sized well under PostgreSQL's 65535 bind-parameter ceiling
+// (TableModelPricing has ~76 columns, so ~860 rows would hit the limit; 500
+// leaves comfortable headroom). Only PostgreSQL batches — see
+// UpsertModelPricesBatch.
+const pricingUpsertBatchSize = 500
+
+// UpsertModelPricesBatch creates or updates many model pricing records with the
+// same semantics as UpsertModelPrices (pricingSyncUpdateColumns only, so
+// additional_attributes editorial metadata survives the sync). Callers must
+// dedup by (model, provider, mode) first: a conflict target may not appear
+// twice in one statement.
+//
+// The whole write runs in one transaction so the sync stays atomic. PostgreSQL
+// uses chunked multi-row ON CONFLICT statements to cut the per-model round-trips
+// that motivated batching against a remote DB. SQLite cannot batch these rows: a
+// multi-row VALUES list rejects the DEFAULT keyword GORM emits for the table's
+// many default:null columns ("near \"DEFAULT\": syntax error"), and its
+// bind-variable ceiling is lower. SQLite is a local file, so per-row writes are
+// ~free — it loops within the same transaction instead.
+func (s *RDBConfigStore) UpsertModelPricesBatch(ctx context.Context, pricing []tables.TableModelPricing, tx ...*gorm.DB) error {
+	if len(pricing) == 0 {
+		return nil
+	}
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	onConflict := clause.OnConflict{
+		Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}, {Name: "mode"}},
+		DoUpdates: clause.AssignmentColumns(pricingSyncUpdateColumns),
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		if tx.Dialector.Name() == "postgres" {
+			if err := tx.Clauses(onConflict).CreateInBatches(pricing, pricingUpsertBatchSize).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			return nil
+		}
+		for i := range pricing {
+			if err := tx.Clauses(onConflict).Create(&pricing[i]).Error; err != nil {
+				return s.parseGormError(err)
+			}
+		}
+		return nil
+	})
+}
+
 // UpsertModelPricingAttributes writes only the additional_attributes column
 // for the pricing row keyed by (model, provider). The row must already exist
 // — callers may not seed pricing rows through this path; the management API

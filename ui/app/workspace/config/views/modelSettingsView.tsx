@@ -97,7 +97,7 @@ export default function ModelSettingsView() {
 	const handleForceSync = async () => {
 		try {
 			await forcePricingSync().unwrap();
-			toast.success("Pricing sync triggered successfully.");
+			toast.success("Pricing synced successfully.");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
