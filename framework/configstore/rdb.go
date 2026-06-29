@@ -7116,26 +7116,59 @@ type OAuth2SessionRow struct {
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
 }
 
-// ListOAuth2Sessions returns active (non-revoked) refresh token rows, joined
-// with their client names from oauth2_clients and VK names from
-// governance_virtual_keys for vk-mode grants. Uses ScopedDB so callers can
-// inject row-visibility predicates via the context.
-func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context) ([]OAuth2SessionRow, error) {
+// ListOAuth2Sessions returns a page of active (non-revoked) refresh token rows,
+// joined with their client names from oauth2_clients and VK names from
+// governance_virtual_keys for vk-mode grants. Filtering (search + mode) and
+// pagination (limit/offset) are pushed to SQL; the second return value is the
+// total count matching the filters before the page slice. Uses ScopedDB so
+// callers can inject row-visibility predicates via the context.
+func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context, params OAuth2SessionsQueryParams) ([]OAuth2SessionRow, int64, error) {
+	// base carries the joins + filters shared by the count and the page query.
+	// Session() forks it so Count and Find don't pollute each other's statement.
+	base := s.ScopedDB(ctx).
+		Table("oauth2_refresh_tokens rt").
+		Joins("LEFT JOIN oauth2_clients c ON c.client_id = rt.client_id").
+		Joins("LEFT JOIN governance_virtual_keys vk ON vk.id = rt.bf_sub AND rt.bf_mode = 'vk'").
+		Where("rt.revoked_at IS NULL")
+
+	if search := strings.TrimSpace(params.Search); search != "" {
+		like := "%" + strings.ToLower(search) + "%"
+		// Match the columns the UI renders: client name/id, the bound identity
+		// (bf_sub), and the joined VK name shown as the display name for vk mode.
+		base = base.Where(
+			"LOWER(COALESCE(c.client_name, '')) LIKE ? OR LOWER(rt.client_id) LIKE ? OR LOWER(rt.bf_sub) LIKE ? OR LOWER(COALESCE(vk.name, '')) LIKE ?",
+			like, like, like, like,
+		)
+	}
+	if len(params.Modes) > 0 {
+		base = base.Where("rt.bf_mode IN ?", params.Modes)
+	}
+
+	var totalCount int64
+	if err := base.Session(&gorm.Session{}).Count(&totalCount).Error; err != nil {
+		return nil, 0, fmt.Errorf("count oauth2 sessions: %w", err)
+	}
+
 	rows := []struct {
 		tables.TableOAuth2RefreshToken
 		ClientName string `gorm:"column:client_name"`
 		VKName     string `gorm:"column:vk_name"`
 	}{}
-	err := s.ScopedDB(ctx).
-		Table("oauth2_refresh_tokens rt").
+	query := base.Session(&gorm.Session{}).
 		Select("rt.*, c.client_name, vk.name as vk_name").
-		Joins("LEFT JOIN oauth2_clients c ON c.client_id = rt.client_id").
-		Joins("LEFT JOIN governance_virtual_keys vk ON vk.id = rt.bf_sub AND rt.bf_mode = 'vk'").
-		Where("rt.revoked_at IS NULL").
+		// id is the unique tiebreaker: created_at alone is not unique, and offset
+		// paging over a non-unique sort lets same-timestamp rows shuffle between
+		// pages (duplicated or skipped). id pins a deterministic order.
 		Order("rt.created_at DESC").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("list oauth2 sessions: %w", err)
+		Order("rt.id DESC")
+	if params.Limit > 0 {
+		query = query.Limit(params.Limit)
+	}
+	if params.Offset > 0 {
+		query = query.Offset(params.Offset)
+	}
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("list oauth2 sessions: %w", err)
 	}
 	out := make([]OAuth2SessionRow, 0, len(rows))
 	for _, r := range rows {
@@ -7155,7 +7188,7 @@ func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context) ([]OAuth2Sessio
 		}
 		out = append(out, row)
 	}
-	return out, nil
+	return out, totalCount, nil
 }
 
 // RevokeOAuth2Session revokes a specific refresh token by ID (for use from the

@@ -1,6 +1,8 @@
+import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetOAuth2GrantsQuery, useRevokeOAuth2GrantMutation } from "@/lib/store";
 import type { OAuth2GrantRow } from "@/lib/store/apis/oauth2SessionsApi";
 import { Loader2 } from "lucide-react";
+import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import GrantsFilterBar from "./views/grantsFilterBar";
@@ -10,47 +12,47 @@ import RevokeGrantDialog from "./views/revokeGrantDialog";
 const PAGE_SIZE = 50;
 
 export default function OAuthGrantsPage() {
-	const { data, isLoading, isFetching, isError, error } = useGetOAuth2GrantsQuery();
+	const [urlState, setUrlState] = useQueryStates(
+		{
+			q: parseAsString.withDefault(""),
+			bf_mode: parseAsArrayOf(parseAsString).withDefault([]),
+			offset: parseAsInteger.withDefault(0),
+		},
+		{ history: "push" },
+	);
+
+	const debouncedSearch = useDebouncedValue(urlState.q, 300);
+
+	const { data, isLoading, isFetching, isError, error } = useGetOAuth2GrantsQuery({
+		q: debouncedSearch || undefined,
+		bf_mode: urlState.bf_mode.length ? urlState.bf_mode : undefined,
+		limit: PAGE_SIZE,
+		offset: urlState.offset,
+	});
 	const [revokeGrant, { isLoading: revoking }] = useRevokeOAuth2GrantMutation();
 
-	const [search, setSearch] = useState("");
-	const [modeFilter, setModeFilter] = useState<string[]>([]);
-	const [offset, setOffset] = useState(0);
 	const [pendingDelete, setPendingDelete] = useState<OAuth2GrantRow | null>(null);
 	const [pendingActionRowId, setPendingActionRowId] = useState<string | null>(null);
 
-	const allGrants = data?.sessions ?? [];
-	const filtered = allGrants.filter((g) => {
-		const matchesMode = modeFilter.length === 0 || modeFilter.includes(g.bf_mode);
-		const q = search.toLowerCase();
-		const matchesSearch =
-			!q ||
-			g.client_name?.toLowerCase().includes(q) ||
-			g.client_id.toLowerCase().includes(q) ||
-			(g.bf_sub_display ?? g.bf_sub).toLowerCase().includes(q);
-		return matchesMode && matchesSearch;
-	});
-	const totalCount = filtered.length;
-	const page = filtered.slice(offset, offset + PAGE_SIZE);
-	const hasActiveFilters = !!search || modeFilter.length > 0;
+	const page = data?.sessions ?? [];
+	const totalCount = data?.total_count ?? 0;
+	const hasActiveFilters = !!urlState.q || urlState.bf_mode.length > 0;
 
-	// Snap the offset back into range when the filtered count shrinks (e.g. a
-	// revoke removes the last row on the last page). Without this the page goes
-	// blank with the paginator and clear-filters affordances both hidden.
+	// Snap the offset back into range when the total shrinks past the current
+	// page (e.g. a revoke removes the last row on the last page). Without this
+	// the page goes blank with the paginator and clear-filters affordances both
+	// hidden. Mirrors the MCP sessions page.
 	useEffect(() => {
-		if (totalCount === 0) {
-			if (offset !== 0) setOffset(0);
-			return;
-		}
-		const maxOffset = Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE;
-		if (offset > maxOffset) setOffset(maxOffset);
-	}, [offset, totalCount]);
+		if (!data || urlState.offset < totalCount) return;
+		setUrlState({
+			offset: totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE,
+		});
+	}, [totalCount, urlState.offset, data, setUrlState]);
 
-	const clearFilters = () => {
-		setSearch("");
-		setModeFilter([]);
-		setOffset(0);
-	};
+	const handleSearchChange = (value: string) => setUrlState({ q: value || null, offset: 0 });
+	const handleModeChange = (value: string[]) => setUrlState({ bf_mode: value.length ? value : null, offset: 0 });
+	const handleOffsetChange = (offset: number) => setUrlState({ offset });
+	const clearFilters = () => setUrlState({ q: null, bf_mode: null, offset: 0 });
 
 	const confirmRevoke = async () => {
 		if (!pendingDelete) return;
@@ -68,14 +70,14 @@ export default function OAuthGrantsPage() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4">
+		<div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">
 			<RevokeGrantDialog
 				open={pendingDelete !== null}
 				onOpenChange={(open) => !open && setPendingDelete(null)}
 				onConfirm={confirmRevoke}
 			/>
 
-			<div className="flex items-center justify-between gap-4">
+			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">OAuth Grants</h2>
 					<p className="text-muted-foreground text-sm">
@@ -85,17 +87,19 @@ export default function OAuthGrantsPage() {
 				</div>
 			</div>
 
-			<GrantsFilterBar
-				search={search}
-				onSearchChange={(value) => { setSearch(value); setOffset(0); }}
-				modeFilter={modeFilter}
-				onModeChange={(value) => { setModeFilter(value); setOffset(0); }}
-				hasActiveFilters={hasActiveFilters}
-				onClearFilters={clearFilters}
-			/>
+			<div className="mb-4">
+				<GrantsFilterBar
+					search={urlState.q}
+					onSearchChange={handleSearchChange}
+					modeFilter={urlState.bf_mode}
+					onModeChange={handleModeChange}
+					hasActiveFilters={hasActiveFilters}
+					onClearFilters={clearFilters}
+				/>
+			</div>
 
 			{isLoading ? (
-				<div className="flex items-center justify-center py-16">
+				<div className="flex grow items-center justify-center">
 					<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 				</div>
 			) : isError ? (
@@ -106,9 +110,9 @@ export default function OAuthGrantsPage() {
 				<GrantsTable
 					rows={page}
 					totalCount={totalCount}
-					offset={offset}
+					offset={urlState.offset}
 					pageSize={PAGE_SIZE}
-					onOffsetChange={setOffset}
+					onOffsetChange={handleOffsetChange}
 					isFetching={isFetching}
 					hasActiveFilters={hasActiveFilters}
 					revoking={revoking}

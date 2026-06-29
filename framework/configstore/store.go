@@ -144,6 +144,18 @@ type MCPSessionsFilterParams struct {
 	MatchedUserIDs []string
 }
 
+// OAuth2SessionsQueryParams holds the filters + pagination for the OAuth2
+// grants list (Connected Clients UI). Search is a case-insensitive substring
+// matched against the client name/id, the bound identity (bf_sub), and the
+// joined virtual key name. Modes filters on bf_mode (user/vk/session); an
+// empty slice matches all. Limit/Offset paginate the filtered result in SQL.
+type OAuth2SessionsQueryParams struct {
+	Search string
+	Modes  []string
+	Limit  int
+	Offset int
+}
+
 // PricingOverrideFilters holds the filters for pricing overrides.
 type PricingOverrideFilters struct {
 	ScopeKind     *string
@@ -704,8 +716,10 @@ type ConfigStore interface {
 	// token sweep so clients are not collected while their tokens are still
 	// retained for reuse detection.
 	SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error)
-	// ListOAuth2Sessions returns active downstream grants for the Connected Clients UI.
-	ListOAuth2Sessions(ctx context.Context) ([]OAuth2SessionRow, error)
+	// ListOAuth2Sessions returns a page of active downstream grants for the
+	// Connected Clients UI, plus the total count matching the filters (before
+	// the limit/offset are applied). Filtering and pagination are pushed to SQL.
+	ListOAuth2Sessions(ctx context.Context, params OAuth2SessionsQueryParams) ([]OAuth2SessionRow, int64, error)
 	// GetOAuth2SessionByID returns a single active grant row for permission checks.
 	GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error)
 	// RevokeOAuth2Session revokes a specific downstream grant by refresh token ID.
