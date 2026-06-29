@@ -1,0 +1,2 @@
+- feat: added Anthropic code execution tool support
+- fix: corrected Bedrock usage calculation
