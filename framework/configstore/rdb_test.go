@@ -88,6 +88,36 @@ func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 	}
 }
 
+func TestRDBConfigStore_UpsertModelPricesSyncsIsDeprecated(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: true,
+	}))
+
+	prices, err := store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.True(t, prices[0].IsDeprecated)
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: false,
+	}))
+
+	prices, err = store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.False(t, prices[0].IsDeprecated)
+}
+
 func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

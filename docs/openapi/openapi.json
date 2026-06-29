@@ -37001,6 +37001,10 @@
                           "provider": {
                             "type": "string"
                           },
+                          "is_deprecated": {
+                            "type": "boolean",
+                            "description": "True when the model is marked deprecated in the Bifrost pricing datasheet. Deprecated models remain listable for migration and compatibility workflows."
+                          },
                           "accessible_by_keys": {
                             "type": "array",
                             "items": {
@@ -37148,6 +37152,10 @@
                                 }
                               }
                             }
+                          },
+                          "is_deprecated": {
+                            "type": "boolean",
+                            "description": "True when the model is marked deprecated in the Bifrost pricing datasheet. Deprecated models remain listable for migration and compatibility workflows."
                           },
                           "accessible_by_keys": {
                             "type": "array",
@@ -61457,6 +61465,10 @@
                 }
               }
             }
+          },
+          "is_deprecated": {
+            "type": "boolean",
+            "description": "True when the model is marked deprecated in the Bifrost pricing datasheet. Deprecated models remain listable for migration and compatibility workflows."
           },
           "pricing": {
             "type": "object",
