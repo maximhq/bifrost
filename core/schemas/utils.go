@@ -1273,6 +1273,9 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	if original.Recipient != nil {
 		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
+	if original.ToolSearchOutputTools != nil {
+		copy.ToolSearchOutputTools = append(json.RawMessage(nil), original.ToolSearchOutputTools...)
+	}
 
 	if original.Content != nil {
 		copy.Content = &ResponsesMessageContent{}
@@ -1308,6 +1311,16 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		if original.ResponsesToolMessage.Arguments != nil {
 			copyArguments := *original.ResponsesToolMessage.Arguments
 			copy.ResponsesToolMessage.Arguments = &copyArguments
+		}
+
+		if original.ResponsesToolMessage.Namespace != nil {
+			copyNamespace := *original.ResponsesToolMessage.Namespace
+			copy.ResponsesToolMessage.Namespace = &copyNamespace
+		}
+
+		if original.ResponsesToolMessage.Execution != nil {
+			copyExecution := *original.ResponsesToolMessage.Execution
+			copy.ResponsesToolMessage.Execution = &copyExecution
 		}
 
 		if original.ResponsesToolMessage.Error != nil {

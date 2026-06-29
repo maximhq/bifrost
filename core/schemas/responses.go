@@ -898,6 +898,8 @@ const (
 	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
+	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
+	ResponsesMessageTypeToolSearchOutput     ResponsesMessageType = "tool_search_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
@@ -940,6 +942,10 @@ type ResponsesMessage struct {
 	// Preserved as raw JSON to survive bifrost round-trip without schema coupling.
 	Author    json.RawMessage `json:"author,omitempty"`
 	Recipient json.RawMessage `json:"recipient,omitempty"`
+
+	// Discovered tool_search_output tools. Programmatic callers must set this,
+	// not ResponsesMCPListTools.Tools, because the entries are ResponsesTool-shaped.
+	ToolSearchOutputTools json.RawMessage `json:"-"`
 
 	*ResponsesToolMessage // For Tool calls and outputs
 
@@ -994,17 +1000,11 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	return MarshalSorted(alias(m))
 }
 
-// UnmarshalJSON normalizes function/tool-call arguments before decoding the rest
-// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
-// a JSON string, but `tool_search_call` items (emitted when the request enables
-// the `tool_search` deferred-tool-discovery tool, as Codex does) serialize
-// `arguments` as a JSON object — e.g. {} while in_progress and
-// {"query":"...","limit":10} when completed. The embedded
-// ResponsesToolMessage.Arguments field is a *string, so an object value makes a
-// plain decode fail with "Mismatch type string with value object", which
-// silently drops the item mid-stream and hangs streaming clients. We shadow
-// `arguments` as raw JSON, decode everything else as usual, then store the
-// canonical stringified form.
+// UnmarshalJSON normalizes the `arguments` field before decoding the rest of the
+// item. OpenAI sends function_call arguments as a JSON string but tool_search_call
+// arguments as a JSON object; the Arguments field is a *string, so decoding an
+// object directly fails and drops the item mid-stream. We shadow `arguments` as
+// raw JSON and store the stringified form.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	type Alias ResponsesMessage
 	aux := &struct {
@@ -1026,6 +1026,20 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		m.Arguments = &args
 	}
 
+	// The embedded ResponsesMCPListTools decode of `tools` drops the type
+	// discriminator, so capture the raw array and skip that lossy parse.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
+		var probe struct {
+			Tools json.RawMessage `json:"tools,omitempty"`
+		}
+		if err := Unmarshal(data, &probe); err == nil && len(probe.Tools) > 0 && string(probe.Tools) != "null" {
+			m.ToolSearchOutputTools = probe.Tools
+		}
+		if m.ResponsesToolMessage != nil {
+			m.ResponsesMCPListTools = nil
+		}
+	}
+
 	return nil
 }
 
@@ -1039,6 +1053,51 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 		return str
 	}
 	return string(raw)
+}
+
+// MarshalJSON preserves OpenAI's per-item argument shape after UnmarshalJSON
+// normalizes both forms into the internal string field.
+func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	type Alias ResponsesMessage
+
+	// Re-emit the raw tools captured during unmarshal so the type discriminator survives.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
+		aux := &struct {
+			Arguments json.RawMessage `json:"arguments,omitempty"`
+			Tools     json.RawMessage `json:"tools,omitempty"`
+			*Alias
+		}{
+			Alias: (*Alias)(&m),
+		}
+		if m.ToolSearchOutputTools != nil {
+			aux.Tools = m.ToolSearchOutputTools
+		}
+		if m.ResponsesToolMessage != nil && m.Arguments != nil {
+			aux.Arguments = json.RawMessage(*m.Arguments)
+		}
+		return MarshalSorted(aux)
+	}
+
+	aux := &struct {
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(&m),
+	}
+
+	if m.ResponsesToolMessage != nil && m.Arguments != nil {
+		if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall {
+			aux.Arguments = json.RawMessage(*m.Arguments)
+		} else {
+			encoded, err := Marshal(*m.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			aux.Arguments = encoded
+		}
+	}
+
+	return MarshalSorted(aux)
 }
 
 type ResponsesMessageRoleType string
@@ -1215,6 +1274,7 @@ type ResponsesToolMessage struct {
 	Name      *string                           `json:"name,omitempty"`      // Common name field for tool calls
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
+	Execution *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
