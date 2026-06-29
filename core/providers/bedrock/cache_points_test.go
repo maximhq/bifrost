@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -228,5 +229,88 @@ func TestBedrockModelSupportsExtendedCacheTTL(t *testing.T) {
 		if got := schemas.BedrockModelSupportsExtendedCacheTTL(model); got != want {
 			t.Errorf("BedrockModelSupportsExtendedCacheTTL(%q) = %v, want %v", model, got, want)
 		}
+	}
+}
+
+// TestToBedrockConverseStreamResponse_CopiesCacheTokens guards the streaming Converse
+// path against dropping prompt-cache token counts (issue #4746). Cached tokens are folded
+// into InputTokens upstream, so the converter must copy them into the cache fields AND
+// subtract them back out of InputTokens.
+func TestToBedrockConverseStreamResponse_CopiesCacheTokens(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  2660, // cached tokens folded in (as FinalizeBedrockStream does)
+				OutputTokens: 4,
+				TotalTokens:  2664,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					CachedReadTokens: 2647,
+				},
+			},
+		},
+	}
+
+	event, err := ToBedrockConverseStreamResponse(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event == nil || event.Usage == nil {
+		t.Fatal("expected usage on completed event")
+	}
+	if event.Usage.CacheReadInputTokens != 2647 {
+		t.Errorf("CacheReadInputTokens: want 2647, got %d", event.Usage.CacheReadInputTokens)
+	}
+	// Cached tokens must be subtracted so inputTokens is not double-counted.
+	if event.Usage.InputTokens != 13 {
+		t.Errorf("InputTokens: want 13 (cached subtracted), got %d", event.Usage.InputTokens)
+	}
+}
+
+// TestBuildBedrockTokenUsage_StreamMatchesNonStream asserts the streaming and non-streaming
+// Converse converters report identical usage from the same Responses usage — the drift that
+// caused issue #4746. Exercises cache write + 5m/1h breakdown in addition to cache read.
+func TestBuildBedrockTokenUsage_StreamMatchesNonStream(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{
+		InputTokens:  2660, // cached read + write folded in
+		OutputTokens: 4,
+		TotalTokens:  2664,
+		InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+			CachedReadTokens:  2000,
+			CachedWriteTokens: 647,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: 600,
+				CachedWriteTokens1h: 47,
+			},
+		},
+	}
+
+	streamResp := &schemas.BifrostResponsesStreamResponse{
+		Type:     schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{Usage: usage},
+	}
+	streamEvent, err := ToBedrockConverseStreamResponse(streamResp)
+	if err != nil {
+		t.Fatalf("stream conversion error: %v", err)
+	}
+
+	nonStreamResp, err := ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{Usage: usage})
+	if err != nil {
+		t.Fatalf("non-stream conversion error: %v", err)
+	}
+
+	if streamEvent.Usage == nil || nonStreamResp.Usage == nil {
+		t.Fatal("expected usage on both converters")
+	}
+	if !reflect.DeepEqual(streamEvent.Usage, nonStreamResp.Usage) {
+		t.Errorf("usage mismatch:\n  stream:     %+v\n  non-stream: %+v", *streamEvent.Usage, *nonStreamResp.Usage)
+	}
+	// Spot-check the expected values: 2660 - 2000 - 647 = 13.
+	if streamEvent.Usage.InputTokens != 13 {
+		t.Errorf("InputTokens: want 13, got %d", streamEvent.Usage.InputTokens)
+	}
+	if streamEvent.Usage.CacheReadInputTokens != 2000 || streamEvent.Usage.CacheWriteInputTokens != 647 {
+		t.Errorf("cache tokens: want read=2000 write=647, got read=%d write=%d",
+			streamEvent.Usage.CacheReadInputTokens, streamEvent.Usage.CacheWriteInputTokens)
 	}
 }
