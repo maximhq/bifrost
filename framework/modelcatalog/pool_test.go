@@ -1,10 +1,13 @@
 package modelcatalog
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 // TestUpsertLiveFromResponse_NilRespIsNoop guards the API surface: handing a
@@ -42,6 +45,31 @@ func TestUpsertLiveFromResponse_PopulatesFromResponse(t *testing.T) {
 	got := mc.GetModelsForProvider(schemas.OpenAI)
 	slices.Sort(got)
 	want := []string{"gpt-4o", "o1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetModelsForProvider = %v, want %v", got, want)
+	}
+}
+
+func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
+		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"live-model"})
+
+	got := mc.GetModelsForProvider(schemas.OpenAI)
+	slices.Sort(got)
+	want := []string{"deprecated-model", "live-model"}
 	if !slices.Equal(got, want) {
 		t.Errorf("GetModelsForProvider = %v, want %v", got, want)
 	}

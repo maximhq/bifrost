@@ -20,6 +20,7 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	var out []string
 	if liveModels := mc.live.ModelsForProvider(provider); len(liveModels) > 0 {
 		out = liveModels
+		out = mc.appendAllowedDatasheetModels(out, mc.datasheet.DeprecatedDatasheetModelsForProvider(provider), allowed, blacklisted)
 	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
@@ -66,6 +67,31 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 			out = append(out, m)
 		}
 	}
+	return out
+}
+
+func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, blacklisted schemas.BlackList) []string {
+	if len(models) == 0 {
+		return out
+	}
+	seen := make(map[string]struct{}, len(out))
+	for _, m := range out {
+		seen[m] = struct{}{}
+	}
+	for _, m := range models {
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		if blacklisted.IsBlocked(m) {
+			continue
+		}
+		if allowed != nil && !allowed.IsAllowed(m) {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+	}
+	slices.Sort(out)
 	return out
 }
 

@@ -873,6 +873,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 			}
 			if pricingEntry != nil {
+				resp.Data[i].IsDeprecated = pricingEntry.IsDeprecated
 				if pricingEntry.BaseModel != "" && resp.Data[i].NormalizedName == nil {
 					resp.Data[i].NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
 				}
