@@ -114,8 +114,9 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	searchStr := string(ctx.QueryArgs().Peek("search"))
+	serverStr := string(ctx.QueryArgs().Peek("server"))
 
-	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr)
+	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr, serverStr)
 }
 
 // getMCPLibrary handles GET /api/mcp/library — paginated, searchable, filterable
@@ -245,10 +246,11 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 }
 
 // getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients
-func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr string) {
+func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr, serverStr string) {
 	params := configstore.MCPClientsQueryParams{
-		Search: searchStr,
-		Limit:  100,
+		Search:   searchStr,
+		ClientID: serverStr,
+		Limit:    100,
 	}
 	if limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
@@ -469,10 +471,10 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 type OAuthConfigRequest struct {
 	ClientID        *schemas.SecretVar `json:"client_id"`
 	ClientSecret    *schemas.SecretVar `json:"client_secret"`
-	AuthorizeURL    string          `json:"authorize_url"`
-	TokenURL        string          `json:"token_url"`
-	RegistrationURL string          `json:"registration_url"`
-	Scopes          []string        `json:"scopes"`
+	AuthorizeURL    string             `json:"authorize_url"`
+	TokenURL        string             `json:"token_url"`
+	RegistrationURL string             `json:"registration_url"`
+	Scopes          []string           `json:"scopes"`
 }
 
 // MCPClientRequest represents the full MCP client creation request with OAuth support.
@@ -499,21 +501,21 @@ type MCPVKConfigRequest struct {
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
 // accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
-	Name                  *string                   `json:"name,omitempty"`
-	Disabled              *bool                     `json:"disabled,omitempty"`
-	AllowOnAllVirtualKeys *bool                     `json:"allow_on_all_virtual_keys,omitempty"`
-	IsCodeModeClient      *bool                     `json:"is_code_mode_client,omitempty"`
-	IsPingAvailable       *bool                     `json:"is_ping_available,omitempty"`
-	ToolSyncInterval      *int                      `json:"tool_sync_interval,omitempty"`
+	Name                  *string                      `json:"name,omitempty"`
+	Disabled              *bool                        `json:"disabled,omitempty"`
+	AllowOnAllVirtualKeys *bool                        `json:"allow_on_all_virtual_keys,omitempty"`
+	IsCodeModeClient      *bool                        `json:"is_code_mode_client,omitempty"`
+	IsPingAvailable       *bool                        `json:"is_ping_available,omitempty"`
+	ToolSyncInterval      *int                         `json:"tool_sync_interval,omitempty"`
 	Headers               map[string]schemas.SecretVar `json:"headers,omitempty"`
-	AllowedExtraHeaders   *schemas.WhiteList        `json:"allowed_extra_headers,omitempty"`
-	ToolPricing           map[string]float64        `json:"tool_pricing,omitempty"`
-	ToolsToExecute        *schemas.WhiteList        `json:"tools_to_execute,omitempty"`
-	ToolsToAutoExecute    *schemas.WhiteList        `json:"tools_to_auto_execute,omitempty"`
-	PerUserHeaderKeys     *[]string                 `json:"per_user_header_keys,omitempty"`
-	TLSConfig             *schemas.MCPTLSConfig     `json:"tls_config,omitempty"`
-	VKConfigs             *[]MCPVKConfigRequest     `json:"vk_configs,omitempty"`
-	OauthConfig           *OAuthConfigRequest       `json:"oauth_config,omitempty"`
+	AllowedExtraHeaders   *schemas.WhiteList           `json:"allowed_extra_headers,omitempty"`
+	ToolPricing           map[string]float64           `json:"tool_pricing,omitempty"`
+	ToolsToExecute        *schemas.WhiteList           `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute    *schemas.WhiteList           `json:"tools_to_auto_execute,omitempty"`
+	PerUserHeaderKeys     *[]string                    `json:"per_user_header_keys,omitempty"`
+	TLSConfig             *schemas.MCPTLSConfig        `json:"tls_config,omitempty"`
+	VKConfigs             *[]MCPVKConfigRequest        `json:"vk_configs,omitempty"`
+	OauthConfig           *OAuthConfigRequest          `json:"oauth_config,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
