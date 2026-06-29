@@ -8,7 +8,11 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentPro
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
 const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
-const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => (
+	<Suspense fallback={null}>
+		<LazyMarkdown {...props} />
+	</Suspense>
+);
 
 /**
  * Renders an editable system message block that supports role switching, rich-text editing, JSON editing with buffered changes, Jinja variable highlighting, and optional removal.

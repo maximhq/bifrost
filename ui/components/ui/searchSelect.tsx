@@ -186,7 +186,7 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 							<div className="text-destructive py-6 text-center text-sm">{errorMessage}</div>
 						) : (
 							<>
-								<CommandPrimitive.Empty className="py-6 text-center text-sm text-muted-foreground">{emptyMessage}</CommandPrimitive.Empty>
+								<CommandPrimitive.Empty className="text-muted-foreground py-6 text-center text-sm">{emptyMessage}</CommandPrimitive.Empty>
 								{options.map((option) => (
 									<CommandPrimitive.Item
 										key={option.value}
@@ -202,7 +202,11 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 						)}
 					</CommandPrimitive.List>
 				</CommandPrimitive>
-				{footer && <div data-slot="search-select-footer" className="border-t">{footer}</div>}
+				{footer && (
+					<div data-slot="search-select-footer" className="border-t">
+						{footer}
+					</div>
+				)}
 			</PopoverContent>
 		</Popover>
 	);

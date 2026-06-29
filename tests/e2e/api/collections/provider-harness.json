@@ -1585,6 +1585,401 @@
                 "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 800,\n  \"stream\": true,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count from 1 to 10.\"}]\n}"},
                 "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
               }
+            },
+            {
+              "name": "Code execution — python (code_execution_20250825)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python code execution to compute the mean and population standard deviation of [2, 4, 4, 4, 5, 5, 7, 9]. Show the code.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — bash sub-tool (bash_code_execution)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Using a bash shell command (not Python), print the Python version with `python3 --version` and list the directory with `ls -la`.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — text_editor (create / view / str_replace)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the file editor tool to: (1) create notes.txt containing 'debug=true', (2) view it, then (3) str_replace 'debug=true' with 'debug=false'. Use the editor, not Python.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});",
+                      "if (pm.response.code < 400) {",
+                      "  pm.test('Anthropic: text_editor input preserved (command + path)', function () {",
+                      "    var blocks = (pm.response.json().content) || [];",
+                      "    var te = blocks.find(function (b) { return b.type === 'server_tool_use' && b.name === 'text_editor_code_execution'; });",
+                      "    if (te) { pm.expect(te.input).to.have.property('command'); pm.expect(te.input).to.have.property('path'); }",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — streaming (SSE, well-formed blocks)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to list the first 15 Fibonacci numbers and print them.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ],\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: streaming code execution is well-formed', function () {",
+                      "  var raw = pm.response.text() || '';",
+                      "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+                      "  pm.expect(raw, 'no code-execution server_tool_use in stream').to.include('\"type\":\"server_tool_use\"');",
+                      "  pm.expect(raw).to.match(/\"name\":\"(code_execution|bash_code_execution|text_editor_code_execution)\"/);",
+                      "  var starts = (raw.match(/event: content_block_start/g) || []).length;",
+                      "  var stops = (raw.match(/event: content_block_stop/g) || []).length;",
+                      "  pm.expect(stops, 'content_block_start/stop unbalanced ' + starts + '/' + stops).to.equal(starts);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — version code_execution_20260120 (REPL persistence + PTC)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to compute 17 * 23 and print the result.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260120\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — version code_execution_20260521 (disclosed per-cell time limit)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to compute the factorial of 10 and print it.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260521\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — programmatic tool calling (custom tool + allowed_callers)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Write Python that calls get_stock_price for 'AAPL' and 'GOOGL' in a loop and prints each result.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260120\",\n      \"name\": \"code_execution\"\n    },\n    {\n      \"name\": \"get_stock_price\",\n      \"description\": \"Get the current price for a stock ticker.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"ticker\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"ticker\"\n        ]\n      },\n      \"allowed_callers\": [\n        \"code_execution_20260120\"\n      ]\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: programmatic tool calling accepted (allowed_callers + auto beta header)', function () {",
+                      "  var blocks = (pm.response.json().content) || [];",
+                      "  var ran = blocks.some(function (b) {",
+                      "    return (b.type === 'server_tool_use' && b.name === 'code_execution') || (b.type === 'tool_use' && b.name === 'get_stock_price');",
+                      "  });",
+                      "  pm.expect(ran, 'neither code_execution nor the custom tool was invoked').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
@@ -3920,7 +4315,7 @@
             { "name": "OpenAI: service_tier auto", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hi\"}],\n  \"service_tier\": \"auto\"\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/chat/completions","host":["{{baseUrl}}"],"path":["openai","v1","chat","completions"]}}},
             { "name": "OpenAI: store + metadata", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hi\"}],\n  \"store\": true,\n  \"metadata\": {\"harness\": \"backlog\"}\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/chat/completions","host":["{{baseUrl}}"],"path":["openai","v1","chat","completions"]}}},
             { "name": "OpenAI Responses: reasoning summary", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"o3-mini\",\n  \"input\": \"What's 17*23?\",\n  \"reasoning\": {\"summary\": \"auto\"}\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/responses","host":["{{baseUrl}}"],"path":["openai","v1","responses"]}}},
-            { "name": "OpenAI Responses streaming: summary_index + obfuscation preserved", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 400) { return; }","pm.test('summary_index and obfuscation survive stream', function () {","  var body = pm.response.text() || '';","  pm.expect(body, 'expected summary_index in SSE body').to.include('\"summary_index\"');","  pm.expect(body, 'expected obfuscation in SSE body').to.include('\"obfuscation\"');","});"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"o3-mini\",\n  \"input\": \"What's 17*23?\",\n  \"reasoning\": {\"summary\": \"auto\"},\n  \"stream\": true,\n  \"stream_options\": {\"include_obfuscation\": true}\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/responses","host":["{{baseUrl}}"],"path":["openai","v1","responses"]}}},
+            { "name": "OpenAI Responses streaming: summary_index + obfuscation preserved", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 400) { return; }","pm.test('summary_index and obfuscation survive stream', function () {","  var body = pm.response.text() || '';","  pm.expect(body, 'expected obfuscation in SSE body').to.include('\"obfuscation\"');","  // reasoning.summary is model-discretionary: o3-mini may emit no summary on simple prompts.","  // Only assert summary_index preservation when a reasoning summary was actually emitted.","  if (body.indexOf('response.reasoning_summary') !== -1) {","    pm.expect(body, 'reasoning summary emitted but summary_index stripped').to.include('\"summary_index\"');","  }","});"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"o3-mini\",\n  \"input\": \"Prove that the square root of 2 is irrational, step by step.\",\n  \"reasoning\": {\"summary\": \"detailed\"},\n  \"stream\": true,\n  \"stream_options\": {\"include_obfuscation\": true}\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/responses","host":["{{baseUrl}}"],"path":["openai","v1","responses"]}}},
             { "name": "OpenAI Responses streaming: assistant phase preserved (gpt-5.3-codex)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 400) { return; }","pm.test('phase appears on assistant message items', function () {","  var body = pm.response.text() || '';","  var hasPhase = body.indexOf('\"phase\":\"final_answer\"') !== -1 || body.indexOf('\"phase\":\"commentary\"') !== -1;","  pm.expect(hasPhase, 'no phase field in SSE body. First 200 chars: ' + body.slice(0,200)).to.be.true;","});"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-5.3-codex\",\n  \"input\": \"Solve 2+2 and explain your steps briefly.\",\n  \"stream\": true\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/responses","host":["{{baseUrl}}"],"path":["openai","v1","responses"]}}},
             { "name": "OpenAI Responses: assistant phase input round-trip (gpt-5.3-codex)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 400) {","  pm.test('phase field accepted on input message', function () {","    var body = (pm.response.text() || '').toLowerCase();","    pm.expect(body, 'unexpected rejection of phase field: ' + body.slice(0,200)).to.not.include('unknown field \"phase\"');","    pm.expect(body).to.not.include('unexpected field \"phase\"');","  });","  return;","}","pm.test('response returned output items', function () {","  var body = pm.response.text() || '';","  pm.expect(body).to.include('\"output\"');","});"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-5.3-codex\",\n  \"input\": [\n    {\"role\":\"user\",\"content\":\"What's 2+2?\"},\n    {\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":\"4\"},\n    {\"role\":\"user\",\"content\":\"Now what's 3+3?\"}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/responses","host":["{{baseUrl}}"],"path":["openai","v1","responses"]}}},
             { "name": "OpenAI Responses: background mode", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o\",\n  \"input\": \"Hi\",\n  \"background\": true\n}"}, "url": {"raw":"{{baseUrl}}/openai/v1/responses","host":["{{baseUrl}}"],"path":["openai","v1","responses"]}}},

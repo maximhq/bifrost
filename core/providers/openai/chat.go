@@ -58,9 +58,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.ChatParameters.Tools = normalizedTools
 		}
 	}
+
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(capModel)
+		return openaiReq
+	case schemas.Cerebras:
+		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.applyCerebrasCompatibility()
 		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(capModel)
@@ -182,6 +187,17 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
 			req.Reasoning.Effort = schemas.Ptr("high")
 		}
+	}
+}
+
+// applyCerebrasCompatibility applies Cerebras-specific transformations to the request.
+func (req *OpenAIChatRequest) applyCerebrasCompatibility() {
+	for i := range req.Messages {
+		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
+		if assistantMessage == nil {
+			continue
+		}
+		assistantMessage.Reasoning = nil
 	}
 }
 

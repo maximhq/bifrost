@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { OtelFormSchema } from "@/lib/types/schemas";
-import { toHeaderStringMap } from "@/lib/utils/envVarForm";
+import { toHeaderStringMap } from "@/lib/utils/secretVarForm";
 import { Activity } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -21,7 +21,7 @@ export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 
 	const handleOtelConfigSave = (config: OtelFormSchema): Promise<void> => {
 		// The backend stores headers as a plain "env.VAR"/literal string map, so flatten the
-		// EnvVar form values here. The config is sent as the { profiles: [...] } wrapper.
+		// SecretVar form values here. The config is sent as the { profiles: [...] } wrapper.
 		const profiles = config.profiles.map((profile) => ({
 			...profile,
 			headers: toHeaderStringMap(profile.headers),

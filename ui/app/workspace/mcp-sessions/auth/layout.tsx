@@ -12,14 +12,14 @@ import MCPSessionsAuthPage from "./page";
 // outbound API calls, and suppresses the global 401-redirect so a stale
 // link renders an inline error instead.
 function RouteComponent() {
-  return (
-    <TempTokenScope name="mcp_auth">
-      <MCPSessionsAuthPage />
-    </TempTokenScope>
-  );
+	return (
+		<TempTokenScope name="mcp_auth">
+			<MCPSessionsAuthPage />
+		</TempTokenScope>
+	);
 }
 
 export const Route = createFileRoute("/workspace/mcp-sessions/auth")({
-  staticData: { tempTokenScoped: true },
-  component: RouteComponent,
+	staticData: { tempTokenScoped: true },
+	component: RouteComponent,
 });

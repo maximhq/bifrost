@@ -25,7 +25,7 @@ cd "$API_DIR"
 COLLECTION="collections/bifrost-v1-auth-matrix.postman_collection.json"
 REPORT_DIR="newman-reports/auth-matrix"
 ADMIN_USER="admin"
-ADMIN_PASS="matrix-admin-pass"
+ADMIN_PASS="Matrix-Admin-Pass1!"
 VK_VALUE="sk-bf-matrix-test-key"
 
 GREEN='\033[0;32m'

@@ -106,6 +106,7 @@ export default function ClientSettingsView() {
 		return (
 			localConfig.drop_excess_requests !== config.drop_excess_requests ||
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
+			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
@@ -332,6 +333,26 @@ export default function ClientSettingsView() {
 						size="md"
 						checked={localConfig.disable_db_pings_in_health}
 						onCheckedChange={(checked) => handleConfigChange("disable_db_pings_in_health", checked)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				{/* Dump Errors in Console Logs */}
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="dump-errors-in-console-logs" className="text-sm font-medium">
+							Dump Errors in Console Logs
+						</label>
+						<p className="text-muted-foreground text-sm">
+							If enabled, full error details are written to the server console logs. Useful for debugging, but may be noisy in production.
+						</p>
+					</div>
+					<Switch
+						id="dump-errors-in-console-logs"
+						data-testid="client-settings-dump-errors-switch"
+						size="md"
+						checked={localConfig.dump_errors_in_console_logs}
+						onCheckedChange={(checked) => handleConfigChange("dump_errors_in_console_logs", checked)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

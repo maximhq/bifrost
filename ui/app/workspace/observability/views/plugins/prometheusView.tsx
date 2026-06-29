@@ -1,19 +1,19 @@
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
-import { type EnvVar, PrometheusFormSchema } from "@/lib/types/schemas";
-import { toOptionalEnvVarPayload } from "@/lib/utils/envVarForm";
+import { type SecretVar, PrometheusFormSchema } from "@/lib/types/schemas";
+import { toOptionalSecretVarPayload } from "@/lib/utils/secretVarForm";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { PrometheusFormFragment } from "../../fragments/prometheusFormFragment";
 
 interface PushGatewayConfig {
 	enabled?: boolean;
-	push_gateway_url?: string | EnvVar;
+	push_gateway_url?: string | SecretVar;
 	job_name?: string;
 	instance_id?: string;
 	push_interval?: number;
 	basic_auth?: {
-		username?: string | EnvVar;
-		password?: string | EnvVar;
+		username?: string | SecretVar;
+		password?: string | SecretVar;
 	};
 }
 
@@ -54,8 +54,8 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 				push_interval: config.prometheus_config.push_interval,
 			};
 
-			const username = toOptionalEnvVarPayload(config.prometheus_config.basic_auth_username);
-			const password = toOptionalEnvVarPayload(config.prometheus_config.basic_auth_password);
+			const username = toOptionalSecretVarPayload(config.prometheus_config.basic_auth_username);
+			const password = toOptionalSecretVarPayload(config.prometheus_config.basic_auth_password);
 			if (username && password) {
 				pushGatewayConfig.basic_auth = { username, password };
 			}

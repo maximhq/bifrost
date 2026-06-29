@@ -5,12 +5,7 @@
 // (see CreateMCPClientRequest.user_headers); this module only carries the
 // end-user submission types.
 import { MCPHeadersUserCredentialStatus } from "./mcp";
-import {
-	AuthMode,
-	MCPClientSummary,
-	UserSummary,
-	VirtualKeySummary,
-} from "./mcpSessions";
+import { AuthMode, MCPClientSummary, UserSummary, VirtualKeySummary } from "./mcpSessions";
 
 // MCPHeadersUserCredentialStatus is exported from mcp.ts so the sessions
 // table can switch on it. Re-exported here for clarity from the headers-

@@ -174,7 +174,7 @@ export function RoutingRulesTable({
 	return (
 		<>
 			{/* Toolbar: Search */}
-			<div className="flex items-center gap-3 mb-4">
+			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -188,9 +188,9 @@ export function RoutingRulesTable({
 				</div>
 			</div>
 
-			<div className="overflow-hidden rounded-sm border mb-2">
+			<div className="mb-2 overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
-					<TableHeader className="sticky top-0 bg-muted z-10">
+					<TableHeader className="bg-muted sticky top-0 z-10">
 						<TableRow className="bg-muted/50">
 							<TableHead className="font-semibold">Name</TableHead>
 							<TableHead className="font-semibold">Targets</TableHead>
@@ -198,7 +198,9 @@ export function RoutingRulesTable({
 							<TableHead className="text-right font-semibold">Priority</TableHead>
 							<TableHead className="font-semibold">Expression</TableHead>
 							<TableHead className="font-semibold">Status</TableHead>
-							<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>Actions</TableHead>
+							<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>
+								Actions
+							</TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
@@ -210,7 +212,11 @@ export function RoutingRulesTable({
 							</TableRow>
 						) : (
 							sortedRules.map((rule) => (
-								<TableRow key={rule.id} className="group hover:bg-muted/50 cursor-pointer transition-colors" onClick={() => onRowClick(rule)}>
+								<TableRow
+									key={rule.id}
+									className="group hover:bg-muted/50 cursor-pointer transition-colors"
+									onClick={() => onRowClick(rule)}
+								>
 									<TableCell className="font-medium">
 										<div className="flex flex-col gap-1">
 											<span className="max-w-xs truncate">{rule.name}</span>

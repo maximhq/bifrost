@@ -1,0 +1,275 @@
+---
+title: "SSO using OIDC"
+description: "Configure Auth0 as your identity provider for Bifrost Enterprise using OpenID Connect."
+---
+
+## Prerequisites
+
+- An Auth0 account with admin access to create applications
+- Bifrost Enterprise deployed and accessible
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Bifrost [roles](../rbac) created for the roles you plan to map
+
+---
+
+## Step 1: Create a regular web application
+
+<Steps>
+
+<Step title="Open the Auth0 dashboard">
+
+Sign in to [manage.auth0.com](https://manage.auth0.com).
+
+In the left navigation, go to **Applications → Applications** and click **Create Application**.
+
+<Frame caption="Applications page - click Create Application to add a new integration.">
+  <img src="/media/user-provisioning/auth0/auth0-applications.png" alt="Auth0 Applications page with Create Application button highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Choose the application type">
+
+Give the app a name - e.g. `Bifrost OIDC`.
+
+Select **Regular Web Application** and click **Create**.
+
+</Step>
+
+<Step title="Open the Settings tab">
+
+After creating the app, go to the **Settings** tab. You will see your app's **Domain**, **Client ID**, and **Client Secret** at the top - keep this tab open as you will need these values later.
+
+<Frame caption="Settings tab - Domain, Client ID, and Client Secret are shown here. Keep this tab open.">
+  <img src="/media/user-provisioning/auth0/auth0-app-settings.png" alt="Auth0 Bifrost OIDC application Settings tab showing the Basic Information section with Domain, Client ID, and Client Secret" />
+</Frame>
+
+</Step>
+
+<Step title="Configure callback URLs">
+
+Still on the **Settings** tab, scroll down to **Application URIs** and add your login callback to **Allowed Callback URLs**:
+
+```
+https://<your-bifrost-domain>/login
+```
+
+Optionally, to use the **Discover Claims** feature during Bifrost setup, also add:
+
+```
+https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback
+```
+
+Discover Claims opens a one-time sign-in popup during configuration so Bifrost can inspect the exact JWT your Auth0 tenant sends - useful for verifying the `roles` claim is present before you build your attribute mappings. You can skip it and add the URL later if needed.
+
+<Frame caption="Allowed Callback URLs - the login callback is required; the discovery callback is optional and only used during initial setup.">
+  <img src="/media/user-provisioning/auth0/auth0-callback-urls.png" alt="Auth0 application Settings showing Allowed Callback URLs with the Bifrost login and SCIM discovery endpoints" />
+</Frame>
+
+Scroll down and click **Save Changes**.
+
+</Step>
+
+<Step title="Copy your credentials">
+
+Scroll back up to the top of the **Settings** tab and copy:
+
+- **Domain** - e.g. `your-tenant.us.auth0.com`
+- **Client ID**
+- **Client Secret** (click to reveal)
+
+<Frame caption="App credentials - copy Domain, Client ID, and Client Secret. You will need all three when configuring Bifrost.">
+  <img src="/media/user-provisioning/auth0/auth0-app-credentials.png" alt="Auth0 Bifrost OIDC application Settings tab showing Domain, Client ID, and Client Secret fields" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Add custom claims to the token
+
+Auth0 does not include roles or group memberships in the ID token by default. Use a **Post Login Action** to inject any attributes you want to map in Bifrost.
+
+In **Actions → Triggers → post-login**, create a custom action and add the claims you need. For example, to expose Auth0 roles:
+
+```javascript
+exports.onExecutePostLogin = async (event, api) => {
+  const roles = event.authorization?.roles ?? [];
+  api.idToken.setCustomClaim('roles', roles);
+  api.accessToken.setCustomClaim('roles', roles);
+};
+```
+
+<Frame caption="Post Login Action — deploy the action and wire it into the post-login flow between Start and Complete.">
+  <img src="/media/user-provisioning/auth0/auth0-action-code.png" alt="Auth0 action code editor showing the roles claims in token action" />
+</Frame>
+
+You can add any other user metadata the same way — `event.user.department`, `event.user.app_metadata.team`, etc. Any claim you set here will be available in Bifrost's Attribute Mapping step.
+
+<Note>
+  Using a plain claim name (e.g. `roles`) keeps the mapping simple. If your org policy requires a URL-namespaced claim (e.g. `https://your-domain.com/roles`), use the full namespaced string as the claim name in Bifrost's attribute mappings.
+</Note>
+
+---
+
+## Step 3: Create a Machine-to-Machine app for bulk sync (optional)
+
+<Note>
+  This step is only required if you want Bifrost to import users in bulk and sync them in the background every 24 hours. If you only need SSO login, skip this step.
+</Note>
+
+<Steps>
+
+<Step title="Create a Machine-to-Machine application">
+
+Go to **Applications → Applications** and click **Create Application**.
+
+Give it a name - e.g. `Bifrost Bulk Sync` - and select **Machine to Machine Application**.
+
+Click **Create**.
+
+</Step>
+
+<Step title="Authorize the Management API">
+
+On the next screen, select the **Auth0 Management API** and grant the following scopes:
+
+- `read:users`
+- `read:user_idp_tokens`
+- `read:roles`
+- `read:role_members`
+
+Click **Authorize**.
+
+</Step>
+
+<Step title="Copy the M2M credentials">
+
+Open the **Settings** tab of your `Bifrost Bulk Sync` app and copy:
+
+- **Client ID**
+- **Client Secret**
+
+<Frame caption="Machine-to-Machine app credentials - these are used in Bifrost to authorize background user sync via the Auth0 Management API.">
+  <img src="/media/user-provisioning/auth0/auth0-m2m-credentials.png" alt="Auth0 Bifrost Bulk Sync Machine to Machine application Settings tab showing Client ID and Client Secret" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 4: Configure Bifrost
+
+<Steps>
+
+<Step title="Open User Provisioning and choose Auth0">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning**.
+
+Select **Auth0** as the identity provider and click **Next**.
+
+<Frame caption="Choose Provider - select Auth0 from the list of supported identity providers.">
+  <img src="/media/user-provisioning/auth0/bifrost-choose-provider.png" alt="Bifrost Choose Provider screen with Auth0 highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Fill in the provider configuration">
+
+Enter the credentials you collected in Steps 1 and 3:
+
+| Field | Value |
+| --- | --- |
+| **Domain** | Your Auth0 domain, e.g. `your-tenant.us.auth0.com` |
+| **Client ID** | From the `Bifrost OIDC` app Settings tab |
+| **Client Secret** | From the `Bifrost OIDC` app Settings tab |
+| **M2M Client ID** | From the `Bifrost Bulk Sync` app (optional) |
+| **M2M Client Secret** | From the `Bifrost Bulk Sync` app (optional) |
+
+Click **Verify & Next** to confirm the connection.
+
+</Step>
+
+<Step title="Discover claims">
+
+On the Attribute Mapping screen, click **Discover Claims**.
+
+Bifrost opens a sign-in popup - no session is created. Once you authenticate, it returns the exact claims your Auth0 tenant is sending in the JWT.
+
+Confirm that the `roles` claim is present and contains the expected values before building your mappings.
+
+<Frame caption="Discover Claims - authenticate once to see the exact JWT claims Auth0 sends, including the roles claim added by your Post Login Action.">
+  <img src="/media/user-provisioning/auth0/bifrost-discover-claims.png" alt="Bifrost Discover Claims screen showing all claims returned by Auth0 including email, roles, and standard OIDC fields" />
+</Frame>
+
+</Step>
+
+<Step title="Set up attribute mappings">
+
+Use the sections below the claim list to map Auth0 claim values to Bifrost roles, teams, and business units.
+
+**Attribute-to-Role Mappings**
+
+Map a claim value to a Bifrost role.
+
+- All matching rules are evaluated - if multiple rules match, the role with the highest permissions is assigned
+- If no rule matches, the user is not assigned a role and login is denied
+
+**Attribute-to-Team Mappings**
+
+Map a claim value to a Bifrost team. All matching rules apply.
+
+- Use a specific value (e.g. `engineering`) to map that exact claim value to a named Bifrost team
+- Use `*` as the value to sync the claim value directly as the team name
+- Use `${*}` to extract part of the string - e.g. `Bifrost Playground: ${*} Team` matches `Bifrost Playground: Alpha Team` and creates team **Alpha**
+
+**Attribute-to-Business Unit Mappings**
+
+Same wildcard support as team mappings.
+
+- Use a specific value (e.g. `platform`) to map that exact claim value to a named Bifrost business unit
+- Use `${*}` to extract a substring as the business unit name - e.g. `Bifrost Playground: ${*} BU` matches `Bifrost Playground: Alpha BU` and creates business unit **Alpha**
+- When a rule matches, the resolved business unit is assigned to all of that user's teams
+- Manually assigned teams are left unchanged
+
+<Frame caption="Attribute Mapping - map the roles claim values from Auth0 to Bifrost roles, and optionally map groups to teams and business units.">
+  <img src="/media/user-provisioning/auth0/bifrost-attribute-mapping.png" alt="Bifrost Attribute Mapping screen showing role mappings (roles = Engineering → Admin, roles = Marketing → Viewer) and team mapping with wildcard" />
+</Frame>
+
+Click **Next** when done.
+
+</Step>
+
+<Step title="Review and enable">
+
+Review your full configuration on the final screen - connection details, attribute mappings, and SCIM provisioning status - then click **Save & Enable**.
+
+<Frame caption="Review & Enable - confirm your Auth0 connection details and attribute mappings before activating the provider.">
+  <img src="/media/user-provisioning/auth0/bifrost-review-enable.png" alt="Bifrost Review and Enable screen showing Auth0 domain, Client ID, and attribute mappings summary" />
+</Frame>
+
+<Warning>
+  Restart your Bifrost server after enabling for the changes to take effect.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+## Troubleshooting
+
+**User is not redirected to Auth0** - verify the provider is enabled in Bifrost and the server was restarted after saving. Confirm the Auth0 Domain has no trailing slash in the Bifrost config.
+
+**`Callback URL mismatch`** - the redirect URI in Bifrost must exactly match one of the **Allowed Callback URLs** in Auth0. Check for protocol, trailing slash, and path differences.
+
+**`roles` claim not appearing in Discover Claims** - confirm the Post Login Action is deployed (not just saved as draft) and is connected to the Login flow. Open the Action editor and click **Deploy** if the status shows **Draft**.
+
+**Roles not assigned after login** - confirm the user has an Auth0 role assigned under **User Management → Users → Roles** tab. Only roles from Auth0's built-in role system are populated by the action code above - custom claims from other sources need a modified action.
+
+**`invalid_token` or audience mismatch** - leave the **Audience** field blank in Bifrost, or set it to match the `aud` claim in the JWT (typically the Auth0 Client ID).

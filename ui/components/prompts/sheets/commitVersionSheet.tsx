@@ -14,7 +14,11 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
-const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => (
+	<Suspense fallback={null}>
+		<LazyMarkdown {...props} />
+	</Suspense>
+);
 
 interface CommitVersionFormData {
 	commitMessage: string;

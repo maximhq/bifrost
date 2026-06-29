@@ -41,7 +41,11 @@ import { FilePreviewPane, getFileServeUrl } from "./filePreview";
 import { formatYamlRecord } from "./helpers";
 
 const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
-const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => (
+	<Suspense fallback={null}>
+		<LazyMarkdown {...props} />
+	</Suspense>
+);
 
 // Sentinel used as the "selected file" value for the SKILL.md body node.
 export const SKILLMD_KEY = "__skillmd__";
@@ -108,10 +112,7 @@ function ClampedDescription({ description }: { description: string }) {
 
 	return (
 		<div className="relative max-w-3xl">
-			<p
-				ref={textRef}
-				className={cn("text-muted-foreground text-xs", !expanded && "line-clamp-3")}
-			>
+			<p ref={textRef} className={cn("text-muted-foreground text-xs", !expanded && "line-clamp-3")}>
 				{description}
 				{expanded && isOverflowing && (
 					<button
@@ -127,7 +128,7 @@ function ClampedDescription({ description }: { description: string }) {
 				<button
 					type="button"
 					onClick={() => setExpanded(true)}
-					className="bg-card absolute right-0 bottom-0 cursor-pointer pl-8 pr-4 text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
+					className="bg-card absolute right-0 bottom-0 cursor-pointer pr-4 pl-8 text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
 				>
 					<span className="from-card pointer-events-none absolute top-0 right-full h-full w-8 bg-gradient-to-l to-transparent" />
 					Show more
@@ -175,7 +176,7 @@ export function SkillHeader({
 	return (
 		<>
 			<div className={cn("flex w-full flex-row items-center gap-2 bg-card relative", sticky && "sticky top-0 z-30 py-4")}>
-				<div className="flex flex-row items-center gap-2 align-middle h-5">
+				<div className="flex h-5 flex-row items-center gap-2 align-middle">
 					{onBack ? (
 						<nav aria-label="Breadcrumb" className="min-w-0">
 							<ol className="text-muted-foreground flex items-center gap-1.5 text-sm">
@@ -214,7 +215,7 @@ export function SkillHeader({
 						</Button>
 					)}
 				</div>
-				<div className="ml-auto flex flex-row items-center align-middle absolute right-0 top-4">
+				<div className="absolute top-4 right-0 ml-auto flex flex-row items-center align-middle">
 					{decorators}
 					{(actions || downloadSkillName) && (
 						<div className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -242,7 +243,10 @@ export function SkillHeader({
 			</div>
 			{composedSkillMd && (
 				<Dialog open={showRawDialog} onOpenChange={setShowRawDialog}>
-					<DialogContent showCloseButton={false} className="w-full h-[90vh] border-0 p-0 sm:w-[85vw] sm:max-w-[85vw] md:w-[75vw] md:max-w-[75vw]">
+					<DialogContent
+						showCloseButton={false}
+						className="h-[90vh] w-full border-0 p-0 sm:w-[85vw] sm:max-w-[85vw] md:w-[75vw] md:max-w-[75vw]"
+					>
 						<DialogHeader className="sr-only">
 							<DialogTitle>Raw SKILL.md</DialogTitle>
 						</DialogHeader>
@@ -257,7 +261,7 @@ export function SkillHeader({
 								>
 									{copiedRawSkillMd ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
 								</Button>
-								<DialogClose className="text-muted-foreground hover:bg-card hover:text-foreground cursor-pointer rounded-sm h-8 w-8 flex justify-center items-center transition-colors">
+								<DialogClose className="text-muted-foreground hover:bg-card hover:text-foreground flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm transition-colors">
 									<X className="h-4 w-4" />
 									<span className="sr-only">Close</span>
 								</DialogClose>
@@ -437,7 +441,7 @@ export function SkillMarkdown({
 				return (
 					<button
 						type="button"
-						className="wrap-anywhere cursor-pointer appearance-none text-left font-medium text-primary underline"
+						className="text-primary cursor-pointer appearance-none text-left font-medium wrap-anywhere underline"
 						onClick={() => onSelectFile(matchedPath)}
 					>
 						{children}
@@ -500,13 +504,9 @@ export function ReadOnlySkillBody({
 	const [activeTab, setActiveTab] = useState("preview");
 
 	return (
-		<Tabs
-			defaultValue="preview"
-			onValueChange={setActiveTab}
-			className="flex min-h-0 w-full flex-1 flex-col gap-2"
-		>
+		<Tabs defaultValue="preview" onValueChange={setActiveTab} className="flex min-h-0 w-full flex-1 flex-col gap-2">
 			<div className="flex items-center justify-between gap-2">
-				<h2 className="text-foreground text-base font-semibold leading-[normal]">SKILL.md Body</h2>
+				<h2 className="text-foreground text-base leading-[normal] font-semibold">SKILL.md Body</h2>
 				<TabsList className="bg-muted h-8">
 					<TabsTrigger value="preview" className="h-6 px-2.5 text-xs">
 						Preview
@@ -612,10 +612,7 @@ export function ReadOnlyFileTree({
 	searchQuery?: string;
 }) {
 	const query = searchQuery.trim().toLowerCase();
-	const filteredFiles = useMemo(
-		() => (query ? files.filter((f) => f.path.toLowerCase().includes(query)) : files),
-		[files, query],
-	);
+	const filteredFiles = useMemo(() => (query ? files.filter((f) => f.path.toLowerCase().includes(query)) : files), [files, query]);
 	const treeData = useMemo((): TreeNode<FileTreeNodeData>[] => {
 		interface FolderBucket {
 			files: SkillFileEntry[];

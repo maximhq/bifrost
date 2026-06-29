@@ -28,18 +28,18 @@ const (
 
 type RedisConfig struct {
 	// Connection settings
-	Addr     *schemas.EnvVar `json:"addr"`               // Redis server address (host:port) - REQUIRED
-	Username *schemas.EnvVar `json:"username,omitempty"` // Username for Redis AUTH (optional)
-	Password *schemas.EnvVar `json:"password,omitempty"` // Password for Redis AUTH (optional)
-	DB       *schemas.EnvVar `json:"db,omitempty"`       // Redis database number (default: 0)
+	Addr     *schemas.SecretVar `json:"addr"`               // Redis server address (host:port) - REQUIRED
+	Username *schemas.SecretVar `json:"username,omitempty"` // Username for Redis AUTH (optional)
+	Password *schemas.SecretVar `json:"password,omitempty"` // Password for Redis AUTH (optional)
+	DB       *schemas.SecretVar `json:"db,omitempty"`       // Redis database number (default: 0)
 
 	// TLS settings
-	UseTLS             *schemas.EnvVar `json:"use_tls,omitempty"`              // Enable TLS for connection (default: false)
-	InsecureSkipVerify *schemas.EnvVar `json:"insecure_skip_verify,omitempty"` // Skip TLS cert verification (default: false)
-	CACertPEM          *schemas.EnvVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust for Redis/Valkey TLS
+	UseTLS             *schemas.SecretVar `json:"use_tls,omitempty"`              // Enable TLS for connection (default: false)
+	InsecureSkipVerify *schemas.SecretVar `json:"insecure_skip_verify,omitempty"` // Skip TLS cert verification (default: false)
+	CACertPEM          *schemas.SecretVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust for Redis/Valkey TLS
 
 	// Cluster mode
-	ClusterMode *schemas.EnvVar `json:"cluster_mode,omitempty"` // Use Redis Cluster client (default: false)
+	ClusterMode *schemas.SecretVar `json:"cluster_mode,omitempty"` // Use Redis Cluster client (default: false)
 
 	// Connection pool and timeout settings (passed directly to Redis client).
 	// All duration fields accept either a Go duration string (e.g. "5s", "500ms",
@@ -1721,10 +1721,10 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 		return nil, fmt.Errorf("redis addr is required")
 	}
 	if config.Username == nil {
-		config.Username = schemas.NewEnvVar("")
+		config.Username = schemas.NewSecretVar("")
 	}
 	if config.Password == nil {
-		config.Password = schemas.NewEnvVar("")
+		config.Password = schemas.NewSecretVar("")
 	}
 	db := 0
 	if config.DB != nil {

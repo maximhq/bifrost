@@ -391,7 +391,10 @@ export const providersApi = baseApi.injectEndpoints({
 		// Models tab. Server filters by model-name substring (`query`) and by
 		// exact provider; the high default limit covers the typical catalog
 		// size (under 1500 rows).
-		getModelDetails: builder.query<ListModelDetailsResponse, { query?: string; provider?: string; limit?: number; offset?: number; unfiltered?: boolean }>({
+		getModelDetails: builder.query<
+			ListModelDetailsResponse,
+			{ query?: string; provider?: string; limit?: number; offset?: number; unfiltered?: boolean }
+		>({
 			query: ({ query, provider, limit, offset, unfiltered }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);

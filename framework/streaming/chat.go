@@ -547,7 +547,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 		}
 	}
-	if addErr := a.addChatStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
+	if addErr := a.addChatStreamChunk(requestID, streamType, chunk, isFinalChunk); addErr != nil {
 		return nil, fmt.Errorf("failed to add stream chunk for request %s: %w", requestID, addErr)
 	}
 	// If this is the final chunk, process accumulated chunks

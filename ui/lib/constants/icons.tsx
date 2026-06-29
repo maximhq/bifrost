@@ -679,6 +679,25 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	runware: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				fill="currentColor"
+				fillRule="evenodd"
+				height={resolvedSize}
+				style={{ flex: "none", lineHeight: "1" }}
+				viewBox="0 0 24 24"
+				width={resolvedSize}
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Runware</title>
+				<path d="M5.22 1 L19.61 1.09 L22.73 7.42 L8.24 7.33 Z M1.28 8.88 L7.78 8.88 L11.08 15.12 L4.3 15.03 Z M16.12 8.88 L22.73 8.88 L19.52 15.21 L12.92 15.21 Z M13.01 16.68 L19.61 16.77 L22.73 23 L16.12 23 Z"></path>
+			</svg>
+		);
+	},
 	fireworks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

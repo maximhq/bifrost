@@ -14,6 +14,10 @@ const (
 
 type KeySelector func(ctx *BifrostContext, keys []Key, providerKey ModelProvider, model string) (Key, error)
 
+// KeyPoolFilter is an optional hook called before key selection to veto keys
+// from the available pool.
+type KeyPoolFilter func(ctx *BifrostContext, provider ModelProvider, model string, keys []Key) ([]Key, error)
+
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
@@ -24,12 +28,13 @@ type BifrostConfig struct {
 	OAuth2Provider     OAuth2Provider
 	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
-	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
-	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig  // MCP (Model Context Protocol) configuration for tool integration
-	KeySelector        KeySelector // Custom key selector function
-	KVStore            KVStore     // shared KV store for clustering/session stickiness; nil = disabled
+	Tracer             Tracer        // Tracer for distributed tracing (nil = NoOpTracer)
+	InitialPoolSize    int           // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests bool          // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig          *MCPConfig    // MCP (Model Context Protocol) configuration for tool integration
+	KeySelector        KeySelector   // Custom key selector function
+	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
+	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -60,6 +65,7 @@ const (
 	Replicate   ModelProvider = "replicate"
 	VLLM        ModelProvider = "vllm"
 	Runway      ModelProvider = "runway"
+	Runware     ModelProvider = "runware"
 	Fireworks   ModelProvider = "fireworks"
 	Copilot     ModelProvider = "copilot"
 )
@@ -101,6 +107,7 @@ var StandardProviders = []ModelProvider{
 	Replicate,
 	VLLM,
 	Runway,
+	Runware,
 	Fireworks,
 	Copilot,
 }
@@ -226,6 +233,7 @@ const (
 	BifrostContextKeyGovernanceBusinessUnitNames         BifrostContextKey = "bifrost-governance-business-unit-names" // []string (display names, aligned with business-unit-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceCustomerIDs               BifrostContextKey = "bifrost-governance-customer-ids"        // []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceCustomerNames             BifrostContextKey = "bifrost-governance-customer-names"      // []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceScopedCustomerID          BifrostContextKey = "bifrost-governance-scoped-customer-id"  // string (resolved customer the request is scoped to via the x-bf-customer-id / x-bf-customer-name header on a team-VK path; set by the enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"     // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"   // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"      // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
@@ -237,6 +245,7 @@ const (
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                 // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyResolvedAlias                       BifrostContextKey = "bifrost-resolved-alias"                 // *ResolvedAlias (set by bifrost after key-level alias resolution — providers read this for model_family routing and provider-specific overrides; nil/absent when no alias matched)
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyStreamGated                         BifrostContextKey = "bifrost-stream-gated"                  // bool (set by ctx.PauseStream/ResumeStream/EndStream when a plugin first engages the pause/resume gate; provider helpers use this as a fast-path check to skip Tracer.GateSend on streams that never engage the gate)
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"            // time.Duration (per-chunk idle timeout for streaming)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"             // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                  // map[string][]string
@@ -362,10 +371,11 @@ const (
 
 // RoutingEngine constants
 const (
-	RoutingEngineGovernance    = "governance"
-	RoutingEngineRoutingRule   = "routing-rule"
-	RoutingEngineLoadbalancing = "loadbalancing"
-	RoutingEngineModelCatalog  = "model-catalog"
+	RoutingEngineGovernance      = "governance"
+	RoutingEngineRoutingRule     = "routing-rule"
+	RoutingEngineLoadbalancing   = "loadbalancing"
+	RoutingEngineModelCatalog    = "model-catalog"
+	RoutingEngineCircuitBreaker  = "circuit-breaker"
 	// RoutingEngineCore represents the Bifrost core orchestrator's own
 	// routing decisions — primarily fallback transitions. Emitted when the
 	// primary attempt fails and core advances through the fallback chain so

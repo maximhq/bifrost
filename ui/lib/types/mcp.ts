@@ -1,5 +1,5 @@
 import { Function as ToolFunction } from "./logs";
-import { EnvVar } from "./schemas";
+import { SecretVar } from "./schemas";
 
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
@@ -16,7 +16,7 @@ export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per
 //                   resubmit values
 export type MCPHeadersUserCredentialStatus = "active" | "orphaned" | "needs_update";
 
-export type { EnvVar };
+export type { SecretVar };
 
 export interface MCPStdioConfig {
 	command: string;
@@ -26,12 +26,12 @@ export interface MCPStdioConfig {
 
 export interface MCPTLSConfig {
 	insecure_skip_verify?: boolean;
-	ca_cert_pem?: EnvVar;
+	ca_cert_pem?: SecretVar;
 }
 
 export interface OAuthConfig {
-	client_id: EnvVar;
-	client_secret?: EnvVar; // Optional for public clients using PKCE
+	client_id: SecretVar;
+	client_secret?: SecretVar; // Optional for public clients using PKCE
 	authorize_url?: string; // Optional, will be discovered from server_url if not provided
 	token_url?: string; // Optional, will be discovered from server_url if not provided
 	registration_url?: string; // Optional, for dynamic client registration
@@ -41,8 +41,8 @@ export interface OAuthConfig {
 
 /** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */
 export interface OAuthConfigUpdate {
-	client_id?: EnvVar;
-	client_secret?: EnvVar;
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
 }
 
 export interface MCPClientConfig {
@@ -50,16 +50,16 @@ export interface MCPClientConfig {
 	name: string;
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
-	connection_string?: EnvVar;
+	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
-	oauth_client_id?: EnvVar; // Redacted existing client ID (populated on GET for oauth clients)
-	oauth_client_secret?: EnvVar; // Redacted existing client secret (populated on GET for oauth clients)
+	oauth_client_id?: SecretVar; // Redacted existing client ID (populated on GET for oauth clients)
+	oauth_client_secret?: SecretVar; // Redacted existing client secret (populated on GET for oauth clients)
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
-	headers?: Record<string, EnvVar>;
+	headers?: Record<string, SecretVar>;
 	// per_user_header_keys: admin-declared header *names* that each caller
 	// must supply when auth_type === "per_user_headers". Values live per-user
 	// in the credential store, not on the client config. Required (non-empty)
@@ -90,14 +90,14 @@ export interface CreateMCPClientRequest {
 	name: string;
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
-	connection_string?: EnvVar;
+	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
 	auth_type?: MCPAuthType;
 	oauth_config?: OAuthConfig;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
-	headers?: Record<string, EnvVar>;
+	headers?: Record<string, SecretVar>;
 	// per_user_headers-only: admin-declared header schema (names only).
 	per_user_header_keys?: string[];
 	// per_user_headers-only: a sample set of header values supplied by the
@@ -136,7 +136,7 @@ export interface MCPVKConfig {
 export interface UpdateMCPClientRequest {
 	name?: string;
 	is_code_mode_client?: boolean;
-	headers?: Record<string, EnvVar>;
+	headers?: Record<string, SecretVar>;
 	// Set to a new list (including empty) to replace per-user-headers schema.
 	// Omitted = preserve existing. When this list changes against the stored
 	// value, the backend flips all existing user credential rows to

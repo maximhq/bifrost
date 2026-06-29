@@ -115,7 +115,7 @@ export function RoutingRulesView() {
 	return (
 		<div className="flex flex-col overflow-y-auto">
 			{/* Header */}
-			<div className="flex items-center justify-between mb-4">
+			<div className="mb-4 flex items-center justify-between">
 				<div>
 					<h1 className="text-foreground text-lg font-semibold">Routing Rules</h1>
 					<p className="text-muted-foreground text-sm">Manage CEL-based routing rules for intelligent request routing across providers</p>

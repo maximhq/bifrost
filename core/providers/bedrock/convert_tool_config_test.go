@@ -556,3 +556,88 @@ func TestConvertChatParameters_ResponseFormatWithPinnedServerTool_NoConflictingC
 		t.Errorf("expected NO additionalModelRequestFields.tool_choice when response_format pins bf_so_* (conflict hazard)")
 	}
 }
+
+// TestConvertInferenceConfig_GLMSkipsStopSequences locks in the fix for the
+// user-reported 400 ("This model doesn't support the stopSequences field"):
+// GLM models on Bedrock reject inferenceConfig.stopSequences, so we omit it
+// for them while keeping it for every other model family.
+func TestConvertInferenceConfig_GLMSkipsStopSequences(t *testing.T) {
+	params := &schemas.ChatParameters{
+		MaxCompletionTokens: schemas.Ptr(12000),
+		Stop:                []string{"hi"},
+	}
+
+	glm := convertInferenceConfig(params, "zai.glm-5")
+	if glm.StopSequences != nil {
+		t.Fatalf("expected StopSequences to be omitted for GLM, got %v", glm.StopSequences)
+	}
+	// Other inference params must still pass through.
+	if glm.MaxTokens == nil || *glm.MaxTokens != 12000 {
+		t.Fatalf("expected MaxTokens to be preserved, got %v", glm.MaxTokens)
+	}
+
+	other := convertInferenceConfig(params, "anthropic.claude-sonnet-4")
+	if len(other.StopSequences) != 1 || other.StopSequences[0] != "hi" {
+		t.Fatalf("expected StopSequences to be preserved for non-GLM, got %v", other.StopSequences)
+	}
+}
+
+// TestToBedrockResponsesRequest_GLMSkipsStopSequences verifies the Responses
+// path (where `stop` arrives via ExtraParams) also drops stopSequences for GLM.
+func TestToBedrockResponsesRequest_GLMSkipsStopSequences(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Model: "zai.glm-5",
+		Input: []schemas.ResponsesMessage{glmUserMessage("hello")},
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(32000),
+			ExtraParams:     map[string]interface{}{"stop": []string{"hi"}},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.StopSequences != nil {
+		t.Fatalf("expected StopSequences to be omitted for GLM, got %v", bedrockReq.InferenceConfig.StopSequences)
+	}
+}
+
+// TestToBedrockResponsesRequest_OmitsToolChoiceWhenNoTools reproduces the 400
+// ("The provided request is not valid"): a web_search tool with tool_choice:auto
+// on GLM. Web search is skipped for GLM, so no tools survive — the request must
+// not carry a toolConfig that holds a toolChoice with an empty tools list.
+func TestToBedrockResponsesRequest_OmitsToolChoiceWhenNoTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	autoStr := string(schemas.ResponsesToolChoiceTypeAuto)
+	req := &schemas.BifrostResponsesRequest{
+		Model: "zai.glm-5",
+		Input: []schemas.ResponsesMessage{glmUserMessage("Perform a web search")},
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(32000),
+			Tools:           []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: &autoStr,
+			},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	if bedrockReq.ToolConfig != nil {
+		t.Fatalf("expected no ToolConfig when all tools are skipped, got %+v", bedrockReq.ToolConfig)
+	}
+}
+
+func glmUserMessage(text string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{
+			ContentStr: schemas.Ptr(text),
+		},
+	}
+}

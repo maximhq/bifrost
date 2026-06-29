@@ -8,7 +8,11 @@ import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
 const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
-const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => <Suspense fallback={null}><LazyMarkdown {...props} /></Suspense>;
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => (
+	<Suspense fallback={null}>
+		<LazyMarkdown {...props} />
+	</Suspense>
+);
 
 /**
  * Renders the assistant message UI including role switcher, usage tooltip, edit/delete controls, and editable or view-only content.
