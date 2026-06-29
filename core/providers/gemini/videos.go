@@ -258,7 +258,7 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 	// Handle input reference (image for image-to-video)
 	if bifrostReq.Input.InputReference != nil && *bifrostReq.Input.InputReference != "" {
 		// extract mime type and base64 string from input reference
-		sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(*bifrostReq.Input.InputReference, defaultGeminiImageURLSchemes...)
+		sanitizedURL, err := schemas.SanitizeImageURL(*bifrostReq.Input.InputReference)
 		if err != nil {
 			return nil, fmt.Errorf("invalid input reference: %w", err)
 		}

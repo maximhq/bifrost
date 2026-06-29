@@ -64,12 +64,6 @@ var vertexShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
 // is empty and we fall back to google.FindDefaultCredentials.
 const defaultCredentialsCacheKey = "__default_credentials__"
 
-// geminiImageURLSchemes is the image URL scheme allowlist Vertex applies when it
-// routes a request through the Gemini converter. Vertex natively accepts gs://
-// FileData URIs (in addition to http(s)), so we extend the Gemini-default list
-// with "gs".
-var geminiImageURLSchemes = []string{"http", "https", "gs"}
-
 // getClientKey generates a unique key for caching token sources.
 // It uses a hash of the auth credentials for security.
 func getClientKey(authCredentials string) string {
@@ -899,7 +893,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				reqBody, err := gemini.ToGeminiChatCompletionRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -1181,7 +1175,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				reqBody, err := gemini.ToGeminiResponsesRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -1423,7 +1417,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				reqBody, err := gemini.ToGeminiResponsesRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -4055,7 +4049,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				return gemini.ToGeminiResponsesRequest(ctx, request)
 			},
 		)
 		if bifrostErr != nil {

@@ -10,12 +10,6 @@ import (
 
 // ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
 func ToGeminiChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
-	return ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, bifrostReq, defaultGeminiImageURLSchemes...)
-}
-
-// ToGeminiChatCompletionRequestWithImageURLSchemes converts a BifrostChatRequest
-// to Gemini format using the provider-specific allowlist for non-data image URLs.
-func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, allowedImageURLSchemes ...string) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -81,10 +75,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 		}
 	}
 	// Convert chat completion messages to Gemini format
-	contents, systemInstruction, err := convertBifrostMessagesToGemini(bifrostReq.Input, allowedImageURLSchemes...)
-	if err != nil {
-		return nil, err
-	}
+	contents, systemInstruction := convertBifrostMessagesToGemini(bifrostReq.Input)
 	if systemInstruction != nil {
 		geminiReq.SystemInstruction = systemInstruction
 	}
