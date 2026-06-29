@@ -77,7 +77,7 @@ export default function MCPSessionsPage() {
 	const handleClearFilters = () => setUrlState({ q: null, kind: null, status: null, auth_mode: null, mcp_client_id: null, identity: null, offset: 0 });
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">
 			<SessionsTable
 				sessions={data?.sessions ?? []}
 				totalCount={totalCount}
