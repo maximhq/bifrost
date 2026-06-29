@@ -1227,6 +1227,9 @@ type ResponsesToolMessage struct {
 
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
+
+	// Anthropic tool_search-specific (tool_search_call): carries the discovered tool references
+	*ResponsesToolSearchCall
 }
 
 // ResponsesAdvisorCall carries the Anthropic advisor_tool_result content
@@ -1237,6 +1240,14 @@ type ResponsesAdvisorCall struct {
 	EncryptedContent *string `json:"advisor_encrypted_content,omitempty"` // advisor_redacted_result variant
 	ErrorCode        *string `json:"advisor_error_code,omitempty"`        // advisor_tool_result_error variant
 	StopReason       *string `json:"advisor_stop_reason,omitempty"`       // present when max_tokens is set on the tool
+}
+
+// ResponsesToolSearchCall carries the payload of an Anthropic server-side
+// tool_search (server_tool_use + tool_search_tool_result). ToolReferences holds
+// the names of the deferred tools the search discovered (from the result block's
+// tool_references); the model then emits a normal tool_use to call one of them.
+type ResponsesToolSearchCall struct {
+	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
 }
 
 type ResponsesToolMessageActionStruct struct {
