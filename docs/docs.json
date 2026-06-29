@@ -533,7 +533,8 @@
               "features/observability/default",
               "features/observability/maxim",
               "features/observability/otel",
-              "features/observability/prometheus"
+              "features/observability/prometheus",
+              "features/observability/kafka"
             ]
           },
           {
