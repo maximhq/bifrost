@@ -310,7 +310,9 @@ func TestHandleToken_AuthorizationCode(t *testing.T) {
 		assert.NotEmpty(t, resp["refresh_token"])
 
 		// The minted access token verifies under the same issuer/signing key.
-		claims, err := verifyMCPJWT(bgCtx(), resp["access_token"].(string), cfg)
+		signingKey, keyErr := cfg.ConfigStore.GetOAuth2SigningKey(bgCtx())
+		require.NoError(t, keyErr)
+		claims, err := verifyMCPJWT(bgCtx(), resp["access_token"].(string), cfg, signingKey)
 		require.NoError(t, err)
 		assert.Equal(t, "session", claims.BfMode)
 		assert.Equal(t, "sess-1", claims.Subject)

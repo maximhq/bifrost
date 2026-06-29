@@ -35,6 +35,14 @@ type MCPToolManager interface {
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
 
+// VirtualKeyCache resolves a virtual key by its row ID from an in-memory cache,
+// letting the JWT auth path avoid a per-request database read. Satisfied by the
+// governance plugin's in-memory store. Optional: when nil (or a cache miss), the
+// handler falls back to the config store.
+type VirtualKeyCache interface {
+	GetVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, bool)
+}
+
 // MCPServerHandler manages HTTP requests for MCP server operations
 // It implements the MCP protocol over HTTP streaming (SSE) for MCP clients
 type MCPServerHandler struct {
@@ -46,11 +54,36 @@ type MCPServerHandler struct {
 	// resolving a representative virtual key. Optional: when nil, user-mode
 	// requests fall back to the global server.
 	identityResolver OAuth2IdentityResolver
-	mu               sync.RWMutex
+	// vkCache serves by-ID virtual key lookups on the JWT auth path from the
+	// governance in-memory store, avoiding a per-request DB read. Optional: a nil
+	// cache or a miss falls back to the config store. See getVirtualKeyByID.
+	vkCache VirtualKeyCache
+	mu      sync.RWMutex
+}
+
+// getVirtualKeyByID resolves a virtual key by its row ID for the JWT auth path,
+// preferring the governance in-memory cache and falling back to the config store
+// on a miss (e.g. a key created since the cache last refreshed) or when no cache
+// is wired. The active-state check is left to the caller, matching both sources
+// (neither filters inactive keys by ID).
+func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
+	if h.vkCache != nil {
+		if vk, ok := h.vkCache.GetVirtualKeyByID(ctx, vkID); ok && vk != nil {
+			return vk, nil
+		}
+	}
+	if h.config.ConfigStore == nil {
+		return nil, fmt.Errorf("virtual key not found or inactive")
+	}
+	vk, err := h.config.ConfigStore.GetVirtualKey(ctx, vkID)
+	if err != nil || vk == nil {
+		return nil, fmt.Errorf("virtual key not found or inactive")
+	}
+	return vk, nil
 }
 
 // NewMCPServerHandler creates a new MCP server handler instance
-func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, identityResolver OAuth2IdentityResolver) (*MCPServerHandler, error) {
+func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, identityResolver OAuth2IdentityResolver, vkCache VirtualKeyCache) (*MCPServerHandler, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -71,6 +104,7 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		config:           config,
 		vkMCPServers:     make(map[string]*server.MCPServer),
 		identityResolver: identityResolver,
+		vkCache:          vkCache,
 	}
 
 	// Register per-request tool filter so x-bf-mcp-include-clients and x-bf-mcp-include-tools are respected on tools/list
@@ -81,6 +115,17 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 
 	if err := handler.SyncAllMCPServers(ctx); err != nil {
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
+	}
+
+	// Warm the signing-key cache when OAuth discovery is enabled: this creates the
+	// key if absent and populates the cache, so the first JWKS/issuance/verify
+	// request need not pay the load. This is the single startup warm path for both
+	// OSS and enterprise. Best-effort — the verify path lazily loads it on a miss —
+	// but a failure is logged since a persistent one means OAuth cannot work.
+	if config.ClientConfig.IsMCPOAuthDiscoveryEnabled() {
+		if _, err := handler.config.GetOAuth2SigningKey(ctx); err != nil {
+			logger.Warn("mcp: failed to warm oauth2 signing key: %v", err)
+		}
 	}
 
 	return handler, nil
@@ -597,7 +642,17 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 			return nil, fmt.Errorf("conflicting credentials: an OAuth token and a virtual key header were both provided; send only the OAuth token")
 		}
 
-		claims, err := verifyMCPJWT(ctx, rawJWT, h.config)
+		// Load the signing key (cached for the process lifetime). A failure here is
+		// an infrastructure fault — the config store or key is unavailable — not a
+		// bad token. Log the detail for operators and return a clean message so it
+		// is never mislabeled as the client's token being invalid.
+		signingKey, err := h.config.GetOAuth2SigningKey(ctx)
+		if err != nil {
+			logger.Error("mcp: failed to load oauth2 signing key for jwt verification: %v", err)
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+			return nil, fmt.Errorf("signing key unavailable")
+		}
+		claims, err := verifyMCPJWT(ctx, rawJWT, h.config, signingKey)
 		if err != nil {
 			if discoveryEnabled {
 				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
@@ -650,12 +705,9 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 				return nil, fmt.Errorf("virtual-key identity is no longer accepted; re-authenticate")
 			}
-			if h.config.ConfigStore == nil {
-				return nil, fmt.Errorf("virtual key not found")
-			}
-			vk, err := h.config.ConfigStore.GetVirtualKey(ctx, claims.Subject)
-			if err != nil || vk == nil {
-				return nil, fmt.Errorf("virtual key not found or inactive")
+			vk, err := h.getVirtualKeyByID(ctx, claims.Subject)
+			if err != nil {
+				return nil, err
 			}
 			if !vk.IsActiveValue() {
 				return nil, fmt.Errorf("virtual key is inactive")
@@ -732,9 +784,9 @@ func (h *MCPServerHandler) userScopedServer(ctx *fasthttp.RequestCtx, claims *jw
 	}
 	// Mirror the vk-mode branch: resolve the representative VK by ID to get its
 	// value and active state, then reuse the shared per-VK server cache.
-	vk, err := h.config.ConfigStore.GetVirtualKey(ctx, vkID)
-	if err != nil || vk == nil {
-		return nil, fmt.Errorf("virtual key not found or inactive")
+	vk, err := h.getVirtualKeyByID(ctx, vkID)
+	if err != nil {
+		return nil, err
 	}
 	if !vk.IsActiveValue() {
 		return nil, fmt.Errorf("virtual key is inactive")

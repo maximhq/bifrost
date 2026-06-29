@@ -1332,7 +1332,17 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
-	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s.OAuth2IdentityResolver)
+	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
+	// governance in-memory store (avoiding a per-request DB read). Best-effort:
+	// any store that exposes GetVirtualKeyByID qualifies; otherwise the handler
+	// falls back to the config store.
+	var vkCache handlers.VirtualKeyCache
+	if gp, gerr := s.getGovernancePlugin(); gerr == nil && gp != nil {
+		if c, ok := gp.GetGovernanceStore().(handlers.VirtualKeyCache); ok {
+			vkCache = c
+		}
+	}
+	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s.OAuth2IdentityResolver, vkCache)
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
@@ -1793,13 +1803,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
-	}
-	// Bootstrap OAuth2 signing key when discovery is enabled — ensures JWKS
-	// and JWT signing are ready before the first request arrives.
-	if s.Config.ConfigStore != nil && s.Config.ClientConfig.IsMCPOAuthDiscoveryEnabled() {
-		if _, keyErr := s.Config.ConfigStore.GetOAuth2SigningKey(s.Ctx); keyErr != nil {
-			logger.Warn("oauth2: failed to bootstrap signing key: %v", keyErr)
-		}
 	}
 
 	// Register routes

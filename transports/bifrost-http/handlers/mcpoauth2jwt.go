@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"crypto/rsa"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -11,6 +13,28 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// mcpJWTPublicKeys caches the parsed RSA public key so verification can skip
+// re-parsing the PEM on every request. Keyed by the public-key PEM (its content)
+// rather than the kid: the content uniquely identifies the keypair, so a rotated
+// key materializes a fresh entry while a reused kid across distinct keys can
+// never alias the wrong key. The signing key is immutable for the process
+// lifetime, so an entry never goes stale.
+var mcpJWTPublicKeys sync.Map // publicKeyPEM (string) -> *rsa.PublicKey
+
+// mcpJWTPublicKey returns the verification public key for the given signing key,
+// parsing and caching it on first use.
+func mcpJWTPublicKey(signingKey *configtables.OAuth2SigningKey) (*rsa.PublicKey, error) {
+	if cached, ok := mcpJWTPublicKeys.Load(signingKey.PublicKeyPEM); ok {
+		return cached.(*rsa.PublicKey), nil
+	}
+	pubKey, err := parseRSAPublicKeyPEM(signingKey.PublicKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("invalid signing key: %w", err)
+	}
+	mcpJWTPublicKeys.Store(signingKey.PublicKeyPEM, pubKey)
+	return pubKey, nil
+}
 
 // jwtMCPClaims are the custom claims embedded in Bifrost-issued /mcp JWTs.
 type jwtMCPClaims struct {
@@ -41,24 +65,19 @@ func extractBearerJWT(ctx *fasthttp.RequestCtx) string {
 }
 
 // verifyMCPJWT parses and verifies a Bifrost-issued JWT for the /mcp endpoint.
-// It validates the RS256 signature using the active signing key, checks the
+// It validates the RS256 signature using the supplied signing key, checks the
 // audience matches the canonical /mcp resource URL (RFC 8707), and returns
-// the verified claims.
-func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config) (*jwtMCPClaims, error) {
-	if store.ConfigStore == nil {
-		return nil, fmt.Errorf("config store unavailable")
-	}
-
-	signingKey, err := store.ConfigStore.GetOAuth2SigningKey(ctx)
-	if err != nil || signingKey == nil {
+// the verified claims. The caller provides the signing key (typically from a
+// process-lifetime cache) so verification need not read it per request.
+func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey) (*jwtMCPClaims, error) {
+	if signingKey == nil {
 		return nil, fmt.Errorf("signing key unavailable")
 	}
 
-	privKey, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
+	pubKey, err := mcpJWTPublicKey(signingKey)
 	if err != nil {
-		return nil, fmt.Errorf("invalid signing key: %w", err)
+		return nil, err
 	}
-	pubKey := &privKey.PublicKey
 
 	// Pin the issuer to this instance: the kid + signature checks only prove the
 	// token was signed by our key, so a different authorization server sharing
