@@ -75,7 +75,7 @@ func resolveModelAndProvider(_ *fasthttp.RequestCtx, _ *lib.Config, model string
 func prepareRequest[T baseRequest](ctx *fasthttp.RequestCtx, config *lib.Config, knownFields map[string]bool) (*T, *requestBase, error) {
 	req := new(T)
 	if err := sonic.Unmarshal(ctx.PostBody(), req); err != nil {
-		return nil, nil, fmt.Errorf("invalid request format: %v", err)
+		return nil, nil, fmt.Errorf("Invalid request payload")
 	}
 	provider, modelName, err := resolveModelAndProvider(ctx, config, (*req).getModel())
 	if err != nil {
@@ -2379,7 +2379,7 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 	var req VideoGenerationRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -2691,7 +2691,7 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	// Parse request body
 	var req VideoRemixRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -2767,7 +2767,7 @@ func resolveBatchProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model st
 func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	var req BatchCreateRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -3463,7 +3463,7 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 func (h *CompletionHandler) containerCreate(ctx *fasthttp.RequestCtx) {
 	var req ContainerCreateRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
