@@ -12011,6 +12011,90 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	t.Log("✓ New budget from file added to DB with hash")
 }
 
+func TestLoadConfig_Governance_FirstImportUsesMergeIDHandling(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Customers: []tables.TableCustomer{
+			{ID: "customer-explicit", Name: "Explicit Customer"},
+			{Name: "Generated Customer"},
+		},
+		Teams: []tables.TableTeam{
+			{ID: "team-explicit", Name: "Explicit Team"},
+			{Name: "Generated Team"},
+		},
+		VirtualKeys: []tables.TableVirtualKey{
+			{ID: "vk-explicit", Name: "Explicit VK", Value: "sk-bf-explicit"},
+			{Name: "Generated VK"},
+		},
+		ComplexityAnalyzerConfig: testFileComplexityAnalyzerConfig(),
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+
+	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, govConfig.Customers, 2)
+	require.Len(t, govConfig.Teams, 2)
+	require.Len(t, govConfig.VirtualKeys, 2)
+
+	var explicitCustomer, generatedCustomer *tables.TableCustomer
+	for i := range govConfig.Customers {
+		switch govConfig.Customers[i].Name {
+		case "Explicit Customer":
+			explicitCustomer = &govConfig.Customers[i]
+		case "Generated Customer":
+			generatedCustomer = &govConfig.Customers[i]
+		}
+	}
+	require.NotNil(t, explicitCustomer)
+	require.Equal(t, "customer-explicit", explicitCustomer.ID)
+	require.NotNil(t, generatedCustomer)
+	_, err = uuid.Parse(generatedCustomer.ID)
+	require.NoError(t, err)
+
+	var explicitTeam, generatedTeam *tables.TableTeam
+	for i := range govConfig.Teams {
+		switch govConfig.Teams[i].Name {
+		case "Explicit Team":
+			explicitTeam = &govConfig.Teams[i]
+		case "Generated Team":
+			generatedTeam = &govConfig.Teams[i]
+		}
+	}
+	require.NotNil(t, explicitTeam)
+	require.Equal(t, "team-explicit", explicitTeam.ID)
+	require.NotNil(t, generatedTeam)
+	_, err = uuid.Parse(generatedTeam.ID)
+	require.NoError(t, err)
+
+	var explicitVK, generatedVK *tables.TableVirtualKey
+	for i := range govConfig.VirtualKeys {
+		switch govConfig.VirtualKeys[i].Name {
+		case "Explicit VK":
+			explicitVK = &govConfig.VirtualKeys[i]
+		case "Generated VK":
+			generatedVK = &govConfig.VirtualKeys[i]
+		}
+	}
+	require.NotNil(t, explicitVK)
+	require.Equal(t, "vk-explicit", explicitVK.ID)
+	require.Equal(t, "sk-bf-explicit", explicitVK.Value)
+	require.NotNil(t, generatedVK)
+	_, err = uuid.Parse(generatedVK.ID)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(generatedVK.Value, "sk-bf-"))
+	require.NotNil(t, config.GovernanceConfig.ComplexityAnalyzerConfig)
+	require.NotNil(t, govConfig.ComplexityAnalyzerConfig)
+	require.Equal(t, govConfig.ComplexityAnalyzerConfig, config.GovernanceConfig.ComplexityAnalyzerConfig)
+}
+
 // TestSQLite_Budget_HashMatch_DBPreserved tests DB budget preserved when hash matches
 func TestSQLite_Budget_HashMatch_DBPreserved(t *testing.T) {
 	initTestLogger()
@@ -18026,6 +18110,44 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		// Verify sessions were NOT flushed because password did not change
 		require.False(t, mockStore.flushSessionsCalled, "sessions should not be flushed when password matches")
 	})
+}
+
+func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		AuthConfig: &configstore.AuthConfig{
+			AdminUserName: schemas.NewSecretVar("nested-admin"),
+			AdminPassword: schemas.NewSecretVar("nested-password"),
+			IsEnabled:     true,
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	storedAuth, err := config1.ConfigStore.GetAuthConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, storedAuth)
+	require.Equal(t, "nested-admin", storedAuth.AdminUserName.GetValue())
+	require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()))
+	require.True(t, storedAuth.IsEnabled)
+	config1.Close(ctx)
+
+	configData.Governance = nil
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	require.NotNil(t, config2.GovernanceConfig)
+	require.NotNil(t, config2.GovernanceConfig.AuthConfig)
+	require.Equal(t, "nested-admin", config2.GovernanceConfig.AuthConfig.AdminUserName.GetValue())
+	require.True(t, isBcryptHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
+	require.True(t, config2.GovernanceConfig.AuthConfig.IsEnabled)
 }
 
 // =============================================================================
