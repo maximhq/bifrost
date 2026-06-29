@@ -541,7 +541,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				var err error
 
 				if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
-					reqBody, err := gemini.ToGeminiChatCompletionRequest(ctx, request)
+					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 					if err != nil {
 						return nil, err
 					}
@@ -569,36 +569,6 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 						return nil, fmt.Errorf("failed to marshal request body: %w", err)
 					}
 				}
-				// Remove model field (it's in URL for Vertex)
-				rawBody, err = providerUtils.DeleteJSONField(rawBody, "model")
-				if err != nil {
-					return nil, fmt.Errorf("failed to delete model field: %w", err)
-				}
-			} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				// Strip unsupported fields for Vertex Gemini
-				stripVertexGeminiUnsupportedFields(reqBody)
-				// Marshal to JSON bytes
-				rawBody, err = providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-			} else {
-				// Use centralized OpenAI converter for non-Claude models
-				reqBody := openai.ToOpenAIChatRequest(ctx, request)
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				// Marshal to JSON bytes
-				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				// Remove region field if present
 				rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
 				if err != nil {
