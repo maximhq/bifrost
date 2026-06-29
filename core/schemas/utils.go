@@ -174,28 +174,10 @@ type URLTypeInfo struct {
 	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
-// defaultImageURLSchemes is the historical allowlist enforced by SanitizeImageURL.
-// Provider-specific code paths that need to accept additional schemes (e.g. Vertex's
-// gs://) must use SanitizeImageURLWithAllowedSchemes with an explicit list.
-var defaultImageURLSchemes = []string{"http", "https"}
-
-// SanitizeImageURL sanitizes and normalizes an image URL.
-// It handles both data URLs and regular URLs, accepting only http/https for non-data
-// URLs. Callers that need to accept provider-specific schemes (e.g. gs://) must use
-// SanitizeImageURLWithAllowedSchemes.
+// SanitizeImageURL sanitizes and validates an image URL.
+// It handles both data URLs and regular HTTP/HTTPS URLs.
+// It also detects raw base64 image data and adds proper data URL headers.
 func SanitizeImageURL(rawURL string) (string, error) {
-	return sanitizeImageURL(rawURL, defaultImageURLSchemes)
-}
-
-// SanitizeImageURLWithAllowedSchemes sanitizes and normalizes an image URL, then
-// validates regular URL schemes against the target provider's allowlist. Passing an
-// empty list is treated as "no non-data URL is acceptable" — call SanitizeImageURL
-// if you want the default http/https policy.
-func SanitizeImageURLWithAllowedSchemes(rawURL string, allowedSchemes ...string) (string, error) {
-	return sanitizeImageURL(rawURL, allowedSchemes)
-}
-
-func sanitizeImageURL(rawURL string, allowedSchemes []string) (string, error) {
 	if rawURL == "" {
 		return rawURL, fmt.Errorf("URL cannot be empty")
 	}
@@ -230,22 +212,9 @@ func sanitizeImageURL(rawURL string, allowedSchemes []string) (string, error) {
 		return rawURL, fmt.Errorf("invalid URL format: %w", err)
 	}
 
-	if parsedURL.Scheme == "" {
-		return rawURL, fmt.Errorf("URL must have a valid scheme")
-	}
-
-	if len(allowedSchemes) == 0 {
-		return rawURL, fmt.Errorf("URL scheme %q is not allowed: no schemes permitted", parsedURL.Scheme)
-	}
-	allowed := false
-	for _, scheme := range allowedSchemes {
-		if strings.EqualFold(parsedURL.Scheme, scheme) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return rawURL, fmt.Errorf("URL scheme %q is not allowed; expected one of: %s", parsedURL.Scheme, strings.Join(allowedSchemes, ", "))
+	// Validate scheme
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return rawURL, fmt.Errorf("URL must use http or https scheme")
 	}
 
 	// Validate host

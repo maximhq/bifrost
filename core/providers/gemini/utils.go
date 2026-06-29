@@ -18,8 +18,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-var defaultGeminiImageURLSchemes = []string{"http", "https"}
-
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher
 // Uses simple string operations for hot path performance
 func isGemini3Plus(model string) bool {
@@ -1810,16 +1808,12 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
-	if len(allowedImageURLSchemes) == 0 {
-		allowedImageURLSchemes = defaultGeminiImageURLSchemes
-	}
-
+func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		content := convertSystemChatMessageToGeminiUserContent(messages[0])
 		if len(content.Parts) > 0 {
-			return []Content{content}, nil, nil
+			return []Content{content}, nil
 		}
 	}
 
@@ -2005,9 +1999,10 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 						imageURL := block.ImageURLStruct.URL
 
 						// Sanitize and parse the image URL
-						sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(imageURL, allowedImageURLSchemes...)
+						sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
 						if err != nil {
-							return nil, nil, fmt.Errorf("failed to sanitize image URL: %w", err)
+							// Skip this block if URL is invalid
+							continue
 						}
 
 						urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
@@ -2169,7 +2164,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 		}
 	}
 
-	return contents, systemInstruction, nil
+	return contents, systemInstruction
 }
 
 func convertSystemChatMessageToGeminiUserContent(message schemas.ChatMessage) Content {
