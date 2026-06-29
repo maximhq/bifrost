@@ -2167,3 +2167,47 @@ func TestDeletePromptSession(t *testing.T) {
 		assert.Len(t, versions, 2)
 	})
 }
+
+// TestUpsertModelPricesBatch_SQLite guards the pricing-sync write path on
+// SQLite. Batching these rows into a multi-row INSERT makes GORM emit the
+// DEFAULT keyword for the table's many default:null columns, which SQLite
+// rejects ("near \"DEFAULT\": syntax error"), so UpsertModelPricesBatch must
+// fall back to per-row writes on SQLite. The rows below intentionally leave
+// cost columns nil to exercise exactly that case.
+func TestUpsertModelPricesBatch_SQLite(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{
+		{Model: "google/gemini-2.5-flash", Provider: "vertex", Mode: "chat", InputCostPerToken: cost(0.000001)},
+		{Model: "openai/gpt-4o", Provider: "openai", Mode: "chat"}, // all costs nil
+		{Model: "anthropic/claude-3", Provider: "anthropic", Mode: "chat", OutputCostPerToken: cost(0.000015)},
+	}
+
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+
+	// Re-upsert with a changed cost to exercise the ON CONFLICT update path.
+	pricing[1].InputCostPerToken = cost(0.000005)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err = s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3) // upsert, not duplicate insert
+
+	var updated *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "openai/gpt-4o" {
+			updated = &got[i]
+		}
+	}
+	require.NotNil(t, updated)
+	require.NotNil(t, updated.InputCostPerToken)
+	assert.InDelta(t, 0.000005, *updated.InputCostPerToken, 1e-9)
+}

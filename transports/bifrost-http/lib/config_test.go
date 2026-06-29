@@ -1100,6 +1100,10 @@ func (m *MockConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables
 	return nil
 }
 
+func (m *MockConfigStore) UpsertModelPricesBatch(ctx context.Context, pricing []tables.TableModelPricing, tx ...*gorm.DB) error {
+	return nil
+}
+
 func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error {
 	return nil
 }
