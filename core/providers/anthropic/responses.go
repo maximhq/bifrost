@@ -3892,6 +3892,33 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 			}
 
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			// tool_search calls, like web search/advisor, emit a server_tool_use +
+			// result pair (carrying the discovered tool_references) that lives inside
+			// the assistant message, so a follow-up turn keeps the search context.
+			flushPendingToolResults()
+			toolSearchBlocks := convertBifrostToolSearchCallToAnthropicBlocks(&msg)
+			if len(toolSearchBlocks) > 0 {
+				if currentAssistantMessage == nil {
+					currentAssistantMessage = &AnthropicMessage{
+						Role: AnthropicMessageRoleAssistant,
+					}
+				}
+				if len(pendingReasoningContentBlocks) > 0 {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					pendingToolCalls = append(copied, pendingToolCalls...)
+					pendingReasoningContentBlocks = nil
+				}
+				pendingToolCalls = append(pendingToolCalls, toolSearchBlocks...)
+				if toolSearchBlocks[0].ID != nil {
+					if currentToolCallIDs == nil {
+						currentToolCallIDs = make(map[string]bool)
+					}
+					currentToolCallIDs[*toolSearchBlocks[0].ID] = true
+				}
+			}
+
 		case schemas.ResponsesMessageTypeWebFetchCall:
 			flushPendingToolResults()
 
@@ -5345,6 +5372,57 @@ func convertBifrostAdvisorCallToAnthropicBlocks(msg *schemas.ResponsesMessage) [
 				StopReason:       adv.StopReason,
 			},
 		}
+	}
+
+	return []AnthropicContentBlock{serverToolUseBlock, resultBlock}
+}
+
+// convertBifrostToolSearchCallToAnthropicBlocks rebuilds the tool_search
+// server_tool_use block and its paired tool_search_tool_result block (carrying
+// the discovered tool_references) from a neutral tool_search_call. Anthropic
+// requires the server_tool_use to be followed by its result block in the
+// assistant message, so a follow-up turn that references a discovered tool keeps
+// the search context. Mirrors convertBifrostWebSearchCall/AdvisorCall.
+func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
+	if msg.ResponsesToolMessage == nil {
+		return nil
+	}
+
+	// Resolve the tool-use id (server_tool_use.id == tool_search_tool_result.tool_use_id).
+	var toolUseID *string
+	if msg.ResponsesToolMessage.CallID != nil {
+		toolUseID = msg.ResponsesToolMessage.CallID
+	} else {
+		toolUseID = msg.ID
+	}
+
+	// 1. server_tool_use block. Preserve the search variant name (regex/bm25);
+	// the query is not retained on the neutral item, so send an empty input.
+	name := string(AnthropicToolNameToolSearchRegex)
+	if msg.ResponsesToolMessage.Name != nil && *msg.ResponsesToolMessage.Name != "" {
+		name = *msg.ResponsesToolMessage.Name
+	}
+	serverToolUseBlock := AnthropicContentBlock{
+		Type:  AnthropicContentBlockTypeServerToolUse,
+		ID:    toolUseID,
+		Name:  schemas.Ptr(name),
+		Input: json.RawMessage("{}"),
+	}
+
+	// 2. tool_search_tool_result block reconstructed from the discovered tool names.
+	var toolReferences []AnthropicContentBlock
+	if msg.ResponsesToolMessage.ResponsesToolSearchCall != nil {
+		for _, toolName := range msg.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences {
+			toolReferences = append(toolReferences, AnthropicContentBlock{
+				Type:     AnthropicContentBlockTypeToolReference,
+				ToolName: schemas.Ptr(toolName),
+			})
+		}
+	}
+	resultBlock := AnthropicContentBlock{
+		Type:           AnthropicContentBlockTypeToolSearchToolResult,
+		ToolUseID:      toolUseID,
+		ToolReferences: toolReferences,
 	}
 
 	return []AnthropicContentBlock{serverToolUseBlock, resultBlock}

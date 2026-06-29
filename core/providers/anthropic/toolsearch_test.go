@@ -251,3 +251,67 @@ func TestToolSearch_CompletedResponseIncludesToolSearchCall(t *testing.T) {
 		t.Fatal("response.completed Output missing the discovered tool function_call")
 	}
 }
+
+// TestToolSearch_ReverseRebuildsAnthropicBlocks asserts the Bifrost→Anthropic
+// request builder rebuilds a tool_search_call into the paired
+// server_tool_use(tool_search) + tool_search_tool_result(tool_references) blocks,
+// so a follow-up turn keeps the search context (parity with web_search/advisor).
+// Without the reverse case the item hits `default: continue` and is dropped.
+func TestToolSearch_ReverseRebuildsAnthropicBlocks(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	history := []schemas.ResponsesMessage{
+		{
+			ID:   schemas.Ptr(tsServerToolUseID),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  schemas.Ptr(tsServerToolUseID),
+				Name:                    schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
+			},
+		},
+		{
+			ID:   schemas.Ptr(tsDiscoveredCallID),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr(tsDiscoveredCallID), Name: schemas.Ptr(tsDiscoveredTool), Arguments: schemas.Ptr(`{"location":"Tokyo"}`),
+			},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true, schemas.Anthropic, "claude-sonnet-4-6")
+
+	var serverToolUse, resultBlock *AnthropicContentBlock
+	for mi := range msgs {
+		for bi := range msgs[mi].Content.ContentBlocks {
+			b := &msgs[mi].Content.ContentBlocks[bi]
+			switch b.Type {
+			case AnthropicContentBlockTypeServerToolUse:
+				if b.Name != nil && *b.Name == string(AnthropicToolNameToolSearchRegex) {
+					serverToolUse = b
+				}
+			case AnthropicContentBlockTypeToolSearchToolResult:
+				resultBlock = b
+			}
+		}
+	}
+
+	if serverToolUse == nil {
+		t.Fatal("reverse path dropped tool_search_call — no server_tool_use(tool_search) block rebuilt")
+	}
+	if serverToolUse.ID == nil || *serverToolUse.ID != tsServerToolUseID {
+		t.Fatalf("server_tool_use ID = %v, want %q", serverToolUse.ID, tsServerToolUseID)
+	}
+	if resultBlock == nil {
+		t.Fatal("no tool_search_tool_result block rebuilt")
+	}
+	if resultBlock.ToolUseID == nil || *resultBlock.ToolUseID != tsServerToolUseID {
+		t.Fatalf("tool_search_tool_result tool_use_id = %v, want %q", resultBlock.ToolUseID, tsServerToolUseID)
+	}
+	if len(resultBlock.ToolReferences) != 1 || resultBlock.ToolReferences[0].ToolName == nil ||
+		*resultBlock.ToolReferences[0].ToolName != tsDiscoveredTool {
+		t.Fatalf("rebuilt tool_references = %+v, want one ref to %q", resultBlock.ToolReferences, tsDiscoveredTool)
+	}
+}
