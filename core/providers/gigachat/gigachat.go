@@ -227,6 +227,7 @@ func (provider *GigaChatProvider) chatCompletionStream(
 		},
 		nil,
 		withGigaChatChatResponseProvider(providerName),
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)

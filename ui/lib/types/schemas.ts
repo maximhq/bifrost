@@ -196,6 +196,41 @@ export const bedrockKeyConfigSchema = z
 		},
 	);
 
+// Bedrock Mantle key config schema (SigV4 credentials; no ARN / batch S3 config)
+export const bedrockMantleKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			// Explicit auth must carry both keys; a region-only config fails at request time.
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			// If either access_key or secret_key is set, both must be set.
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// IAM-role path: both keys empty is valid, but a lone session token cannot sign SigV4.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
 // VLLM key config schema
 export const vllmKeyConfigSchema = z
 	.object({
@@ -359,6 +394,7 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -375,7 +411,19 @@ export const modelProviderKeySchema = z
 			}
 			// GigaChat can use OAuth credentials, access token, user/password, mTLS, or a top-level token.
 			if (data.gigachat_key_config) {
-				return isGigaChatAuthConfigured(data.gigachat_key_config) || isGigaChatMTLSConfigured(data.gigachat_key_config) || isSecretVarSet(data.value);
+				return (
+					isGigaChatAuthConfigured(data.gigachat_key_config) ||
+					isGigaChatMTLSConfigured(data.gigachat_key_config) ||
+					isSecretVarSet(data.value)
+				);
+			}
+			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
+			// a top-level API key when the user explicitly chose the api_key auth method.
+			if (data.bedrock_mantle_key_config) {
+				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
 			}
 			// Azure requires API key only when using api_key auth
 			if (data.azure_key_config) {

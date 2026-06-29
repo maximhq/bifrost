@@ -39,7 +39,10 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 		if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
 			return geminiReq, fmt.Errorf("failed to unmarshal messages: %w", err)
 		}
-		contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
+		contents, systemInstruction, err := convertBifrostMessagesToGemini(chatMessages)
+		if err != nil {
+			return geminiReq, fmt.Errorf("failed to convert messages: %w", err)
+		}
 		geminiReq.Contents = contents
 		geminiReq.SystemInstruction = systemInstruction
 	}

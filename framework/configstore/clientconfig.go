@@ -547,6 +547,29 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
 
+		// Redact Bedrock Mantle key config if present
+		if key.BedrockMantleKeyConfig != nil {
+			mantleConfig := &schemas.BedrockMantleKeyConfig{}
+			mantleConfig.AccessKey = *key.BedrockMantleKeyConfig.AccessKey.Redacted()
+			mantleConfig.SecretKey = *key.BedrockMantleKeyConfig.SecretKey.Redacted()
+			if key.BedrockMantleKeyConfig.SessionToken != nil {
+				mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.Region != nil {
+				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.RoleARN != nil {
+				mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.ExternalID != nil {
+				mantleConfig.ExternalID = key.BedrockMantleKeyConfig.ExternalID.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.RoleSessionName != nil {
+				mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
+			}
+			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
+		}
+
 		if key.VLLMKeyConfig != nil {
 			vllmConfig := &schemas.VLLMKeyConfig{
 				ModelName: key.VLLMKeyConfig.ModelName,

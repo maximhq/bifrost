@@ -29,6 +29,7 @@ export const ModelPlaceholders = {
 	anthropic: "e.g. claude-3-haiku, claude-2.1",
 	azure: "e.g. gpt-4, gpt-35-turbo (must match alias keys)",
 	bedrock: "e.g. claude-v2, titan-text-express-v1, ai21-j2-mid",
+	bedrock_mantle: "e.g. anthropic.claude-opus-4-8, openai.gpt-oss-120b",
 	cerebras: "e.g. cerebras-2, cerebras-2-vision",
 	cohere: "e.g. command-r, command-r-plus",
 	gemini: "e.g. gemini-1.5-pro, gemini-1.5-flash",
@@ -51,6 +52,7 @@ export const ModelPlaceholders = {
 	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
 	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
+	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 };
 
@@ -58,6 +60,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	anthropic: true,
 	azure: true,
 	bedrock: true,
+	bedrock_mantle: true,
 	cerebras: true,
 	cohere: true,
 	gemini: true,
@@ -79,6 +82,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	xai: true,
 	replicate: true,
 	runway: true,
+	runware: true,
 	vllm: false,
 	fireworks: true,
 };

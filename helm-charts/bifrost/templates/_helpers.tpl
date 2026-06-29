@@ -670,6 +670,18 @@ false
 {{- /* Load Balancer Config */ -}}
 {{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
 {{- $lb := dict "enabled" true }}
+{{- if hasKey .Values.bifrost.loadBalancer "directionSelectionEnabled" }}
+{{- $_ := set $lb "direction_selection_enabled" .Values.bifrost.loadBalancer.directionSelectionEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "routeSelectionEnabled" }}
+{{- $_ := set $lb "route_selection_enabled" .Values.bifrost.loadBalancer.routeSelectionEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "rerouteFailedDirections" }}
+{{- $_ := set $lb "reroute_failed_directions" .Values.bifrost.loadBalancer.rerouteFailedDirections }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "pruneFailedFallbacks" }}
+{{- $_ := set $lb "prune_failed_fallbacks" .Values.bifrost.loadBalancer.pruneFailedFallbacks }}
+{{- end }}
 {{- if .Values.bifrost.loadBalancer.trackerConfig }}
 {{- $_ := set $lb "tracker_config" .Values.bifrost.loadBalancer.trackerConfig }}
 {{- end }}
@@ -1577,6 +1589,10 @@ false
 {{- if $flags }}
 {{- $_ := set $config "feature_flags" (dict "flags" $flags) }}
 {{- end }}
+{{- end }}
+{{- /* Circuit Breaker Config */ -}}
+{{- if .Values.bifrost.circuitBreakerConfig }}
+{{- $_ := set $config "circuit_breaker_config" .Values.bifrost.circuitBreakerConfig }}
 {{- end }}
 {{- $config | toJson }}
 {{- end }}

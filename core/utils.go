@@ -83,6 +83,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
 	schemas.Bedrock,
+	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
 	schemas.Elevenlabs,
@@ -119,14 +120,14 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 }
 
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
-// Some providers like Vertex, Bedrock, and GigaChat have their credentials in additional key configs.
+// Some providers like Vertex, Bedrock, Bedrock Mantle, and GigaChat have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.GigaChat
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.GigaChat
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex
+	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.BedrockMantle && providerKey != schemas.Vertex
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -170,6 +171,11 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		// BedrockKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
 		if key.BedrockKeyConfig == nil {
 			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		}
+	case schemas.BedrockMantle:
+		// BedrockMantleKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.BedrockMantleKeyConfig == nil {
+			key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{}
 		}
 	case schemas.Vertex:
 		if key.VertexKeyConfig == nil {

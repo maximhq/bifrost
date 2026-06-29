@@ -237,6 +237,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															(key.vertex_key_config?.project_id?.type && key.vertex_key_config.project_id.type !== "plain_text") ||
 															(key.vertex_key_config?.region?.type && key.vertex_key_config.region.type !== "plain_text") ||
 															(key.bedrock_key_config?.region?.type && key.bedrock_key_config.region.type !== "plain_text") ||
+															(key.bedrock_mantle_key_config?.region?.type && key.bedrock_mantle_key_config.region.type !== "plain_text") ||
 															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
 															(key.gigachat_key_config?.credentials?.type && key.gigachat_key_config.credentials.type !== "plain_text") ||
 															(key.gigachat_key_config?.access_token?.type && key.gigachat_key_config.access_token.type !== "plain_text") ||

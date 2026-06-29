@@ -109,6 +109,10 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 			const { _auth_type, ...rest } = key.gigachat_key_config;
 			key.gigachat_key_config = rest;
 		}
+		if (key.bedrock_mantle_key_config) {
+			const { _auth_type, ...rest } = key.bedrock_mantle_key_config;
+			key.bedrock_mantle_key_config = rest;
+		}
 		const mutation = isEditing
 			? updateProviderKey({
 					provider: provider.name,
