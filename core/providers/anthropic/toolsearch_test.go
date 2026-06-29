@@ -37,6 +37,7 @@ func newToolSearchTestState() *AnthropicResponsesStreamState {
 		TextBuffers:               make(map[int]*strings.Builder),
 		CurrentOutputIndex:        0,
 		MessageID:                 schemas.Ptr("msg_ts_test"),
+		Model:                     schemas.Ptr("claude-sonnet-4-6"),
 		CreatedAt:                 1234567890,
 		HasEmittedCreated:         true,
 		HasEmittedInProgress:      true,
@@ -44,17 +45,19 @@ func newToolSearchTestState() *AnthropicResponsesStreamState {
 }
 
 // toolSearchStreamChunks builds a realistic server-side tool_search Anthropic
-// stream: server_tool_use(tool_search_tool_regex) -> tool_search_tool_result
-// (with tool_references to the discovered tool) -> tool_use(discovered tool).
-func toolSearchStreamChunks() []*AnthropicStreamEvent {
+// stream for the given tool-search variant: server_tool_use(toolName) ->
+// tool_search_tool_result(tool_references to the discovered tool) ->
+// tool_use(discovered tool). When withStop is set, a terminal message_stop is
+// appended so the converter emits response.completed.
+func toolSearchStreamChunks(toolName string, withStop bool) []*AnthropicStreamEvent {
 	q := `{"query":"weather"}`
 	args := `{"location":"Tokyo"}`
-	return []*AnthropicStreamEvent{
-		// idx0: server_tool_use(tool_search_tool_regex) + its query deltas
+	chunks := []*AnthropicStreamEvent{
+		// idx0: server_tool_use(<tool search variant>) + its query deltas
 		{Type: AnthropicStreamEventTypeContentBlockStart, Index: schemas.Ptr(0), ContentBlock: &AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeServerToolUse,
 			ID:   schemas.Ptr(tsServerToolUseID),
-			Name: schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+			Name: schemas.Ptr(toolName),
 		}},
 		{Type: AnthropicStreamEventTypeContentBlockDelta, Index: schemas.Ptr(0), Delta: &AnthropicStreamDelta{
 			Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &q,
@@ -82,6 +85,14 @@ func toolSearchStreamChunks() []*AnthropicStreamEvent {
 		}},
 		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(2)},
 	}
+	if withStop {
+		stopReason := AnthropicStopReasonToolUse
+		chunks = append(chunks,
+			&AnthropicStreamEvent{Type: AnthropicStreamEventTypeMessageDelta, Delta: &AnthropicStreamDelta{StopReason: &stopReason}},
+			&AnthropicStreamEvent{Type: AnthropicStreamEventTypeMessageStop},
+		)
+	}
+	return chunks
 }
 
 func driveToolSearch(t *testing.T, chunks []*AnthropicStreamEvent) []*schemas.BifrostResponsesStreamResponse {
@@ -101,29 +112,46 @@ func driveToolSearch(t *testing.T, chunks []*AnthropicStreamEvent) []*schemas.Bi
 }
 
 // TestToolSearch_ForwardsToolReferences asserts the discovered tool references
-// from tool_search_tool_result survive into a tool_search_call item (instead of
-// being dropped). Fails on the unpatched provider, which emits no tool_search_call.
+// from tool_search_tool_result survive into a tool_search_call item (carrying
+// the tool name), instead of being dropped. Runs both tool_search variants.
+// Fails on the unpatched provider, which emits no tool_search_call.
 func TestToolSearch_ForwardsToolReferences(t *testing.T) {
 	t.Parallel()
-	all := driveToolSearch(t, toolSearchStreamChunks())
+	for _, tc := range []struct {
+		name     string
+		toolName string
+	}{
+		{"regex", string(AnthropicToolNameToolSearchRegex)},
+		{"bm25", string(AnthropicToolNameToolSearchBM25)},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			all := driveToolSearch(t, toolSearchStreamChunks(tc.toolName, false))
 
-	var toolSearchDone *schemas.ResponsesMessage
-	for _, r := range all {
-		if r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone &&
-			r.Item != nil && r.Item.Type != nil &&
-			*r.Item.Type == schemas.ResponsesMessageTypeToolSearchCall {
-			toolSearchDone = r.Item
-		}
-	}
-	if toolSearchDone == nil {
-		t.Fatal("no tool_search_call output_item.done emitted — tool_search_tool_result was dropped")
-	}
-	if toolSearchDone.ResponsesToolMessage == nil || toolSearchDone.ResponsesToolMessage.ResponsesToolSearchCall == nil {
-		t.Fatal("tool_search_call item carries no ResponsesToolSearchCall payload")
-	}
-	refs := toolSearchDone.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
-	if len(refs) != 1 || refs[0] != tsDiscoveredTool {
-		t.Fatalf("tool_references = %v, want [%q]", refs, tsDiscoveredTool)
+			var done *schemas.ResponsesMessage
+			for _, r := range all {
+				if r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone &&
+					r.Item != nil && r.Item.Type != nil &&
+					*r.Item.Type == schemas.ResponsesMessageTypeToolSearchCall {
+					done = r.Item
+				}
+			}
+			if done == nil {
+				t.Fatal("no tool_search_call output_item.done emitted — tool_search_tool_result was dropped")
+			}
+			if done.ResponsesToolMessage == nil || done.ResponsesToolMessage.ResponsesToolSearchCall == nil {
+				t.Fatal("tool_search_call item carries no ResponsesToolSearchCall payload")
+			}
+			refs := done.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
+			if len(refs) != 1 || refs[0] != tsDiscoveredTool {
+				t.Fatalf("tool_references = %v, want [%q]", refs, tsDiscoveredTool)
+			}
+			// done item must carry the tool name, matching the added item (advisor parity)
+			if done.ResponsesToolMessage.Name == nil || *done.ResponsesToolMessage.Name != tc.toolName {
+				t.Fatalf("tool_search_call done Name = %v, want %q", done.ResponsesToolMessage.Name, tc.toolName)
+			}
+		})
 	}
 }
 
@@ -131,7 +159,7 @@ func TestToolSearch_ForwardsToolReferences(t *testing.T) {
 // calls the discovered tool is forwarded as a function_call (added + done).
 func TestToolSearch_ForwardsDiscoveredToolUse(t *testing.T) {
 	t.Parallel()
-	all := driveToolSearch(t, toolSearchStreamChunks())
+	all := driveToolSearch(t, toolSearchStreamChunks(string(AnthropicToolNameToolSearchRegex), false))
 
 	var sawAdded, sawDone bool
 	for _, r := range all {
@@ -160,7 +188,7 @@ func TestToolSearch_ForwardsDiscoveredToolUse(t *testing.T) {
 // item), which desync the client stream parser — this guards against that.
 func TestToolSearch_NoOrphanFunctionCallArgs(t *testing.T) {
 	t.Parallel()
-	all := driveToolSearch(t, toolSearchStreamChunks())
+	all := driveToolSearch(t, toolSearchStreamChunks(string(AnthropicToolNameToolSearchRegex), false))
 
 	added := map[string]bool{}
 	for _, r := range all {
@@ -178,5 +206,48 @@ func TestToolSearch_NoOrphanFunctionCallArgs(t *testing.T) {
 				t.Fatalf("orphan function_call args for item %q — no preceding output_item.added", *r.ItemID)
 			}
 		}
+	}
+}
+
+// TestToolSearch_CompletedResponseIncludesToolSearchCall asserts the terminal
+// response.completed Output carries the tool_search_call (with its tool_references),
+// guarding the OutputItems persistence that the streamed done events alone don't cover.
+func TestToolSearch_CompletedResponseIncludesToolSearchCall(t *testing.T) {
+	t.Parallel()
+	all := driveToolSearch(t, toolSearchStreamChunks(string(AnthropicToolNameToolSearchRegex), true))
+
+	var completed *schemas.BifrostResponsesResponse
+	for _, r := range all {
+		if r.Type == schemas.ResponsesStreamResponseTypeCompleted && r.Response != nil {
+			completed = r.Response
+		}
+	}
+	if completed == nil {
+		t.Fatal("no response.completed emitted")
+	}
+	var foundRefs []string
+	var foundTool bool
+	for i := range completed.Output {
+		item := completed.Output[i]
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.ResponsesToolSearchCall != nil {
+				foundRefs = item.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
+			}
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.Name != nil &&
+				*item.ResponsesToolMessage.Name == tsDiscoveredTool {
+				foundTool = true
+			}
+		}
+	}
+	if len(foundRefs) != 1 || foundRefs[0] != tsDiscoveredTool {
+		t.Fatalf("response.completed tool_search_call tool_references = %v, want [%q]", foundRefs, tsDiscoveredTool)
+	}
+	if !foundTool {
+		t.Fatal("response.completed Output missing the discovered tool function_call")
 	}
 }

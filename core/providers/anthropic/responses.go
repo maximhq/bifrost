@@ -41,6 +41,7 @@ type AnthropicResponsesStreamState struct {
 
 	// Tool search (server-side tool_search) accumulation
 	ToolSearchToolID      *string                // server_tool_use ID of active tool_search
+	ToolSearchToolName    *string                // tool name (tool_search_tool_regex|bm25) — kept so the done item matches the added item
 	ToolSearchOutputIndex *int                   // Output index for this tool_search call
 	ToolSearchResult      *AnthropicContentBlock // tool_search_tool_result block (carries tool_references) when it arrives
 
@@ -188,6 +189,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
 	state.ToolSearchToolID = nil
+	state.ToolSearchToolName = nil
 	state.ToolSearchOutputIndex = nil
 	state.ToolSearchResult = nil
 	state.CurrentOutputIndex = 0
@@ -227,6 +229,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
 	state.ToolSearchToolID = nil
+	state.ToolSearchToolName = nil
 	state.ToolSearchOutputIndex = nil
 	state.ToolSearchResult = nil
 	state.ContentIndexToOutputIndex = nil
@@ -507,6 +510,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				state.ChunkIndex = chunk.Index
 				state.AccumulatedJSON = ""
 				state.ToolSearchToolID = chunk.ContentBlock.ID
+				state.ToolSearchToolName = chunk.ContentBlock.Name
 				state.ToolSearchOutputIndex = schemas.Ptr(outputIndex)
 				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
 				// Mark block type so content_block_stop doesn't emit a generic message done
@@ -1336,6 +1340,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Status: schemas.Ptr("completed"),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID:                  state.ToolSearchToolID,
+						Name:                    state.ToolSearchToolName,
 						ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: toolRefs},
 					},
 				}
@@ -1349,6 +1354,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					state.OutputItems[*outputIdx] = &cloned
 				}
 				state.ToolSearchToolID = nil
+				state.ToolSearchToolName = nil
 				state.ToolSearchOutputIndex = nil
 				state.ToolSearchResult = nil
 				if chunk.Index != nil {
