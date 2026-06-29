@@ -5,8 +5,10 @@ import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
-import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
-import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
+import { getErrorMessage } from "@/lib/store";
+import { getActiveTempToken } from "@/lib/store/apis/tempToken";
+import type { LogFilters as LogFiltersType, RecalculateCostProgress, RecalculateCostResponse } from "@/lib/types/logs";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Calculator, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -50,7 +52,6 @@ export function LogsHeaderView({
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
-	const [recalculateCosts] = useRecalculateLogCostsMutation();
 
 	const [timezone, setTimezone] = useTimezonePreference();
 
@@ -77,19 +78,37 @@ export function LogsHeaderView({
 	}, []);
 
 	const handleRecalculateCosts = useCallback(async () => {
-		try {
-			const response = await recalculateCosts({ filters }).unwrap();
-			await fetchLogs();
-			await fetchStats();
-			setOpenMoreActionsPopover(false);
-			toast.success(`Recalculated costs for ${response.updated} logs`, {
+		setOpenMoreActionsPopover(false);
+		const toastId = "logs-recalculate-costs";
+		const recalculatePromise = recalculateCostsWithProgress(filters, (progress) => {
+			const total = progress.total_matched || 0;
+			const processed = Math.min(progress.processed, total || progress.processed);
+			toast.loading("Recalculating log costs...", {
+				id: toastId,
+				description:
+					total > 0
+						? `${processed}/${total} checked, ${progress.updated} updated, ${progress.skipped} skipped`
+						: "Finding logs with missing costs",
+			});
+		});
+
+		toast.promise(recalculatePromise, {
+			id: toastId,
+			loading: "Recalculating log costs...",
+			success: (response) => ({
+				message: `Recalculated costs for ${response.updated} logs`,
 				description: `${response.updated} logs updated, ${response.skipped} logs skipped, ${response.remaining} logs remaining`,
 				duration: 5000,
-			});
-		} catch (err) {
-			toast.error(getErrorMessage(err));
-		}
-	}, [filters, recalculateCosts, fetchLogs, fetchStats]);
+			}),
+			error: (err) => getErrorMessage(err),
+		});
+
+		try {
+			await recalculatePromise;
+			await fetchLogs();
+			await fetchStats();
+		} catch {}
+	}, [filters, fetchLogs, fetchStats]);
 
 	const handleSearchChange = useCallback(
 		(value: string) => {
@@ -190,4 +209,104 @@ export function LogsHeaderView({
 			/>
 		</div>
 	);
+}
+
+async function recalculateCostsWithProgress(
+	filters: LogFiltersType,
+	onProgress: (progress: RecalculateCostProgress) => void,
+): Promise<RecalculateCostResponse> {
+	const headers: Record<string, string> = {
+		Accept: "text/event-stream",
+		"Content-Type": "application/json",
+	};
+	const tempToken = getActiveTempToken();
+	if (tempToken) {
+		headers["X-Bifrost-Temp-Token"] = tempToken;
+	}
+
+	const response = await fetch(`${getApiBaseUrl()}/logs/recalculate-cost`, {
+		method: "POST",
+		credentials: "include",
+		headers,
+		body: JSON.stringify({ filters }),
+	});
+
+	if (!response.ok) {
+		throw await readRecalculateCostError(response);
+	}
+	if (!response.body) {
+		throw new Error("Recalculate cost stream is unavailable");
+	}
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	let finalResult: RecalculateCostResponse | undefined;
+
+	while (true) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		buffer += decoder.decode(value, { stream: true });
+		const events = buffer.split("\n\n");
+		buffer = events.pop() || "";
+		for (const eventBlock of events) {
+			const parsed = parseSSEEvent(eventBlock);
+			if (!parsed || parsed.data === "[DONE]") continue;
+			if (parsed.event === "error") {
+				throw parseRecalculateCostStreamError(parsed.data);
+			}
+			if (parsed.event === "progress") {
+				onProgress(JSON.parse(parsed.data) as RecalculateCostProgress);
+				continue;
+			}
+			if (parsed.event === "done") {
+				finalResult = JSON.parse(parsed.data) as RecalculateCostResponse;
+			}
+		}
+	}
+
+	buffer += decoder.decode();
+	if (buffer.trim()) {
+		const parsed = parseSSEEvent(buffer);
+		if (parsed?.event === "done") {
+			finalResult = JSON.parse(parsed.data) as RecalculateCostResponse;
+		}
+	}
+
+	if (!finalResult) {
+		throw new Error("Recalculate cost stream ended before a final result was received");
+	}
+	return finalResult;
+}
+
+function parseSSEEvent(block: string): { event: string; data: string } | undefined {
+	let event = "message";
+	const data: string[] = [];
+	for (const rawLine of block.split("\n")) {
+		const line = rawLine.trimEnd();
+		if (line.startsWith("event: ")) {
+			event = line.slice(7);
+		} else if (line.startsWith("data: ")) {
+			data.push(line.slice(6));
+		}
+	}
+	if (data.length === 0) return undefined;
+	return { event, data: data.join("\n") };
+}
+
+async function readRecalculateCostError(response: Response): Promise<Error> {
+	try {
+		return parseRecalculateCostStreamError(await response.text());
+	} catch {
+		return new Error(`Failed to recalculate costs (${response.status})`);
+	}
+}
+
+function parseRecalculateCostStreamError(data: string): Error {
+	try {
+		const parsed = JSON.parse(data) as { error?: { message?: string }; message?: string };
+		return new Error(parsed.error?.message || parsed.message || "Failed to recalculate costs");
+	} catch {
+		return new Error(data || "Failed to recalculate costs");
+	}
 }

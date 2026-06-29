@@ -61,6 +61,7 @@ type SearchFilters struct {
 	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	StartTime         *time.Time        `json:"start_time,omitempty"`
 	EndTime           *time.Time        `json:"end_time,omitempty"`
+	Period            string            `json:"period,omitempty"`
 	MinLatency        *float64          `json:"min_latency,omitempty"`
 	MaxLatency        *float64          `json:"max_latency,omitempty"`
 	MinTokens         *int              `json:"min_tokens,omitempty"`
