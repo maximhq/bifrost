@@ -4,6 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
@@ -234,7 +235,7 @@ function CheckboxFilterItem({
 	return (
 		<label className="hover:bg-muted/50 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm" data-testid={testId}>
 			<Checkbox checked={checked} onCheckedChange={onCheckedChange} />
-			<span className={cn("truncate", labelClassName)}>{label}</span>
+			<TruncatedLabel className={labelClassName}>{label}</TruncatedLabel>
 		</label>
 	);
 }
