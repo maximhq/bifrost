@@ -1,8 +1,10 @@
 package vertex
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -51,6 +53,36 @@ func TestGetVertexAPIHost(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
 		})
+	}
+}
+
+func TestVertexGeminiImageURLSchemesAllowGCS(t *testing.T) {
+	result, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	}, geminiImageURLSchemes...)
+	if err != nil {
+		t.Fatalf("expected Vertex Gemini schemes to allow gs:// image URLs, got: %v", err)
+	}
+	if len(result.Contents) != 1 || len(result.Contents[0].Parts) != 1 || result.Contents[0].Parts[0].FileData == nil {
+		t.Fatalf("expected one fileData part, got %#v", result.Contents)
+	}
+	if result.Contents[0].Parts[0].FileData.FileURI != "gs://my-bucket/xxx.png" {
+		t.Fatalf("expected gs:// fileUri, got %q", result.Contents[0].Parts[0].FileData.FileURI)
 	}
 }
 
@@ -495,5 +527,17 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 	})
 	if got := resolveVertexProjectNumber(ctx2, key); got != keyNumber {
 		t.Errorf("empty alias ProjectNumber should fall through: got %q, want %q", got, keyNumber)
+	}
+}
+
+// TestGeminiImageURLSchemesContract pins the exact allowlist that Vertex passes
+// into the Gemini converter. vertex.go reuses geminiImageURLSchemes across
+// ChatCompletion / ChatCompletionStream / Responses / ResponsesStream / CountTokens,
+// so a regression that drops "gs" (or accidentally adds e.g. "file") is caught
+// here without having to drive each provider entrypoint end-to-end.
+func TestGeminiImageURLSchemesContract(t *testing.T) {
+	want := []string{"http", "https", "gs"}
+	if !reflect.DeepEqual(geminiImageURLSchemes, want) {
+		t.Fatalf("geminiImageURLSchemes = %v, want %v", geminiImageURLSchemes, want)
 	}
 }

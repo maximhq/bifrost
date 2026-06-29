@@ -410,8 +410,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MCPServers = servers
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
-			// Vertex doesn't support native structured outputs, so convert to tool
-			if bifrostReq.Provider == schemas.Vertex {
+			// Vertex and Bedrock Mantle don't accept native structured outputs
+			// (output_config.format), so convert to a tool instead.
+			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle {
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)

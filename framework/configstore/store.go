@@ -64,9 +64,10 @@ type RoutingRulesQueryParams struct {
 
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
 type MCPClientsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string
+	Limit    int
+	Offset   int
+	Search   string
+	ClientID string
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
