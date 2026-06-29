@@ -8,7 +8,7 @@ icon: "/media/runware-nav.svg"
 
 Runware exposes a single synchronous endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**. Bifrost wraps each request in this array envelope and maps the unified image and video schemas onto Runware's `imageInference` and `videoInference` task types. Image tasks return synchronously; video tasks are submitted asynchronously and polled to completion.
 
-Bifrost routes chat completions (unary and streaming), the Responses API (unary and streaming, translated to chat completions), and model listing through its shared OpenAI-compatible handlers,
+Bifrost routes chat completions (unary and streaming), the Responses API (unary and streaming, translated to chat completions), and model listing through its shared OpenAI-compatible handlers.
 
 ### Supported Operations
 
