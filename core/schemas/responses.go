@@ -991,7 +991,15 @@ func isToolSearchItem(t string) bool {
 }
 
 // UnmarshalJSON preserves codex tool_search items verbatim (see rawToolSearch)
-// and defers every other item type to the default struct decoding.
+// and otherwise normalizes function/tool-call arguments before decoding the rest
+// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
+// a JSON string, but `tool_search_call` items serialize `arguments` as a JSON
+// object — e.g. {} while in_progress and {"query":"...","limit":10} when
+// completed. The embedded ResponsesToolMessage.Arguments field is a *string, so
+// an object value makes a plain decode fail with "Mismatch type string with
+// value object", which silently drops the item mid-stream and hangs streaming
+// clients. We shadow `arguments` as raw JSON, decode everything else as usual,
+// then store the canonical stringified form.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// Clear the receiver first so a reused instance never retains a stale
 	// rawToolSearch (or other fields) from a prior decode — unmarshalling a
@@ -1004,32 +1012,7 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		m.rawToolSearch = append([]byte(nil), data...)
 		return nil
 	}
-	type alias ResponsesMessage
-	return sonic.Unmarshal(data, (*alias)(m))
-}
 
-// MarshalJSON re-emits preserved tool_search items verbatim and defers every
-// other item type to the default (sorted-key) struct encoding.
-func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	if m.rawToolSearch != nil {
-		return m.rawToolSearch, nil
-	}
-	type alias ResponsesMessage
-	return MarshalSorted(alias(m))
-}
-
-// UnmarshalJSON normalizes function/tool-call arguments before decoding the rest
-// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
-// a JSON string, but `tool_search_call` items (emitted when the request enables
-// the `tool_search` deferred-tool-discovery tool, as Codex does) serialize
-// `arguments` as a JSON object — e.g. {} while in_progress and
-// {"query":"...","limit":10} when completed. The embedded
-// ResponsesToolMessage.Arguments field is a *string, so an object value makes a
-// plain decode fail with "Mismatch type string with value object", which
-// silently drops the item mid-stream and hangs streaming clients. We shadow
-// `arguments` as raw JSON, decode everything else as usual, then store the
-// canonical stringified form.
-func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	type Alias ResponsesMessage
 	aux := &struct {
 		Arguments json.RawMessage `json:"arguments,omitempty"`
@@ -1051,6 +1034,16 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// MarshalJSON re-emits preserved tool_search items verbatim and defers every
+// other item type to the default (sorted-key) struct encoding.
+func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	if m.rawToolSearch != nil {
+		return m.rawToolSearch, nil
+	}
+	type alias ResponsesMessage
+	return MarshalSorted(alias(m))
 }
 
 // responsesToolArgumentsToString normalizes a function/tool-call `arguments`
