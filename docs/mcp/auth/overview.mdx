@@ -82,7 +82,7 @@ Per-user auth keys every credential against an **identity**. The mode is derived
 | Mode      | How it's set                                                                                            | Notes                                              |
 | --------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
 | `user`    | Bifrost's auth middleware populates `BifrostContextKeyUserID` (signed-in user via SSO), **or** the caller sends a VK that is owned by a user — Bifrost auto-promotes the VK's owner onto the context  | Enterprise SSO and enterprise user-owned VKs only |
-| `vk`      | Caller sends `x-bf-vk` (or `Authorization: Bearer …` / `x-api-key`) and the VK resolves but is **not** owned by a user                | Typical non-enterprise pattern, or enterprise VKs that aren't tied to a person  |
+| `vk`      | Caller sends `x-bf-vk` (or `Authorization: Bearer …` / `x-api-key` / `x-goog-api-key`) and the VK resolves but is **not** owned by a user                | Typical non-enterprise pattern, or enterprise VKs that aren't tied to a person  |
 | `session` | Caller sends `x-bf-mcp-session-id: <any-opaque-value>` and re-sends the same value on later calls      | Useful when there is no VK and no SSO              |
 
 Priority: `user` > `vk` > `session`. If multiple are present (e.g., a user-owned VK both resolves a VK ID **and** promotes a user ID), Bifrost picks the highest-priority and ignores the rest for credential lookup. This means a user-owned VK always lands in `user` mode — the credential and any auth flow are bound to the user, not the VK.
