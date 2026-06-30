@@ -458,6 +458,24 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// bf_sub liveness check: for user-mode tokens, verify the user still exists
+	// and is active, mirroring the VK-mode check above. A deleted or deactivated
+	// user should not be able to silently obtain new access tokens via refresh.
+	// The user is verified against the same in-memory source used on the /mcp
+	// request path. A transient lookup failure stays retriable (server_error) —
+	// only a gone/deactivated user invalidates the grant.
+	if schemas.MCPAuthMode(rt.BfMode) == schemas.MCPAuthModeUser && h.identityResolver != nil {
+		active, err := h.identityResolver.IsUserActive(ctx, rt.BfSub)
+		if err != nil {
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to verify user")
+			return
+		}
+		if !active {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "user is no longer active")
+			return
+		}
+	}
+
 	// RFC 8707: resource (audience URI) is distinct from scope. When the client
 	// omits it on refresh, carry forward the original resource captured at
 	// authorization — never substitute the scope string. When the client does
