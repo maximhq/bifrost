@@ -630,6 +630,42 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 
 	discoveryEnabled := authMode == tables.MCPServerAuthModeBoth || authMode == tables.MCPServerAuthModeOAuth
 
+	// --- Pre-authenticated user path ---
+	// An upstream auth layer that authenticated the caller as a user stamps the
+	// user id onto the request context. In headers/both modes, scope the request
+	// to that user's virtual key — the same representative-VK scoping a user-mode
+	// token gets — so a user authenticated by a bearer token is treated like a
+	// virtual key. oauth-strict accepts only Bifrost-issued tokens and is excluded.
+	if h.identityResolver != nil &&
+		(authMode == tables.MCPServerAuthModeHeaders || authMode == tables.MCPServerAuthModeBoth) {
+		if userID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string); userID != "" {
+			// The user identity is the sole credential; reject a stray virtual key
+			// header so it is not also attributed to the request.
+			if headerVK := getVKFromRequest(ctx); headerVK != "" {
+				return nil, fmt.Errorf("conflicting credentials: a user token and a virtual key header were both provided; send only one")
+			}
+			vkID, err := h.identityResolver.ResolveUserVirtualKey(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			if vkID == "" {
+				return nil, fmt.Errorf("no MCP access grant for the authenticated user")
+			}
+			vk, err := h.getVirtualKeyByID(ctx, vkID)
+			if err != nil {
+				return nil, err
+			}
+			if !vk.IsActiveValue() {
+				return nil, fmt.Errorf("virtual key is inactive")
+			}
+			vkServer, err := h.ensureVKMCPServerByValue(ctx, vk.Value)
+			if err != nil {
+				return nil, err
+			}
+			return &mcpAuthResult{mcpServer: vkServer}, nil
+		}
+	}
+
 	// --- JWT path ---
 	if rawJWT := extractBearerJWT(ctx); rawJWT != "" && discoveryEnabled {
 		// An OAuth token is the sole identity for the request. Reject when a
