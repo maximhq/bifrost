@@ -61,6 +61,7 @@ type Store struct {
 	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
 	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
 	datasheetByProvider    map[schemas.ModelProvider][]string             // rebuilt every reload
+	deprecatedByProvider   map[schemas.ModelProvider][]string             // rebuilt every reload
 
 	// Overrides under their own mutex: writes here don't block pricing reads
 	// (the hot CalculateCost path takes mu.RLock and overridesMu.RLock
@@ -91,6 +92,7 @@ func New(configStore configstore.ConfigStore, logger schemas.Logger, cfg Config)
 		supportedResponseTypes: make(map[string][]string),
 		supportedParams:        make(map[string][]string),
 		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
+		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
 		url:                    cfg.URL,
 		modelParametersURL:     cfg.ModelParametersURL,
 		syncInterval:           cfg.SyncInterval,
@@ -267,6 +269,30 @@ func (s *Store) DistinctBaseModelNames() []string {
 	return out
 }
 
+// DistinctActiveBaseModelNames returns unique base names from non-deprecated
+// pricing rows only. Use this for API responses that should hide deprecated
+// catalog entries while preserving the full datasheet internally.
+func (s *Store) DistinctActiveBaseModelNames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[string]struct{})
+	for _, pricing := range s.pricingData {
+		if pricing.IsDeprecated {
+			continue
+		}
+		baseName := pricing.BaseModel
+		if baseName == "" {
+			baseName = s.baseModelNameUnsafe(pricing.Model)
+		}
+		seen[baseName] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	return out
+}
+
 // DatasheetModelsForProvider returns the per-provider model slice derived
 // from pricing data on the last load/sync. Composer unions this with
 // live.ModelsForProvider on read.
@@ -431,17 +457,19 @@ func NewTestStore(baseModelIndex map[string]string) *Store {
 		supportedResponseTypes: make(map[string][]string),
 		supportedParams:        make(map[string][]string),
 		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
+		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
 	}
 }
 
 // --- Internal: rebuild the datasheet view from current pricingData ---
 
-// rebuildDatasheetViewUnsafe regenerates baseModelIndex and datasheetByProvider
-// from pricingData. Caller MUST hold s.mu write-lock. Called after every
-// pricingData mutation in sync.go / params.go.
+// rebuildDatasheetViewUnsafe regenerates baseModelIndex, datasheetByProvider,
+// and deprecatedByProvider from pricingData. Caller MUST hold s.mu write-lock.
+// Called after every pricingData mutation in sync.go / params.go.
 func (s *Store) rebuildDatasheetViewUnsafe() {
 	s.baseModelIndex = make(map[string]string)
 	providerModels := make(map[schemas.ModelProvider]map[string]struct{})
+	deprecatedModels := make(map[schemas.ModelProvider]map[string]struct{})
 
 	for _, pricing := range s.pricingData {
 		normalized := schemas.ModelProvider(normalizeProvider(pricing.Provider))
@@ -449,6 +477,12 @@ func (s *Store) rebuildDatasheetViewUnsafe() {
 			providerModels[normalized] = make(map[string]struct{})
 		}
 		providerModels[normalized][pricing.Model] = struct{}{}
+		if pricing.IsDeprecated {
+			if deprecatedModels[normalized] == nil {
+				deprecatedModels[normalized] = make(map[string]struct{})
+			}
+			deprecatedModels[normalized][pricing.Model] = struct{}{}
+		}
 
 		if pricing.BaseModel != "" {
 			s.baseModelIndex[pricing.Model] = pricing.BaseModel
@@ -463,5 +497,15 @@ func (s *Store) rebuildDatasheetViewUnsafe() {
 		}
 		slices.Sort(models)
 		s.datasheetByProvider[provider] = models
+	}
+
+	s.deprecatedByProvider = make(map[schemas.ModelProvider][]string, len(deprecatedModels))
+	for provider, modelSet := range deprecatedModels {
+		models := make([]string, 0, len(modelSet))
+		for m := range modelSet {
+			models = append(models, m)
+		}
+		slices.Sort(models)
+		s.deprecatedByProvider[provider] = models
 	}
 }

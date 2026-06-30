@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,6 +28,7 @@ type mockHandlerStore struct {
 	headerMatcher              *lib.HeaderMatcher
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
+	modelCatalog               *modelcatalog.ModelCatalog
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -70,8 +75,35 @@ func (m *mockHandlerStore) GetMCPExternalClientURL() string {
 	return ""
 }
 
+func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {
+	return m.modelCatalog
+}
+
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
+
+func TestGenericRouter_FilterDeprecatedListModelsResponseUsesCatalog(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
+		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"}
+	}`)
+	require.NoError(t, os.WriteFile(pricingPath, pricingJSON, 0o600))
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
+	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds)}, nil, nil, nil)
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "openai/deprecated-model"},
+		{ID: "openai/current-model"},
+		{ID: "openai/provider-deprecated", IsDeprecated: true},
+	}}
+
+	router.filterDeprecatedListModelsResponse(resp)
+
+	require.Len(t, resp.Data, 1)
+	assert.Equal(t, "openai/current-model", resp.Data[0].ID)
+	assert.False(t, resp.Data[0].IsDeprecated)
+}
 
 func Test_parseS3URI(t *testing.T) {
 	tests := []struct {
