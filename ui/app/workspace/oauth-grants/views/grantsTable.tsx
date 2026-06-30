@@ -21,7 +21,6 @@ import {
 	Fingerprint,
 	Info,
 	KeyRound,
-	ShieldCheck,
 	UserRound,
 } from "lucide-react";
 import GrantActions from "./grantActions";
@@ -52,10 +51,10 @@ export default function GrantsTable({
 	onRevoke,
 }: GrantsTableProps) {
 	return (
-		<>
-			<div className={`overflow-auto rounded-sm border ${isFetching ? "opacity-70 transition-opacity" : ""}`}>
-				<Table>
-					<TableHeader>
+		<div className="flex grow flex-col overflow-hidden">
+			<div className={`mb-2 grow overflow-hidden rounded-sm border ${isFetching ? "opacity-70 transition-opacity" : ""}`}>
+				<Table containerClassName="h-full overflow-auto">
+					<TableHeader className="bg-muted sticky top-0 z-20">
 						<TableRow>
 							<TableHead>Client</TableHead>
 							<TableHead>
@@ -128,26 +127,44 @@ export default function GrantsTable({
 				</Table>
 			</div>
 
-			{totalCount > pageSize && (
-				<div className="flex items-center justify-between gap-4">
-					<p className="text-muted-foreground text-sm">
-						Showing {offset + 1}&#8211;{Math.min(offset + pageSize, totalCount)} of {totalCount}
-					</p>
+			{totalCount > 0 && (
+				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+					<div className="text-muted-foreground flex items-center gap-2">
+						{(offset + 1).toLocaleString()}-{Math.min(offset + pageSize, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+					</div>
+
 					<div className="flex items-center gap-2">
-						<Button data-testid="oauth-grants-prev-page-btn" variant="outline" size="sm" disabled={offset === 0}
-							onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}>
-							<ChevronLeft className="h-4 w-4" />
-							Previous
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}
+							disabled={offset === 0}
+							data-testid="oauth-grants-prev-page-btn"
+							aria-label="Previous page"
+						>
+							<ChevronLeft className="size-3" />
 						</Button>
-						<Button data-testid="oauth-grants-next-page-btn" variant="outline" size="sm" disabled={offset + pageSize >= totalCount}
-							onClick={() => onOffsetChange(offset + pageSize)}>
-							Next
-							<ChevronRight className="h-4 w-4" />
+
+						<div className="flex items-center gap-1">
+							<span>Page</span>
+							<span>{Math.floor(offset / pageSize) + 1}</span>
+							<span>of {Math.ceil(totalCount / pageSize)}</span>
+						</div>
+
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => onOffsetChange(offset + pageSize)}
+							disabled={offset + pageSize >= totalCount}
+							data-testid="oauth-grants-next-page-btn"
+							aria-label="Next page"
+						>
+							<ChevronRight className="size-3" />
 						</Button>
 					</div>
 				</div>
 			)}
-		</>
+		</div>
 	);
 }
 

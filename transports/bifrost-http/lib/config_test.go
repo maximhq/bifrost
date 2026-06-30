@@ -473,8 +473,8 @@ func (m *MockConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedO
 func (m *MockConfigStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
 	return 0, nil
 }
-func (m *MockConfigStore) ListOAuth2Sessions(ctx context.Context) ([]configstore.OAuth2SessionRow, error) {
-	return nil, nil
+func (m *MockConfigStore) ListOAuth2Sessions(ctx context.Context, params configstore.OAuth2SessionsQueryParams) ([]configstore.OAuth2SessionRow, int64, error) {
+	return nil, 0, nil
 }
 func (m *MockConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error) {
 	return nil, configstore.ErrNotFound
