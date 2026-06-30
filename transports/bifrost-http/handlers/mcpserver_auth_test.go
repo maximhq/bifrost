@@ -145,6 +145,30 @@ func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
 		assert.Nil(t, res.jwtVK)
 	})
 
+	t.Run("user JWT is rejected when the user is no longer active", func(t *testing.T) {
+		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-user-rep", IsActive: new(true)}
+		store := &mockOAuth2Store{
+			signingKey: key,
+			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
+		}
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+		h := newTestMCPHandler(cfg)
+		// The resolver still maps the user to a VK, but reports the user as gone.
+		// The request must be rejected at request time rather than falling through
+		// to the global (unscoped) server until the access token expires.
+		h.identityResolver = &fakeResolver{userVKID: "vk-row-1", userInactive: true}
+
+		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+			c["bf_mode"] = string(schemas.MCPAuthModeUser)
+			c["sub"] = "user-1"
+		})
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+
+		_, err := h.getMCPServerForRequest(ctx)
+		require.Error(t, err)
+	})
+
 	t.Run("user JWT falls back to the global server when the user has no virtual key", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
 		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
