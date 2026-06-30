@@ -59,6 +59,50 @@ func makeRefreshToken(id, familyID, clientID, hash string) *tables.TableOAuth2Re
 	}
 }
 
+// TestGetExpiringOauthTokens_ExcludesTerminalConfigs verifies the refresh worker
+// query skips tokens whose oauth_config is already terminal (expired/revoked), so
+// a permanently-dead grant is not retried — and re-logged — on every tick.
+func TestGetExpiringOauthTokens_ExcludesTerminalConfigs(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableOauthConfig{}, &tables.TableOauthToken{}))
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour)
+
+	mkToken := func(id string) {
+		require.NoError(t, s.DB().Create(&tables.TableOauthToken{
+			ID: id, AccessToken: "at-" + id, TokenType: "Bearer",
+			ExpiresAt: &past, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}).Error)
+	}
+	mkConfig := func(id, tokenID, status, state string) {
+		require.NoError(t, s.DB().Create(&tables.TableOauthConfig{
+			ID: id, RedirectURI: "http://127.0.0.1/cb", State: state, Status: status,
+			TokenID: &tokenID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(time.Hour),
+		}).Error)
+	}
+
+	mkToken("tok-live")
+	mkConfig("cfg-live", "tok-live", "authorized", "state-live")
+	mkToken("tok-expired")
+	mkConfig("cfg-expired", "tok-expired", "expired", "state-expired")
+	mkToken("tok-revoked")
+	mkConfig("cfg-revoked", "tok-revoked", "revoked", "state-revoked")
+	mkToken("tok-orphan") // no owning config at all
+
+	got, err := s.GetExpiringOauthTokens(ctx, time.Now().Add(time.Minute))
+	require.NoError(t, err)
+
+	ids := make(map[string]bool, len(got))
+	for _, tk := range got {
+		ids[tk.ID] = true
+	}
+	assert.True(t, ids["tok-live"], "token with an authorized config should be refreshed")
+	assert.True(t, ids["tok-orphan"], "token with no config should still be returned")
+	assert.False(t, ids["tok-expired"], "token with an expired config must be excluded")
+	assert.False(t, ids["tok-revoked"], "token with a revoked config must be excluded")
+}
+
 func TestGetOAuth2SigningKey_AutoGeneratesAndIsStable(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()
