@@ -346,9 +346,9 @@ Run `/mcp` inside Claude Code. `bifrost` should appear as connected with a tool 
 		Unexpected identifier "Method". Raw body: Method Not Allowed
 		```
 
-		This is cosmetic and has no functional impact. Claude Code probes `/register` (RFC 7591 Dynamic Client Registration) when you click **Re-authenticate**; Bifrost intentionally does not implement an OAuth stub for that probe, so the SDK logs the parse error. The `/mcp` connection itself works fine.
+		This is cosmetic and has no functional impact in the default `headers` [auth mode](../mcp/gateway-auth). Claude Code probes `/register` (RFC 7591 Dynamic Client Registration) when you click **Re-authenticate**, but registration and discovery aren't served in that mode, so the SDK logs the parse error. The `/mcp` connection itself works fine. In `both` / `oauth` mode Bifrost serves real Dynamic Client Registration and this error doesn't appear.
 
-		To refresh tools from Bifrost, click **Reconnect** in the `/mcp` panel instead of Re-authenticate. See the upstream [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
+		To refresh tools from Bifrost in `headers` mode, click **Reconnect** in the `/mcp` panel instead of Re-authenticate. See the upstream [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
 	</Accordion>
 
 	<Accordion title="`Failed to reconnect to bifrost.` and the MCP shows status `failed`">

@@ -90,6 +90,9 @@ export interface MCPSessionsListResponse {
 // missing as "no filter" for that field.
 export interface MCPSessionsQueryParams {
 	q?: string;
+	// Exact-match filter pinning the list to a single identity (user_id,
+	// virtual key id, or session id). Distinct from the fuzzy `q` search.
+	identity?: string;
 	kind?: MCPSessionKind[];
 	status?: MCPSessionStatus[];
 	auth_mode?: AuthMode[];

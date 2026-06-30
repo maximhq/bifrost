@@ -1,0 +1,297 @@
+---
+title: "SSO using OIDC"
+description: "Configure Google Workspace as your identity provider for Bifrost Enterprise using OAuth 2.0 / OIDC."
+---
+
+## Prerequisites
+
+- A Google Workspace domain with **Super Admin** access to the Admin console
+- A Google Cloud project where you can create OAuth clients and service accounts
+- Bifrost Enterprise deployed and accessible
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Bifrost [roles](../rbac) created for the roles you plan to map
+
+---
+
+## Step 1: Configure the OAuth consent screen
+
+<Steps>
+
+<Step title="Open the OAuth consent screen">
+
+In the Google Cloud Console, go to **APIs & Services → OAuth consent screen**.
+
+<Frame caption="OAuth consent screen - choose Internal for Workspace-only access or External for all Google accounts.">
+  <img src="/media/user-provisioning/gws-apis-and-services.png" alt="Google Cloud Console APIs and Services section with OAuth consent screen option highlighted" />
+</Frame>
+
+Choose **Internal** if you only want Workspace users, or **External** otherwise.
+
+Fill in the **App name**, **support email**, and **developer contact information**.
+
+</Step>
+
+<Step title="Add the required scopes">
+
+Add the following scopes:
+
+- `openid`
+- `profile`
+- `email`
+
+Click **Save and Continue**.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Create an OAuth client ID
+
+<Steps>
+
+<Step title="Create a new credential">
+
+Go to **APIs & Services → Credentials** and click **Create credentials → OAuth client ID**.
+
+<Frame caption="Create credentials - select OAuth client ID to generate a client for Bifrost.">
+  <img src="/media/user-provisioning/gws-auth-client-creation.png" alt="Google Cloud Console Create credentials dropdown with OAuth client ID option" />
+</Frame>
+
+</Step>
+
+<Step title="Configure the OAuth client">
+
+Set the following values:
+
+| Field | Value |
+| --- | --- |
+| **Application type** | Web application |
+| **Name** | `Bifrost Enterprise` |
+| **Authorized JavaScript origins** | `https://<your-bifrost-domain>` |
+| **Authorized redirect URIs** | `https://<your-bifrost-domain>/login` |
+
+Click **Create**.
+
+</Step>
+
+<Step title="Copy your credentials">
+
+Copy the **Client ID** and **Client Secret** - you will need them in [Step 5](#step-5-configure-bifrost).
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 3: Create a service account for Directory API access (optional)
+
+<Note>
+  Skip this section if you only need SSO login and do not want directory-based user import or team sync.
+</Note>
+
+<Steps>
+
+<Step title="Create the service account">
+
+Go to **IAM & Admin → Service Accounts** and click **Create service account**.
+
+<Frame caption="Create a service account - the account is used to call the Admin Directory API on behalf of Bifrost.">
+  <img src="/media/user-provisioning/gws-service-account-id.png" alt="Google Cloud Console Service Accounts page with Create service account button" />
+</Frame>
+
+Give it a name (e.g. `bifrost-provisioning`). Skip the **Grant this service account access to project** step - no GCP IAM roles are required; access is granted via domain-wide delegation in Step 4.
+
+</Step>
+
+<Step title="Generate a JSON key">
+
+Open the service account, go to **Keys → Add Key → Create new key**, and select **JSON**.
+
+<Frame caption="Create a new JSON key - download and store the file securely. This is the only time you can download it.">
+  <img src="/media/user-provisioning/gws-service-key-creation.png" alt="Service account Keys tab with Add Key dropdown and Create new key option selected" />
+</Frame>
+
+Download and store the JSON key file securely.
+
+</Step>
+
+<Step title="Copy the Unique ID">
+
+From the service account **Details** tab, copy the **Unique ID** - a numeric value, **not** the email or the OAuth Client ID.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 4: Enable the Admin SDK and set up domain-wide delegation (optional)
+
+<Note>
+  Required only if you created a service account in Step 3.
+</Note>
+
+<Steps>
+
+<Step title="Enable the Admin SDK API">
+
+Go to **APIs & Services → Library**, search for **Admin SDK API**, and click **Enable**.
+
+</Step>
+
+<Step title="Configure domain-wide delegation">
+
+In the [Google Admin Console](https://admin.google.com), go to **Security → Access and data control → API controls → Manage Domain Wide Delegation**.
+
+<Frame caption="Domain-wide delegation - authorize the service account to call the Directory API on behalf of an admin user.">
+  <img src="/media/user-provisioning/gws-domain-wide-delegation.png" alt="Google Admin Console Domain-Wide Delegation page with Add new entry button" />
+</Frame>
+
+Click **Add new** and enter:
+
+- **Client ID**: the service account Unique ID from Step 3
+- **OAuth scopes** (copy all three, comma-separated):
+
+```
+https://www.googleapis.com/auth/admin.directory.user.readonly,
+https://www.googleapis.com/auth/admin.directory.group.readonly,
+https://www.googleapis.com/auth/admin.directory.group.member.readonly
+```
+
+Click **Authorize**.
+
+<Note>
+  Domain-wide delegation requires impersonating an admin user. Choose an admin email that will persist (e.g. a dedicated `sso-admin@company.com`) - Bifrost uses this as the **Admin Email** in Step 5.
+</Note>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 5: Configure Bifrost
+
+<Steps>
+
+<Step title="Open User Provisioning and choose Google Workspace">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning**.
+
+Select **Google Workspace** as the identity provider and click **Next**.
+
+</Step>
+
+<Step title="Fill in the provider configuration">
+
+<Frame caption="Provider Configuration - enter your Google OAuth credentials and optional service account details.">
+  <img src="/media/user-provisioning/gws-form.png" alt="Bifrost Provider Configuration form for Google Workspace showing Domain, Client ID, Client Secret, and service account fields" />
+</Frame>
+
+| Field | Value |
+| --- | --- |
+| **Domain** | Your Google Workspace primary domain (e.g. `company.com`) |
+| **Client ID** | OAuth Client ID from Step 2 |
+| **Client Secret** | OAuth Client Secret from Step 2 |
+| **Audience** | Optional override - defaults to Client ID |
+| **Admin Email** | Admin user to impersonate for Directory API (Step 4) |
+| **Service Account Source** | Paste JSON / Environment variable / File path |
+
+Click **Verify & Next** to confirm the connection.
+
+</Step>
+
+<Step title="Discover claims">
+
+On the Attribute Mapping screen, click **Discover Claims**.
+
+Bifrost opens a sign-in popup - no session is created.
+
+Once you authenticate, it returns the exact claims your Google tenant is sending in the JWT.
+
+Use this to confirm which attributes (e.g. `hd` for hosted domain, `email`, `groups`) are present before building your mappings.
+
+</Step>
+
+<Step title="Set up attribute mappings">
+
+Use the sections below the claim list to map Google claim values to Bifrost roles, teams, and business units.
+
+**Attribute-to-Role Mappings**
+
+Map a claim value to a Bifrost role.
+
+- All matching rules are evaluated - if multiple rules match, the role with the highest permissions is assigned
+- If no rule matches, the user is not assigned a role and login is denied
+
+**Attribute-to-Team Mappings**
+
+Map a claim value to a Bifrost team. All matching rules apply.
+
+- Use a specific value (e.g. `engineering`) to map that exact claim value to a named Bifrost team
+- Use `*` as the value to sync the claim value directly as the team name
+- Use `${*}` to extract part of the string - e.g. `Bifrost Playground: ${*} Team` matches `Bifrost Playground: Alpha Team` and creates team **Alpha**
+
+**Attribute-to-Business Unit Mappings**
+
+Same wildcard support as team mappings.
+
+- Use a specific value (e.g. `platform`) to map that exact claim value to a named Bifrost business unit
+- Use `${*}` to extract a substring as the business unit name - e.g. `Bifrost Playground: ${*} BU` matches `Bifrost Playground: Alpha BU` and creates business unit **Alpha**
+- When a rule matches, the resolved business unit is assigned to all of that user's teams
+- Manually assigned teams are left unchanged
+
+<Frame caption="Attribute Mapping - configure role, team, and business unit rules based on the claims Google sends.">
+  <img src="/media/user-provisioning/attribute-to-entity-mapping.png" alt="Bifrost Attribute Mapping screen showing role, team, and business unit mapping rules" />
+</Frame>
+
+<Frame caption="Custom attribute mapping - map any custom claim from Google to a Bifrost role, team, or business unit.">
+  <img src="/media/user-provisioning/custom-attribute-mapping.png" alt="Bifrost custom attribute mapping configuration" />
+</Frame>
+
+Click **Next** when done.
+
+</Step>
+
+<Step title="Review and enable">
+
+Review your configuration on the final screen, then click **Enable**.
+
+<Warning>
+  Restart your Bifrost server after enabling for the changes to take effect.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+## How background sync works
+
+Bifrost uses the Directory API credentials from this setup to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Google Workspace.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Google whether the user is still active; if Google reports the user as inactive, Bifrost decommissions that user locally.
+
+---
+
+## Optional next steps
+
+**Real-time user sync** - OIDC provisions users on first login and the Directory API runs a 24-hour background sync. For closer to real-time provisioning via SCIM, see [SCIM with Google Workspace](./scim).
+
+---
+
+## Troubleshooting
+
+**`admin_policy_enforced` or `access_denied` during OAuth** - the Workspace admin has blocked third-party OAuth apps. In the Admin Console, go to **Security → Access and data control → API controls** and allow the Bifrost OAuth client.
+
+**`unauthorized_client: Client is unauthorized to retrieve access tokens`** - the service account Unique ID and scopes in Domain-Wide Delegation don't match. Re-enter the numeric Unique ID from the service account Details tab (not the client email or OAuth client ID).
+
+**`Not Authorized to access this resource/api` from Directory API** - the impersonated `adminEmail` is missing the **User Management Admin** role. Promote them in Admin Console → Admin roles. Also confirm the Admin SDK API is enabled in the Cloud project.
+
+**`domain_mismatch`** - use the primary domain, not an alias.
+
+**Users see a consent prompt every login** - on the OAuth consent screen, ensure the app is **Published** (or **Internal** for Workspace-only) so it doesn't stay in testing mode.
