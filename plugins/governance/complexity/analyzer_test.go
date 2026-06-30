@@ -794,7 +794,8 @@ func TestKeywordMatchModeFor(t *testing.T) {
 }
 
 func TestBuildWordPresenceSet_UnicodeWords(t *testing.T) {
-	words := buildWordPresenceSet("la sécurité du réseau protège les données")
+	text := "la sécurité du réseau protège les données"
+	words := buildWordPresenceSet(text, countWordsNoAlloc(text))
 
 	if _, ok := words["sécurité"]; !ok {
 		t.Fatalf("expected unicode word to be preserved in presence set")

@@ -185,7 +185,7 @@ When `governance.complexity_analyzer_config` is present in `config.json`, the de
 Each list controls a different part of the scoring signal. Understanding what they do helps you tune routing for your domain.
 
 <Note>
-The default keyword lists are tuned for common request patterns and are a good starting point for most deployments. For domain-specific traffic, add or remove keywords based on the prompts your users actually send so the tiers match your routing strategy.
+The default keyword lists are tuned for common request patterns and are a good starting point for most deployments. For domain-specific traffic, add or remove keywords based on the prompts your users actually send so the tiers match your routing strategy. Bifrost stores and displays the exact keywords you configure; internally, normal word-based keywords and phrases also match common word forms, such as `debug`, `debugging`, and `debugged`. Punctuation-heavy terms such as `ci/cd` still use literal matching.
 </Note>
 
 <Tabs group="complexity-keywords">
