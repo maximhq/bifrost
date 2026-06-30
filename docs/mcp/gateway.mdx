@@ -135,6 +135,12 @@ When using Virtual Keys, each VK gets its own MCP server with filtered tools bas
 **Authenticate with Virtual Key:**
 
 ```bash
+# Via x-bf-vk header
+curl -X POST http://localhost:8080/mcp \
+  -H "x-bf-vk: vk_your_virtual_key" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+
 # Via Authorization header
 curl -X POST http://localhost:8080/mcp \
   -H "Authorization: Bearer vk_your_virtual_key" \
@@ -147,9 +153,9 @@ curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
 
-# Via x-bf-vk header
+# Via x-goog-api-key header
 curl -X POST http://localhost:8080/mcp \
-  -H "x-bf-vk: vk_your_virtual_key" \
+  -H "x-goog-api-key: vk_your_virtual_key" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
 ```
@@ -315,7 +321,7 @@ When at least one upstream MCP server is configured with `per_user_oauth` or `pe
 
 In `headers` mode, inbound MCP clients identify themselves via headers:
 
-- `x-bf-vk: <vk>` (or `Authorization: Bearer <vk>` / `x-api-key: <vk>`) — VK-mode identity
+- `x-bf-vk: <vk>` (or `Authorization: Bearer <vk>` / `x-api-key: <vk>` / `x-goog-api-key: <vk>`) — VK-mode identity
 - `x-bf-mcp-session-id: <opaque-string>` — session-mode identity (client-asserted, must be re-sent on every call)
 - Enterprise SSO — user-mode identity, attached automatically by the auth middleware
 
