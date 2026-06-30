@@ -7002,3 +7002,170 @@ func (s *RDBConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID str
 		return nil
 	})
 }
+
+// GetOAuth2RefreshTokenByHashAny returns a refresh token row including revoked
+// ones. Used for stolen-token detection: if a revoked token is presented we can
+// identify its family and revoke all descendants (RFC 9700 §2.2.2).
+func (s *RDBConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
+	var rt tables.TableOAuth2RefreshToken
+	err := s.DB().WithContext(ctx).Where("token_hash = ?", hash).First(&rt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 refresh token (any): %w", err)
+	}
+	return &rt, nil
+}
+
+// RevokeOAuth2RefreshTokensByFamilyID revokes all active refresh tokens sharing
+// the same family ID. Called when a revoked token is re-presented, indicating
+// the token family has been compromised (RFC 9700 §2.2.2).
+func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).
+		Model(&tables.TableOAuth2RefreshToken{}).
+		Where("family_id = ? AND revoked_at IS NULL", familyID).
+		Update("revoked_at", &now).Error
+}
+
+// RevokeOAuth2RefreshTokensByMode revokes all active refresh tokens for a given
+// bf_mode. Used to invalidate session-mode grants when EnforceAuthOnInference
+// is toggled on, or to bulk-revoke all grants of a specific type.
+func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).
+		Model(&tables.TableOAuth2RefreshToken{}).
+		Where("bf_mode = ? AND revoked_at IS NULL", bfMode).
+		Update("revoked_at", &now).Error
+}
+
+// SweepOAuth2RefreshTokens deletes revoked refresh tokens older than the given
+// duration. Active tokens are never swept — only revoked ones that are past
+// their retention window.
+func (s *RDBConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
+	// A non-positive retention would put the cutoff at (or after) now, deleting
+	// nearly every revoked token — including the rows kept for stolen-token replay
+	// detection. Treat it as "don't sweep" rather than wiping the retention window.
+	if revokedOlderThan <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-revokedOlderThan)
+	result := s.DB().WithContext(ctx).
+		Where("revoked_at IS NOT NULL AND revoked_at < ?", cutoff).
+		Delete(&tables.TableOAuth2RefreshToken{})
+	return result.RowsAffected, result.Error
+}
+
+// SweepOrphanedOAuth2Clients deletes dynamically-registered clients that no
+// longer back any refresh token and were registered before the grace cutoff.
+//
+// Clients are minted per OAuth flow via Dynamic Client Registration, so they
+// accumulate unbounded without this. A client is safe to drop once it owns no
+// refresh token rows at all: either it never completed a flow (abandoned
+// registration) or every grant it issued has since been revoked and aged out.
+// This must run after the revoked-token sweep so a client whose tokens are
+// still within their retention window — and thus still needed for refresh-token
+// reuse detection — keeps its rows and is not collected prematurely.
+//
+// The grace cutoff protects a client mid-handshake (authorization code issued
+// but not yet exchanged for tokens), which legitimately owns no tokens yet;
+// registeredOlderThan must exceed the authorization code TTL.
+func (s *RDBConfigStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-registeredOlderThan)
+	result := s.DB().WithContext(ctx).
+		Where("created_at < ? AND NOT EXISTS (?)", cutoff,
+			s.DB().Model(&tables.TableOAuth2RefreshToken{}).
+				Select("1").
+				Where("oauth2_refresh_tokens.client_id = oauth2_clients.client_id")).
+		Delete(&tables.TableOAuth2Client{})
+	return result.RowsAffected, result.Error
+}
+
+// OAuth2SessionRow is the wire shape for a single downstream grant in the
+// Connected Clients list.
+type OAuth2SessionRow struct {
+	ID           string     `json:"id"`
+	ClientID     string     `json:"client_id"`
+	ClientName   string     `json:"client_name,omitempty"`
+	BfMode       string     `json:"bf_mode"`
+	BfSub        string     `json:"bf_sub"`
+	BfSubDisplay string     `json:"bf_sub_display,omitempty"` // human-readable: VK name for vk mode
+	Scope        string     `json:"scope"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ListOAuth2Sessions returns active (non-revoked) refresh token rows, joined
+// with their client names from oauth2_clients and VK names from
+// governance_virtual_keys for vk-mode grants. Uses ScopedDB so callers can
+// inject row-visibility predicates via the context.
+func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context) ([]OAuth2SessionRow, error) {
+	rows := []struct {
+		tables.TableOAuth2RefreshToken
+		ClientName string `gorm:"column:client_name"`
+		VKName     string `gorm:"column:vk_name"`
+	}{}
+	err := s.ScopedDB(ctx).
+		Table("oauth2_refresh_tokens rt").
+		Select("rt.*, c.client_name, vk.name as vk_name").
+		Joins("LEFT JOIN oauth2_clients c ON c.client_id = rt.client_id").
+		Joins("LEFT JOIN governance_virtual_keys vk ON vk.id = rt.bf_sub AND rt.bf_mode = 'vk'").
+		Where("rt.revoked_at IS NULL").
+		Order("rt.created_at DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("list oauth2 sessions: %w", err)
+	}
+	out := make([]OAuth2SessionRow, 0, len(rows))
+	for _, r := range rows {
+		row := OAuth2SessionRow{
+			ID:         r.ID,
+			ClientID:   r.ClientID,
+			ClientName: r.ClientName,
+			BfMode:     r.BfMode,
+			BfSub:      r.BfSub,
+			Scope:      r.Scope,
+			CreatedAt:  r.CreatedAt,
+			LastUsedAt: r.LastUsedAt,
+		}
+		// Populate human-readable display name for VK mode.
+		if r.BfMode == "vk" && r.VKName != "" {
+			row.BfSubDisplay = r.VKName
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// RevokeOAuth2Session revokes a specific refresh token by ID (for use from the
+// Connected Clients UI). Returns ErrNotFound when the ID does not exist.
+func (s *RDBConfigStore) RevokeOAuth2Session(ctx context.Context, id string) error {
+	now := time.Now()
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableOAuth2RefreshToken{}).
+		Where("id = ? AND revoked_at IS NULL", id).
+		Update("revoked_at", &now)
+	if result.Error != nil {
+		return fmt.Errorf("revoke oauth2 session: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetOAuth2SessionByID returns a single active refresh token row by ID.
+// Uses ScopedDB so row-visibility predicates injected into the context apply.
+// Returns ErrNotFound when the ID does not exist or is already revoked.
+func (s *RDBConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error) {
+	var rt tables.TableOAuth2RefreshToken
+	err := s.ScopedDB(ctx).Where("id = ? AND revoked_at IS NULL", id).First(&rt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 session: %w", err)
+	}
+	return &rt, nil
+}
