@@ -730,6 +730,13 @@ export default function AppSidebar() {
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
+						title: "OAuth Grants",
+						url: "/workspace/oauth-grants",
+						icon: ShieldCheck,
+						description: "Downstream OAuth grants",
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
 						title: "MCP Settings",
 						url: "/workspace/mcp-settings",
 						icon: Settings,
