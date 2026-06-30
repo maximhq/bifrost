@@ -91,11 +91,16 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 		return path
 	}
 
-	// For custom providers, auto-detect if the base URL already includes a path
-	// segment (e.g. https://api.telnyx.com/v2/ai/openai). If so, strip the /v1
-	// prefix from the default path to avoid duplicate version prefixes like
-	// /v2/ai/openai/v1/chat/completions.
-	if provider.customProviderConfig != nil && path == defaultPath && strings.HasPrefix(path, "/v1/") {
+	// When DisableDefaultVersionPath is set on the custom provider config, strip
+	// the /v1 prefix from default paths for providers whose base URL already has
+	// a non-root path segment. This avoids duplicate version prefixes like
+	// /v2/ai/openai/v1/chat/completions for providers such as Telnyx.
+	// The strip only applies to the true default path (not context overrides or
+	// RequestPathOverrides), preserving explicit path control.
+	if provider.customProviderConfig != nil &&
+		provider.customProviderConfig.DisableDefaultVersionPath &&
+		path == defaultPath &&
+		strings.HasPrefix(path, "/v1/") {
 		if u, err := url.Parse(provider.networkConfig.BaseURL); err == nil && u.Path != "" && u.Path != "/" {
 			path = strings.TrimPrefix(path, "/v1")
 		}
