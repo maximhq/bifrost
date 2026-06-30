@@ -1380,26 +1380,7 @@ func HandleAnthropicResponsesStream(
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
 				break
 			}
-			// Passthrough: when conversion returns no responses but we need to forward raw events,
-			// create a minimal pass-through response to carry the raw event data.
-			// This ensures events like compaction content_block_start/stop are not silently dropped.
-			if len(responses) == 0 && sendBackRawResponse {
-				passthroughResp := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseType(eventType),
-					SequenceNumber: chunkIndex,
-					ExtraFields: schemas.BifrostResponseExtraFields{
-						ChunkIndex:  chunkIndex,
-						Latency:     time.Since(lastChunkTime).Milliseconds(),
-						RawResponse: eventData,
-					},
-				}
-				lastChunkTime = time.Now()
-				chunkIndex++
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, passthroughResp, nil, nil, nil),
-					responseChan, postHookSpanFinalizer)
-				continue
-			}
+
 			// Attach the upstream raw to exactly one bifrost response. Default to the last,
 			// but for the message_start expansion ([created, in_progress]) attach it to
 			// response.created

@@ -18,7 +18,7 @@ const (
 	DefaultURL                    = "https://getbifrost.ai/datasheet"
 	DefaultModelParametersURL     = "https://getbifrost.ai/datasheet/model-parameters"
 	DefaultSyncInterval           = 24 * time.Hour
-	DefaultPricingTimeout         = 45 * time.Second
+	DefaultPricingTimeout         = 60 * time.Second
 	DefaultModelParametersTimeout = 45 * time.Second
 )
 
