@@ -10,20 +10,12 @@ const (
 	maskStrongReasoning
 	maskTechnical
 	maskSimple
-	maskEnum
-	maskComprehensive
-	maskElaboration
-	maskLimiter
-	maskReferentialPhrase
-	maskReferentialReference
-	maskReferentialAction
-	maskTaskShift
+	maskContinuation
 )
 
 const (
-	lastTextBaseScanMask = maskCode | maskReasoning | maskStrongReasoning | maskTechnical | maskSimple | maskEnum | maskComprehensive | maskElaboration | maskLimiter
-	lastTextFullScanMask = lastTextBaseScanMask | maskReferentialPhrase | maskReferentialReference | maskReferentialAction | maskTaskShift
-	systemTextScanMask   = maskCode | maskTechnical | maskSimple
+	lastTextBaseScanMask = maskCode | maskReasoning | maskStrongReasoning | maskTechnical | maskSimple | maskContinuation
+	systemTextScanMask   = maskCode | maskTechnical
 	contextTextScanMask  = maskCode | maskReasoning | maskTechnical
 )
 
@@ -50,20 +42,13 @@ type compiledKeywordMatcher struct {
 }
 
 type textSignalCounts struct {
-	wordCount                 int
-	codeCount                 int
-	reasoningCount            int
-	strongReasoningCount      int
-	technicalCount            int
-	simpleCount               int
-	enumCount                 int
-	comprehensiveCount        int
-	elaborationCount          int
-	limitingQualifierCount    int
-	referentialPhraseCount    int
-	referentialReferenceCount int
-	referentialActionCount    int
-	taskShiftCount            int
+	wordCount               int
+	codeCount               int
+	reasoningCount          int
+	strongReasoningCount    int
+	technicalCount          int
+	simpleCount             int
+	continuationPhraseCount int
 }
 
 func newCompiledKeywordMatcher(keywords KeywordConfig) *compiledKeywordMatcher {
@@ -90,17 +75,9 @@ func newCompiledKeywordMatcher(keywords KeywordConfig) *compiledKeywordMatcher {
 
 	addKeywords(keywords.CodeKeywords, maskCode)
 	addKeywords(keywords.StrongReasoningKeywords, maskReasoning|maskStrongReasoning)
-	addKeywords(keywords.WeakReasoningKeywords, maskReasoning)
 	addKeywords(keywords.TechnicalKeywords, maskTechnical)
 	addKeywords(keywords.SimpleKeywords, maskSimple)
-	addKeywords(keywords.EnumTriggers, maskEnum)
-	addKeywords(keywords.ComprehensivenessMarkers, maskComprehensive)
-	addKeywords(keywords.ElaborationMarkers, maskElaboration)
-	addKeywords(keywords.LimitingQualifiers, maskLimiter)
-	addKeywords(keywords.ReferentialPhrases, maskReferentialPhrase)
-	addKeywords(keywords.ReferentialReferenceWords, maskReferentialReference)
-	addKeywords(keywords.ReferentialActionWords, maskReferentialAction)
-	addKeywords(keywords.TaskShiftPhrases, maskTaskShift)
+	addKeywords(keywords.ContinuationPhrases, maskContinuation)
 
 	matcher := &compiledKeywordMatcher{}
 	for _, entry := range entries {
@@ -197,29 +174,8 @@ func (s *textSignalCounts) addMask(mask compiledKeywordMask) {
 	if mask&maskSimple != 0 {
 		s.simpleCount++
 	}
-	if mask&maskEnum != 0 {
-		s.enumCount++
-	}
-	if mask&maskComprehensive != 0 {
-		s.comprehensiveCount++
-	}
-	if mask&maskElaboration != 0 {
-		s.elaborationCount++
-	}
-	if mask&maskLimiter != 0 {
-		s.limitingQualifierCount++
-	}
-	if mask&maskReferentialPhrase != 0 {
-		s.referentialPhraseCount++
-	}
-	if mask&maskReferentialReference != 0 {
-		s.referentialReferenceCount++
-	}
-	if mask&maskReferentialAction != 0 {
-		s.referentialActionCount++
-	}
-	if mask&maskTaskShift != 0 {
-		s.taskShiftCount++
+	if mask&maskContinuation != 0 {
+		s.continuationPhraseCount++
 	}
 }
 

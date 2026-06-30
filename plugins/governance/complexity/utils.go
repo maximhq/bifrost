@@ -72,24 +72,6 @@ func scoreCount(count, capAt int) float64 {
 	return math.Min(1.0, float64(count)/float64(capAt))
 }
 
-func scoreOutputComplexity(signals textSignalCounts) float64 {
-	totalCount := signals.enumCount + signals.comprehensiveCount + signals.elaborationCount
-	if totalCount == 0 {
-		return 0.0
-	}
-
-	enumScore := math.Min(1.0, float64(signals.enumCount))
-	compScore := math.Min(1.0, float64(signals.comprehensiveCount))
-	elabScore := math.Min(1.0, float64(signals.elaborationCount))
-
-	rawScore := (enumScore * 0.4) + (compScore * 0.3) + (elabScore * 0.3)
-	if signals.limitingQualifierCount > 0 {
-		rawScore *= 0.3
-	}
-
-	return math.Min(1.0, rawScore)
-}
-
 // scoreTokenCount scores based on word count of the text.
 func scoreTokenCount(words int) float64 {
 	switch {
