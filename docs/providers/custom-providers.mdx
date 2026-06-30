@@ -346,10 +346,6 @@ With this setting, requests resolve to `https://api.telnyx.com/v2/ai/openai/chat
 
 This only affects the true default paths — explicit `request_path_overrides` are never rewritten.
 
-<Warning>
-Using `insecure_skip_verify` disables all certificate verification and is insecure. Prefer `ca_cert_pem` when you have the CA certificate. Only use `insecure_skip_verify` in trusted, isolated environments (e.g., air-gapped networks).
-</Warning>
-
 ## Use Cases
 
 ### 1. Environment-Specific Configurations
