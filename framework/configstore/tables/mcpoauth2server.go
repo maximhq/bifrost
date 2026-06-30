@@ -72,10 +72,10 @@ type OAuth2ServerConfig struct {
 	// Refresh tokens have no hard expiry — they are invalidated only by:
 	//   - rotation on use (each /oauth2/token refresh call issues a new token
 	//     and immediately invalidates the previous one)
-	//   - bf_sub liveness check on refresh (VK deleted / user deactivated →
+	//   - bf_sub liveness check on refresh (VK or user deleted / deactivated →
 	//     invalid_grant, forcing re-authentication)
-	//   - explicit revocation via the Connected Clients UI
-	//   - EnforceAuthOnInference toggled on (revokes all session-mode grants)
+	//   - explicit revocation via the OAuth Grants UI
+	//   - DisableVKIdentity enabled (vk-mode grants denied on refresh)
 	// No RefreshTokenTTL field exists by design — there is no timer, only
 	// explicit invalidation paths.
 }
