@@ -5745,8 +5745,18 @@ func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error 
 // GetExpiringOauthTokens retrieves tokens that are expiring before the given time
 func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
 	var tokens []*tables.TableOauthToken
+	// Exclude tokens whose owning oauth_config has already reached a terminal
+	// state — "expired" (set when a refresh is permanently rejected, e.g.
+	// invalid_grant / Grant not found) or "revoked". Without this, the refresh
+	// worker re-selects a permanently-dead token on every tick (its expires_at
+	// stays in the past) and logs the same failure indefinitely; a dead grant
+	// needs re-authorization, not perpetual retries.
 	result := s.DB().WithContext(ctx).
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).
+		Where("NOT EXISTS (?)",
+			s.DB().Model(&tables.TableOauthConfig{}).
+				Select("1").
+				Where("oauth_configs.token_id = oauth_tokens.id AND oauth_configs.status IN ?", []string{"expired", "revoked"})).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
