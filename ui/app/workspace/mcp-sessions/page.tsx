@@ -18,12 +18,14 @@ export default function MCPSessionsPage() {
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			auth_mode: parseAsArrayOf(parseAsString).withDefault([]),
 			mcp_client_id: parseAsArrayOf(parseAsString).withDefault([]),
+			identity: parseAsString.withDefault(""),
 			offset: parseAsInteger.withDefault(0),
 		},
 		{ history: "push" },
 	);
 
 	const debouncedSearch = useDebouncedValue(urlState.q, 300);
+	const normalizedIdentity = urlState.identity.trim();
 
 	const { data, isLoading, isFetching, isError, error } = useGetMCPSessionsQuery({
 		q: debouncedSearch || undefined,
@@ -31,6 +33,7 @@ export default function MCPSessionsPage() {
 		status: urlState.status.length ? (urlState.status as MCPSessionStatus[]) : undefined,
 		auth_mode: urlState.auth_mode.length ? (urlState.auth_mode as AuthMode[]) : undefined,
 		mcp_client_id: urlState.mcp_client_id.length ? urlState.mcp_client_id : undefined,
+		identity: normalizedIdentity || undefined,
 		limit: PAGE_SIZE,
 		offset: urlState.offset,
 	});
@@ -46,9 +49,7 @@ export default function MCPSessionsPage() {
 		});
 	}, [totalCount, urlState.offset, data, setUrlState]);
 
-	if (isLoading) {
-		return <FullPageLoader />;
-	}
+	if (isLoading) return <FullPageLoader />;
 
 	if (isError) {
 		return (
@@ -65,14 +66,15 @@ export default function MCPSessionsPage() {
 		urlState.kind.length > 0 ||
 		urlState.status.length > 0 ||
 		urlState.auth_mode.length > 0 ||
-		urlState.mcp_client_id.length > 0;
+		urlState.mcp_client_id.length > 0 ||
+		!!normalizedIdentity;
 
 	const handleSearchChange = (value: string) => setUrlState({ q: value || null, offset: 0 });
 	const handleKindChange = (value: string[]) => setUrlState({ kind: value.length ? value : null, offset: 0 });
 	const handleStatusChange = (value: string[]) => setUrlState({ status: value.length ? value : null, offset: 0 });
 	const handleAuthModeChange = (value: string[]) => setUrlState({ auth_mode: value.length ? value : null, offset: 0 });
 	const handleOffsetChange = (offset: number) => setUrlState({ offset });
-	const handleClearFilters = () => setUrlState({ q: null, kind: null, status: null, auth_mode: null, mcp_client_id: null, offset: 0 });
+	const handleClearFilters = () => setUrlState({ q: null, kind: null, status: null, auth_mode: null, mcp_client_id: null, identity: null, offset: 0 });
 
 	return (
 		<div className="mx-auto w-full max-w-7xl">
