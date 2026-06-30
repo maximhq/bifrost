@@ -3,12 +3,13 @@ import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
+import { parseAsSafeArrayOf } from "@/lib/queryParamsParser";
 import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
 import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { useLocation } from "@tanstack/react-router";
-import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
@@ -21,8 +22,6 @@ import { type ProviderUsageTabViewHandle, ProviderUsageTabView } from "./compone
 import type { DashboardData } from "./utils/exportUtils";
 
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
-
-const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
 
 export default function DashboardPage() {
 	// MCP filter data
@@ -41,16 +40,16 @@ export default function DashboardPage() {
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			tab: parseAsString.withDefault("overview"),
-			virtual_key_ids: parseAsString.withDefault(""),
-			providers: parseAsString.withDefault(""),
-			models: parseAsString.withDefault(""),
-			selected_key_ids: parseAsString.withDefault(""),
-			objects: parseAsString.withDefault(""),
-			status: parseAsString.withDefault(""),
-			routing_rule_ids: parseAsString.withDefault(""),
-			routing_engine_used: parseAsString.withDefault(""),
-			stop_reasons: parseAsString.withDefault(""),
-			missing_cost_only: parseAsString.withDefault("false"),
+			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
+			providers: parseAsSafeArrayOf.withDefault([]),
+			models: parseAsSafeArrayOf.withDefault([]),
+			selected_key_ids: parseAsSafeArrayOf.withDefault([]),
+			objects: parseAsSafeArrayOf.withDefault([]),
+			status: parseAsSafeArrayOf.withDefault([]),
+			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
+			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
+			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			missing_cost_only: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
 			token_chart: parseAsString.withDefault("bar"),
@@ -70,11 +69,11 @@ export default function DashboardPage() {
 			mcp_tool_names: parseAsString.withDefault(""),
 			mcp_server_labels: parseAsString.withDefault(""),
 			parent_request_id: parseAsString.withDefault(""),
-			user_ids: parseAsString.withDefault(""),
-			team_ids: parseAsString.withDefault(""),
-			customer_ids: parseAsString.withDefault(""),
-			business_unit_ids: parseAsString.withDefault(""),
-			aliases: parseAsString.withDefault(""),
+			user_ids: parseAsSafeArrayOf.withDefault([]),
+			team_ids: parseAsSafeArrayOf.withDefault([]),
+			customer_ids: parseAsSafeArrayOf.withDefault([]),
+			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
+			aliases: parseAsSafeArrayOf.withDefault([]),
 		},
 		{
 			history: "push",
@@ -82,17 +81,13 @@ export default function DashboardPage() {
 		},
 	);
 
-	// Parse filter arrays from URL state
-	const selectedProviders = useMemo(() => parseCsvParam(urlState.providers), [urlState.providers]);
-	const selectedModels = useMemo(() => parseCsvParam(urlState.models), [urlState.models]);
-	const selectedKeyIds = useMemo(() => parseCsvParam(urlState.selected_key_ids), [urlState.selected_key_ids]);
-	const selectedVirtualKeyIds = useMemo(() => parseCsvParam(urlState.virtual_key_ids), [urlState.virtual_key_ids]);
-	const selectedTypes = useMemo(() => parseCsvParam(urlState.objects), [urlState.objects]);
-	const selectedStatuses = useMemo(() => parseCsvParam(urlState.status), [urlState.status]);
-	const selectedRoutingRuleIds = useMemo(() => parseCsvParam(urlState.routing_rule_ids), [urlState.routing_rule_ids]);
-	const selectedRoutingEngines = useMemo(() => parseCsvParam(urlState.routing_engine_used), [urlState.routing_engine_used]);
-	const selectedStopReasons = useMemo(() => parseCsvParam(urlState.stop_reasons), [urlState.stop_reasons]);
-	const missingCostOnly = useMemo(() => urlState.missing_cost_only === "true", [urlState.missing_cost_only]);
+	// Parse string-backed MCP filter values from URL state
+	const selectedMcpToolNames = useMemo(() => (urlState.mcp_tool_names ? [urlState.mcp_tool_names] : []), [urlState.mcp_tool_names]);
+	const selectedMcpServerLabels = useMemo(
+		() => (urlState.mcp_server_labels ? [urlState.mcp_server_labels] : []),
+		[urlState.mcp_server_labels],
+	);
+
 	const metadataFilters = useMemo(() => {
 		if (!urlState.metadata_filters) return undefined;
 		try {
@@ -102,15 +97,6 @@ export default function DashboardPage() {
 		}
 	}, [urlState.metadata_filters]);
 
-	const selectedMcpToolNames = useMemo(() => parseCsvParam(urlState.mcp_tool_names), [urlState.mcp_tool_names]);
-	const selectedMcpServerLabels = useMemo(() => parseCsvParam(urlState.mcp_server_labels), [urlState.mcp_server_labels]);
-
-	const selectedUserIds = useMemo(() => parseCsvParam(urlState.user_ids), [urlState.user_ids]);
-	const selectedTeamIds = useMemo(() => parseCsvParam(urlState.team_ids), [urlState.team_ids]);
-	const selectedCustomerIds = useMemo(() => parseCsvParam(urlState.customer_ids), [urlState.customer_ids]);
-	const selectedBusinessUnitIds = useMemo(() => parseCsvParam(urlState.business_unit_ids), [urlState.business_unit_ids]);
-	const selectedAliases = useMemo(() => parseCsvParam(urlState.aliases), [urlState.aliases]);
-
 	const filters: LogFilters = useMemo(
 		() => ({
 			...(urlState.period
@@ -119,54 +105,54 @@ export default function DashboardPage() {
 						start_time: dateUtils.toISOString(urlState.start_time),
 						end_time: dateUtils.toISOString(urlState.end_time),
 					}),
-			...(selectedProviders.length > 0 && { providers: selectedProviders }),
-			...(selectedModels.length > 0 && { models: selectedModels }),
-			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
-			...(selectedVirtualKeyIds.length > 0 && {
-				virtual_key_ids: selectedVirtualKeyIds,
+			...(urlState.providers.length > 0 && { providers: urlState.providers }),
+			...(urlState.models.length > 0 && { models: urlState.models }),
+			...(urlState.selected_key_ids.length > 0 && { selected_key_ids: urlState.selected_key_ids }),
+			...(urlState.virtual_key_ids.length > 0 && {
+				virtual_key_ids: urlState.virtual_key_ids,
 			}),
-			...(selectedTypes.length > 0 && { objects: selectedTypes }),
-			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
-			...(selectedRoutingRuleIds.length > 0 && {
-				routing_rule_ids: selectedRoutingRuleIds,
+			...(urlState.objects.length > 0 && { objects: urlState.objects }),
+			...(urlState.status.length > 0 && { status: urlState.status }),
+			...(urlState.routing_rule_ids.length > 0 && {
+				routing_rule_ids: urlState.routing_rule_ids,
 			}),
-			...(selectedRoutingEngines.length > 0 && {
-				routing_engine_used: selectedRoutingEngines,
+			...(urlState.routing_engine_used.length > 0 && {
+				routing_engine_used: urlState.routing_engine_used,
 			}),
-			...(selectedStopReasons.length > 0 && { stop_reasons: selectedStopReasons }),
-			...(missingCostOnly && { missing_cost_only: true }),
+			...(urlState.stop_reasons.length > 0 && { stop_reasons: urlState.stop_reasons }),
+			...(urlState.missing_cost_only && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
 					metadata_filters: metadataFilters,
 				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
-			...(selectedUserIds.length > 0 && { user_ids: selectedUserIds }),
-			...(selectedTeamIds.length > 0 && { team_ids: selectedTeamIds }),
-			...(selectedCustomerIds.length > 0 && { customer_ids: selectedCustomerIds }),
-			...(selectedBusinessUnitIds.length > 0 && { business_unit_ids: selectedBusinessUnitIds }),
-			...(selectedAliases.length > 0 && { aliases: selectedAliases }),
+			...(urlState.user_ids.length > 0 && { user_ids: urlState.user_ids }),
+			...(urlState.team_ids.length > 0 && { team_ids: urlState.team_ids }),
+			...(urlState.customer_ids.length > 0 && { customer_ids: urlState.customer_ids }),
+			...(urlState.business_unit_ids.length > 0 && { business_unit_ids: urlState.business_unit_ids }),
+			...(urlState.aliases.length > 0 && { aliases: urlState.aliases }),
 		}),
 		[
 			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
 			urlState.parent_request_id,
-			selectedProviders,
-			selectedModels,
-			selectedKeyIds,
-			selectedVirtualKeyIds,
-			selectedTypes,
-			selectedStatuses,
-			selectedRoutingRuleIds,
-			selectedRoutingEngines,
-			selectedStopReasons,
-			missingCostOnly,
+			urlState.providers,
+			urlState.models,
+			urlState.selected_key_ids,
+			urlState.virtual_key_ids,
+			urlState.objects,
+			urlState.status,
+			urlState.routing_rule_ids,
+			urlState.routing_engine_used,
+			urlState.stop_reasons,
+			urlState.missing_cost_only,
 			metadataFilters,
-			selectedUserIds,
-			selectedTeamIds,
-			selectedCustomerIds,
-			selectedBusinessUnitIds,
-			selectedAliases,
+			urlState.user_ids,
+			urlState.team_ids,
+			urlState.customer_ids,
+			urlState.business_unit_ids,
+			urlState.aliases,
 		],
 	);
 
@@ -184,9 +170,9 @@ export default function DashboardPage() {
 			...(selectedMcpServerLabels.length > 0 && {
 				server_labels: selectedMcpServerLabels,
 			}),
-			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
-			...(selectedVirtualKeyIds.length > 0 && {
-				virtual_key_ids: selectedVirtualKeyIds,
+			...(urlState.status.length > 0 && { status: urlState.status }),
+			...(urlState.virtual_key_ids.length > 0 && {
+				virtual_key_ids: urlState.virtual_key_ids,
 			}),
 		}),
 		[
@@ -195,8 +181,8 @@ export default function DashboardPage() {
 			urlState.end_time,
 			selectedMcpToolNames,
 			selectedMcpServerLabels,
-			selectedStatuses,
-			selectedVirtualKeyIds,
+			urlState.status,
+			urlState.virtual_key_ids,
 		],
 	);
 
@@ -290,7 +276,7 @@ export default function DashboardPage() {
 		[setUrlState],
 	);
 
-	// Adapter: converts a full LogFilters object to dashboard's CSV-based URL state
+	// Adapter: converts a full LogFilters object to dashboard URL state
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
 			const newStartTime = newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined;
@@ -300,30 +286,29 @@ export default function DashboardPage() {
 				...(timeChanged && { period: "" }),
 				start_time: newStartTime,
 				end_time: newEndTime,
-				period: urlState.period,
-				providers: (newFilters.providers || []).join(","),
-				models: (newFilters.models || []).join(","),
-				selected_key_ids: (newFilters.selected_key_ids || []).join(","),
-				virtual_key_ids: (newFilters.virtual_key_ids || []).join(","),
-				objects: (newFilters.objects || []).join(","),
-				status: (newFilters.status || []).join(","),
-				routing_rule_ids: (newFilters.routing_rule_ids || []).join(","),
-				routing_engine_used: (newFilters.routing_engine_used || []).join(","),
-				stop_reasons: (newFilters.stop_reasons || []).join(","),
-				missing_cost_only: String(newFilters.missing_cost_only ?? false),
+				providers: newFilters.providers || [],
+				models: newFilters.models || [],
+				selected_key_ids: newFilters.selected_key_ids || [],
+				virtual_key_ids: newFilters.virtual_key_ids || [],
+				objects: newFilters.objects || [],
+				status: newFilters.status || [],
+				routing_rule_ids: newFilters.routing_rule_ids || [],
+				routing_engine_used: newFilters.routing_engine_used || [],
+				stop_reasons: newFilters.stop_reasons || [],
+				missing_cost_only: newFilters.missing_cost_only ?? false,
 				metadata_filters:
 					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0
 						? JSON.stringify(newFilters.metadata_filters)
 						: "",
 				parent_request_id: newFilters.parent_request_id || "",
-				user_ids: (newFilters.user_ids || []).join(","),
-				team_ids: (newFilters.team_ids || []).join(","),
-				customer_ids: (newFilters.customer_ids || []).join(","),
-				business_unit_ids: (newFilters.business_unit_ids || []).join(","),
-				aliases: (newFilters.aliases || []).join(","),
+				user_ids: newFilters.user_ids || [],
+				team_ids: newFilters.team_ids || [],
+				customer_ids: newFilters.customer_ids || [],
+				business_unit_ids: newFilters.business_unit_ids || [],
+				aliases: newFilters.aliases || [],
 			});
 		},
-		[setUrlState, urlState.start_time, urlState.end_time, urlState.period],
+		[setUrlState, urlState.start_time, urlState.end_time],
 	);
 
 	// Date range for picker
