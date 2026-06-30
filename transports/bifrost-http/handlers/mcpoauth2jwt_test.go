@@ -65,11 +65,11 @@ func (m *mockOAuth2Store) GetOAuth2ClientByClientID(_ context.Context, clientID 
 	return nil, configstore.ErrNotFound
 }
 
-func (m *mockOAuth2Store) ListOAuth2Sessions(_ context.Context) ([]configstore.OAuth2SessionRow, error) {
+func (m *mockOAuth2Store) ListOAuth2Sessions(_ context.Context, _ configstore.OAuth2SessionsQueryParams) ([]configstore.OAuth2SessionRow, int64, error) {
 	if m.listErr != nil {
-		return nil, m.listErr
+		return nil, 0, m.listErr
 	}
-	return m.sessionRows, nil
+	return m.sessionRows, int64(len(m.sessionRows)), nil
 }
 
 func (m *mockOAuth2Store) GetOAuth2SessionByID(_ context.Context, id string) (*configtables.TableOAuth2RefreshToken, error) {
