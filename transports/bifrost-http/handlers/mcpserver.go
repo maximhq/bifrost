@@ -669,7 +669,7 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 	// --- JWT path ---
 	if rawJWT := extractBearerJWT(ctx); rawJWT != "" && discoveryEnabled {
 		// An OAuth token is the sole identity for the request. Reject when a
-		// header-based virtual key (x-bf-vk / x-api-key / Bearer vk) is also
+		// header-based virtual key (x-bf-vk / x-api-key / x-goog-api-key / Bearer vk) is also
 		// presented: mixing credential sources is ambiguous, and for user- and
 		// session-mode tokens — which carry no virtual key — a stray header VK
 		// would otherwise leak onto the context and be attributed to the request.
@@ -784,7 +784,7 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 		if discoveryEnabled {
 			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 		}
-		return nil, fmt.Errorf("virtual key required to access mcp server; set one of x-bf-vk, Authorization: Bearer <vk>, or x-api-key in your MCP client config")
+		return nil, fmt.Errorf("virtual key required to access mcp server; set one of x-bf-vk, Authorization: Bearer <vk>, x-api-key, or x-goog-api-key in your MCP client config")
 	}
 
 	vkServer, err := h.ensureVKMCPServerByValue(ctx, vk)
@@ -877,6 +877,17 @@ func (h *MCPServerHandler) ensureVKMCPServer(ctx context.Context, vkValue string
 	return h.SyncVKMCPServer(vk), nil
 }
 
+// getVKFromRequest extracts a virtual key from the request headers, checking
+// each supported header in priority order and returning the first match:
+//  1. x-bf-vk        — taken verbatim (no prefix check)
+//  2. Authorization  — "Bearer <vk>", where <vk> must start with the VK prefix
+//  3. x-api-key      — must start with the VK prefix
+//  4. x-goog-api-key — must start with the VK prefix
+//
+// The prefix gate (governance.VirtualKeyPrefix) on the latter three lets real
+// provider credentials pass through untouched, so only Bifrost virtual keys are
+// picked up here. This header set mirrors the inference path, keeping MCP and
+// inference at parity. Returns "" when no header carries a virtual key.
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {
 	if value := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); value != "" {
 		return value
@@ -895,6 +906,12 @@ func getVKFromRequest(ctx *fasthttp.RequestCtx) string {
 	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
 		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
 			return apiKey
+		}
+	}
+
+	if googAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); googAPIKey != "" {
+		if strings.HasPrefix(strings.ToLower(googAPIKey), governance.VirtualKeyPrefix) {
+			return googAPIKey
 		}
 	}
 

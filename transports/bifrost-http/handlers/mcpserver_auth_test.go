@@ -25,6 +25,72 @@ func newTestMCPHandler(cfg *lib.Config) *MCPServerHandler {
 	}
 }
 
+// TestGetVKFromRequest verifies the VK value is extracted from each supported
+// header, in priority order, and that non-VK values are ignored. This mirrors
+// the inference-path header set (x-bf-vk, Authorization Bearer, x-api-key,
+// x-goog-api-key) so MCP and inference stay at parity.
+func TestGetVKFromRequest(t *testing.T) {
+	const vk = "sk-bf-test-virtual-key"
+
+	cases := []struct {
+		name   string
+		setup  func(*fasthttp.RequestCtx)
+		wantVK string
+	}{
+		{
+			name:   "x-bf-vk header",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("x-bf-vk", vk) },
+			wantVK: vk,
+		},
+		{
+			name:   "Authorization Bearer header",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("Authorization", "Bearer "+vk) },
+			wantVK: vk,
+		},
+		{
+			name:   "x-api-key header",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("x-api-key", vk) },
+			wantVK: vk,
+		},
+		{
+			name:   "x-goog-api-key header",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("x-goog-api-key", vk) },
+			wantVK: vk,
+		},
+		{
+			name:   "no header returns empty string",
+			setup:  func(*fasthttp.RequestCtx) {},
+			wantVK: "",
+		},
+		{
+			name:   "non-VK Bearer token returns empty string",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("Authorization", "Bearer regular-api-key-123") },
+			wantVK: "",
+		},
+		{
+			name:   "non-VK x-goog-api-key returns empty string",
+			setup:  func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set("x-goog-api-key", "regular-google-key") },
+			wantVK: "",
+		},
+		{
+			name: "x-bf-vk takes priority over x-goog-api-key",
+			setup: func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set("x-bf-vk", vk)
+				ctx.Request.Header.Set("x-goog-api-key", "sk-bf-other")
+			},
+			wantVK: vk,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			tc.setup(ctx)
+			assert.Equal(t, tc.wantVK, getVKFromRequest(ctx))
+		})
+	}
+}
+
 // TestGetMCPServerForRequest_JWTPath covers the JWT branch of /mcp auth across
 // modes and identity kinds: the security contract for OAuth-authenticated calls.
 func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
