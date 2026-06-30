@@ -19,6 +19,9 @@ const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "
 interface Props {
 	control: Control<any>;
 	providerName: string;
+	// For custom providers, the underlying base provider type (e.g. "bedrock").
+	// Drives which credential UI renders; falls back to providerName for native providers.
+	baseProviderType?: string;
 	form: UseFormReturn<any>;
 }
 
@@ -45,16 +48,19 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 	);
 }
 
-export function ApiKeyFormFragment({ control, providerName, form }: Props) {
-	const isBedrock = providerName === "bedrock";
-	const isVertex = providerName === "vertex";
-	const isAzure = providerName === "azure";
-	const isReplicate = providerName === "replicate";
-	const isVLLM = providerName === "vllm";
-	const isOllama = providerName === "ollama";
-	const isSGL = providerName === "sgl";
+export function ApiKeyFormFragment({ control, providerName, baseProviderType, form }: Props) {
+	// Credential UI keys off the base provider type for custom providers; the
+	// model list, deployments table, and API calls still use the real providerName.
+	const effectiveProvider = baseProviderType ?? providerName;
+	const isBedrock = effectiveProvider === "bedrock";
+	const isVertex = effectiveProvider === "vertex";
+	const isAzure = effectiveProvider === "azure";
+	const isReplicate = effectiveProvider === "replicate";
+	const isVLLM = effectiveProvider === "vllm";
+	const isOllama = effectiveProvider === "ollama";
+	const isSGL = effectiveProvider === "sgl";
 	const isKeylessProvider = isOllama || isSGL;
-	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
+	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
