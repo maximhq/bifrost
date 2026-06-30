@@ -322,58 +322,29 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 
 In this example, instead of using OpenAI's default `/v1/chat/completions` path, requests will be sent to `https://custom-endpoint.example.com/api/v2/chat`.
 
-### TLS for Self-Signed or Internal Certificates
+### Disable Default Version Path
 
-When connecting to providers with HTTPS endpoints that use self-signed certificates or internal CAs (e.g., air-gapped environments, internal services), you can configure TLS in `network_config`:
+Some OpenAI-compatible providers serve their API at a base URL that already includes a path segment (e.g. Telnyx at `https://api.telnyx.com/v2/ai/openai`). By default, Bifrost appends `/v1/` to the base URL, resulting in a double path like `https://api.telnyx.com/v2/ai/openai/v1/chat/completions`.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `insecure_skip_verify` | boolean | Disable TLS certificate verification. Use only for trusted internal environments. **Not recommended for production.** |
-| `ca_cert_pem` | string | PEM-encoded CA certificate to trust for provider connections. Use when the endpoint uses a custom CA. |
-
-These options are mutually exclusive. Do not set `insecure_skip_verify: true` together with `ca_cert_pem`; provider config validation rejects that combination.
-
-**Option 1: Skip verification (air-gapped / self-signed)**
+Set `disable_default_version_path` to `true` to strip the default `/v1` prefix from request paths when the base URL already contains a path segment:
 
 ```json
 {
-    "my-air-gapped-provider": {
-        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": ["*"], "weight": 1.0 }],
+    "custom-llm": {
         "network_config": {
-            "base_url": "https://internal-llm.example.com",
-            "insecure_skip_verify": true
+            "base_url": "https://api.telnyx.com/v2/ai/openai"
         },
         "custom_provider_config": {
             "base_provider_type": "openai",
-            "allowed_requests": {
-                "chat_completion": true,
-                "chat_completion_stream": true
-            }
+            "disable_default_version_path": true
         }
     }
 }
 ```
 
-**Option 2: Custom CA certificate (preferred when you have the CA)**
+With this setting, requests resolve to `https://api.telnyx.com/v2/ai/openai/chat/completions` instead of the incorrect `https://api.telnyx.com/v2/ai/openai/v1/chat/completions`.
 
-```json
-{
-    "my-internal-provider": {
-        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": ["*"], "weight": 1.0 }],
-        "network_config": {
-            "base_url": "https://internal-llm.example.com",
-            "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
-        },
-        "custom_provider_config": {
-            "base_provider_type": "openai",
-            "allowed_requests": {
-                "chat_completion": true,
-                "chat_completion_stream": true
-            }
-        }
-    }
-}
-```
+This only affects the true default paths — explicit `request_path_overrides` are never rewritten.
 
 <Warning>
 Using `insecure_skip_verify` disables all certificate verification and is insecure. Prefer `ca_cert_pem` when you have the CA certificate. Only use `insecure_skip_verify` in trusted, isolated environments (e.g., air-gapped networks).
