@@ -145,8 +145,7 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 	bifrost.logger.Info("Starting Dynamic Worker Scaling routine in the background for provider: %s", providerName)
 	ticker := time.NewTicker(config.ConcurrencyAndBufferSize.ScalingInterval)
 	defer ticker.Stop()
-	waitGroupValue, _ := bifrost.waitGroups.Load(providerName)
-	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
+
 	for {
 		select {
 		case <-ticker.C:
@@ -188,9 +187,9 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 
 					numWorkersToAdd := targetWorkers - int(pq.ActiveWorkers.Load())
 					for i := 0; i < numWorkersToAdd; i++ {
-						currentWaitGroup.Add(1)
+						waitgroup.Add(1)
 						pq.ActiveWorkers.Add(1)
-						go bifrost.requestWorker(provider, config, pq, currentWaitGroup)
+						go bifrost.requestWorker(provider, config, pq, waitgroup)
 					}
 					bifrost.logger.Info("Added %d number of workers to worker pool provider: %s", numWorkersToAdd, providerName)
 				}
