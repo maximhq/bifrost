@@ -58,7 +58,7 @@ type NetworkConfig struct {
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
-	CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
+	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
@@ -82,7 +82,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
 		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
-		CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`
+		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
@@ -227,8 +227,84 @@ var DefaultNetworkConfig = NetworkConfig{
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
 type ConcurrencyAndBufferSize struct {
-	Concurrency int `json:"concurrency"` // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
-	BufferSize  int `json:"buffer_size"` // Size of the buffer
+	Concurrency        int           `json:"concurrency"`            // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
+	BufferSize         int           `json:"buffer_size"`            // Size of the buffer
+	DynamicScaling     bool          `json:"dynamic_worker_scaling"` //Whether the user wants dynamic scaling to happen
+	ScalingInterval    time.Duration `json:"scaling_interval"`       //After how much time will the go routine run and check the capacity of the queue and make the nesscary changes.
+	MinWorkers         int           `json:"min_workers"`            //No. of workers will never go below this value
+	MaxWorkers         int           `json:"max_workers"`            //No. of workers will never go above this value
+	ScaleUpThreshold   float64       `json:"scale_up_threshold"`     //If Queue capacity is above this threshold (eg 70%) then workers would be scaled up.
+	ScaleDownThreshold float64       `json:"scale_down_threshold"`   //If Queue capacity is below this threshold (eg 20%) then workers would be scaled down.
+}
+
+// UnmarshalJSON customizes JSON unmarshaling for ConcurrencyAndBufferSize.
+// ScalingInterval is interpreted as milliseconds in JSON,
+// but stored as time.Duration (nanoseconds) internally.
+func (c *ConcurrencyAndBufferSize) UnmarshalJSON(data []byte) error {
+	// Use an alias type to avoid infinite recursion
+	type Alias struct {
+		Concurrency        int     `json:"concurrency"`
+		BufferSize         int     `json:"buffer_size"`
+		DynamicScaling     bool    `json:"dynamic_worker_scaling"`
+		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
+		MinWorkers         int     `json:"min_workers"`
+		MaxWorkers         int     `json:"max_workers"`
+		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
+		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+	}
+
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+
+	// Copy all fields
+	c.Concurrency = alias.Concurrency
+	c.BufferSize = alias.BufferSize
+	c.DynamicScaling = alias.DynamicScaling
+	c.MinWorkers = alias.MinWorkers
+	c.MaxWorkers = alias.MaxWorkers
+	c.ScaleUpThreshold = alias.ScaleUpThreshold
+	c.ScaleDownThreshold = alias.ScaleDownThreshold
+
+	// Convert milliseconds to time.Duration (nanoseconds)
+	c.ScalingInterval = 0
+	if alias.ScalingInterval > 0 {
+		c.ScalingInterval = time.Duration(alias.ScalingInterval) * time.Millisecond
+	}
+
+	return nil
+}
+
+// MarshalJSON customizes JSON marshaling for ConcurrencyAndBufferSize.
+// ScalingInterval is converted from time.Duration (nanoseconds)
+// to milliseconds (integers) in JSON.
+func (c ConcurrencyAndBufferSize) MarshalJSON() ([]byte, error) {
+	// Use an alias type to avoid infinite recursion
+	type Alias struct {
+		Concurrency        int     `json:"concurrency"`
+		BufferSize         int     `json:"buffer_size"`
+		DynamicScaling     bool    `json:"dynamic_worker_scaling"`
+		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
+		MinWorkers         int     `json:"min_workers"`
+		MaxWorkers         int     `json:"max_workers"`
+		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
+		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+	}
+
+	alias := Alias{
+		Concurrency:    c.Concurrency,
+		BufferSize:     c.BufferSize,
+		DynamicScaling: c.DynamicScaling,
+		// Convert time.Duration (nanoseconds) to milliseconds
+		ScalingInterval:    int64(c.ScalingInterval / time.Millisecond),
+		MinWorkers:         c.MinWorkers,
+		MaxWorkers:         c.MaxWorkers,
+		ScaleUpThreshold:   c.ScaleUpThreshold,
+		ScaleDownThreshold: c.ScaleDownThreshold,
+	}
+
+	return json.Marshal(alias)
 }
 
 // DefaultConcurrencyAndBufferSize is the default concurrency and buffer size for provider operations.
@@ -253,11 +329,11 @@ const (
 
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
-	Type      ProxyType `json:"type"`        // Type of proxy to use
-	URL       *SecretVar   `json:"url"`         // URL of the proxy server (supports env.*)
-	Username  *SecretVar   `json:"username"`    // Username for proxy authentication (supports env.*)
-	Password  *SecretVar   `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *SecretVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	Type      ProxyType  `json:"type"`        // Type of proxy to use
+	URL       *SecretVar `json:"url"`         // URL of the proxy server (supports env.*)
+	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
+	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
+	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).

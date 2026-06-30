@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -128,10 +129,117 @@ type Bifrost struct {
 //     ProviderQueue, both the struct and pq.queue are eligible for GC.
 //     No explicit close is needed.
 type ProviderQueue struct {
-	queue      chan *ChannelMessage // the actual request queue channel — never closed, see above
-	done       chan struct{}        // closed by signalClosing() to signal shutdown; never written to otherwise
-	closing    uint32               // atomic: 0 = open, 1 = closing
-	signalOnce sync.Once
+	queue         chan *ChannelMessage // the actual request queue channel — never closed, see above
+	done          chan struct{}        // closed by signalClosing() to signal shutdown; never written to otherwise
+	closing       uint32               // atomic: 0 = open, 1 = closing
+	quit          chan struct{}        //signal is sent on this channel to kill the workers during autoscaling.
+	ActiveWorkers atomic.Int32
+	signalOnce    sync.Once
+}
+
+// DynamicWorkerScaling dynamically scales the worker up and down based on the no. of reqeusts in the providerQueue.
+func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitgroup *sync.WaitGroup) {
+	providerName := provider.GetProviderKey()
+	defer waitgroup.Done()
+
+	bifrost.logger.Info("Starting Dynamic Worker Scaling routine in the background for provider: %s", providerName)
+	ticker := time.NewTicker(config.ConcurrencyAndBufferSize.ScalingInterval)
+	defer ticker.Stop()
+	waitGroupValue, _ := bifrost.waitGroups.Load(providerName)
+	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
+	for {
+		select {
+		case <-ticker.C:
+			select {
+			case <-pq.done:
+				bifrost.logger.Info("Shutdown underway .. stopping dynamic worker scaling provider: %s", providerName)
+				return
+			default:
+				bifrost.logger.Debug("Starting Dynamic Worker Scaling Check happening in the background for provider: %s", providerName)
+				bufferCap := float64(cap(pq.queue))
+				capacity := (float64(len(pq.queue)) / bufferCap) * 100
+
+				if capacity >= config.ConcurrencyAndBufferSize.ScaleUpThreshold {
+					bifrost.logger.Info("Capacity for provider: %s is at %.2f which is above the threshold... scaling up the workers", providerName, capacity)
+				drainLoop:
+					for {
+						select {
+						case <-pq.quit:
+							// Since we need to scale up.. drain the quit tokens/signals
+						default:
+							break drainLoop
+						}
+					}
+					if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MaxWorkers {
+						bifrost.logger.Info("No. of workers is already at max workers. Cannot scale up. Provider: %s", providerName)
+						continue
+					}
+					step := int(math.Ceil(float64(config.ConcurrencyAndBufferSize.MaxWorkers) * 0.15))
+					//double the step size if above 90% queue utilization.
+					if float64(capacity) >= 90.0 {
+						step *= 2
+					}
+
+					targetWorkers := int(pq.ActiveWorkers.Load()) + step
+					if targetWorkers > config.ConcurrencyAndBufferSize.MaxWorkers {
+						targetWorkers = config.ConcurrencyAndBufferSize.MaxWorkers
+					}
+					//before scaling up, drain remaining quit tokens in the pq.quit channel.
+
+					numWorkersToAdd := targetWorkers - int(pq.ActiveWorkers.Load())
+					for i := 0; i < numWorkersToAdd; i++ {
+						currentWaitGroup.Add(1)
+						pq.ActiveWorkers.Add(1)
+						go bifrost.requestWorker(provider, config, pq, currentWaitGroup)
+					}
+					bifrost.logger.Info("Added %d number of workers to worker pool provider: %s", numWorkersToAdd, providerName)
+				}
+				if capacity <= config.ConcurrencyAndBufferSize.ScaleDownThreshold {
+					bifrost.logger.Info("Capacity for provider: %s is at %.2f which is below the threshold... scaling down the workers", providerName, capacity)
+					if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MinWorkers {
+						bifrost.logger.Info("No. of workers is already at min workers. Cannot scale down. Provider: %s", providerName)
+						continue
+					}
+					step := int(math.Ceil(float64(config.ConcurrencyAndBufferSize.MaxWorkers) * 0.15))
+
+					pendingQuits := len(pq.quit)
+					effectiveActive := int(pq.ActiveWorkers.Load()) - pendingQuits
+					if effectiveActive <= config.ConcurrencyAndBufferSize.MinWorkers {
+						bifrost.logger.Info("Workers already at or converging toward min workers, skipping. Provider: %s", providerName)
+						continue
+					}
+					targetWorkers := effectiveActive - step
+					if targetWorkers < config.ConcurrencyAndBufferSize.MinWorkers {
+						targetWorkers = config.ConcurrencyAndBufferSize.MinWorkers
+					}
+					numWorkersToSubtract := effectiveActive - targetWorkers
+					numWorkersSubtracted := 0
+				outer:
+					for i := 0; i < numWorkersToSubtract; i++ {
+						select {
+						case pq.quit <- struct{}{}:
+							numWorkersSubtracted++
+						default:
+							break outer
+						}
+					}
+
+					bifrost.logger.Info("Removed %d number of workers to worker pool provider: %s", numWorkersSubtracted, providerName)
+				}
+			}
+		case <-pq.done:
+			for {
+				select {
+				case <-pq.quit:
+					// drain value
+				default:
+					bifrost.logger.Info("Shutdown underway.. stopping dynamic worker scaling provider: %s", providerName)
+					// channel empty → done
+					return
+				}
+			}
+		}
+	}
 }
 
 func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
@@ -3427,6 +3535,11 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
 	}
+
+	if providerConfig.ConcurrencyAndBufferSize.DynamicScaling {
+		newPq.quit = make(chan struct{}, providerConfig.ConcurrencyAndBufferSize.MaxWorkers)
+	}
+
 	newWaitGroup := &sync.WaitGroup{}
 
 	// Step 3: Atomically replace the provider in the providers slice before new
@@ -3483,9 +3596,17 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 		providerConfig.ConcurrencyAndBufferSize.Concurrency,
 		providerKey,
 		providerConfig.ConcurrencyAndBufferSize.BufferSize)
+	numWorkers := 0
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		newWaitGroup.Add(1)
+		numWorkers++
 		go bifrost.requestWorker(provider, providerConfig, newPq, newWaitGroup)
+	}
+
+	if providerConfig.ConcurrencyAndBufferSize.DynamicScaling {
+		newPq.ActiveWorkers.Add(int32(numWorkers))
+		newWaitGroup.Add(1)
+		go bifrost.DynamicWorkerScaling(provider, providerConfig, newPq, newWaitGroup)
 	}
 
 	// Step 5: Transfer buffered requests from the old queue to the new queue BEFORE
@@ -4068,11 +4189,18 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 // It initializes the request queue and starts worker goroutines for processing requests.
 // Note: This function assumes the caller has already acquired the appropriate mutex for the provider.
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
+	config.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(config, providerKey, bifrost.logger)
+
 	// Create ProviderQueue with lifecycle management
 	pq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
 		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
+	}
+
+	//make the quit channel if dynamic scaling is enabled.
+	if config.ConcurrencyAndBufferSize.DynamicScaling {
+		pq.quit = make(chan struct{}, config.ConcurrencyAndBufferSize.MaxWorkers)
 	}
 
 	bifrost.requestQueues.Store(providerKey, pq)
@@ -4105,9 +4233,16 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 
 	schemas.RegisterKnownProvider(providerKey)
 
+	numWorkers := 0
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		currentWaitGroup.Add(1)
+		numWorkers++
 		go bifrost.requestWorker(provider, config, pq, currentWaitGroup)
+	}
+	if config.ConcurrencyAndBufferSize.DynamicScaling {
+		currentWaitGroup.Add(1)
+		pq.ActiveWorkers.Add(int32(numWorkers))
+		go bifrost.DynamicWorkerScaling(provider, config, pq, currentWaitGroup)
 	}
 
 	return nil
@@ -6054,12 +6189,19 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
 	defer waitGroup.Done()
-
+	defer pq.ActiveWorkers.Add(-1)
 	for {
 		var req *ChannelMessage
 		select {
 		case r := <-pq.queue:
 			req = r
+		case <-pq.quit:
+			// Dynamic autoscaler sent a kill signal
+			if pq.isClosing() {
+				//bifrost is shutting down. do the pending work and then return
+				continue
+			}
+			return
 		case <-pq.done:
 			// Provider is shutting down. Drain any buffered requests and send
 			// back errors so callers are not left blocked on their response channel.
