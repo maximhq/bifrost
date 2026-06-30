@@ -712,6 +712,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
