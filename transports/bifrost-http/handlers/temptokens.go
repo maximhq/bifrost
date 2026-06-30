@@ -51,6 +51,19 @@ var mcpHeadersAuthScope = temptoken.Scope{
 	MaxTTL:           15 * time.Minute,
 }
 
+// oauth2ConsentScope authorizes the public OAuth2 consent page to call the
+// consent flow APIs. The flow request ID is substituted into {id} at
+// validation time, binding each token to exactly one authorize request.
+var oauth2ConsentScope = temptoken.Scope{
+	Name: temptoken.OAuth2ConsentScopeName,
+	AllowedRoutes: []temptoken.RoutePattern{
+		{Method: "GET", Path: "/api/oauth2/consent/flows/{id}"},
+		{Method: "PUT", Path: "/api/oauth2/consent/flows/{id}"},
+	},
+	ResourceIDInPath: "{id}",
+	MaxTTL:           15 * time.Minute,
+}
+
 // RegisterTempTokenScopes registers every scope owned by this handlers
 // package on the given service. Called at server startup once the service
 // has been constructed. Returns an error if any scope is invalid or has
@@ -64,6 +77,9 @@ func RegisterTempTokenScopes(svc *temptoken.Service) error {
 	}
 	if err := svc.Registry().Register(mcpHeadersAuthScope); err != nil {
 		return fmt.Errorf("temp_token_scopes: register mcp_headers_auth: %w", err)
+	}
+	if err := svc.Registry().Register(oauth2ConsentScope); err != nil {
+		return fmt.Errorf("temp_token_scopes: register oauth2_consent: %w", err)
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ require (
 	github.com/fasthttp/websocket v1.5.12
 	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-git/go-git/v5 v5.19.1
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6
@@ -123,7 +124,6 @@ require (
 	github.com/go-openapi/swag/yamlutils v0.25.4 // indirect
 	github.com/go-openapi/validate v0.25.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
-	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/cel-go v0.28.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect

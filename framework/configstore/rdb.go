@@ -6837,3 +6837,168 @@ func (s *RDBConfigStore) createOAuth2SigningKey(ctx context.Context) (*tables.OA
 	key.PrivateKeyPEM = privPEM
 	return key, nil
 }
+
+// --- OAuth2 Clients (DCR) ---
+
+// CreateOAuth2Client persists a new DCR registration.
+func (s *RDBConfigStore) CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error {
+	if err := s.DB().WithContext(ctx).Create(client).Error; err != nil {
+		return fmt.Errorf("create oauth2 client: %w", err)
+	}
+	return nil
+}
+
+// GetOAuth2ClientByClientID returns the client with the given client_id, or nil
+// if not found.
+func (s *RDBConfigStore) GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error) {
+	var c tables.TableOAuth2Client
+	err := s.DB().WithContext(ctx).Where("client_id = ?", clientID).First(&c).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 client: %w", err)
+	}
+	return &c, nil
+}
+
+// --- OAuth2 Authorize Requests ---
+
+// CreateOAuth2AuthorizeRequest persists a new pending authorize request.
+func (s *RDBConfigStore) CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	if err := s.DB().WithContext(ctx).Create(req).Error; err != nil {
+		return fmt.Errorf("create oauth2 authorize request: %w", err)
+	}
+	return nil
+}
+
+// GetOAuth2AuthorizeRequestByID returns the authorize request with the given ID.
+func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request: %w", err)
+	}
+	return &req, nil
+}
+
+// GetOAuth2AuthorizeRequestByCodeHash finds a consented authorize request by
+// the hash of the auth code. Used by the token endpoint.
+func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).
+		Where("code_hash = ? AND status = ?", codeHash, tables.OAuth2AuthorizeRequestStatusConsented).
+		First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request by code hash: %w", err)
+	}
+	return &req, nil
+}
+
+// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending authorize
+// request to consented, recording the minted code hash and resolved identity in
+// a single conditional update. The status guard makes the transition idempotent
+// under concurrency: a second consent for the same flow matches zero rows and
+// returns ErrNotFound rather than overwriting the code hash the first one minted.
+func (s *RDBConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	result := s.DB().WithContext(ctx).Model(&tables.TableOAuth2AuthorizeRequest{}).
+		Where("id = ? AND status = ?", req.ID, tables.OAuth2AuthorizeRequestStatusPending).
+		Updates(map[string]any{
+			"status":     tables.OAuth2AuthorizeRequestStatusConsented,
+			"code_hash":  req.CodeHash,
+			"bf_mode":    req.BfMode,
+			"bf_sub":     req.BfSub,
+			"updated_at": req.UpdatedAt,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("consent authorize request: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SweepExpiredOAuth2AuthorizeRequests deletes pending/consented requests past
+// their TTL. Safe to call periodically.
+func (s *RDBConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
+	return s.DB().WithContext(ctx).
+		Where("expires_at < ? AND status != ?", time.Now(), tables.OAuth2AuthorizeRequestStatusCodeIssued).
+		Delete(&tables.TableOAuth2AuthorizeRequest{}).Error
+}
+
+// --- OAuth2 Refresh Tokens ---
+
+// GetOAuth2RefreshTokenByHash returns the refresh token row for the given hash.
+func (s *RDBConfigStore) GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
+	var rt tables.TableOAuth2RefreshToken
+	err := s.DB().WithContext(ctx).Where("token_hash = ? AND revoked_at IS NULL", hash).First(&rt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 refresh token: %w", err)
+	}
+	return &rt, nil
+}
+
+// ConsumeOAuth2AuthorizeRequest atomically marks the authorize request as
+// code_issued and creates the refresh token in a single transaction.
+// If either operation fails the transaction is rolled back — the authorize
+// request stays in "consented" state and the client can retry the token exchange.
+func (s *RDBConfigStore) ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Conditional update guards single-use: only a still-consented, unexpired
+		// request transitions. A zero-row result means the code was already
+		// consumed, expired, or never consented — reject before minting a token so
+		// a racing second exchange can't double-spend one authorization code.
+		result := tx.Model(&tables.TableOAuth2AuthorizeRequest{}).
+			Where("id = ? AND status = ? AND expires_at > ?", requestID, tables.OAuth2AuthorizeRequestStatusConsented, now).
+			Updates(map[string]any{
+				"status":     tables.OAuth2AuthorizeRequestStatusCodeIssued,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("consume authorize request: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if err := tx.Create(rt).Error; err != nil {
+			return fmt.Errorf("create refresh token: %w", err)
+		}
+		return nil
+	})
+}
+
+// RotateOAuth2RefreshToken atomically revokes the old refresh token and creates
+// the new one in a single transaction. If either operation fails the transaction
+// is rolled back — the old token stays active and the client can retry the refresh.
+func (s *RDBConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Only an active (not-yet-revoked) token may be rotated. A zero-row result
+		// means the token was already revoked — either by a concurrent rotation or
+		// as a replay — so reject before minting a replacement.
+		result := tx.Model(&tables.TableOAuth2RefreshToken{}).
+			Where("id = ? AND revoked_at IS NULL", oldID).
+			Update("revoked_at", &now)
+		if result.Error != nil {
+			return fmt.Errorf("revoke old refresh token: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if err := tx.Create(newRT).Error; err != nil {
+			return fmt.Errorf("create new refresh token: %w", err)
+		}
+		return nil
+	})
+}
