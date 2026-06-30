@@ -240,8 +240,8 @@ func getOrCreateAnthropicToResponsesStreamState(ctx *schemas.BifrostContext) *an
 	return state
 }
 
-// acquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
-func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
+// AcquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
+func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state := anthropicResponsesStreamStatePool.Get().(*AnthropicResponsesStreamState)
 	// Clear maps (they're already initialized from New or previous flush)
 	// Only initialize if nil (shouldn't happen, but defensive)
@@ -343,8 +343,8 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	return state
 }
 
-// releaseAnthropicResponsesStreamState returns an Anthropic responses stream state to the pool.
-func releaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) {
+// ReleaseAnthropicResponsesStreamState returns an Anthropic responses stream state to the pool.
+func ReleaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) {
 	if state != nil {
 		state.flush() // Clean before returning to pool
 		anthropicResponsesStreamStatePool.Put(state)
@@ -3038,8 +3038,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 		if bifrostReq.Params.Text != nil {
-			// Vertex doesn't support native structured outputs, so convert to tool
-			if bifrostReq.Provider == schemas.Vertex {
+			// Vertex and Bedrock Mantle don't accept native structured outputs
+			// (output_config.format), so convert to a tool instead.
+			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle {
 				if bifrostReq.Params.Text.Format != nil {
 					responseFormatTool := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
 					if responseFormatTool != nil {

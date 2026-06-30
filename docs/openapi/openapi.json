@@ -61045,6 +61045,7 @@
           "perplexity",
           "replicate",
           "cerebras",
+          "deepseek",
           "gemini",
           "openrouter",
           "elevenlabs",
@@ -61906,7 +61907,7 @@
           "prompt_cache_retention": {
             "type": "string",
             "enum": [
-              "in-memory",
+              "in_memory",
               "24h"
             ],
             "description": "Prompt cache retention policy"

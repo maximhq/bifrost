@@ -305,6 +305,9 @@
         "bedrock": {
           "$ref": "#/$defs/provider_with_bedrock_config"
         },
+        "bedrock_mantle": {
+          "$ref": "#/$defs/provider_with_bedrock_mantle_config"
+        },
         "cohere": {
           "$ref": "#/$defs/provider"
         },
@@ -351,6 +354,9 @@
           "$ref": "#/$defs/provider"
         },
         "cerebras": {
+          "$ref": "#/$defs/provider"
+        },
+        "deepseek": {
           "$ref": "#/$defs/provider"
         },
         "vllm": {
@@ -1811,6 +1817,7 @@
                         "anthropic",
                         "gemini",
                         "bedrock",
+                        "bedrock_mantle",
                         "azure",
                         "cohere",
                         "mistral",
@@ -3342,6 +3349,53 @@
         }
       ]
     },
+    "bedrock_mantle_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bedrock_mantle_key_config": {
+              "type": "object",
+              "properties": {
+                "access_key": {
+                  "type": "string",
+                  "description": "AWS access key for SigV4 (can use env. prefix)"
+                },
+                "secret_key": {
+                  "type": "string",
+                  "description": "AWS secret key for SigV4 (can use env. prefix)"
+                },
+                "session_token": {
+                  "type": "string",
+                  "description": "AWS session token for temporary credentials (can use env. prefix)"
+                },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region used to build the bedrock-mantle endpoint host"
+                },
+                "role_arn": {
+                  "type": "string",
+                  "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                },
+                "external_id": {
+                  "type": "string",
+                  "description": "External ID for AssumeRole (can use env. prefix)"
+                },
+                "session_name": {
+                  "type": "string",
+                  "description": "Role session name for AssumeRole (can use env. prefix)"
+                }
+              },
+              "required": ["region"],
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
     "vllm_key": {
       "allOf": [
         {
@@ -3576,6 +3630,45 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/bedrock_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "provider_with_bedrock_mantle_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bedrock_mantle_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
@@ -5438,6 +5531,7 @@
             "azure",
             "anthropic",
             "bedrock",
+            "bedrock_mantle",
             "cohere",
             "vertex",
             "mistral",

@@ -1,0 +1,144 @@
+---
+title: "DeepSeek"
+description: "DeepSeek API conversion guide - OpenAI-compatible chat models, streaming, tool calling, and root-based endpoint paths"
+icon: "D"
+---
+
+## Overview
+
+DeepSeek is an **OpenAI-compatible provider** for chat-oriented models. In Bifrost, the DeepSeek adapter is intentionally conservative in its first pass:
+
+- **OpenAI-compatible chat support** - Non-streaming and streaming chat completions
+- **Responses compatibility** - Implemented through Bifrost's chat-to-responses fallback
+- **Model discovery** - Lists models from DeepSeek's `/models` endpoint
+- **Tool calling** - Supported through the shared OpenAI-compatible chat handlers
+- **Root-based endpoints** - DeepSeek uses `/chat/completions` and `/models` instead of the more common `/v1/*` paths
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | `/chat/completions` (fallback) |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): The first DeepSeek adapter intentionally supports only the stable, documented chat/model-listing surface. Legacy text completions in DeepSeek are currently documented as beta/FIM-oriented, so Bifrost does not expose them in this first pass.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+DeepSeek chat completions are forwarded through Bifrost's shared OpenAI-compatible chat handlers.
+
+### Endpoint behavior
+
+Unlike many other OpenAI-compatible providers, DeepSeek documents **root-based** paths:
+
+- `/chat/completions`
+- `/models`
+
+So the DeepSeek provider does **not** use `/v1/chat/completions` by default.
+
+### Parameter handling
+
+DeepSeek reuses the shared OpenAI-compatible conversion path, so standard chat parameters, streaming, tools, and JSON output follow the same behavior described in [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+DeepSeek-specific beta capabilities that require `https://api.deepseek.com/beta` are not hardcoded into the provider. If you need them, override `network_config.base_url` in your provider config.
+
+---
+
+# 2. Responses API
+
+Bifrost provides Responses compatibility for DeepSeek by converting a Responses request into a Chat Completions request internally, then converting the result back into a Responses-shaped output.
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Streaming responses use the same fallback strategy on top of DeepSeek chat streaming.
+
+---
+
+# 3. List Models
+
+DeepSeek model discovery is forwarded to the documented `/models` endpoint and returned through Bifrost's standard model-listing format.
+
+The currently documented public models include names such as:
+
+- `deepseek-v4-flash`
+- `deepseek-v4-pro`
+
+`deepseek-chat` and `deepseek-reasoner` are deprecated aliases — they will be retired and inaccessible after July 24, 2026. Migrate to `deepseek-v4-flash` or `deepseek-v4-pro`.
+
+---
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Open **Model Providers** → **Configurations** → **DeepSeek**.
+2. Add a key using `env.DEEPSEEK_API_KEY`.
+3. Pick a model like `deepseek/deepseek-v4-flash` or `deepseek/deepseek-v4-pro`.
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek/deepseek-v4-pro",
+    "messages": [
+      {"role": "user", "content": "Say hello from DeepSeek"}
+    ]
+  }'
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "deepseek": {
+      "keys": [
+        {
+          "value": "env.DEEPSEEK_API_KEY"
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completion | Kept out of the first pass because the documented DeepSeek `/completions` surface is beta/FIM-oriented |
+| Embedding | Not implemented in the first DeepSeek adapter |
+| Image Generation | Not implemented in the first DeepSeek adapter |
+| Speech/TTS | Not implemented in the first DeepSeek adapter |
+| Transcription/STT | Not implemented in the first DeepSeek adapter |
+| Batch Operations | Not implemented in the first DeepSeek adapter |
+| File Management | Not implemented in the first DeepSeek adapter |
