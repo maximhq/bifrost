@@ -55,6 +55,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableOauthUserToken{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
+		&tables.TableOAuth2RefreshToken{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
@@ -985,6 +986,40 @@ func TestDeleteVirtualKey(t *testing.T) {
 
 	_, err = store.GetVirtualKey(ctx, "vk-delete")
 	assert.Error(t, err, "Should not find deleted virtual key")
+}
+
+func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-grant",
+		Name:     "Grant VK",
+		Value:    "vk-grant-value",
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// An active vk-mode inbound grant bound to this VK (vk-mode rows key bf_sub
+	// to the VK id).
+	rt := &tables.TableOAuth2RefreshToken{
+		ID:        "rt-vk-grant",
+		TokenHash: "hash-vk-grant",
+		FamilyID:  "fam-vk-grant",
+		ClientID:  "client-1",
+		BfMode:    string(schemas.MCPAuthModeVK),
+		BfSub:     vk.ID,
+		Scope:     "mcp",
+		Resource:  "https://example.test/mcp",
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, store.DB().WithContext(ctx).Create(rt).Error)
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+
+	var got tables.TableOAuth2RefreshToken
+	require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-grant").Error)
+	assert.NotNil(t, got.RevokedAt, "vk-mode grant should be revoked when its VK is deleted")
 }
 
 func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {

@@ -3392,6 +3392,16 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
 			return err
 		}
+		// Revoke gateway-issued OAuth2 grants bound to this VK (vk-mode tokens are
+		// keyed by vk_id in bf_sub). They are revoked rather than deleted so they
+		// stop minting access tokens on refresh and drop off the active-grants
+		// view, while remaining available for reuse detection until the sweep.
+		now := time.Now()
+		if err := txDB.WithContext(ctx).Model(&tables.TableOAuth2RefreshToken{}).
+			Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", string(schemas.MCPAuthModeVK), id).
+			Update("revoked_at", &now).Error; err != nil {
+			return err
+		}
 		// Delete per-user MCP header credentials tied to this VK
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
 			return err

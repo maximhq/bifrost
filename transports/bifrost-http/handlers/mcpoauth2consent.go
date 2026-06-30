@@ -41,6 +41,13 @@ type OAuth2IdentityResolver interface {
 	// carry no virtual key of their own. When a user maps to several equivalent
 	// virtual keys, any one of them may be returned.
 	ResolveUserVirtualKey(ctx context.Context, userID string) (vkID string, err error)
+	// IsUserActive reports whether the given user identity still exists and is
+	// usable. Returns (false, nil) when the user is gone or deactivated; an
+	// error is reserved for transient lookup failures that should be retried.
+	// Used to cut off a deleted user's grant at request and refresh time rather
+	// than waiting for the access token to expire, mirroring the virtual-key
+	// liveness check.
+	IsUserActive(ctx context.Context, userID string) (active bool, err error)
 }
 
 // OAuth2ConsentHandler serves the two consent flow APIs:

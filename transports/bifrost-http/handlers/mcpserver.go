@@ -811,6 +811,15 @@ func (h *MCPServerHandler) userScopedServer(ctx *fasthttp.RequestCtx, claims *jw
 	if schemas.MCPAuthMode(claims.BfMode) != schemas.MCPAuthModeUser {
 		return nil, nil
 	}
+	// Reject deleted or deactivated users at request time, mirroring the vk-mode
+	// IsActiveValue() cutoff, rather than letting an already-issued access token
+	// keep working until it expires. Placed before the no-virtual-key early
+	// return below so a removed user cannot fall through to the global server.
+	if active, err := h.identityResolver.IsUserActive(ctx, claims.Subject); err != nil {
+		return nil, fmt.Errorf("failed to verify user: %w", err)
+	} else if !active {
+		return nil, fmt.Errorf("user is no longer active")
+	}
 	vkID, err := h.identityResolver.ResolveUserVirtualKey(ctx, claims.Subject)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve virtual key for user: %w", err)

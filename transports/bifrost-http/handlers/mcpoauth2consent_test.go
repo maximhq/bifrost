@@ -22,6 +22,8 @@ type fakeResolver struct {
 	vkBindErr         error
 	userVKID          string
 	userVKErr         error
+	userInactive      bool // when true, IsUserActive reports the user as gone
+	userActiveErr     error
 }
 
 func (f *fakeResolver) IsUserModeAvailable() bool { return f.userModeAvailable }
@@ -33,6 +35,9 @@ func (f *fakeResolver) ResolveVKUserUpgrade(_ context.Context, _ string) (string
 }
 func (f *fakeResolver) ResolveUserVirtualKey(_ context.Context, _ string) (string, error) {
 	return f.userVKID, f.userVKErr
+}
+func (f *fakeResolver) IsUserActive(_ context.Context, _ string) (bool, error) {
+	return !f.userInactive, f.userActiveErr
 }
 
 func newConsentStore() *mockOAuth2Store {

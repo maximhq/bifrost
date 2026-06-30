@@ -569,3 +569,52 @@ func TestHandleToken_RefreshVKIdentityDisabled(t *testing.T) {
 		assert.Contains(t, body, "no longer active")
 	})
 }
+
+func TestHandleToken_RefreshUserLiveness(t *testing.T) {
+	seedUserRefresh := func(t *testing.T, store configstore.ConfigStore, plain string) {
+		t.Helper()
+		seedConsentedRequest(t, store, "fam-user", "client-1", "auth-code-user", pkceChallenge("v"), "user", "user-1", time.Now().Add(time.Minute))
+		rt := &configtables.TableOAuth2RefreshToken{
+			ID: "rt-user", TokenHash: hashSHA256Hex(plain), FamilyID: "fam-user", ClientID: "client-1",
+			BfMode: "user", BfSub: "user-1", Scope: "mcp", Resource: testMCPResource, CreatedAt: time.Now(),
+		}
+		require.NoError(t, store.ConsumeOAuth2AuthorizeRequest(context.Background(), "fam-user", rt))
+	}
+
+	refreshReq := func() *fasthttp.RequestCtx {
+		return formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-user-1"}, "client_id": {"client-1"},
+		}.Encode())
+	}
+
+	t.Run("user refresh rejected when the user is no longer active", func(t *testing.T) {
+		store := newRealOAuth2Store(t)
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		// Resolver reports the user as gone: refresh must be denied rather than
+		// minting a new access token, mirroring the VK-mode liveness check.
+		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true, userInactive: true})
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedUserRefresh(t, store, "refresh-user-1")
+
+		ctx := refreshReq()
+		h.handleToken(ctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+		body := string(ctx.Response.Body())
+		assert.Contains(t, body, "invalid_grant")
+		assert.Contains(t, body, "user is no longer active")
+	})
+
+	t.Run("user refresh succeeds when the user is active", func(t *testing.T) {
+		store := newRealOAuth2Store(t)
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		// Active user (default resolver) must pass the liveness check and rotate.
+		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true})
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedUserRefresh(t, store, "refresh-user-1")
+
+		ctx := refreshReq()
+		h.handleToken(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.NotContains(t, string(ctx.Response.Body()), "user is no longer active")
+	})
+}
