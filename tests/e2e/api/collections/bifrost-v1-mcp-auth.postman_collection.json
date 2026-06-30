@@ -1,0 +1,388 @@
+{
+  "info": {
+    "name": "Bifrost V1 - MCP Auth",
+    "description": "Validates inbound /mcp authentication across the three server auth modes (headers | both | oauth), driven by the auth_mode env-var set per boot config. The runner boots a fresh server per mode with two pre-seeded virtual keys (one active, one inactive) and an upstream MCP client. Core guarantees: (1) in headers mode every virtual-key credential connects exactly as before and the OAuth discovery surface is invisible (404); (2) both mode keeps every header-credential outcome identical and only ADDS JWT acceptance + discovery; (3) oauth mode rejects header credentials outright; (4) an inactive virtual key never connects, in any mode; (5) discovery documents are spec-shaped when served.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8090", "type": "string" },
+    { "key": "auth_mode", "value": "headers", "type": "string" },
+    { "key": "vk_value", "value": "sk-bf-mcp-test-key", "type": "string" },
+    { "key": "vk_inactive_value", "value": "sk-bf-mcp-inactive-key", "type": "string" },
+    { "key": "mcp_issuer", "value": "http://localhost:8090", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Discovery gating",
+      "item": [
+        {
+          "name": "Protected resource metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('PRM is hidden in headers mode (404)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(404);",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('PRM is served (200)', function () { pm.expect(code).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "var issuer = pm.variables.get('mcp_issuer');",
+                  "pm.test('resource is the /mcp URL (RFC 9728)', function () {",
+                  "  pm.expect(b.resource).to.equal(issuer + '/mcp');",
+                  "});",
+                  "pm.test('authorization_servers lists this issuer', function () {",
+                  "  pm.expect(b.authorization_servers).to.include(issuer);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/.well-known/oauth-protected-resource",
+              "host": ["{{base_url}}"],
+              "path": [".well-known", "oauth-protected-resource"]
+            }
+          }
+        },
+        {
+          "name": "Authorization server metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('AS metadata is hidden in headers mode (404)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(404);",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('AS metadata is served (200)', function () { pm.expect(code).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "var issuer = pm.variables.get('mcp_issuer');",
+                  "pm.test('issuer + endpoints are present', function () {",
+                  "  pm.expect(b.issuer).to.equal(issuer);",
+                  "  pm.expect(b.authorization_endpoint).to.equal(issuer + '/oauth2/authorize');",
+                  "  pm.expect(b.token_endpoint).to.equal(issuer + '/oauth2/token');",
+                  "  pm.expect(b.registration_endpoint).to.equal(issuer + '/oauth2/register');",
+                  "  pm.expect(b.jwks_uri).to.equal(issuer + '/.well-known/jwks.json');",
+                  "});",
+                  "pm.test('advertises code grant, PKCE S256, public clients', function () {",
+                  "  pm.expect(b.response_types_supported).to.include('code');",
+                  "  pm.expect(b.grant_types_supported).to.include('authorization_code');",
+                  "  pm.expect(b.grant_types_supported).to.include('refresh_token');",
+                  "  pm.expect(b.code_challenge_methods_supported).to.include('S256');",
+                  "  pm.expect(b.token_endpoint_auth_methods_supported).to.include('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/.well-known/oauth-authorization-server",
+              "host": ["{{base_url}}"],
+              "path": [".well-known", "oauth-authorization-server"]
+            }
+          }
+        },
+        {
+          "name": "JWKS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('JWKS is hidden in headers mode (404)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(404);",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('JWKS is served (200)', function () { pm.expect(code).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "pm.test('exposes one RS256 signing key', function () {",
+                  "  pm.expect(b.keys).to.be.an('array').with.lengthOf(1);",
+                  "  var k = b.keys[0];",
+                  "  pm.expect(k.kty).to.equal('RSA');",
+                  "  pm.expect(k.alg).to.equal('RS256');",
+                  "  pm.expect(k.use).to.equal('sig');",
+                  "  pm.expect(k.kid).to.be.a('string').and.not.empty;",
+                  "  pm.expect(k.n).to.be.a('string').and.not.empty;",
+                  "  pm.expect(k.e).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/.well-known/jwks.json",
+              "host": ["{{base_url}}"],
+              "path": [".well-known", "jwks.json"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP connect matrix",
+      "description": "POST a JSON-RPC initialize to /mcp with each credential. The auth gate runs on every /mcp request, so initialize alone proves accept/reject. Accepted is asserted as 'not 401'; rejected is asserted as exactly 401 (with WWW-Authenticate where discovery is enabled).",
+      "item": [
+        {
+          "name": "Virtual key via x-bf-vk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('header VK is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('401 advertises the protected-resource metadata', function () {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('header VK connects (not 401) — unchanged legacy behavior', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "x-bf-vk", "value": "{{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Virtual key via Authorization Bearer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('Bearer VK is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Bearer VK connects (not 401) — unchanged legacy behavior', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer {{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Virtual key via x-api-key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('x-api-key VK is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('x-api-key VK connects (not 401) — unchanged legacy behavior', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "x-api-key", "value": "{{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "No credentials (anonymous)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// enforce_auth_on_inference is off in the boot config, so anonymous /mcp",
+                  "// access falls back to the global server in headers/both. oauth-strict",
+                  "// still requires a JWT.",
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('anonymous is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('401 advertises the protected-resource metadata', function () {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('anonymous connects when auth is not enforced (not 401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Inactive virtual key via x-bf-vk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A deactivated key must never connect, in any mode: headers/both reject",
+                  "// it at the shared key-lookup chokepoint, oauth-strict rejects the header",
+                  "// credential outright.",
+                  "var code = pm.response.code;",
+                  "pm.test('inactive virtual key is rejected (401)', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "x-bf-vk", "value": "{{vk_inactive_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Opaque bearer token (not a Bifrost JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A JWT-shaped bearer that is not a real issued token. In headers mode the",
+                  "// JWT path is off, so this is not treated as a credential and falls back to",
+                  "// anonymous (auth not enforced). In both/oauth the token is verified and",
+                  "// fails, yielding 401 with WWW-Authenticate.",
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('JWT-shaped bearer is ignored in headers mode (not 401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('invalid JWT is rejected (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('401 advertises the protected-resource metadata', function () {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.be.a('string');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.bm90LWEtcmVhbC1zaWduYXR1cmU" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        }
+      ]
+    }
+  ]
+}
