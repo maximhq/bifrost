@@ -3852,3 +3852,413 @@ class TestAnthropicCompaction:
         print("  ✓ Compaction works with tool use")
 
         print("\n✓ All edge cases handled correctly")
+
+
+# Code-execution sub-tool / result-block taxonomy (per the code execution tool docs).
+CODE_EXEC_TOOL_NAMES = {
+    "code_execution",  # python
+    "bash_code_execution",
+    "text_editor_code_execution",
+}
+CODE_EXEC_RESULT_TYPES = {
+    "code_execution_tool_result",
+    "bash_code_execution_tool_result",
+    "text_editor_code_execution_tool_result",
+}
+
+
+def _attr(obj, key, default=None):
+    """Read a field whether the SDK surfaced the (beta) block as an object or a dict."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+class TestAnthropicCodeExecution:
+    """Code execution tool — every invocation type a user can drive through Bifrost.
+
+    Covers all three sub-tools (python / bash / text_editor view·create·edit),
+    streaming + non-streaming, every tool version (20250825 / 20260120 / 20260521),
+    programmatic tool calling, web-search auto-injection, file upload via
+    container_upload, generated-file retrieval, and container reuse.
+
+    Code execution is an Anthropic-only server tool, so these run against the
+    Anthropic provider directly. No anthropic-beta header is required for code
+    execution on /v1/messages (only files-api-2025-04-14 when a container_upload
+    references an uploaded file — see test_11). Model behaviour is non-deterministic,
+    so assertions validate that the request is accepted and that whatever
+    code-execution blocks come back are well-formed and never crash the SDK's
+    streaming accumulator (the class of bug this whole feature path has hit).
+    """
+
+    MODEL = get_model("anthropic", "chat")  # claude-sonnet-4-5+ supports every version
+
+    @pytest.fixture
+    def code_exec_client(self):
+        """Anthropic client pointed at Bifrost (no beta header needed)."""
+        from .utils.config_loader import get_config, get_integration_url
+
+        api_key = get_api_key("anthropic")
+        base_url = get_integration_url("anthropic")
+        config = get_config()
+        api_config = config.get_api_config()
+        integration_settings = config.get_integration_settings("anthropic")
+
+        default_headers = {}
+        if integration_settings.get("version"):
+            default_headers["anthropic-version"] = integration_settings["version"]
+
+        return Anthropic(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=api_config.get("timeout", 300),
+            default_headers=default_headers or None,
+        )
+
+    @pytest.fixture
+    def files_beta_client(self):
+        """Client carrying the files-api beta header, for container_upload flows."""
+        from .utils.config_loader import get_config, get_integration_url
+
+        api_key = get_api_key("anthropic")
+        base_url = get_integration_url("anthropic")
+        config = get_config()
+        api_config = config.get_api_config()
+        integration_settings = config.get_integration_settings("anthropic")
+
+        default_headers = {"anthropic-beta": "files-api-2025-04-14"}
+        if integration_settings.get("version"):
+            default_headers["anthropic-version"] = integration_settings["version"]
+
+        return Anthropic(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=api_config.get("timeout", 300),
+            default_headers=default_headers,
+        )
+
+    @staticmethod
+    def _scan(content):
+        """Classify code-execution blocks in a response/final-message content list."""
+        out = {
+            "tool_names": [],       # server_tool_use names (code-exec sub-tools)
+            "inputs": [],           # their input dicts
+            "result_types": [],     # *_code_execution_tool_result block types
+            "inner_types": [],      # inner result discriminators
+            "error_codes": [],      # error_code on *_tool_result_error inner blocks
+            "file_ids": [],         # generated-file ids inside result content
+            "web_search": False,    # a web_search server_tool_use appeared
+            "web_search_results": False,
+        }
+        for block in content or []:
+            btype = _attr(block, "type")
+            name = _attr(block, "name")
+            if btype == "server_tool_use" and name in CODE_EXEC_TOOL_NAMES:
+                out["tool_names"].append(name)
+                out["inputs"].append(_attr(block, "input") or {})
+            elif btype == "server_tool_use" and name == "web_search":
+                out["web_search"] = True
+            elif btype == "web_search_tool_result":
+                out["web_search_results"] = True
+            elif btype in CODE_EXEC_RESULT_TYPES:
+                out["result_types"].append(btype)
+                inner = _attr(block, "content")
+                inner_type = _attr(inner, "type")
+                if inner_type:
+                    out["inner_types"].append(inner_type)
+                if isinstance(inner_type, str) and inner_type.endswith("_error"):
+                    out["error_codes"].append(_attr(inner, "error_code"))
+                # Generated files live in the inner result's own "content" array.
+                for sub in (_attr(inner, "content") or []):
+                    fid = _attr(sub, "file_id")
+                    if fid:
+                        out["file_ids"].append(fid)
+        return out
+
+    def _run(self, client, tool_type, prompt, max_tokens=2048, **kwargs):
+        """One-shot code execution request; returns (response, scan)."""
+        resp = client.messages.create(
+            model=self.MODEL,
+            max_tokens=max_tokens,
+            tools=[{"type": tool_type, "name": "code_execution"}],
+            messages=[{"role": "user", "content": prompt}],
+            **kwargs,
+        )
+        assert resp is not None and hasattr(resp, "content") and len(resp.content) > 0
+        scan = self._scan(resp.content)
+        # Inner results, when present, must be well-formed (no silent corruption).
+        for et in scan["inner_types"]:
+            assert isinstance(et, str) and et, f"malformed inner result type: {et!r}"
+        return resp, scan
+
+    # ---- 1. Python (default sub-tool), non-streaming -------------------------
+    def test_01_python_non_streaming(self, code_exec_client):
+        _, scan = self._run(
+            code_exec_client,
+            "code_execution_20250825",
+            "Use Python code execution to compute the mean and population standard "
+            "deviation of [2, 4, 4, 4, 5, 5, 7, 9]. Show the code.",
+        )
+        assert scan["tool_names"], f"code execution did not run; got {scan}"
+        assert scan["result_types"], f"no code_execution result block; got {scan}"
+        print(f"✓ python code execution: {scan['tool_names']} -> {scan['inner_types']}")
+
+    # ---- 2. Python, STREAMING (SDK accumulator regression guard) -------------
+    def test_02_python_streaming(self, code_exec_client):
+        # The streaming accumulator (iterate + get_final_message) is exactly what
+        # used to crash with IndexError / UnicodeDecodeError / malformed blocks.
+        text = ""
+        with code_exec_client.messages.stream(
+            model=self.MODEL,
+            max_tokens=2048,
+            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            messages=[{"role": "user", "content": "Use Python to list the first 15 Fibonacci numbers and print them."}],
+        ) as stream:
+            for event in stream:
+                if event.type == "content_block_delta" and _attr(event.delta, "type") == "text_delta":
+                    text += event.delta.text
+            final = stream.get_final_message()  # must not raise
+
+        assert final is not None and final.content
+        scan = self._scan(final.content)
+        assert scan["tool_names"], f"streaming code execution did not run; got {scan}"
+        assert scan["result_types"], f"no result block in streamed final message; got {scan}"
+        print(f"✓ streaming python code execution: {scan['inner_types']}")
+
+    # ---- 3. Bash sub-tool ----------------------------------------------------
+    def test_03_bash_code_execution(self, code_exec_client):
+        _, scan = self._run(
+            code_exec_client,
+            "code_execution_20250825",
+            "Using a bash shell command (not Python), print the Python version with "
+            "`python3 --version` and list the working directory with `ls -la`.",
+        )
+        assert scan["result_types"], f"code execution did not run; got {scan}"
+        # Require the bash sub-tool specifically so the bash routing/serialization
+        # path is actually exercised (prompt explicitly forces a shell command).
+        assert "bash_code_execution" in scan["tool_names"], (
+            f"bash_code_execution sub-tool not exercised; tool_names={scan['tool_names']}"
+        )
+        print("✓ bash_code_execution sub-tool exercised")
+
+    # ---- 4. Text editor: create + view + edit (non-streaming) ----------------
+    def test_04_text_editor_create_view_edit(self, code_exec_client):
+        _, scan = self._run(
+            code_exec_client,
+            "code_execution_20250825",
+            "Use the text editor tool to: (1) create a file notes.txt containing "
+            "'debug=true', (2) view it, then (3) str_replace 'debug=true' with "
+            "'debug=false'. Use the file editor, not Python.",
+        )
+        assert scan["result_types"], f"code execution did not run; got {scan}"
+        # Require the text_editor sub-tool so its routing/serialization is exercised.
+        assert "text_editor_code_execution" in scan["tool_names"], (
+            f"text_editor_code_execution sub-tool not exercised; tool_names={scan['tool_names']}"
+        )
+        # Verify the multi-key input round-tripped through Bifrost intact.
+        cmds = [i.get("command") for i in scan["inputs"] if isinstance(i, dict)]
+        assert any(c in {"create", "view", "str_replace"} for c in cmds), (
+            f"text_editor input lost its command/path payload: {scan['inputs']}"
+        )
+        print(f"✓ text_editor sub-tool exercised: commands={cmds}")
+
+    # ---- 5. Text editor, STREAMING (verbatim multi-key input regression) -----
+    def test_05_text_editor_streaming(self, code_exec_client):
+        with code_exec_client.messages.stream(
+            model=self.MODEL,
+            max_tokens=2048,
+            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            messages=[{"role": "user", "content": "Use the text editor tool to create a file hello.py with the line print('hi'), then view it."}],
+        ) as stream:
+            for _event in stream:
+                pass
+            final = stream.get_final_message()  # must not raise
+
+        scan = self._scan(final.content)
+        assert scan["result_types"], f"code execution did not run; got {scan}"
+        # Require the text_editor sub-tool so the streaming verbatim-input path is exercised.
+        assert "text_editor_code_execution" in scan["tool_names"], (
+            f"streamed text_editor_code_execution not exercised; tool_names={scan['tool_names']}"
+        )
+        inputs_have_path = any(
+            isinstance(i, dict) and i.get("path") for i in scan["inputs"]
+        )
+        assert inputs_have_path, f"streamed text_editor input lost its path: {scan['inputs']}"
+        print("✓ streaming text_editor input preserved")
+
+    # ---- 6 & 7. Newer tool versions (REPL persistence / disclosed time limit) -
+    def test_06_version_20260120(self, code_exec_client):
+        _, scan = self._run(
+            code_exec_client,
+            "code_execution_20260120",
+            "Use Python to compute 17 * 23 and print the result.",
+        )
+        assert scan["result_types"], f"code_execution_20260120 did not run; got {scan}"
+        print("✓ code_execution_20260120 accepted and executed")
+
+    def test_07_version_20260521(self, code_exec_client):
+        _, scan = self._run(
+            code_exec_client,
+            "code_execution_20260521",
+            "Use Python to compute the factorial of 10 and print it.",
+        )
+        assert scan["result_types"], f"code_execution_20260521 did not run; got {scan}"
+        print("✓ code_execution_20260521 accepted and executed")
+
+    # ---- 8. Programmatic tool calling: code calls a custom tool --------------
+    def test_08_programmatic_tool_calling(self, code_exec_client):
+        # allowed_callers makes the custom tool callable from inside the sandbox.
+        # Bifrost must auto-inject the advanced-tool-use beta header.
+        custom_tool = {
+            "name": "get_stock_price",
+            "description": "Get the current price for a stock ticker.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
+            },
+            "allowed_callers": ["code_execution_20260120"],
+        }
+        resp = code_exec_client.messages.create(
+            model=self.MODEL,
+            max_tokens=2048,
+            tools=[{"type": "code_execution_20260120", "name": "code_execution"}, custom_tool],
+            messages=[{"role": "user", "content": "Write Python that calls get_stock_price for 'AAPL' and 'GOOGL' in a loop and prints each result."}],
+        )
+        assert resp is not None and resp.content
+        # The model may either call the tool programmatically (a tool_use with a
+        # caller, surfaced as a normal function tool_use) or run code first; either
+        # way the request must be accepted and code execution must be available.
+        scan = self._scan(resp.content)
+        names = [_attr(b, "name") for b in resp.content if _attr(b, "type") in {"server_tool_use", "tool_use"}]
+        print(f"✓ programmatic tool calling accepted; tool uses={names}, code_exec={scan['inner_types']}")
+        # Prove the *programmatic* path engaged. A bare get_stock_price (a normal
+        # top-level tool call) or a lone code-execution result does NOT show the
+        # sandbox invoked the tool — and either could appear if allowed_callers were
+        # dropped or the advanced-tool-use header wasn't injected. PTC requires BOTH
+        # a code_execution server tool AND the get_stock_price call together.
+        assert "code_execution" in scan["tool_names"] and "get_stock_price" in names, (
+            "programmatic tool path not proven (need a code_execution server tool + a "
+            f"get_stock_price call together); tool_names={scan['tool_names']}, names={names}"
+        )
+        # Direct provenance, when the SDK surfaces it: the get_stock_price call must
+        # carry a caller pointing back at the code-execution sandbox.
+        for b in resp.content:
+            if _attr(b, "type") == "tool_use" and _attr(b, "name") == "get_stock_price":
+                caller = _attr(b, "caller")
+                if caller is not None:
+                    assert str(_attr(caller, "type") or "").startswith("code_execution"), (
+                        f"get_stock_price caller is not the code-execution sandbox: {caller}"
+                    )
+        assert resp.stop_reason is not None
+
+    # ---- 9. web_search auto-injects code execution (non-streaming) -----------
+    def test_09_web_search_auto_injects_code_execution(self, code_exec_client):
+        # web_search_20260209 makes Anthropic auto-inject code_execution (dynamic
+        # filtering / PTC). Exercises the nested-caller pipeline non-streaming.
+        resp = code_exec_client.messages.create(
+            model=self.MODEL,
+            max_tokens=2048,
+            tools=[{"type": "web_search_20260209", "name": "web_search"}],
+            messages=[{"role": "user", "content": "Search the web and tell me one notable technology announcement from this week."}],
+        )
+        assert resp is not None and resp.content
+        scan = self._scan(resp.content)
+        assert scan["web_search"] or scan["web_search_results"] or scan["result_types"], (
+            f"web_search did not engage the server-tool pipeline; got {scan}"
+        )
+        print(f"✓ web_search pipeline: web_search={scan['web_search']}, code_exec_results={scan['result_types']}")
+
+    # ---- 10. web_search auto-inject, STREAMING (the headline regression) ------
+    def test_10_web_search_code_execution_streaming(self, code_exec_client):
+        with code_exec_client.messages.stream(
+            model=self.MODEL,
+            max_tokens=2048,
+            tools=[{"type": "web_search_20260209", "name": "web_search"}],
+            messages=[{"role": "user", "content": "Search the web for the current P/E ratios of AAPL and GOOGL and compare them."}],
+        ) as stream:
+            for _event in stream:
+                pass
+            final = stream.get_final_message()  # must not raise (IndexError/UTF-8 guard)
+
+        assert final is not None and final.content
+        scan = self._scan(final.content)
+        print(f"✓ streamed web_search+code_execution well-formed: {scan['result_types']}, web_search={scan['web_search']}")
+
+    # ---- 11. File upload + container_upload (analyze an uploaded CSV) ---------
+    def test_11_file_upload_and_container_upload(self, files_beta_client):
+        try:
+            csv = b"name,score\nalice,90\nbob,75\ncarol,88\n"
+            uploaded = files_beta_client.beta.files.upload(
+                file=("scores.csv", csv, "text/csv"),
+            )
+            assert uploaded is not None and getattr(uploaded, "id", None)
+            try:
+                resp = files_beta_client.messages.create(
+                    model=self.MODEL,
+                    max_tokens=2048,
+                    tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Load this CSV with pandas and print the average score."},
+                            {"type": "container_upload", "file_id": uploaded.id},
+                        ],
+                    }],
+                )
+                assert resp is not None and resp.content
+                scan = self._scan(resp.content)
+                print(f"✓ container_upload analyzed; code_exec results={scan['result_types']}")
+            finally:
+                try:
+                    files_beta_client.beta.files.delete(uploaded.id)
+                except Exception as e:
+                    print(f"⚠ cleanup failed for {uploaded.id}: {e}")
+        except Exception as e:
+            msg = str(e).lower()
+            if any(k in msg for k in ("beta", "not found", "not supported", "files-api")):
+                pytest.skip(f"Files API not available: {e}")
+            raise
+
+    # ---- 12. Container reuse across requests ---------------------------------
+    def test_12_container_reuse(self, code_exec_client):
+        first = code_exec_client.messages.create(
+            model=self.MODEL,
+            max_tokens=1024,
+            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            messages=[{"role": "user", "content": "Use Python to set a variable x = 42 and print it."}],
+        )
+        container = _attr(first, "container")
+        container_id = _attr(container, "id")
+        if not container_id:
+            pytest.skip("No container returned to reuse (model may not have run code)")
+
+        second = code_exec_client.messages.create(
+            model=self.MODEL,
+            max_tokens=1024,
+            container=container_id,  # reuse the same sandbox (string id form)
+            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            messages=[{"role": "user", "content": "Use Python to print x + 1."}],
+        )
+        assert second is not None and second.content
+        reused = _attr(_attr(second, "container"), "id")
+        print(f"✓ container reuse: first={container_id} second={reused}")
+        assert reused, "second response should carry a container"
+
+    # ---- 13. Generated files (code execution that writes a file) -------------
+    def test_13_generated_files(self, code_exec_client):
+        resp = code_exec_client.messages.create(
+            model=self.MODEL,
+            max_tokens=2048,
+            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            messages=[{"role": "user", "content": "Use Python to write the text 'hello world' to a file called output.txt in the working directory."}],
+        )
+        assert resp is not None and resp.content
+        scan = self._scan(resp.content)
+        assert scan["result_types"], f"code execution did not run; got {scan}"
+        if scan["file_ids"]:
+            print(f"✓ generated file ids surfaced: {scan['file_ids']}")
+        else:
+            print("⚠ no generated file_ids surfaced (model may have used stdout only); code-exec valid")

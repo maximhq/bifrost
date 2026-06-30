@@ -64,9 +64,10 @@ type RoutingRulesQueryParams struct {
 
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
 type MCPClientsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string
+	Limit    int
+	Offset   int
+	Search   string
+	ClientID string
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -369,6 +370,7 @@ type ConfigStore interface {
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
+	UpsertModelPricesBatch(ctx context.Context, pricing []tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
 	// UpsertModelPricingAttributes writes only the additional_attributes column
