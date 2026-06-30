@@ -23,6 +23,13 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// streamIdleTimeoutOverrideMax bounds the per-request x-bf-stream-idle-timeout
+// override so a client cannot disable idle detection (or set a pathologically
+// long window). For streaming the per-chunk idle timer is the SOLE liveness
+// governor (the providers' streaming HTTP client carries no ReadTimeout — see
+// openai/vllm streamingClient), so this clamp is the effective ceiling. Tunable.
+const streamIdleTimeoutOverrideMax = 30 * time.Minute
+
 const (
 	// FastHTTPUserValueBifrostContext stores the active *schemas.BifrostContext on fasthttp.RequestCtx.
 	// This allows transport middleware and request handlers to share the same context instance.
@@ -146,6 +153,12 @@ func ParseSessionIDFromBaggage(header string) string {
 // 8. Session Stickiness Headers:
 //   - x-bf-session-id: Session identifier for key binding (reuse same key across requests)
 //   - x-bf-session-ttl: Per-request TTL override (duration string e.g. "30m" or seconds integer)
+//
+// 8a. Stream Idle Timeout Header:
+//   - x-bf-stream-idle-timeout: per-request override of the per-chunk stream idle timeout
+//     (duration string e.g. "540s"/"9m" or a seconds integer). Lets one consumer (scoped by
+//     its virtual key) widen the idle window without changing the provider's global
+//     stream_idle_timeout_in_seconds. Clamped to streamIdleTimeoutOverrideMax.
 //
 // 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
@@ -462,6 +475,33 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			if err == nil && ttlDuration > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
+			}
+			return true
+		}
+		// Per-request stream idle-timeout override (duration string e.g. "540s"/"9m"
+		// or a seconds integer). Lets one consumer — scoped by the virtual key that
+		// selects sending this header, e.g. an OpenWebUI chat VK that hits slow vLLM
+		// guided-decode gaps — widen the per-chunk idle window WITHOUT changing the
+		// provider's global stream_idle_timeout_in_seconds (which affects every
+		// consumer of that provider). Picked up downstream by
+		// providerUtils.GetStreamIdleTimeout, because SetStreamIdleTimeoutIfEmpty
+		// yields to a value already present on the context. Clamped to
+		// streamIdleTimeoutOverrideMax so a client cannot disable idle detection.
+		if keyStr == "x-bf-stream-idle-timeout" {
+			valueStr := strings.TrimSpace(string(value))
+			var idleDuration time.Duration
+			var err error
+			if idleDuration, err = time.ParseDuration(valueStr); err != nil {
+				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					idleDuration = time.Duration(seconds) * time.Second
+					err = nil
+				}
+			}
+			if err == nil && idleDuration > 0 {
+				if idleDuration > streamIdleTimeoutOverrideMax {
+					idleDuration = streamIdleTimeoutOverrideMax
+				}
+				bifrostCtx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleDuration)
 			}
 			return true
 		}
