@@ -121,7 +121,10 @@ func (provider *HuggingFaceProvider) buildRequestURL(ctx *schemas.BifrostContext
 		return path
 	}
 
-	if provider.customProviderConfig != nil && path == defaultPath && strings.HasPrefix(path, "/v1/") {
+	if provider.customProviderConfig != nil &&
+		provider.customProviderConfig.DisableDefaultVersionPath &&
+		path == defaultPath &&
+		strings.HasPrefix(path, "/v1/") {
 		if u, err := url.Parse(provider.networkConfig.BaseURL); err == nil && u.Path != "" && u.Path != "/" {
 			path = strings.TrimPrefix(path, "/v1")
 		}
