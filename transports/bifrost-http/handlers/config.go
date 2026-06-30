@@ -534,9 +534,40 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
 	}
 
-	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
+	// Update external base URL for OAuth client redirect_uri (nil clears the override).
 	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
 	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
+
+	// Validate the inbound MCP auth mode against the allowed enum before persisting
+	// (config.schema.json is the source of truth: headers | both | oauth).
+	switch payload.ClientConfig.MCPServerAuthMode {
+	case "", configstoreTables.MCPServerAuthModeHeaders, configstoreTables.MCPServerAuthModeBoth, configstoreTables.MCPServerAuthModeOAuth:
+		// valid; empty means the field was omitted from a partial update
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_server_auth_mode must be one of: headers, both, oauth")
+		return
+	}
+
+	// oauth2_server_config only applies when discovery is enabled (both | oauth).
+	// Evaluate against the effective mode so a partial update that supplies only
+	// the config cannot smuggle it in while the stored mode is headers.
+	effectiveAuthMode := payload.ClientConfig.MCPServerAuthMode
+	if effectiveAuthMode == "" {
+		effectiveAuthMode = currentConfig.MCPServerAuthMode
+	}
+	if payload.ClientConfig.OAuth2ServerConfig != nil && effectiveAuthMode == configstoreTables.MCPServerAuthModeHeaders {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config is only valid when mcp_server_auth_mode is both or oauth")
+		return
+	}
+
+	// Only update each field when explicitly provided so partial /api/config
+	// payloads do not clear stored values (matches the MCP field handling above).
+	if payload.ClientConfig.MCPServerAuthMode != "" {
+		updatedConfig.MCPServerAuthMode = payload.ClientConfig.MCPServerAuthMode
+	}
+	if payload.ClientConfig.OAuth2ServerConfig != nil {
+		updatedConfig.OAuth2ServerConfig = payload.ClientConfig.OAuth2ServerConfig
+	}
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
