@@ -42,7 +42,7 @@ var thinkingBudgetRanges = []struct {
 }
 
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
-const thoughtSignatureSeparator = "_ts_"
+const thoughtSignatureSeparator = providerUtils.ThoughtSignatureSeparator
 
 type Role string
 

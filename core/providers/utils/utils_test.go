@@ -1878,3 +1878,24 @@ func TestExtractPassthroughProviderResponseHeaders(t *testing.T) {
 		t.Fatalf("benign header x-request-id was dropped: %v", headers)
 	}
 }
+
+func TestStripThoughtSignature(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no separator", "call_abc123", "call_abc123"},
+		{"gemini embedded signature", "search_ts_QUJDREVG", "search"},
+		{"base id is also a gemini id", "fc_123_ts_QUJD", "fc_123"},
+		{"separator only", "_ts_QUJD", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StripThoughtSignature(tc.in); got != tc.want {
+				t.Errorf("StripThoughtSignature(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
