@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,13 @@ func (provider *HuggingFaceProvider) buildRequestURL(ctx *schemas.BifrostContext
 	if isCompleteURL {
 		return path
 	}
+
+	if provider.customProviderConfig != nil && path == defaultPath && strings.HasPrefix(path, "/v1/") {
+		if u, err := url.Parse(provider.networkConfig.BaseURL); err == nil && u.Path != "" && u.Path != "/" {
+			path = strings.TrimPrefix(path, "/v1")
+		}
+	}
+
 	return provider.networkConfig.BaseURL + path
 }
 

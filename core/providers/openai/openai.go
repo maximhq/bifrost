@@ -90,6 +90,17 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	if isCompleteURL {
 		return path
 	}
+
+	// For custom providers, auto-detect if the base URL already includes a path
+	// segment (e.g. https://api.telnyx.com/v2/ai/openai). If so, strip the /v1
+	// prefix from the default path to avoid duplicate version prefixes like
+	// /v2/ai/openai/v1/chat/completions.
+	if provider.customProviderConfig != nil && path == defaultPath && strings.HasPrefix(path, "/v1/") {
+		if u, err := url.Parse(provider.networkConfig.BaseURL); err == nil && u.Path != "" && u.Path != "/" {
+			path = strings.TrimPrefix(path, "/v1")
+		}
+	}
+
 	return provider.networkConfig.BaseURL + path
 }
 
