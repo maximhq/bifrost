@@ -120,6 +120,10 @@ Include any required Virtual Key authentication headers if governance is enabled
 
 Bifrost supports per-Virtual Key MCP servers, allowing you to expose different tools to different clients.
 
+<Note>
+Header credentials are one of two ways clients authenticate to `/mcp`. Clients can also connect through a browser-based OAuth flow — see [Gateway Authentication](./gateway-auth) for the `mcp_server_auth_mode` setting and the OAuth connect flow.
+</Note>
+
 ### Global Server (No Virtual Key)
 
 When `enforce_auth_on_inference` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
@@ -307,7 +311,9 @@ The MCP Server dynamically updates its tool registry from the tool manager.
 
 ## Per-User Auth on the Gateway
 
-When at least one upstream MCP server is configured with `per_user_oauth` or `per_user_headers`, the `/mcp` endpoint serves per-user credentials lazily. Bifrost is **not** an OAuth Authorization Server — there is no `.well-known/oauth-protected-resource` discovery and no inbound consent screen. Inbound MCP clients identify themselves via headers:
+When at least one upstream MCP server is configured with `per_user_oauth` or `per_user_headers`, the `/mcp` endpoint serves per-user credentials lazily, keyed to the inbound caller's identity. How that identity is established depends on the [gateway auth mode](./gateway-auth): in the default `headers` mode, clients identify themselves via headers (below); in `both` / `oauth` mode, a Bifrost-issued JWT carries the identity instead.
+
+In `headers` mode, inbound MCP clients identify themselves via headers:
 
 - `x-bf-vk: <vk>` (or `Authorization: Bearer <vk>` / `x-api-key: <vk>`) — VK-mode identity
 - `x-bf-mcp-session-id: <opaque-string>` — session-mode identity (client-asserted, must be re-sent on every call)
@@ -328,7 +334,7 @@ Who can open and complete that URL depends on the flow's identity mode (frozen w
 See [Flow mode and access rules →](./auth/overview#flow-mode-and-access-rules) for the full per-mode behavior.
 
 <Note>
-Claude Code may proactively POST `/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …`. Bifrost intentionally does not implement an OAuth stub for that probe; the `/mcp` connection itself works. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
+In the default `headers` [auth mode](./gateway-auth), Claude Code may proactively POST `/oauth2/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …` — discovery and registration aren't served in that mode, so the probe has no endpoint to hit. The `/mcp` connection itself still works. In `both` / `oauth` mode the probe is handled by Bifrost's authorization server and the message doesn't appear. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
 </Note>
 
 See [Per-User OAuth →](./auth/per-user-oauth) and [Per-User Headers →](./auth/per-user-headers) for the full flows and identity options, and [MCP Sessions →](./sessions) for managing the resulting credentials.
