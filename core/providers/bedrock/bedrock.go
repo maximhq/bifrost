@@ -189,16 +189,74 @@ func isStreamTransportError(err error) bool {
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
 }
 
-// retryableBedrockExceptions maps AWS Bedrock EventStream exception types to
-// their HTTP status code equivalents. These exceptions are transient and should
-// be retried — the retry gate in executeRequestWithRetries checks StatusCode
-// against transientServerStatusCodes (500, 502, 503, 504) for same-key retries
-// and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+// retryableBedrockExceptions maps AWS Bedrock EventStream exception types (the
+// camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
+// in-stream exception members) to a retryable HTTP status code. These exceptions
+// are transient and should be retried — the retry gate in executeRequestWithRetries
+// checks StatusCode against transientServerStatusCodes (500, 502, 503, 504) for
+// same-key retries and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+//
+// Some AWS exceptions have a native status code the gate does not recognize
+// (modelStreamErrorException=424, modelTimeoutException=408); they are mapped to
+// the nearest gate-recognized transient code so the retry still fires. The client
+// still sees the original exception type — only the internal retry hint is mapped.
+//
+// modelNotReadyException is an HTTP-level error (not an in-stream member) but is
+// kept here because AWS auto-retries it; it is harmless when it never matches a
+// stream event. validationException / accessDeniedException / resourceNotFoundException
+// are intentionally absent — they are terminal request-bound errors.
 var retryableBedrockExceptions = map[string]int{
 	"throttlingException":         429,
 	"serviceUnavailableException": 503,
 	"modelNotReadyException":      503,
 	"internalServerException":     500,
+	"modelStreamErrorException":   503, // native 424; AWS guidance: "Retry your request"
+	"modelTimeoutException":       504, // native 408; processing timeout, transient
+}
+
+// newBedrockStreamException builds a BifrostError from an AWS EventStream
+// exception message (any :message-type other than "event"). It preserves the
+// upstream exception type — the payload's "__type" when present, else the
+// :exception-type header value (excType) — so downstream conversion
+// (ToBedrockError) forwards it instead of falling back to "InternalServerError".
+//
+// Retryable exceptions are emitted with IsBifrostError:false and the equivalent
+// HTTP status so the retry gate in executeRequestWithRetries handles them;
+// non-retryable ones are terminal (IsBifrostError:true). providerName is an
+// optional label prefix for the message.
+func newBedrockStreamException(providerName, excType string, payload []byte) *schemas.BifrostError {
+	errMsg := string(payload)
+	var bedrockErr BedrockError
+	if err := sonic.Unmarshal(payload, &bedrockErr); err == nil && bedrockErr.Message != "" {
+		errMsg = bedrockErr.Message
+	}
+
+	fwdType := bedrockErr.Type
+	if fwdType == "" {
+		fwdType = excType
+	}
+
+	prefix := "stream"
+	if providerName != "" {
+		prefix = providerName + " stream"
+	}
+
+	streamErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("%s %s: %s", prefix, excType, errMsg),
+		},
+	}
+	if fwdType != "" {
+		streamErr.Type = &fwdType
+	}
+	if statusCode, ok := retryableBedrockExceptions[excType]; ok {
+		sc := statusCode
+		streamErr.StatusCode = &sc
+	} else {
+		streamErr.IsBifrostError = true
+	}
+	return streamErr
 }
 
 // completeRequest sends a request to Bedrock's API and handles the response.
@@ -1079,27 +1137,8 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						var bedrockErr BedrockError
-						if err := sonic.Unmarshal(message.Payload, &bedrockErr); err == nil && bedrockErr.Message != "" {
-							errMsg = bedrockErr.Message
-						}
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: fmt.Sprintf("%s stream %s: %s", providerName, excType, errMsg),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException(string(providerName), excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
@@ -1368,23 +1407,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						err := fmt.Errorf("stream %s: %s", excType, errMsg)
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: err.Error(),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException("", excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
@@ -1771,23 +1795,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						err := fmt.Errorf("stream %s: %s", excType, errMsg)
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: err.Error(),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException("", excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
