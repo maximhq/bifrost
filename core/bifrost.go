@@ -3535,6 +3535,7 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
 	}
+	providerConfig.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(providerConfig, providerKey, bifrost.logger)
 
 	if providerConfig.ConcurrencyAndBufferSize.DynamicScaling {
 		newPq.quit = make(chan struct{}, providerConfig.ConcurrencyAndBufferSize.MaxWorkers)
@@ -6189,7 +6190,10 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
 	defer waitGroup.Done()
-	defer pq.ActiveWorkers.Add(-1)
+	if config.ConcurrencyAndBufferSize.DynamicScaling {
+		defer pq.ActiveWorkers.Add(-1)
+	}
+
 	for {
 		var req *ChannelMessage
 		select {
