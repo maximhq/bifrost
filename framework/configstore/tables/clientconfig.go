@@ -49,6 +49,16 @@ type TableClientConfig struct {
 	CompatShouldDropParams       bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
 	CompatShouldConvertParams    bool `gorm:"column:compat_should_convert_params;default:false" json:"-"`
 
+	// MCPServerAuthMode controls how /mcp authenticates inbound clients.
+	// Stored as a plain varchar column so it can be read without JSON parsing.
+	MCPServerAuthMode MCPServerAuthMode `gorm:"column:mcp_server_auth_mode;type:varchar(20);not null;default:'headers'" json:"mcp_server_auth_mode"`
+	// OAuth2ServerConfigJSON holds the OAuth2 AS-specific settings (IssuerURL,
+	// AuthCodeTTL, AccessTokenTTL) as a JSON blob. Only relevant when
+	// MCPServerAuthMode is both or oauth. Deserialized into OAuth2ServerConfig
+	// by AfterFind. The explicit column name avoids GORM deriving the leading
+	// acronym as "o_auth2_..." from the field name.
+	OAuth2ServerConfigJSON string `gorm:"column:oauth2_server_config_json;type:text" json:"-"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -57,14 +67,15 @@ type TableClientConfig struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	PrometheusLabels   []string                  `gorm:"-" json:"prometheus_labels"`
-	AllowedOrigins     []string                  `gorm:"-" json:"allowed_origins,omitempty"`
-	AllowedHeaders     []string                  `gorm:"-" json:"allowed_headers,omitempty"`
-	RequiredHeaders    []string                  `gorm:"-" json:"required_headers,omitempty"`
-	LoggingHeaders     []string                  `gorm:"-" json:"logging_headers,omitempty"`
-	WhitelistedRoutes  []string                  `gorm:"-" json:"whitelisted_routes,omitempty"`
-	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
-	Metadata           map[string]any            `gorm:"-" json:"metadata,omitempty"`
+	PrometheusLabels    []string                  `gorm:"-" json:"prometheus_labels"`
+	AllowedOrigins      []string                  `gorm:"-" json:"allowed_origins,omitempty"`
+	AllowedHeaders      []string                  `gorm:"-" json:"allowed_headers,omitempty"`
+	RequiredHeaders     []string                  `gorm:"-" json:"required_headers,omitempty"`
+	LoggingHeaders      []string                  `gorm:"-" json:"logging_headers,omitempty"`
+	WhitelistedRoutes   []string                  `gorm:"-" json:"whitelisted_routes,omitempty"`
+	HeaderFilterConfig  *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
+	Metadata            map[string]any            `gorm:"-" json:"metadata,omitempty"`
+	OAuth2ServerConfig *OAuth2ServerConfig       `gorm:"-" json:"oauth2_server_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -153,6 +164,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.MetadataJSON = string(data)
 	}
 
+	if cc.OAuth2ServerConfig != nil {
+		data, err := json.Marshal(cc.OAuth2ServerConfig)
+		if err != nil {
+			return err
+		}
+		cc.OAuth2ServerConfigJSON = string(data)
+	} else {
+		cc.OAuth2ServerConfigJSON = ""
+	}
+
 	return nil
 }
 
@@ -210,6 +231,16 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		cc.Metadata = metadata
 	} else {
 		cc.Metadata = nil
+	}
+
+	if cc.OAuth2ServerConfigJSON != "" {
+		var authCfg OAuth2ServerConfig
+		if err := json.Unmarshal([]byte(cc.OAuth2ServerConfigJSON), &authCfg); err != nil {
+			return err
+		}
+		cc.OAuth2ServerConfig = &authCfg
+	} else {
+		cc.OAuth2ServerConfig = nil
 	}
 
 	return nil

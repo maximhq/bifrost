@@ -429,6 +429,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_customer_name_unique_constraint_dedup", "add_customer_name_unique_constraint_index"}, run: migrationAddCustomerNameUniqueConstraint},
 	{IDs: []string{"null_legacy_customer_budget_id_refs"}, run: migrationNullLegacyCustomerBudgetID},
 	{IDs: []string{"add_skills_repo_tables"}, run: migrationAddSkillsRepoTables},
+	{IDs: []string{"add_oauth2_server_tables"}, run: migrationAddOAuth2ServerTables},
+	{IDs: []string{"add_oauth2_issuance_tables"}, run: migrationAddOAuth2IssuanceTables},
 	{IDs: []string{"add_dump_errors_in_console_logs_column"}, run: migrationAddDumpErrorsInConsoleLogsColumn},
 	{IDs: []string{"add_bedrock_mantle_key_columns"}, run: migrationAddBedrockMantleKeyColumns},
 }
@@ -10110,4 +10112,103 @@ func migrationAddCustomerNameUniqueConstraint(ctx context.Context, db *gorm.DB, 
 			return tx.Exec("DROP INDEX IF EXISTS " + idxName).Error
 		},
 	})
+}
+
+func migrationAddOAuth2ServerTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_server_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{
+		{
+			ID: migrationName,
+			Migrate: func(tx *gorm.DB) error {
+				tx = tx.WithContext(ctx)
+				mg := tx.Migrator()
+				if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_server_auth_mode") {
+					if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPServerAuthMode"); err != nil {
+						return fmt.Errorf("add mcp_server_auth_mode column: %w", err)
+					}
+				}
+				if !mg.HasColumn(&tables.TableClientConfig{}, "oauth2_server_config_json") {
+					if err := mg.AddColumn(&tables.TableClientConfig{}, "OAuth2ServerConfigJSON"); err != nil {
+						return fmt.Errorf("add oauth2_server_config_json column: %w", err)
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				tx = tx.WithContext(ctx)
+				mg := tx.Migrator()
+				if mg.HasColumn(&tables.TableClientConfig{}, "oauth2_server_config_json") {
+					if err := mg.DropColumn(&tables.TableClientConfig{}, "OAuth2ServerConfigJSON"); err != nil {
+						return fmt.Errorf("drop oauth2_server_config_json column: %w", err)
+					}
+				}
+				if mg.HasColumn(&tables.TableClientConfig{}, "mcp_server_auth_mode") {
+					if err := mg.DropColumn(&tables.TableClientConfig{}, "MCPServerAuthMode"); err != nil {
+						return fmt.Errorf("drop mcp_server_auth_mode column: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+	})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+func migrationAddOAuth2IssuanceTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_issuance_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableOAuth2Client{}) {
+				if err := mg.CreateTable(&tables.TableOAuth2Client{}); err != nil {
+					return fmt.Errorf("create oauth2_clients table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TableOAuth2AuthorizeRequest{}) {
+				if err := mg.CreateTable(&tables.TableOAuth2AuthorizeRequest{}); err != nil {
+					return fmt.Errorf("create oauth2_authorize_requests table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TableOAuth2RefreshToken{}) {
+				if err := mg.CreateTable(&tables.TableOAuth2RefreshToken{}); err != nil {
+					return fmt.Errorf("create oauth2_refresh_tokens table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			// Drop in reverse creation order.
+			if mg.HasTable(&tables.TableOAuth2RefreshToken{}) {
+				if err := mg.DropTable(&tables.TableOAuth2RefreshToken{}); err != nil {
+					return fmt.Errorf("drop oauth2_refresh_tokens table: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableOAuth2AuthorizeRequest{}) {
+				if err := mg.DropTable(&tables.TableOAuth2AuthorizeRequest{}); err != nil {
+					return fmt.Errorf("drop oauth2_authorize_requests table: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableOAuth2Client{}) {
+				if err := mg.DropTable(&tables.TableOAuth2Client{}); err != nil {
+					return fmt.Errorf("drop oauth2_clients table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
 }

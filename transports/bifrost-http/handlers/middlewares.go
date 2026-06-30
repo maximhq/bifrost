@@ -916,6 +916,11 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// credentials securely. Management endpoints under /api/skills (without
 		// /serve/) remain authenticated.
 		"/api/skills/serve/",
+		// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
+		// resource metadata, RFC 7517 JWKS) must be reachable without auth so
+		// clients can bootstrap the flow. Each handler still gates availability
+		// behind discoveryEnabled() and serves 404 when OAuth mode is off.
+		"/.well-known/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||

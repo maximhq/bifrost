@@ -31,58 +31,51 @@ func NewComplexityAnalyzerWithConfig(config *AnalyzerConfig) *ComplexityAnalyzer
 
 // Analyze computes complexity scores from the normalized input.
 func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
-	// Select scan mask based on whether conversation history is present.
-	lastScanMask := lastTextBaseScanMask
+	// Extract lexical signals from last user message and system prompt.
+	lastSignals := a.matcher.analyzeText(input.LastUserText, lastTextBaseScanMask)
+	wordCount := lastSignals.wordCount
+	hasPositiveSignal := hasPositiveSignal(lastSignals)
+	hasSimpleSignal := lastSignals.simpleCount > 0
+
+	var convScore float64
 	if len(input.PriorUserTexts) > 0 {
-		lastScanMask = lastTextFullScanMask
+		convScore = a.scoreConversationContext(input.PriorUserTexts)
+	}
+	isContinuation := isContinuationFollowup(lastSignals, convScore)
+	if !hasPositiveSignal && !hasSimpleSignal && !isContinuation {
+		return nil
 	}
 
-	// Extract lexical signals from last user message and system prompt.
-	lastSignals := a.matcher.analyzeText(input.LastUserText, lastScanMask)
-	systemSignals := a.matcher.analyzeText(input.SystemText, systemTextScanMask)
+	systemSignals := textSignalCounts{}
+	if hasPositiveSignal {
+		systemSignals = a.matcher.analyzeText(input.SystemText, systemTextScanMask)
+	}
 
 	// Score primary message signals.
 	userCodeScore := scoreCount(lastSignals.codeCount, 3)
 	reasoningScore := scoreCount(lastSignals.reasoningCount, 2)
 	userTechnicalScore := scoreCount(lastSignals.technicalCount, 3)
 	userSimpleScore := scoreCount(lastSignals.simpleCount, 2)
-	outputScore := scoreOutputComplexity(lastSignals)
-	tokenScore := scoreTokenCount(lastSignals.wordCount)
+	tokenScore := 0.0
+	if hasPositiveSignal || isContinuation {
+		tokenScore = scoreTokenCount(wordCount)
+	}
 
-	// System prompt provides soft lexical context for code/technical/simple signals,
-	// but never drives reasoning override, token count, or output complexity.
+	// System prompt provides soft lexical context for code/technical signals,
+	// but never drives reasoning override or token count.
 	systemCodeScore := scoreCount(systemSignals.codeCount, 3)
 	systemTechnicalScore := scoreCount(systemSignals.technicalCount, 3)
-	systemSimpleScore := scoreCount(systemSignals.simpleCount, 2)
 
 	codeScore := clamp(userCodeScore+(systemCodeScore*systemPromptAssistFactor), 0.0, 1.0)
 	technicalScore := clamp(userTechnicalScore+(systemTechnicalScore*systemPromptAssistFactor), 0.0, 1.0)
-	simpleScore := clamp(userSimpleScore+(systemSimpleScore*systemPromptAssistFactor), 0.0, 1.0)
-
-	// Conditional simple dampener: only apply full dampener on short, low-signal asks.
-	wordCount := lastSignals.wordCount
-	effectiveSimpleWeight := simpleWeight
-	signalCount := 0
-	if userCodeScore >= 0.3 {
-		signalCount++
-	}
-	if userTechnicalScore >= 0.3 {
-		signalCount++
-	}
-	if reasoningScore >= 0.3 {
-		signalCount++
-	}
-	if lastSignals.simpleCount > 0 && (wordCount >= 30 || signalCount >= 2) {
-		effectiveSimpleWeight = 0.01
-	}
 
 	codeContribution := codeScore * codeWeight
 	reasoningContribution := reasoningScore * reasoningWeight
 	technicalContribution := technicalScore * technicalWeight
-	simplePenalty := -(simpleScore * effectiveSimpleWeight)
+	simplePenalty := -(userSimpleScore * simpleWeight)
 	tokenContribution := tokenScore * tokenCountWeight
 
-	// Weighted sum for last message (output complexity applied separately as a score floor).
+	// Weighted sum for last message.
 	lastMsgScore := codeContribution +
 		reasoningContribution +
 		technicalContribution +
@@ -92,12 +85,10 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 
 	// Conversation context blending (prior user turns only).
 	var blended float64
-	var convScore float64
-	if len(input.PriorUserTexts) > 0 {
-		convScore = a.scoreConversationContext(input.PriorUserTexts)
+	if len(input.PriorUserTexts) > 0 && (hasPositiveSignal || isContinuation) {
 		lastWeight := defaultLastMessageBlendWeight
 		contextWeight := defaultConversationBlendWeight
-		if isReferentialFollowup(lastSignals, lastMsgScore, convScore, wordCount) {
+		if isContinuation {
 			lastWeight = referentialLastMessageBlendWeight
 			contextWeight = referentialConversationBlendWeight
 		}
@@ -106,15 +97,6 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 		blended = math.Max(lastMsgScore, weightedBlend)
 	} else {
 		blended = lastMsgScore
-	}
-
-	// Output complexity as a score floor: strong output signals set a minimum score.
-	outputFloorMinScore := 0.0
-	if outputScore > 0.5 {
-		outputFloorMinScore = outputScore * 0.5
-		if blended < outputFloorMinScore {
-			blended = outputFloorMinScore
-		}
 	}
 
 	finalScore := clamp(blended, 0.0, 1.0)
@@ -170,23 +152,15 @@ func (a *ComplexityAnalyzer) scoreConversationContext(priorUserTexts []string) f
 	return math.Min(1.0, weightedTotal/totalWeight)
 }
 
-func isReferentialFollowup(signals textSignalCounts, lastMsgScore, convScore float64, wordCount int) bool {
-	if wordCount == 0 || wordCount > referentialMaxWordCount {
-		return false
-	}
-	if lastMsgScore >= referentialMaxStandaloneScore || convScore < referentialMinContextScore {
-		return false
-	}
-	if signals.taskShiftCount > 0 {
-		return false
-	}
-	if signals.referentialPhraseCount > 0 {
-		return true
-	}
+func hasPositiveSignal(signals textSignalCounts) bool {
+	return signals.codeCount > 0 || signals.reasoningCount > 0 || signals.technicalCount > 0
+}
 
-	hasReference := signals.referentialReferenceCount > 0
-	hasAction := signals.referentialActionCount > 0
-	return hasReference && hasAction
+func isContinuationFollowup(signals textSignalCounts, convScore float64) bool {
+	if convScore < referentialMinContextScore {
+		return false
+	}
+	return signals.continuationPhraseCount > 0
 }
 
 func (a *ComplexityAnalyzer) classifyTier(score float64) string {

@@ -4,3 +4,4 @@
 - fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)
 - fix: pass through `gs://` image URLs on Vertex Gemini (closes #4402)
 
+

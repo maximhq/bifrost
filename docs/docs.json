@@ -193,6 +193,7 @@
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway",
+              "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]
@@ -322,6 +323,7 @@
                 ]
               },
               "enterprise/audit-logs",
+              "enterprise/secret-management",
               "enterprise/log-exports",
               "enterprise/datadog-connector",
               "enterprise/clustering",
@@ -452,11 +454,64 @@
             "group": "Identity Providers (SSO)",
             "icon": "id-card",
             "pages": [
-              "enterprise/setting-up-okta",
-              "enterprise/setting-up-entra",
-              "enterprise/setting-up-keycloak",
-              "enterprise/setting-up-zitadel",
-              "enterprise/setting-up-google-workspace"
+              {
+                "group": "Okta",
+                "icon": "/media/okta-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-okta/oidc",
+                  "enterprise/setting-up-okta/scim"
+                ]
+              },
+              {
+                "group": "Microsoft Entra",
+                "icon": "microsoft",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-entra/oidc"
+                ]
+              },
+              {
+                "group": "Zitadel",
+                "icon": "/media/zitadel-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-zitadel/oidc"
+                ]
+              },
+              {
+                "group": "Keycloak",
+                "icon": "/media/keycloak-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-keycloak/oidc"
+                ]
+              },
+              {
+                "group": "Google Workspace",
+                "icon": "google",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-google-workspace"
+                ]
+              },
+              {
+                "group": "Auth0",
+                "icon": "/media/auth0-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-auth0/oidc"
+                ]
+              },
+              {
+                "group": "Generic OIDC",
+                "icon": "fingerprint",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-generic-oidc/oidc",
+                  "enterprise/setting-up-generic-oidc/scim"
+                ]
+              }
             ]
           },
           {
@@ -480,7 +535,8 @@
               "features/observability/default",
               "features/observability/maxim",
               "features/observability/otel",
-              "features/observability/prometheus"
+              "features/observability/prometheus",
+              "features/observability/kafka"
             ]
           },
           {
@@ -524,6 +580,7 @@
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
                   "deployment-guides/helm/guardrails",
+                  "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
                   "deployment-guides/helm/troubleshooting"
                 ]
@@ -541,7 +598,8 @@
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
                   "deployment-guides/config-json/cluster",
-                  "deployment-guides/config-json/guardrails"
+                  "deployment-guides/config-json/guardrails",
+                  "deployment-guides/config-json/secret-management"
                 ]
               }
             ]
@@ -639,6 +697,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.1",
               "changelogs/v1.6.0",
               "changelogs/v1.5.16",
               "changelogs/v1.5.15",
@@ -735,6 +794,7 @@
                 "pages": [
                   "changelogs/v1.4.0-prerelease2",
                   "changelogs/v1.4.0-prerelease1",
+                  "changelogs/v1.3.55",
                   "changelogs/v1.3.54",
                   "changelogs/v1.3.53",
                   "changelogs/v1.3.52",
@@ -824,6 +884,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.1",
               "changelogs/ent-v1.5.0",
               "changelogs/ent-v1.4.13",
               "changelogs/ent-v1.4.12",
@@ -833,34 +894,49 @@
               "changelogs/ent-v1.4.8",
               "changelogs/ent-v1.4.7",
               "changelogs/ent-v1.4.7-rc1",
-              "changelogs/ent-v1.4.6",
-              "changelogs/ent-v1.4.5",
-              "changelogs/ent-v1.4.4",
-              "changelogs/ent-v1.4.3",
-              "changelogs/ent-v1.4.2",
-              "changelogs/ent-v1.4.1",
-              "changelogs/ent-v1.4.0",
-              "changelogs/ent-v1.4.0-prerelease7",
-              "changelogs/ent-v1.3.21",
-              "changelogs/ent-v1.4.0-prerelease6",
-              "changelogs/ent-v1.4.0-prerelease5",
-              "changelogs/ent-v1.3.20",
-              "changelogs/ent-v1.4.0-prerelease4",
-              "changelogs/ent-v1.3.19",
-              "changelogs/ent-v1.4.0-prerelease3",
-              "changelogs/ent-v1.3.18",
-              "changelogs/ent-v1.4.0-prerelease2",
-              "changelogs/ent-v1.3.17",
-              "changelogs/ent-v1.4.0-prerelease1",
-              "changelogs/ent-v1.3.16",
-              "changelogs/ent-v1.3.15",
-              "changelogs/ent-v1.3.14",
-              "changelogs/ent-v1.3.13",
-              "changelogs/ent-v1.3.12",
-              "changelogs/ent-v1.3.11",
-              "changelogs/ent-v1.3.10",
-              "changelogs/ent-v1.3.9",
-              "changelogs/ent-v1.3.8"
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/ent-v1.4.6",
+                  "changelogs/ent-v1.4.5",
+                  "changelogs/ent-v1.4.4",
+                  "changelogs/ent-v1.4.3",
+                  "changelogs/ent-v1.4.2",
+                  "changelogs/ent-v1.4.1",
+                  "changelogs/ent-v1.4.0",
+                  "changelogs/ent-v1.4.0-prerelease7"
+                ]
+              },
+              {
+                "group": "April 2026",
+                "pages": [
+                  "changelogs/ent-v1.3.21",
+                  "changelogs/ent-v1.4.0-prerelease6",
+                  "changelogs/ent-v1.4.0-prerelease5",
+                  "changelogs/ent-v1.3.20",
+                  "changelogs/ent-v1.4.0-prerelease4",
+                  "changelogs/ent-v1.3.19",
+                  "changelogs/ent-v1.4.0-prerelease3",
+                  "changelogs/ent-v1.3.18",
+                  "changelogs/ent-v1.4.0-prerelease2",
+                  "changelogs/ent-v1.3.17",
+                  "changelogs/ent-v1.4.0-prerelease1"
+                ]
+              },
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/ent-v1.3.16",
+                  "changelogs/ent-v1.3.15",
+                  "changelogs/ent-v1.3.14",
+                  "changelogs/ent-v1.3.13",
+                  "changelogs/ent-v1.3.12",
+                  "changelogs/ent-v1.3.11",
+                  "changelogs/ent-v1.3.10",
+                  "changelogs/ent-v1.3.9",
+                  "changelogs/ent-v1.3.8"
+                ]
+              }
             ]
           },
           {
@@ -868,12 +944,22 @@
             "icon": "laptop-code",
             "pages": [
               "changelogs/cli-v0.10.6",
-              "changelogs/cli-v0.10.5",
-              "changelogs/cli-v0.10.4",
-              "changelogs/cli-v0.10.3",
-              "changelogs/cli-v0.10.2",
-              "changelogs/cli-v0.10.1",
-              "changelogs/cli-v0.10.0"
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.5",
+                  "changelogs/cli-v0.10.4"
+                ]
+              },
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.3",
+                  "changelogs/cli-v0.10.2",
+                  "changelogs/cli-v0.10.1",
+                  "changelogs/cli-v0.10.0"
+                ]
+              }
             ]
           },
           {
@@ -885,14 +971,19 @@
               "changelogs/helm-v2.1.23",
               "changelogs/helm-v2.1.22",
               "changelogs/helm-v2.1.21",
-              "changelogs/helm-v2.1.20",
-              "changelogs/helm-v2.1.19",
-              "changelogs/helm-v2.1.18",
-              "changelogs/helm-v2.1.17",
-              "changelogs/helm-v2.1.16",
-              "changelogs/helm-v2.1.15",
-              "changelogs/helm-v2.1.14",
-              "changelogs/helm-v2.1.13",
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.20",
+                  "changelogs/helm-v2.1.19",
+                  "changelogs/helm-v2.1.18",
+                  "changelogs/helm-v2.1.17",
+                  "changelogs/helm-v2.1.16",
+                  "changelogs/helm-v2.1.15",
+                  "changelogs/helm-v2.1.14",
+                  "changelogs/helm-v2.1.13"
+                ]
+              },
               {
                 "group": "April 2026",
                 "pages": [
@@ -1062,8 +1153,36 @@
       "destination": "/enterprise/adaptive-load-balancing"
     },
     {
+      "source": "/enterprise/setting-up-okta",
+      "destination": "/enterprise/setting-up-okta/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-entra",
+      "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-zitadel",
+      "destination": "/enterprise/setting-up-zitadel/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-keycloak",
+      "destination": "/enterprise/setting-up-keycloak/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-google-workspace",
+      "destination": "/enterprise/setting-up-google-workspace/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-auth0",
+      "destination": "/enterprise/setting-up-auth0/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-generic-oidc",
+      "destination": "/enterprise/setting-up-generic-oidc/oidc"
+    },
+    {
       "source": "/enterprise/users",
-      "destination": "/enterprise/setting-up-okta"
+      "destination": "/enterprise/setting-up-okta/oidc"
     },
     {
       "source": "/enterprise/data-connectors/datadog",

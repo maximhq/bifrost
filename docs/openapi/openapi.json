@@ -174,6 +174,10 @@
       "description": "Cache management endpoints"
     },
     {
+      "name": "Vault",
+      "description": "Vault secret management endpoints"
+    },
+    {
       "name": "Skills",
       "description": "Skills Repository management, marketplace, and download endpoints"
     }
@@ -60678,6 +60682,65 @@
         }
       }
     },
+    "/api/vault/flush-cache": {
+      "post": {
+        "operationId": "flushVaultCache",
+        "summary": "Flush vault secret cache",
+        "description": "Clears the in-memory vault secret cache so the next resolution of every\n`vault.<path>` reference re-fetches from the configured backend (AWS Secrets\nManager, GCP Secret Manager, or HashiCorp Vault).\n\nUse this after rotating a secret when you cannot wait for the hourly\nbackground refresh. In a clustered deployment the flush is broadcast to all\npeer nodes automatically — you only need to call this on one node.\n\nReturns `400` if vault integration is not enabled.\n",
+        "tags": [
+          "Vault"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vault cache flushed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "vault cache flushed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Vault is not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "vault is not enabled"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ws": {
       "get": {
         "operationId": "websocketConnect",
@@ -71431,7 +71494,7 @@
                 },
                 "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required."
               },
-              "mcp_external_base_url": {
+              "mcp_external_client_url": {
                 "oneOf": [
                   {
                     "type": "string",
@@ -71453,7 +71516,60 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy. Overrides the host derived from the incoming request. Supports env var syntax (\"env.MY_VAR\"). Configurable via UI, API, or config.json.\n"
+                "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax (\"env.MY_VAR\").\n"
+              },
+              "mcp_server_auth_mode": {
+                "type": "string",
+                "enum": [
+                  "headers",
+                  "both",
+                  "oauth"
+                ],
+                "default": "headers",
+                "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.\n"
+              },
+              "oauth2_server_config": {
+                "type": "object",
+                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "properties": {
+                  "issuer_url": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Plain URL or env var reference (e.g. \"env.MY_VAR\")"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "env_var": {
+                            "type": "string"
+                          },
+                          "from_env": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                  },
+                  "auth_code_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 600)."
+                  },
+                  "access_token_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the issued JWT Bearer token in seconds (default 600)."
+                  }
+                },
+                "additionalProperties": false
               }
             }
           },
@@ -71698,7 +71814,7 @@
                 },
                 "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required."
               },
-              "mcp_external_base_url": {
+              "mcp_external_client_url": {
                 "oneOf": [
                   {
                     "type": "string",
@@ -71720,7 +71836,60 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy. Overrides the host derived from the incoming request. Supports env var syntax (\"env.MY_VAR\"). Configurable via UI, API, or config.json.\n"
+                "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax (\"env.MY_VAR\").\n"
+              },
+              "mcp_server_auth_mode": {
+                "type": "string",
+                "enum": [
+                  "headers",
+                  "both",
+                  "oauth"
+                ],
+                "default": "headers",
+                "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.\n"
+              },
+              "oauth2_server_config": {
+                "type": "object",
+                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "properties": {
+                  "issuer_url": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Plain URL or env var reference (e.g. \"env.MY_VAR\")"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "env_var": {
+                            "type": "string"
+                          },
+                          "from_env": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                  },
+                  "auth_code_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 600)."
+                  },
+                  "access_token_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the issued JWT Bearer token in seconds (default 600)."
+                  }
+                },
+                "additionalProperties": false
               }
             }
           },
