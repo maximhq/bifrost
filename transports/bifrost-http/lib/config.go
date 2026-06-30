@@ -491,6 +491,15 @@ type Config struct {
 	LogsStoreConfig *logstore.Config
 	ObjectStore     objectstore.ObjectStore
 
+	// oauth2SigningKey caches the immutable OAuth2 signing key used to sign and
+	// verify Bifrost-issued /mcp JWTs. The key is created once via an idempotent
+	// insert and never rotated, so it is identical across nodes and immutable for
+	// the process lifetime. Caching it here lets the JWKS, token-issuance, and
+	// JWT-verify paths share a single load — sparing each a DB read + private-key
+	// decrypt per request — through one invalidation point. See
+	// GetOAuth2SigningKey.
+	oauth2SigningKey atomic.Pointer[configstoreTables.OAuth2SigningKey]
+
 	// In-memory storage
 	ServerConfig     *ServerConfig
 	ClientConfig     *configstore.ClientConfig
@@ -6032,6 +6041,27 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 
 	return &configCopy
+}
+
+// GetOAuth2SigningKey returns the OAuth2 signing key, loading it from the
+// config store on first use and caching it for the process lifetime. The key is
+// immutable once created (see the oauth2SigningKey field), so a process-lifetime
+// cache is safe and lets the JWKS, token-issuance, and JWT-verify paths share a
+// single load — skipping a DB read + private-key decrypt per request. Returns an
+// error when no config store is wired.
+func (c *Config) GetOAuth2SigningKey(ctx context.Context) (*configstoreTables.OAuth2SigningKey, error) {
+	if k := c.oauth2SigningKey.Load(); k != nil {
+		return k, nil
+	}
+	if c.ConfigStore == nil {
+		return nil, fmt.Errorf("config store unavailable")
+	}
+	k, err := c.ConfigStore.GetOAuth2SigningKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.oauth2SigningKey.Store(k)
+	return k, nil
 }
 
 // autoDetectProviders automatically detects common environment variables and sets up providers

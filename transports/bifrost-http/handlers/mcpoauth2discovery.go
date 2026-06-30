@@ -127,7 +127,7 @@ func (h *OAuth2DiscoveryHandler) handleJWKS(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	key, err := h.store.ConfigStore.GetOAuth2SigningKey(ctx)
+	key, err := h.store.GetOAuth2SigningKey(ctx)
 	if err != nil {
 		logger.Error("oauth2 discovery: failed to load signing key: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to load signing key")

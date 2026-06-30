@@ -225,7 +225,7 @@ func TestVerifyMCPJWT_ValidEachMode(t *testing.T) {
 				c["sub"] = m.sub
 			})
 			ctx := &fasthttp.RequestCtx{}
-			claims, err := verifyMCPJWT(ctx, raw, cfg)
+			claims, err := verifyMCPJWT(ctx, raw, cfg, key)
 			require.NoError(t, err)
 			require.NotNil(t, claims)
 			assert.Equal(t, string(m.mode), claims.BfMode)
@@ -311,7 +311,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 				tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 					"iss": testIssuer, "aud": jwt.ClaimStrings{testMCPResource},
 					"sub": "vk-123", "bf_mode": "vk", "iat": time.Now().Unix(),
-					"exp": time.Now().Add(time.Hour).Unix(),
+					"nbf": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
 				})
 				tok.Header["kid"] = key.KID
 				signed, err := tok.SignedString([]byte("hs-secret"))
@@ -325,7 +325,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 				tok := jwt.NewWithClaims(jwt.SigningMethodRS384, jwt.MapClaims{
 					"iss": testIssuer, "aud": jwt.ClaimStrings{testMCPResource},
 					"sub": "vk-123", "bf_mode": "vk", "iat": time.Now().Unix(),
-					"exp": time.Now().Add(time.Hour).Unix(),
+					"nbf": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
 				})
 				tok.Header["kid"] = key.KID
 				signed, err := tok.SignedString(priv)
@@ -337,7 +337,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 			name: "alg none",
 			raw: func() string {
 				header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT","kid":"test-kid"}`))
-				payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://bifrost.test","aud":["https://bifrost.test/mcp"],"sub":"vk-123","bf_mode":"vk","exp":9999999999}`))
+				payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://bifrost.test","aud":["https://bifrost.test/mcp"],"sub":"vk-123","bf_mode":"vk","iat":1700000000,"nbf":1700000000,"exp":9999999999}`))
 				return header + "." + payload + "."
 			},
 		},
@@ -352,37 +352,49 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := &fasthttp.RequestCtx{}
-			claims, err := verifyMCPJWT(ctx, tc.raw(), cfg)
+			claims, err := verifyMCPJWT(ctx, tc.raw(), cfg, key)
 			require.Error(t, err)
 			assert.Nil(t, claims)
 		})
 	}
 }
 
-// TestVerifyMCPJWT_ConfigFaultsNotLabeledInvalidToken pins that infrastructure
-// faults (no config store, missing signing key) surface their own message and
-// are never mislabeled as the caller's token being invalid.
-func TestVerifyMCPJWT_ConfigFaultsNotLabeledInvalidToken(t *testing.T) {
+// TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken pins that a nil signing
+// key — the caller's signal that loading the key failed (no config store,
+// missing key) — surfaces as a config fault, never as the caller's token being
+// invalid.
+func TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken(t *testing.T) {
 	key, priv := newTestSigningKey(t)
 	raw := mintTestToken(t, priv, key.KID, nil)
+	cfg := newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeBoth, false)
 
+	ctx := &fasthttp.RequestCtx{}
+	_, err := verifyMCPJWT(ctx, raw, cfg, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "signing key unavailable")
+	assert.NotContains(t, err.Error(), "invalid token")
+}
+
+// TestCachedSigningKey_ConfigFaults pins that the handler's key loader — which
+// now owns reading the signing key for the JWT verify path — surfaces
+// infrastructure faults distinctly, never as the caller's token being invalid.
+func TestCachedSigningKey_ConfigFaults(t *testing.T) {
 	t.Run("nil config store", func(t *testing.T) {
 		cfg := newTestOAuth2Config(nil, configtables.MCPServerAuthModeBoth, false)
 		cfg.ConfigStore = nil
-		ctx := &fasthttp.RequestCtx{}
-		_, err := verifyMCPJWT(ctx, raw, cfg)
+		h := &MCPServerHandler{config: cfg}
+		_, err := h.config.GetOAuth2SigningKey(bgCtx())
 		require.Error(t, err)
 		assert.Equal(t, "config store unavailable", err.Error())
 		assert.NotContains(t, err.Error(), "invalid token")
 	})
 
-	t.Run("signing key unavailable", func(t *testing.T) {
+	t.Run("signing key load error", func(t *testing.T) {
 		store := &mockOAuth2Store{signingErr: configstore.ErrNotFound}
 		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		ctx := &fasthttp.RequestCtx{}
-		_, err := verifyMCPJWT(ctx, raw, cfg)
+		h := &MCPServerHandler{config: cfg}
+		_, err := h.config.GetOAuth2SigningKey(bgCtx())
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "signing key unavailable")
 		assert.NotContains(t, err.Error(), "invalid token")
 	})
 }
