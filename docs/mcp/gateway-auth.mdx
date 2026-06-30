@@ -179,6 +179,8 @@ Revoking a grant stops its refresh token from rotating immediately, so the clien
 
 <Note>
 A revoked grant's current access token is a short-lived JWT that keeps working on `/mcp` until it expires (up to `access_token_ttl`, default `600` seconds). After that the client is fully cut off and must reconnect through the consent flow.
+
+This is deliberate: a holder of the virtual key or user credentials can always start a new authorized session, so invalidating the access token mid-flight adds little security while costing a per-request lookup. Lower `access_token_ttl` for a tighter window.
 </Note>
 
 <Info>
@@ -189,9 +191,11 @@ The **OAuth Grants** page lists credentials Bifrost **issued to clients** for in
 
 ## Token Lifetime & Revocation
 
-- **Access tokens** are JWTs valid for `access_token_ttl` (default 600s). They are validated statelessly on every `/mcp` request — signature, expiry, issuer, and audience.
-- **Refresh tokens** rotate on each use and have no fixed expiry. A token is invalidated by rotation, by the bound virtual key or user becoming inactive, or by an explicit revoke.
-- Because access tokens are validated statelessly, a revoke takes effect for renewals immediately but leaves an already-issued access token usable until it expires. Lower `access_token_ttl` to shorten that window.
+- **Access tokens** are JWTs valid for `access_token_ttl` (default 600s). On every `/mcp` request Bifrost validates the JWT — signature, expiry, issuer, and audience — and confirms the bound identity (the virtual key or user) still exists and is active. The identity check reads an in-memory cache, so in the common case it adds no database round-trip (vk-mode falls back to a single store lookup only on a cache miss).
+- **Refresh tokens** rotate on each use and have no fixed expiry. A token is invalidated by rotation, by the bound virtual key or user becoming inactive or deleted, or by an explicit revoke.
+- An explicit revoke marks the grant's refresh-token row revoked, so renewals stop immediately — but it does **not** remove the bound identity, so the identity check still passes and the already-issued access token keeps working until it expires. Lower `access_token_ttl` to shorten that window.
+- **Deleting** the bound virtual key or user is stronger than revoking a grant: it revokes the grant immediately *and* the identity check rejects the grant's already-issued access token on its next `/mcp` request, instead of letting it live out its TTL.
+- Enabling `disable_vk_identity` (require identity-provider login) cuts off all **virtual-key**–mode grants immediately — they are rejected at `/mcp` and denied on refresh — so those clients must re-authenticate as a user. Only applies in `oauth` mode with an identity provider configured.
 - Enabling `enforce_auth_on_inference` blocks session-mode (anonymous) tokens at `/mcp`, but does **not** delete or invalidate their grants — the grants remain in the database and become valid again if enforcement is later disabled. To remove a session-mode grant permanently, revoke it on the **OAuth Grants** page.
 
 ---

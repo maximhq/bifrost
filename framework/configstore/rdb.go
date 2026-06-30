@@ -7060,8 +7060,8 @@ func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context
 }
 
 // RevokeOAuth2RefreshTokensByMode revokes all active refresh tokens for a given
-// bf_mode. Used to invalidate session-mode grants when EnforceAuthOnInference
-// is toggled on, or to bulk-revoke all grants of a specific type.
+// bf_mode — a bulk-revoke utility for invalidating every grant of one identity
+// type (vk, user, or session).
 func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
 	now := time.Now()
 	return s.DB().WithContext(ctx).

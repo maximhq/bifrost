@@ -150,6 +150,14 @@ ClientConfig:
           minimum: 1
           default: 600
           description: Lifetime of the issued JWT Bearer token in seconds (default 600).
+        disable_vk_identity:
+          type: boolean
+          default: false
+          description: >
+            Require identity-provider login: virtual-key identity is removed from the consent
+            flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh.
+            Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is
+            configured. Anonymous session identity is governed separately by enforce_auth_on_inference.
       additionalProperties: false
 
 FrameworkConfig:
