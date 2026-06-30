@@ -943,7 +943,7 @@ const (
 	// `tools` array). See ResponsesMessage's (Un)MarshalJSON.
 	ResponsesMessageTypeToolSearchCall   ResponsesMessageType = "tool_search_call"
 	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
-	ResponsesMessageTypeAdvisorCall      ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1006,7 +1006,12 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// non-tool-search payload must not leave preserved bytes that MarshalJSON
 	// would then re-emit.
 	*m = ResponsesMessage{}
-	preserveRawToolSearch := isToolSearchItem(gjson.GetBytes(data, "type").String())
+	if t := gjson.GetBytes(data, "type").String(); isToolSearchItem(t) {
+		mt := ResponsesMessageType(t)
+		m.Type = &mt
+		m.rawToolSearch = append([]byte(nil), data...)
+		return nil
+	}
 
 	type Alias ResponsesMessage
 	aux := &struct {
@@ -1018,9 +1023,6 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 
 	if err := Unmarshal(data, aux); err != nil {
 		return err
-	}
-	if preserveRawToolSearch {
-		m.rawToolSearch = append([]byte(nil), data...)
 	}
 
 	if len(aux.Arguments) > 0 && string(aux.Arguments) != "null" {
