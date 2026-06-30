@@ -344,11 +344,6 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 	}
 }
 
-// boolPtr keeps pointer-valued key fixtures inline without pulling in pointer helpers.
-func boolPtr(v bool) *bool {
-	return &v
-}
-
 func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -395,7 +390,7 @@ func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o"}},
 			{ID: "key-b", Models: []string{"gpt-4o", "gpt-4o-mini"}},
-			{ID: "key-disabled", Enabled: boolPtr(false)},
+			{ID: "key-disabled", Enabled: new(false)},
 		},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
@@ -638,7 +633,7 @@ func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o"}},
-			{ID: "key-disabled", Enabled: boolPtr(false)},
+			{ID: "key-disabled", Enabled: new(false)},
 		},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},

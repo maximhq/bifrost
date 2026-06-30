@@ -24,14 +24,19 @@ type EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
 	// Core data maps using sync.Map for lock-free reads
-	virtualKeys  sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
-	teams        sync.Map // string -> *Team (Team ID -> Team)
-	customers    sync.Map // string -> *Customer (Customer ID -> Customer)
-	budgets      sync.Map // string -> *Budget (Budget ID -> Budget)
-	rateLimits   sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
-	modelConfigs sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
-	providers    sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
-	routingRules sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
+	virtualKeys sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
+	// virtualKeysByID is a secondary index over virtualKeys keyed by VK row ID,
+	// giving O(1) by-ID lookups (e.g. the /mcp JWT auth path) without an O(n)
+	// scan or a database read. Maintained in lock-step with virtualKeys via
+	// storeVirtualKey / deleteVirtualKeyByValue — never write it directly.
+	virtualKeysByID sync.Map // string -> *VirtualKey (VK row ID -> VirtualKey)
+	teams           sync.Map // string -> *Team (Team ID -> Team)
+	customers       sync.Map // string -> *Customer (Customer ID -> Customer)
+	budgets         sync.Map // string -> *Budget (Budget ID -> Budget)
+	rateLimits      sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
+	modelConfigs    sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
+	providers       sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	routingRules    sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -865,6 +870,43 @@ func (gs *LocalGovernanceStore) GetVirtualKey(ctx context.Context, vkValue strin
 		return nil, false
 	}
 	return vk, true
+}
+
+// GetVirtualKeyByID retrieves a virtual key by its row ID (lock-free) with all
+// relationships preloaded, via the ID-keyed secondary index. Mirrors
+// GetVirtualKey (which is keyed by value); used by by-ID hot paths such as /mcp
+// JWT auth to avoid a per-request database read.
+func (gs *LocalGovernanceStore) GetVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, bool) {
+	value, exists := gs.virtualKeysByID.Load(vkID)
+	if !exists || value == nil {
+		return nil, false
+	}
+	vk, ok := value.(*configstoreTables.TableVirtualKey)
+	if !ok || vk == nil {
+		return nil, false
+	}
+	return vk, true
+}
+
+// storeVirtualKey writes vk into both the value-keyed primary map and the
+// ID-keyed secondary index, keeping the two in lock-step. Every writer to
+// virtualKeys must go through here so the ID index never diverges.
+func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTables.TableVirtualKey) {
+	gs.virtualKeys.Store(value, vk)
+	if vk != nil && vk.ID != "" {
+		gs.virtualKeysByID.Store(vk.ID, vk)
+	}
+}
+
+// deleteVirtualKeyByValue removes the VK stored under value from both the
+// primary map and the ID-keyed secondary index.
+func (gs *LocalGovernanceStore) deleteVirtualKeyByValue(value string) {
+	if existing, ok := gs.virtualKeys.Load(value); ok {
+		if vk, ok := existing.(*configstoreTables.TableVirtualKey); ok && vk != nil && vk.ID != "" {
+			gs.virtualKeysByID.Delete(vk.ID)
+		}
+	}
+	gs.virtualKeys.Delete(value)
 }
 
 // CheckRateLimit checks rate limits for tokens and requests across categories
@@ -2281,6 +2323,7 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, customers []configstoreTables.TableCustomer, teams []configstoreTables.TableTeam, virtualKeys []configstoreTables.TableVirtualKey, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit, modelConfigs []configstoreTables.TableModelConfig, providers []configstoreTables.TableProvider, routingRules []configstoreTables.TableRoutingRule) {
 	// Clear existing data by creating new sync.Maps
 	gs.virtualKeys = sync.Map{}
+	gs.virtualKeysByID = sync.Map{}
 	gs.teams = sync.Map{}
 	gs.customers = sync.Map{}
 	gs.budgets = sync.Map{}
@@ -2316,7 +2359,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	// Build virtual keys map and track active VKs
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
-		gs.virtualKeys.Store(vk.Value, vk)
+		gs.storeVirtualKey(vk.Value, vk)
 	}
 
 	// Build model configs map.
@@ -2812,7 +2855,7 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 		}
 	}
 
-	gs.virtualKeys.Store(clone.Value, &clone)
+	gs.storeVirtualKey(clone.Value, &clone)
 }
 
 // UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
@@ -2988,9 +3031,9 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 			}
 		}
 		if existingVKKey != "" && existingVKKey != vk.Value {
-			gs.virtualKeys.Delete(existingVKKey)
+			gs.deleteVirtualKeyByValue(existingVKKey)
 		}
-		gs.virtualKeys.Store(vk.Value, &clone)
+		gs.storeVirtualKey(vk.Value, &clone)
 	} else {
 		gs.CreateVirtualKeyInMemory(ctx, vk)
 	}
@@ -3033,7 +3076,7 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 				}
 			}
 
-			gs.virtualKeys.Delete(key)
+			gs.deleteVirtualKeyByValue(key.(string))
 			return false // stop iteration
 		}
 		return true // continue iteration
@@ -3201,7 +3244,7 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 			clone := *vk
 			clone.TeamID = nil
 			clone.Team = nil
-			gs.virtualKeys.Store(key, &clone)
+			gs.storeVirtualKey(key.(string), &clone)
 		}
 		return true // continue iteration
 	})
@@ -3317,7 +3360,7 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 			clone := *vk
 			clone.CustomerID = nil
 			clone.Customer = nil
-			gs.virtualKeys.Store(key, &clone)
+			gs.storeVirtualKey(key.(string), &clone)
 		}
 		return true // continue iteration
 	})
@@ -3574,7 +3617,7 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 			}
 		}
 		if needsUpdate {
-			gs.virtualKeys.Store(key, &clone)
+			gs.storeVirtualKey(key.(string), &clone)
 		}
 		return true // continue
 	})
@@ -3644,7 +3687,7 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 		}
 
 		if needsUpdate {
-			gs.virtualKeys.Store(key, &clone)
+			gs.storeVirtualKey(key.(string), &clone)
 		}
 		return true // continue
 	})
