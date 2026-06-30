@@ -560,6 +560,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// disable_vk_identity only makes sense in oauth mode: in both mode virtual
+	// keys can still authenticate via headers, so suppressing them in the consent
+	// flow alone would be misleading. Evaluate the merged config so a partial
+	// update that switches the mode away from oauth (without resending the config)
+	// cannot leave a previously stored disable_vk_identity active.
+	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
+	if payload.ClientConfig.OAuth2ServerConfig != nil {
+		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
+	}
+	if effectiveOAuth2Config != nil &&
+		effectiveOAuth2Config.DisableVKIdentity &&
+		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
+		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
+		return
+	}
+
 	// Only update each field when explicitly provided so partial /api/config
 	// payloads do not clear stored values (matches the MCP field handling above).
 	if payload.ClientConfig.MCPServerAuthMode != "" {

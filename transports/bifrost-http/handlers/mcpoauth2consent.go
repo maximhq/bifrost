@@ -266,14 +266,29 @@ func (h *OAuth2ConsentHandler) loadPendingFlow(ctx *fasthttp.RequestCtx, flowID 
 
 // availableModes derives which identity modes to offer based on server config.
 func (h *OAuth2ConsentHandler) availableModes() []consentFlowMode {
-	modes := []consentFlowMode{consentFlowModeVK}
 	h.store.Mu.RLock()
 	enforceAuth := h.store.ClientConfig.EnforceAuthOnInference
 	h.store.Mu.RUnlock()
+	// oauth2ServerCfg is nil-safe: OAuth2ServerConfig is an unset pointer until the
+	// AS is configured, and a raw deref here panics the request worker. It takes its
+	// own read lock, so it's called outside the lock above.
+	disableVKIdentity := oauth2ServerCfg(h.store).DisableVKIdentity
+
+	userModeAvailable := h.identityResolver != nil && h.identityResolver.IsUserModeAvailable()
+
+	// Virtual-key identity may be suppressed, but only when user identity is
+	// available — so the flow always retains the identity-provider path and can
+	// never be left with no usable mode.
+	disableVK := userModeAvailable && disableVKIdentity
+
+	modes := []consentFlowMode{}
+	if !disableVK {
+		modes = append(modes, consentFlowModeVK)
+	}
 	if !enforceAuth {
 		modes = append(modes, consentFlowModeSession)
 	}
-	if h.identityResolver != nil && h.identityResolver.IsUserModeAvailable() {
+	if userModeAvailable {
 		modes = append(modes, consentFlowModeUser)
 	}
 	return modes

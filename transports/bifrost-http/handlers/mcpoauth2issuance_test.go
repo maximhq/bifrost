@@ -38,7 +38,7 @@ func newIssuanceHandler(t *testing.T) (*OAuth2IssuanceHandler, configstore.Confi
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-	return NewOAuth2IssuanceHandler(cfg, nil), store, cfg
+	return NewOAuth2IssuanceHandler(cfg, nil, nil), store, cfg
 }
 
 func pkceChallenge(verifier string) string {
@@ -512,5 +512,58 @@ func TestHandleToken_RefreshRotationAndReplay(t *testing.T) {
 		h.handleToken(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 		assert.Contains(t, string(ctx.Response.Body()), "invalid_request")
+	})
+}
+
+func TestHandleToken_RefreshVKIdentityDisabled(t *testing.T) {
+	seedVKRefresh := func(t *testing.T, store configstore.ConfigStore, plain string) {
+		t.Helper()
+		seedConsentedRequest(t, store, "fam-vk", "client-1", "auth-code-vk", pkceChallenge("v"), "vk", "vk-1", time.Now().Add(time.Minute))
+		rt := &configtables.TableOAuth2RefreshToken{
+			ID: "rt-vk", TokenHash: hashSHA256Hex(plain), FamilyID: "fam-vk", ClientID: "client-1",
+			BfMode: "vk", BfSub: "vk-1", Scope: "mcp", Resource: testMCPResource, CreatedAt: time.Now(),
+		}
+		require.NoError(t, store.ConsumeOAuth2AuthorizeRequest(context.Background(), "fam-vk", rt))
+	}
+
+	refreshReq := func() *fasthttp.RequestCtx {
+		return formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {"client-1"},
+		}.Encode())
+	}
+
+	t.Run("vk refresh rejected when disabled and user mode available", func(t *testing.T) {
+		store := newRealOAuth2Store(t)
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = true
+		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true})
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedVKRefresh(t, store, "refresh-vk-1")
+
+		ctx := refreshReq()
+		h.handleToken(ctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+		body := string(ctx.Response.Body())
+		assert.Contains(t, body, "invalid_grant")
+		assert.Contains(t, body, "no longer accepted")
+	})
+
+	t.Run("vk refresh not blocked by flag when user mode unavailable", func(t *testing.T) {
+		store := newRealOAuth2Store(t)
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = true
+		// nil resolver → user mode unavailable → the flag is ignored and the flow
+		// falls through to the VK liveness check, which rejects the (unseeded) VK
+		// with a different message. That proves the cutoff did not fire.
+		h := NewOAuth2IssuanceHandler(cfg, nil, nil)
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedVKRefresh(t, store, "refresh-vk-1")
+
+		ctx := refreshReq()
+		h.handleToken(ctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+		body := string(ctx.Response.Body())
+		assert.NotContains(t, body, "no longer accepted")
+		assert.Contains(t, body, "no longer active")
 	})
 }

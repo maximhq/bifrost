@@ -125,15 +125,22 @@ func TestConsentAvailableModes(t *testing.T) {
 		name        string
 		resolver    OAuth2IdentityResolver
 		enforceAuth bool
+		disableVK   bool
 		want        []consentFlowMode
 	}{
-		{"vk and session when auth not enforced", nil, false, []consentFlowMode{consentFlowModeVK, consentFlowModeSession}},
-		{"vk only when auth enforced", nil, true, []consentFlowMode{consentFlowModeVK}},
-		{"adds user when resolver offers it", &fakeResolver{userModeAvailable: true}, false, []consentFlowMode{consentFlowModeVK, consentFlowModeSession, consentFlowModeUser}},
+		{"vk and session when auth not enforced", nil, false, false, []consentFlowMode{consentFlowModeVK, consentFlowModeSession}},
+		{"vk only when auth enforced", nil, true, false, []consentFlowMode{consentFlowModeVK}},
+		{"adds user when resolver offers it", &fakeResolver{userModeAvailable: true}, false, false, []consentFlowMode{consentFlowModeVK, consentFlowModeSession, consentFlowModeUser}},
+		// DisableVKIdentity drops vk, but only when user mode is available so the
+		// flow always keeps a usable identity path.
+		{"disable vk drops vk when user mode available", &fakeResolver{userModeAvailable: true}, false, true, []consentFlowMode{consentFlowModeSession, consentFlowModeUser}},
+		{"disable vk leaves user-only when auth enforced", &fakeResolver{userModeAvailable: true}, true, true, []consentFlowMode{consentFlowModeUser}},
+		{"disable vk ignored without user mode", nil, false, true, []consentFlowMode{consentFlowModeVK, consentFlowModeSession}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newConsentHandler(newConsentStore(), tc.resolver, tc.enforceAuth)
+			h.store.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = tc.disableVK
 			assert.Equal(t, tc.want, h.availableModes())
 		})
 	}
