@@ -516,7 +516,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 		accessTokenTTL = configtables.DefaultAccessTokenTTL
 	}
 
-	signingKey, err := h.store.ConfigStore.GetOAuth2SigningKey(ctx)
+	signingKey, err := h.store.GetOAuth2SigningKey(ctx)
 	if err != nil {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "signing key unavailable")
 		return
