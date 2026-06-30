@@ -21,6 +21,7 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 
 	if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 		params := req.ChatRequest.Params
+		hasSupportedTools := len(params.Tools) > 0 && isSupported["tools"]
 
 		if params.Audio != nil && !isSupported["audio"] {
 			params.Audio = nil
@@ -68,9 +69,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.PromptCacheRetention = nil
 			dropped = append(dropped, "prompt_cache_retention")
 		}
-		if params.Reasoning != nil && !isSupported["reasoning"] {
-			params.Reasoning = nil
-			dropped = append(dropped, "reasoning")
+		if params.Reasoning != nil {
+			// for chat completions, some models do not support reasoning_effort
+			// with tools
+			if !isSupported["reasoning"] || (hasSupportedTools && !isSupported["reasoning_with_tool_calls"]) {
+				params.Reasoning = nil
+				dropped = append(dropped, "reasoning")
+			}
 		}
 		if params.ResponseFormat != nil && !isSupported["response_format"] {
 			params.ResponseFormat = nil
