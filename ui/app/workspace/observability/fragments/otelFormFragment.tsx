@@ -36,6 +36,7 @@ interface StoredOtelProfile {
 	metrics_push_interval?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
+	propagate_trace_attributes?: boolean;
 }
 
 // StoredOtelConfig is either the canonical { profiles: [...] } wrapper or a legacy single
@@ -98,6 +99,7 @@ const emptyProfile = (): ProfileForm => ({
 	metrics_push_interval: 15,
 	request_headers: [],
 	disable_content_logging: false,
+	propagate_trace_attributes: false,
 });
 
 // toProfileForm normalizes a stored profile into the EnvVar-based form representation.
@@ -115,6 +117,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
+	propagate_trace_attributes: p?.propagate_trace_attributes ?? false,
 });
 
 // buildDefaults handles both stored shapes: the { profiles: [...] } wrapper and the legacy
@@ -455,6 +458,24 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								</div>
 								<FormControl>
 									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-disable-content-logging-toggle`} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`${base}.propagate_trace_attributes`}
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between">
+								<div className="space-y-0.5">
+									<FormLabel className="text-base">Propagate Dimension Attributes to Child Spans</FormLabel>
+									<FormDescription>
+										When enabled, request dimension attributes (e.g. <code className="text-xs">x-bf-dim-*</code> headers) are merged onto
+										every exported span — not just the root span. Useful for filtering or grouping traces by dimension in your collector.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} data-testid={`otel-profile-${index}-propagate-trace-attributes-toggle`} />
 								</FormControl>
 							</FormItem>
 						)}

@@ -130,7 +130,7 @@ func (p *OtelPlugin) buildReparentMap(spans []*schemas.Span) map[string]string {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, propagateTraceAttributes bool) *ResourceSpan {
 	reparent := p.buildReparentMap(trace.Spans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 	otelSpans := make([]*Span, 0, len(trace.Spans))
@@ -149,17 +149,11 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 			}
 		}
 		// Merge trace-level attributes (x-bf-dim-* and friends set via
-		// tracer.SetTraceAttributes) onto every exported span. Span-level
-		// attributes win on conflict, so we build the "present" key set from
-		// the span's own attributes and only append trace attrs that aren't
-		// already present. This runs BEFORE the root-span block adds
-		// AttrRequestID/instanceAttrs, so if a caller-supplied dim collides
-		// with one of those keys the root span carries BOTH entries in its
-		// attribute list — OTLP itself does not deduplicate, and collectors
-		// (Datadog, Jaeger, etc.) resolve via last-wins, which surfaces the
-		// AttrRequestID/instanceAttrs value. Intentional, to keep
-		// service-instance and request-id metadata authoritative.
-		if len(trace.Attributes) > 0 {
+		// tracer.SetTraceAttributes) onto every exported span when
+		// propagateTraceAttributes is enabled. Span-level attributes win on
+		// conflict. Runs BEFORE the root-span block so AttrRequestID/
+		// instanceAttrs remain authoritative on the root span.
+		if propagateTraceAttributes && len(trace.Attributes) > 0 {
 			present := make(map[string]struct{}, len(otelSpan.Attributes))
 			for _, kv := range otelSpan.Attributes {
 				present[kv.Key] = struct{}{}
