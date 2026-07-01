@@ -1701,12 +1701,9 @@ const (
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
 	RankingDimensionUser         RankingDimension = "user"
-<<<<<<< HEAD
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
-=======
 	RankingDimensionApp          RankingDimension = "app"
 	RankingDimensionUserAgent    RankingDimension = "user_agent"
->>>>>>> e32994308 (adds user-agent tracking for llm and mcp logs)
 )
 
 var ValidRankingDimensions = map[RankingDimension]bool{
@@ -1714,12 +1711,9 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
 	RankingDimensionUser:         true,
-<<<<<<< HEAD
 	RankingDimensionVirtualKey:   true,
-=======
 	RankingDimensionApp:          true,
 	RankingDimensionUserAgent:    true,
->>>>>>> e32994308 (adds user-agent tracking for llm and mcp logs)
 }
 
 type dimensionColumnDef struct {
@@ -1732,12 +1726,9 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
-<<<<<<< HEAD
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
-=======
 	RankingDimensionApp:          {IDCol: "app", NameCol: ""},
 	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: ""},
->>>>>>> e32994308 (adds user-agent tracking for llm and mcp logs)
 }
 
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
