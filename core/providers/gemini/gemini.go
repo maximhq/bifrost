@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -3442,6 +3444,16 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to marshal metadata", err)
 	}
+	contentType := ""
+	if request.ContentType != nil {
+		contentType = strings.TrimSpace(*request.ContentType)
+	}
+	if contentType != "" {
+		metadataJSON, err = providerUtils.SetJSONField(metadataJSON, "file.mimeType", contentType)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to marshal metadata", err)
+		}
+	}
 	if _, err := metadataField.Write(metadataJSON); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to write metadata", err)
 	}
@@ -3451,7 +3463,15 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	if filename == "" {
 		filename = "file.bin"
 	}
-	part, err := writer.CreateFormFile("file", filename)
+	var part io.Writer
+	if contentType != "" {
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": filename}))
+		header.Set("Content-Type", contentType)
+		part, err = writer.CreatePart(header)
+	} else {
+		part, err = writer.CreateFormFile("file", filename)
+	}
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
 	}

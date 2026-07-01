@@ -1,0 +1,7 @@
+[project]
+name = "gemini-file-upload-mime-type"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+]
