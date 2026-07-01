@@ -282,6 +282,21 @@ func (s *Store) DatasheetModelsForProvider(provider schemas.ModelProvider) []str
 	return out
 }
 
+// DeprecatedDatasheetModelsForProvider returns deprecated models from the
+// datasheet view for provider. Deprecated models may disappear from provider
+// list-models APIs but must remain visible in Bifrost catalog listings.
+func (s *Store) DeprecatedDatasheetModelsForProvider(provider schemas.ModelProvider) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	models, ok := s.deprecatedByProvider[provider]
+	if !ok {
+		return nil
+	}
+	out := make([]string, len(models))
+	copy(out, models)
+	return out
+}
+
 // DatasheetProviders returns every provider that has at least one pricing
 // row in the datasheet view. Composer unions this with live + keyconfig to
 // enumerate "all known providers" for GetProvidersForModel.

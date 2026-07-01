@@ -433,6 +433,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_issuance_tables"}, run: migrationAddOAuth2IssuanceTables},
 	{IDs: []string{"add_dump_errors_in_console_logs_column"}, run: migrationAddDumpErrorsInConsoleLogsColumn},
 	{IDs: []string{"add_bedrock_mantle_key_columns"}, run: migrationAddBedrockMantleKeyColumns},
+	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -9653,6 +9654,36 @@ func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_additional_attributes_to_pricing migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelPricingIsDeprecatedColumn adds is_deprecated to
+// governance_model_pricing so synced datasheets can mark models that should
+// remain listable but are no longer recommended for new use.
+func migrationAddModelPricingIsDeprecatedColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_pricing_is_deprecated_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "IsDeprecated"); err != nil {
+				return fmt.Errorf("failed to add is_deprecated column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "IsDeprecated"); err != nil {
+				return fmt.Errorf("failed to drop is_deprecated column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_pricing_is_deprecated_column migration: %s", err.Error())
 	}
 	return nil
 }
