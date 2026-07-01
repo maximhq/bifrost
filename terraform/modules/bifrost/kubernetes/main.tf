@@ -8,6 +8,10 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
   }
 }
 
@@ -316,5 +320,176 @@ resource "kubernetes_ingress_v1" "bifrost" {
         }
       }
     }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PostgreSQL StatefulSet (optional – when create_postgresql is true)
+# ──────────────────────────────────────────────────────────────────────────────
+
+locals {
+  pg_password = var.create_postgresql ? (
+    var.postgresql_password != null ? var.postgresql_password : random_password.postgresql[0].result
+  ) : null
+}
+
+resource "random_password" "postgresql" {
+  count = var.create_postgresql && var.postgresql_password == null ? 1 : 0
+
+  length           = 32
+  special          = true
+  override_special = "!#$%&*()-_=+[]<>:?"
+}
+
+resource "kubernetes_secret_v1" "postgresql" {
+  count = var.create_postgresql ? 1 : 0
+
+  metadata {
+    name      = "${var.name_prefix}-postgresql"
+    namespace = kubernetes_namespace_v1.bifrost.metadata[0].name
+  }
+
+  data = {
+    POSTGRES_DB       = var.postgresql_database_name
+    POSTGRES_USER     = var.postgresql_username
+    POSTGRES_PASSWORD = local.pg_password
+  }
+
+  type = "Opaque"
+}
+
+resource "kubernetes_stateful_set_v1" "postgresql" {
+  count = var.create_postgresql ? 1 : 0
+
+  metadata {
+    name      = "${var.name_prefix}-postgresql"
+    namespace = kubernetes_namespace_v1.bifrost.metadata[0].name
+
+    labels = merge(var.tags, {
+      app = "${var.name_prefix}-postgresql"
+    })
+  }
+
+  spec {
+    service_name = "${var.name_prefix}-postgresql"
+    replicas     = 1
+
+    selector {
+      match_labels = {
+        app = "${var.name_prefix}-postgresql"
+      }
+    }
+
+    template {
+      metadata {
+        labels = merge(var.tags, {
+          app = "${var.name_prefix}-postgresql"
+        })
+      }
+
+      spec {
+        container {
+          name  = "postgresql"
+          image = "postgres:${var.postgresql_engine_version}-alpine"
+
+          port {
+            container_port = 5432
+            name           = "postgresql"
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret_v1.postgresql[0].metadata[0].name
+            }
+          }
+
+          resources {
+            requests = {
+              cpu    = "250m"
+              memory = "256Mi"
+            }
+            limits = {
+              cpu    = "1000m"
+              memory = "1Gi"
+            }
+          }
+
+          volume_mount {
+            name       = "pgdata"
+            mount_path = "/var/lib/postgresql/data"
+            sub_path   = "pgdata"
+          }
+
+          liveness_probe {
+            exec {
+              command = ["pg_isready", "-U", var.postgresql_username]
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            exec {
+              command = ["pg_isready", "-U", var.postgresql_username]
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+      }
+    }
+
+    volume_claim_template {
+      metadata {
+        name = "pgdata"
+      }
+
+      spec {
+        access_modes       = ["ReadWriteOnce"]
+        storage_class_name = var.storage_class_name
+
+        resources {
+          requests = {
+            storage = "${var.postgresql_storage_gb}Gi"
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    kubernetes_secret_v1.postgresql,
+  ]
+}
+
+resource "kubernetes_service_v1" "postgresql" {
+  count = var.create_postgresql ? 1 : 0
+
+  metadata {
+    name      = "${var.name_prefix}-postgresql"
+    namespace = kubernetes_namespace_v1.bifrost.metadata[0].name
+
+    labels = merge(var.tags, {
+      app = "${var.name_prefix}-postgresql"
+    })
+  }
+
+  spec {
+    selector = {
+      app = "${var.name_prefix}-postgresql"
+    }
+
+    port {
+      name        = "postgresql"
+      port        = 5432
+      target_port = 5432
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
   }
 }
