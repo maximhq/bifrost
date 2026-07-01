@@ -1,0 +1,7 @@
+[project]
+name = "anthropic-file-id-openai-route"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+]
