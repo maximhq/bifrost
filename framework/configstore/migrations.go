@@ -408,6 +408,10 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"backfill_vk_provider_config_blacklisted_models"}, run: migrationBackfillVirtualKeyBlacklistedModels},
 	{IDs: []string{"add_created_by_user_id_column_for_virtual_keys"}, run: migrationAddCreatedByUserIDColumnForVirtualKeys},
 	{IDs: []string{"re_add_allow_direct_keys_column"}, run: migrationReAddAllowDirectKeysColumn},
+	{IDs: []string{"add_dump_errors_in_console_logs_column"}, run: migrationAddDumpErrorsInConsoleLogsColumn},
+	{IDs: []string{"add_oauth2_server_tables"}, run: migrationAddOAuth2ServerTables},
+	{IDs: []string{"add_oauth2_issuance_tables"}, run: migrationAddOAuth2IssuanceTables},
+	{IDs: []string{"add_bedrock_mantle_key_columns"}, run: migrationAddBedrockMantleKeyColumns},
 	{IDs: []string{"refresh_config_hash_after_mcp_external_server_url_removal"}, run: migrationRefreshConfigHashAfterMCPExternalServerURLRemoval},
 	{IDs: []string{"drop_azure_api_version_column"}, run: migrationDropAzureAPIVersionColumn},
 	{IDs: []string{"add_mcp_per_user_header_credentials_table"}, run: migrationAddPerUserHeadersTables},
@@ -429,10 +433,6 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_customer_name_unique_constraint_dedup", "add_customer_name_unique_constraint_index"}, run: migrationAddCustomerNameUniqueConstraint},
 	{IDs: []string{"null_legacy_customer_budget_id_refs"}, run: migrationNullLegacyCustomerBudgetID},
 	{IDs: []string{"add_skills_repo_tables"}, run: migrationAddSkillsRepoTables},
-	{IDs: []string{"add_oauth2_server_tables"}, run: migrationAddOAuth2ServerTables},
-	{IDs: []string{"add_oauth2_issuance_tables"}, run: migrationAddOAuth2IssuanceTables},
-	{IDs: []string{"add_dump_errors_in_console_logs_column"}, run: migrationAddDumpErrorsInConsoleLogsColumn},
-	{IDs: []string{"add_bedrock_mantle_key_columns"}, run: migrationAddBedrockMantleKeyColumns},
 	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
 }
 
