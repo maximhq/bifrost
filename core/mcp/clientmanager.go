@@ -58,6 +58,18 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 	}
 	url := config.ConnectionString.GetValue()
 
+	// Circuit-breaker: if this per-user client's upstream recently failed to
+	// connect, fail fast instead of eating another MCPPerCallConnectTimeout on
+	// every tool call this turn. Auto-recovers once the cooldown elapses.
+	if v, ok := m.perUserConnectFailures.Load(config.ID); ok {
+		if failedAt, ok := v.(time.Time); ok {
+			if since := time.Since(failedAt); since < MCPPerCallConnectBreakerCooldown {
+				return nil, nil, fmt.Errorf("MCP client %s upstream recently unreachable; failing fast (circuit-breaker, retry in ~%s)", config.Name, (MCPPerCallConnectBreakerCooldown - since).Round(time.Second))
+			}
+			m.perUserConnectFailures.Delete(config.ID) // cooldown elapsed; allow a fresh attempt
+		}
+	}
+
 	connectReq := &schemas.BifrostMCPConnectRequest{
 		ClientName:       config.Name,
 		ConnectionType:   config.ConnectionType,
@@ -75,6 +87,14 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 	// covers both per-user-OAuth (Kind=oauth) and per-user-headers
 	// (Kind=headers) surfaces.
 	var authRequiredErr *schemas.MCPAuthRequiredError
+	// connectAttempted flips true only once we actually reach out to the
+	// upstream (transport built, client.Start about to run). It stays false for
+	// pre-connect failures that never touched the upstream — a PreConnectionHook
+	// policy/plugin denial, a credential-resolution error, or a TLS/transport
+	// build error. Those must NOT trip the circuit-breaker: the upstream is not
+	// known-unreachable, so a denial or config error would otherwise fail-fast
+	// every later valid per-user call for the whole cooldown against a healthy MCP.
+	connectAttempted := false
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(ctx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
@@ -121,6 +141,11 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
 		}
 		tempClient = client.NewClient(httpTransport)
+		// From here on we are actually contacting the upstream — a failure below
+		// (Start / Initialize) is a genuine connect-acquisition failure and may
+		// trip the breaker. Anything that failed above (hook denial, cred error,
+		// transport/TLS build) left connectAttempted false and must not.
+		connectAttempted = true
 		if err := tempClient.Start(ctx); err != nil {
 			return nil, fmt.Errorf("failed to start ephemeral MCP connection: %w", err)
 		}
@@ -137,9 +162,11 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		}
 		// Bound the MCP `initialize` handshake — a stalled upstream (TCP open
 		// succeeds but JSON-RPC initialize never returns) would otherwise block
-		// the entire tool call until the parent request ctx fires. Mirrors the
-		// bound used for shared-connection Initialize in connectToMCPClient.
-		initCtx, initCancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
+		// the entire tool call. This is the PER-CALL ephemeral connect (per-user
+		// auth, every invocation), so it uses the short MCPPerCallConnectTimeout
+		// (fail-fast) — NOT the 30s shared-startup bound, which let a dead
+		// per-user upstream add ~30s to every tool call (the OWUI per-turn stall).
+		initCtx, initCancel := context.WithTimeout(ctx, MCPPerCallConnectTimeout)
 		defer initCancel()
 		initResult, err := tempClient.Initialize(initCtx, initRequest)
 		if err != nil {
@@ -180,8 +207,24 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			_ = tempClient.Close()
 		}
 		if authRequiredErr != nil {
+			// Auth-required is a fast, actionable result (returns a submit/auth
+			// URL) — NOT a connect-acquisition failure. Do not trip the breaker.
 			return nil, nil, authRequiredErr
 		}
+		if !connectAttempted {
+			// Failure happened before we contacted the upstream (PreConnectionHook
+			// denial, credential-resolution error, or transport/TLS build error).
+			// The upstream is not known-unreachable — do NOT trip the breaker, or a
+			// policy denial would fail-fast every later valid per-user call for the
+			// whole cooldown against a perfectly healthy MCP server.
+			if gateErr.Error != nil {
+				return nil, nil, fmt.Errorf("%s", gateErr.Error.Message)
+			}
+			return nil, nil, fmt.Errorf("ephemeral connection setup failed for %s", config.Name)
+		}
+		// Real connect/acquisition failure (dead/unreachable upstream) → trip the
+		// breaker so the rest of this turn's per-call connects fail fast.
+		m.perUserConnectFailures.Store(config.ID, time.Now())
 		if gateErr.Error != nil {
 			return nil, nil, fmt.Errorf("%s", gateErr.Error.Message)
 		}
@@ -193,6 +236,9 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		// no live transport — we have nothing to execute against.
 		return nil, nil, fmt.Errorf("ephemeral MCP connection was short-circuited by plugin for %s", config.Name)
 	}
+
+	// Healthy connect → reset the breaker for this client.
+	m.perUserConnectFailures.Delete(config.ID)
 
 	release := func() {
 		if err := tempClient.Close(); err != nil {
