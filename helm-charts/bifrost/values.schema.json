@@ -229,6 +229,64 @@
     "readinessProbe": {
       "type": "object"
     },
+    "podDisruptionBudget": {
+      "type": "object",
+      "description": "PodDisruptionBudget configuration for high availability",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable PodDisruptionBudget"
+        },
+        "minAvailable": {
+          "description": "Minimum number/percentage of pods that must remain available",
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^[0-9]+%$" }
+          ]
+        },
+        "maxUnavailable": {
+          "description": "Maximum number/percentage of pods that can be unavailable",
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^[0-9]+%$" }
+          ]
+        },
+        "unhealthyPodEvictionPolicy": {
+          "type": "string",
+          "enum": ["IfHealthyBudget", "AlwaysAllow"],
+          "description": "Policy for evicting unhealthy pods (Kubernetes 1.27+)"
+        }
+      },
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "required": ["minAvailable"],
+            "not": { "required": ["maxUnavailable"] }
+          },
+          {
+            "required": ["maxUnavailable"],
+            "not": { "required": ["minAvailable"] }
+          },
+          {
+            "not": {
+              "anyOf": [
+                { "required": ["minAvailable"] },
+                { "required": ["maxUnavailable"] }
+              ]
+            }
+          }
+        ]
+      },
+      "else": {
+        "not": {
+          "required": ["minAvailable", "maxUnavailable"]
+        }
+      }
+    },
     "autoscaling": {
       "type": "object",
       "properties": {
