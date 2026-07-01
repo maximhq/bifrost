@@ -13,7 +13,8 @@ import (
 type MCPServerAuthMode string
 
 const (
-	DefaultAuthCodeTTL    = 600 // 10 minutes
+	DefaultAuthCodeTTL    = 300 // 5 minutes
+	MaxAuthCodeTTL        = 900 // 15 minutes — hard ceiling; enforced at config save and at code issuance
 	DefaultAccessTokenTTL = 600 // 10 minutes
 )
 
@@ -49,10 +50,11 @@ type OAuth2ServerConfig struct {
 	IssuerURL *schemas.SecretVar `json:"issuer_url,omitempty"`
 
 	// AuthCodeTTL is the lifetime of the one-time authorization code issued by
-	// /oauth2/authorize and exchanged at /oauth2/token (seconds, default 600).
+	// /oauth2/authorize and exchanged at /oauth2/token (seconds, default 300).
 	// The code is single-use — it is invalidated the moment it is exchanged or
 	// expires. Short TTL is intentional: if the window lapses the user simply
-	// re-authenticates.
+	// re-authenticates. Capped at MaxAuthCodeTTL (900s); larger stored values
+	// are rejected at config save and clamped to the cap at issuance.
 	AuthCodeTTL int `json:"auth_code_ttl"`
 
 	// AccessTokenTTL is the lifetime of the issued JWT Bearer token (seconds,
