@@ -45,6 +45,7 @@ type Entry struct {
 	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
 	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+	IsDeprecated    bool                  `json:"is_deprecated,omitempty"`
 
 	// AdditionalAttributes carries editorial metadata stored on the pricing
 	// row (e.g. description). Populated from the DB read path only; the
@@ -552,6 +553,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		MaxInputTokens:  entry.MaxInputTokens,
 		MaxOutputTokens: entry.MaxOutputTokens,
 		Architecture:    entry.Architecture,
+		IsDeprecated:    entry.IsDeprecated,
 
 		InputCostPerToken:                         entry.InputCostPerToken,
 		OutputCostPerToken:                        entry.OutputCostPerToken,
@@ -709,6 +711,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		MaxInputTokens:       pricing.MaxInputTokens,
 		MaxOutputTokens:      pricing.MaxOutputTokens,
 		Architecture:         pricing.Architecture,
+		IsDeprecated:         pricing.IsDeprecated,
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}

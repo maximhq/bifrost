@@ -1207,6 +1207,10 @@ func (m *MockConfigStore) UpsertModelParameters(ctx context.Context, params *tab
 	return nil
 }
 
+func (m *MockConfigStore) UpsertModelParametersBatch(ctx context.Context, params []tables.TableModelParameters, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Provider methods
 func (m *MockConfigStore) GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
 	return nil, nil

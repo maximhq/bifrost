@@ -1026,6 +1026,16 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
 		m.rawToolSearch = append([]byte(nil), data...)
+		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
+		// consumers that read Arguments keep working; MarshalJSON still re-emits the
+		// preserved bytes verbatim, so this is additive and does not affect round-trip.
+		if raw := gjson.GetBytes(data, "arguments"); raw.Exists() {
+			args := responsesToolArgumentsToString(json.RawMessage(raw.Raw))
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			m.Arguments = &args
+		}
 		return nil
 	}
 
