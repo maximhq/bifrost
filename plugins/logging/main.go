@@ -259,6 +259,16 @@ type RecalculateCostResult struct {
 	Remaining    int64 `json:"remaining"`
 }
 
+// RecalculateCostProgress represents a progress event from a cost backfill operation.
+type RecalculateCostProgress struct {
+	TotalMatched int64  `json:"total_matched"`
+	Processed    int    `json:"processed"`
+	Updated      int    `json:"updated"`
+	Skipped      int    `json:"skipped"`
+	Remaining    *int64 `json:"remaining,omitempty"`
+	Done         bool   `json:"done"`
+}
+
 // LogMessage represents a message in the logging queue
 type LogMessage struct {
 	Operation          LogOperation
