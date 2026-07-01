@@ -21,6 +21,16 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestNewOpenAIRouterEnablesOpenAICompatibilityPassthrough verifies unmatched OpenAI-compatible routes fall back to provider passthrough.
+func TestNewOpenAIRouterEnablesOpenAICompatibilityPassthrough(t *testing.T) {
+	router := NewOpenAIRouter(nil, &mockHandlerStore{allowDirectKeys: true}, nil)
+
+	require.NotNil(t, router.GenericRouter)
+	require.NotNil(t, router.passthroughCfg)
+	assert.Equal(t, schemas.OpenAI, router.passthroughCfg.Provider)
+	assert.Equal(t, []string{"/openai"}, router.passthroughCfg.StripPrefix)
+}
+
 func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
