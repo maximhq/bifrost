@@ -899,6 +899,12 @@ func (gs *LocalGovernanceStore) GetVirtualKeyByID(ctx context.Context, vkID stri
 // ID-keyed secondary index, keeping the two in lock-step. Every writer to
 // virtualKeys must go through here so the ID index never diverges.
 func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTables.TableVirtualKey) {
+	if value == "" {
+		if vk != nil {
+			gs.logger.Warn("skipping virtual key %s with unresolvable value (env/vault ref could not be resolved)", vk.ID)
+		}
+		return
+	}
 	gs.virtualKeys.Store(value, vk)
 	if vk != nil && vk.ID != "" {
 		gs.virtualKeysByID.Store(vk.ID, vk)
@@ -2419,7 +2425,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	// Build virtual keys map and track active VKs
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
-		gs.storeVirtualKey(vk.Value, vk)
+		gs.storeVirtualKey(vk.Value.GetValue(), vk)
 	}
 
 	// Build model configs map.
@@ -2915,7 +2921,7 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 		}
 	}
 
-	gs.storeVirtualKey(clone.Value, &clone)
+	gs.storeVirtualKey(clone.Value.GetValue(), &clone)
 }
 
 // UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
@@ -2926,8 +2932,8 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 
 	// Do not update the current usage of the rate limit, as it will be updated by the usage tracker.
 	// But update if max limit or reset duration changes.
-	existingVKKey := vk.Value
-	existingVKValue, exists := gs.virtualKeys.Load(vk.Value)
+	existingVKKey := vk.Value.GetValue()
+	existingVKValue, exists := gs.virtualKeys.Load(vk.Value.GetValue())
 	if exists && existingVKValue != nil {
 		if existingVK, ok := existingVKValue.(*configstoreTables.TableVirtualKey); !ok || existingVK == nil || existingVK.ID != vk.ID {
 			exists = false
@@ -3090,10 +3096,10 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				}
 			}
 		}
-		if existingVKKey != "" && existingVKKey != vk.Value {
+		if existingVKKey != "" && existingVKKey != vk.Value.GetValue() {
 			gs.deleteVirtualKeyByValue(existingVKKey)
 		}
-		gs.storeVirtualKey(vk.Value, &clone)
+		gs.storeVirtualKey(vk.Value.GetValue(), &clone)
 	} else {
 		gs.CreateVirtualKeyInMemory(ctx, vk)
 	}

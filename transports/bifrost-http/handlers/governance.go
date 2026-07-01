@@ -1291,7 +1291,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
-			Value:           governance.GenerateVirtualKey(),
+			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
@@ -1904,9 +1904,9 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, err
 	}
-	oldValue := vk.Value
-	vk.Value = governance.GenerateVirtualKey()
-	if vk.Value == oldValue {
+	oldValue := vk.Value.GetValue()
+	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
