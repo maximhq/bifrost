@@ -1510,8 +1510,27 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		}
 	}
 
+	// Set Status/IncompleteDetails and the terminal event type per OpenAI's
+	// Responses-API contract, matching the non-streaming switch above so
+	// unmapped reasons leave Status unset on both paths.
+	terminalEventType := schemas.ResponsesStreamResponseTypeCompleted
+	if response.StopReason != nil {
+		switch *response.StopReason {
+		case string(schemas.BifrostFinishReasonLength):
+			terminalEventType = schemas.ResponsesStreamResponseTypeIncomplete
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			}
+		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
+			if response.Status == nil {
+				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+			}
+		}
+	}
+
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		Type:           terminalEventType,
 		SequenceNumber: sequenceNumber + len(responses),
 		Response:       response,
 	})
@@ -2696,6 +2715,19 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 			}
 		}
 		bifrostResp.StopReason = &stopReason
+		// Surface truncation via Status + IncompleteDetails per OpenAI's
+		// Responses-API contract; without these, truncations are silent.
+		switch stopReason {
+		case string(schemas.BifrostFinishReasonLength):
+			bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			}
+		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
+			if bifrostResp.Status == nil {
+				bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+			}
+		}
 	}
 
 	if response.Trace != nil {
