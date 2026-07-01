@@ -147,6 +147,13 @@ func loadCustomPlugin(ctx context.Context, path *string, pluginConfig any, bifro
 
 // LoadPlugins loads the plugins for the server.
 func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
+	// Seed config marshallers from the process-wide registry (populated by plugin
+	// init() self-registration) so disabled plugins can still redact/normalize their
+	// stored config via the API. Enabled plugins overwrite these with their live
+	// instance during rebuildInterfaceCaches — identical behavior, both stateless.
+	for name, cm := range schemas.ConfigMarshallers() {
+		s.Config.RegisterConfigMarshaller(name, cm)
+	}
 	// Load built-in plugins first (order matters)
 	if err := s.loadBuiltinPlugins(ctx); err != nil {
 		return err
