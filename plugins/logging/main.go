@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -313,6 +314,8 @@ type InitialLogData struct {
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
+	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
+	App                    string // Backend-detected client app derived from UserAgent
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -321,6 +324,7 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 // MCPToolLogCallback is a function that gets called when a new MCP tool log entry is created or updated
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
+// Config controls logging plugin behavior.
 type Config struct {
 	DisableContentLogging *bool                  `json:"disable_content_logging"`
 	LoggingHeaders        *[]string              `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
@@ -351,6 +355,13 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
 	}
 	return nil
+}
+
+type compiledUserAgentMapping struct {
+	Pattern   string
+	MatchType schemas.UserAgentMappingMatchType
+	App       string
+	Regex     *regexp.Regexp
 }
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
@@ -384,6 +395,8 @@ type LoggerPlugin struct {
 	batchCancel            context.CancelFunc    // Cancels batchCtx
 	batchWriterDone        chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch         []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
+	userAgentMappings      atomic.Value          // []compiledUserAgentMapping, read from request hot paths
+	userAgentMappingMu     sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
 // Init creates new logger plugin with given log store
@@ -447,6 +460,11 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		plugin.updateDataPool.Put(&UpdateLogData{})
 	}
 
+	if err := plugin.ReloadUserAgentMappings(ctx); err != nil {
+		logger.Warn("failed to load user agent mappings: %v", err)
+		plugin.userAgentMappings.Store([]compiledUserAgentMapping{})
+	}
+
 	// Start cleanup ticker (runs every 1 minute)
 	plugin.cleanupTicker = time.NewTicker(1 * time.Minute)
 	plugin.wg.Add(1)
@@ -457,6 +475,57 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	go plugin.batchWriter()
 
 	return plugin, nil
+}
+
+// ReloadUserAgentMappings refreshes the in-memory custom User-Agent mapping cache.
+func (p *LoggerPlugin) ReloadUserAgentMappings(ctx context.Context) error {
+	mappings, err := p.store.ListUserAgentMappings(ctx, true)
+	if err != nil {
+		return err
+	}
+	compiled := make([]compiledUserAgentMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		matchType := schemas.UserAgentMappingMatchType(mapping.MatchType)
+		entry := compiledUserAgentMapping{
+			Pattern:   mapping.Pattern,
+			MatchType: matchType,
+			App:       mapping.App,
+		}
+		if matchType == schemas.UserAgentMappingMatchTypeRegex {
+			re, err := regexp.Compile(mapping.Pattern)
+			if err != nil {
+				p.logger.Warn("skipping invalid user agent mapping regex %q: %v", mapping.Pattern, err)
+				continue
+			}
+			entry.Regex = re
+		}
+		compiled = append(compiled, entry)
+	}
+	p.userAgentMappings.Store(compiled)
+	return nil
+}
+
+func (p *LoggerPlugin) detectAppFromUserAgent(userAgent string) string {
+	if strings.TrimSpace(userAgent) == "" {
+		return ""
+	}
+	if mappings, ok := p.userAgentMappings.Load().([]compiledUserAgentMapping); ok {
+		for _, mapping := range mappings {
+			if mapping.App == "" || mapping.Pattern == "" {
+				continue
+			}
+			if mapping.Regex != nil {
+				if mapping.Regex.MatchString(userAgent) {
+					return mapping.App
+				}
+				continue
+			}
+			if schemas.MatchUserAgent(userAgent, mapping.Pattern, mapping.MatchType) {
+				return mapping.App
+			}
+		}
+	}
+	return schemas.DetectAppFromUserAgent(userAgent)
 }
 
 // SetClusterNodeID sets the cluster node ID that will be attached to all log entries.
@@ -525,6 +594,26 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
+}
+
+// userAgentFromContext returns the raw HTTP User-Agent of the calling client from
+// the request header map, or "" when absent. Keys in the map are lowercased, so
+// the lookup is case-insensitive. The value is stored verbatim on the log entry;
+// mapping it to a client app happens in the UI.
+func userAgentFromContext(ctx *schemas.BifrostContext) string {
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if allHeaders != nil {
+		if ua := allHeaders["user-agent"]; ua != "" {
+			return ua
+		}
+		for key, value := range allHeaders {
+			if strings.EqualFold(key, "user-agent") && value != "" {
+				return value
+			}
+		}
+	}
+	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
+	return ua
 }
 
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
@@ -628,6 +717,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	if req.RequestType == schemas.RealtimeRequest {
 		initialData.Object = "realtime.turn"
+	}
+
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
+	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
+		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
 	if p.contentLoggingEnabled(ctx) {
@@ -911,6 +1008,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Stream:    bifrost.IsStreamRequestType(requestType),
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
+			}
+			if ua := userAgentFromContext(ctx); ua != "" {
+				entry.UserAgent = &ua
+				if app := p.detectAppFromUserAgent(ua); app != "" {
+					entry.App = &app
+				}
 			}
 			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
@@ -1484,6 +1587,15 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		entry.VirtualKeyName = &virtualKeyName
 	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
+
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	if ua := userAgentFromContext(ctx); ua != "" {
+		entry.UserAgent = &ua
+		if app := p.detectAppFromUserAgent(ua); app != "" {
+			entry.App = &app
+		}
+	}
 
 	// Set arguments if content logging is enabled
 	if p.contentLoggingEnabled(ctx) {

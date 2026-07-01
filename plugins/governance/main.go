@@ -943,7 +943,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 	}
 	p.cfgMutex.RLock()
-	if !isVirtualKeyValid && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !isVirtualKeyValid && !hasDirectKeyAuth(ctx) && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -1134,6 +1134,15 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 }
 
+// hasDirectKeyAuth returns true when the transport accepted an admin-enabled direct provider key.
+func hasDirectKeyAuth(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	_, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	return ok
+}
+
 // isMCPToolAllowedByVK checks whether a tool pattern (in "clientName-toolName" or "clientName-*"
 // format) is permitted by the virtual key's MCPConfigs.
 //
@@ -1282,10 +1291,8 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
-
 	// Extract virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
