@@ -12,6 +12,7 @@ describe("logs constants", () => {
 	it("maps backend app names to display metadata", () => {
 		expect(mapAppToClientApp("Claude Code").name).toBe("Claude Code");
 		expect(mapAppToClientApp("Claude Code").icon).toBe("/images/claude-code.png");
+		expect(mapAppToClientApp("Claude Chat Web").icon).toBe("/images/claude-desktop.png");
 		expect(mapAppToClientApp("Custom App").name).toBe("Custom App");
 	});
 
