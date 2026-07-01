@@ -4594,17 +4594,19 @@ func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		bedrockReason   string
-		expectedBifrost string
+		name                      string
+		bedrockReason             string
+		expectedBifrost           string
+		expectedStatus            string // "" means Status should be nil
+		expectedIncompleteDetails string // "" means IncompleteDetails should be nil
 	}{
-		{"EndTurn", "end_turn", "stop"},
-		{"MaxTokens", "max_tokens", "length"},
-		{"StopSequence", "stop_sequence", "stop"},
-		{"ToolUse", "tool_use", "tool_calls"},
-		{"ContentFiltered", "content_filtered", "content_filter"},
-		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
-		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"},         // no clean mapping — passes through
+		{"EndTurn", "end_turn", "stop", "completed", ""},
+		{"MaxTokens", "max_tokens", "length", "incomplete", "max_output_tokens"},
+		{"StopSequence", "stop_sequence", "stop", "completed", ""},
+		{"ToolUse", "tool_use", "tool_calls", "completed", ""},
+		{"ContentFiltered", "content_filtered", "content_filter", "", ""},               // no clean mapping — passes through, no Status
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "", ""}, // no clean mapping — passes through, no Status
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},         // no clean mapping — passes through, no Status
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4629,8 +4631,86 @@ func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
 			require.NotNil(t, bifrostResp.StopReason, "StopReason should be set")
 			assert.Equal(t, tt.expectedBifrost, *bifrostResp.StopReason,
 				"Bedrock stop reason %q should map to %q in responses path", tt.bedrockReason, tt.expectedBifrost)
+
+			// Status + IncompleteDetails mirror the OpenAI Responses-API spec.
+			// Truncation must surface as Status="incomplete" with the canonical
+			// IncompleteDetails.Reason; clean completions get Status="completed";
+			// unmapped reasons leave both unset (preserves prior behavior).
+			if tt.expectedStatus == "" {
+				assert.Nil(t, bifrostResp.Status, "Status must be nil for unmapped stop reasons")
+				assert.Nil(t, bifrostResp.IncompleteDetails, "IncompleteDetails must be nil for unmapped stop reasons")
+			} else {
+				require.NotNil(t, bifrostResp.Status, "Status must be set for mapped stop reason %q", tt.bedrockReason)
+				assert.Equal(t, tt.expectedStatus, *bifrostResp.Status)
+			}
+			if tt.expectedIncompleteDetails == "" {
+				assert.Nil(t, bifrostResp.IncompleteDetails)
+			} else {
+				require.NotNil(t, bifrostResp.IncompleteDetails)
+				assert.Equal(t, tt.expectedIncompleteDetails, bifrostResp.IncompleteDetails.Reason)
+			}
 		})
 	}
+}
+
+// TestFinalizeBedrockStream_MaxTokensTruncation guards the streaming counterpart:
+// when Bedrock's stopReason is "max_tokens", the terminal SSE event must be
+// response.incomplete (not response.completed) and the embedded response must
+// carry Status="incomplete" + IncompleteDetails.Reason="max_output_tokens" so
+// streaming consumers can detect truncation.
+func TestFinalizeBedrockStream_MaxTokensTruncation(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.StopReason = schemas.Ptr("length") // mapped from bedrock's "max_tokens"
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 30, OutputTokens: 15, TotalTokens: 45}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+	require.NotEmpty(t, finalResponses)
+
+	terminal := finalResponses[len(finalResponses)-1]
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeIncomplete, terminal.Type,
+		"terminal event must be response.incomplete on max_output_tokens truncation")
+	require.NotNil(t, terminal.Response)
+	require.NotNil(t, terminal.Response.Status)
+	assert.Equal(t, "incomplete", *terminal.Response.Status)
+	require.NotNil(t, terminal.Response.IncompleteDetails)
+	assert.Equal(t, "max_output_tokens", terminal.Response.IncompleteDetails.Reason)
+}
+
+// TestFinalizeBedrockStream_CleanCompletionUnaffected verifies non-truncation
+// stop reasons still produce response.completed with Status="completed".
+func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.StopReason = schemas.Ptr("stop")
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+	require.NotEmpty(t, finalResponses)
+
+	terminal := finalResponses[len(finalResponses)-1]
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, terminal.Type)
+	require.NotNil(t, terminal.Response)
+	require.NotNil(t, terminal.Response.Status)
+	assert.Equal(t, "completed", *terminal.Response.Status)
+	assert.Nil(t, terminal.Response.IncompleteDetails)
+}
+
+// TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming
+// path aligned with the non-streaming mapping: an unmapped stop reason (e.g.
+// content_filter) ends the stream as response.completed but must leave Status
+// unset rather than asserting "completed".
+func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.StopReason = schemas.Ptr("content_filter")
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+	require.NotEmpty(t, finalResponses)
+
+	terminal := finalResponses[len(finalResponses)-1]
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, terminal.Type)
+	require.NotNil(t, terminal.Response)
+	assert.Nil(t, terminal.Response.Status, "unmapped stop reasons must leave Status unset, matching the non-streaming path")
+	assert.Nil(t, terminal.Response.IncompleteDetails)
 }
 
 // TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
