@@ -1269,6 +1269,15 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 						tracer.SetAttribute(rootSpan, name, value)
 					}
 				}
+				// Propagate dimension headers onto trace.Attributes so observability
+				// plugins can merge them onto every exported child span at export time.
+				if len(dimensions) > 0 {
+					attrs := make(map[string]any, len(dimensions))
+					for k, v := range dimensions {
+						attrs[k] = v
+					}
+					tracer.SetTraceAttributes(traceID, attrs)
+				}
 				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
 				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
 				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))

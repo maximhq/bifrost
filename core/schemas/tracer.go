@@ -173,6 +173,11 @@ type Tracer interface {
 	// Thread-safe. Should be called after plugin hooks complete, before trace completion.
 	AttachPluginLogs(traceID string, logs []PluginLogEntry)
 
+	// SetTraceAttributes merges attributes onto the trace identified by traceID.
+	// Attributes set here are propagated to every exported span by observability plugins.
+	// Thread-safe. Nil/empty maps are no-ops.
+	SetTraceAttributes(traceID string, attrs map[string]any)
+
 	// CompleteAndFlushTrace ends a trace, exports it to observability plugins, and
 	// releases the trace resources. Used by transports that bypass normal HTTP trace completion.
 	CompleteAndFlushTrace(traceID string)
@@ -289,6 +294,9 @@ func (n *NoOpTracer) GateSend(_ string, chunk *BifrostStreamChunk, _ bool, _ boo
 
 // AttachPluginLogs does nothing.
 func (n *NoOpTracer) AttachPluginLogs(_ string, _ []PluginLogEntry) {}
+
+// SetTraceAttributes is a no-op for NoOpTracer.
+func (n *NoOpTracer) SetTraceAttributes(_ string, _ map[string]any) {}
 
 // CompleteAndFlushTrace does nothing.
 func (n *NoOpTracer) CompleteAndFlushTrace(_ string) {}

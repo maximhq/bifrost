@@ -2628,6 +2628,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
 	}
 
+	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	}
+
 	return bedrockReq, nil
 }
 

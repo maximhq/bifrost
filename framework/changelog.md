@@ -1,1 +1,2 @@
-[fix]: rebuild token usage from denormalized columns in hybrid log list [@G-XD](https://github.com/G-XD)
+- feat: add `TraceStore.SetTraceAttributes` and `Tracer.SetTraceAttributes` passthroughs that merge attributes onto a trace for propagation to child spans (#3770)
+- [fix]: rebuild token usage from denormalized columns in hybrid log list [@G-XD](https://github.com/G-XD)

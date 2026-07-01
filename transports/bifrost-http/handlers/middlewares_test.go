@@ -2205,6 +2205,55 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 	}
 }
 
+// TestTracingMiddleware_PropagatesDimAttributesToTrace verifies that the
+// TracingMiddleware lands x-bf-dim-* headers on trace.Attributes (in addition
+// to the root HTTP span), so that observability plugins propagate them onto
+// every exported child span.
+func TestTracingMiddleware_PropagatesDimAttributesToTrace(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	tm := NewTracingMiddleware(tracer)
+
+	var capturedTraceID string
+	var capturedAttributes map[string]any
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		capturedTraceID = traceID
+		if trace := store.GetTrace(traceID); trace != nil {
+			capturedAttributes = make(map[string]any, len(trace.Attributes))
+			for k, v := range trace.Attributes {
+				capturedAttributes[k] = v
+			}
+		}
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+
+	tm.Middleware()(next)(ctx)
+
+	if capturedTraceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if capturedAttributes == nil {
+		t.Fatal("trace.Attributes was nil — SetTraceAttributes was never called")
+	}
+	if got := capturedAttributes["customer_id"]; got != "acme" {
+		t.Errorf("trace.Attributes[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := capturedAttributes["environment"]; got != "prod" {
+		t.Errorf("trace.Attributes[environment] = %v, want %q", got, "prod")
+	}
+}
+
 func TestCollectDimensionHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")

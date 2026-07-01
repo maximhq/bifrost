@@ -128,6 +128,26 @@ func (t *Trace) AppendPluginLogs(logs []PluginLogEntry) {
 	t.mu.Unlock()
 }
 
+// MergeAttributes merges the given attributes into the trace. Existing keys
+// are overwritten. Thread-safe. Nil/empty input is a no-op.
+//
+// Attributes set here are propagated to every exported span by observability
+// plugins, which is how request-scoped dimensions (x-bf-dim-*) attach to
+// child spans (LLM calls, plugin hooks, retries, fallbacks, MCP tools).
+func (t *Trace) MergeAttributes(attrs map[string]any) {
+	if len(attrs) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.Attributes == nil {
+		t.Attributes = make(map[string]any, len(attrs))
+	}
+	for k, v := range attrs {
+		t.Attributes[k] = v
+	}
+}
+
 // Span represents a single operation within a trace
 type Span struct {
 	SpanID     string         // Unique identifier for this span

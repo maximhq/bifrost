@@ -96,7 +96,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, propagateTraceAttributes bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
 	reparent := p.pluginSpanFilter.BuildReparentMap(trace.Spans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 
@@ -134,6 +134,30 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 				otelSpan.ParentSpanId = nil
 			} else {
 				otelSpan.ParentSpanId = hexToBytes(effectiveParent, 8)
+			}
+		}
+		// Merge trace-level attributes (x-bf-dim-* and friends set via
+		// tracer.SetTraceAttributes) onto every exported span when
+		// propagateTraceAttributes is enabled. Span-level attributes win on
+		// conflict. Runs BEFORE the root-span block so AttrRequestID/
+		// instanceAttrs remain authoritative on the root span.
+		if propagateTraceAttributes && len(trace.Attributes) > 0 {
+			present := make(map[string]struct{}, len(otelSpan.Attributes))
+			for _, kv := range otelSpan.Attributes {
+				present[kv.Key] = struct{}{}
+			}
+			for k, v := range trace.Attributes {
+				if _, exists := present[k]; exists {
+					continue
+				}
+				kv := anyToKeyValue(k, v)
+				if kv == nil {
+					// anyToKeyValue returns nil for empty strings and other
+					// unrepresentable values; appending nil here would crash
+					// OTLP marshaling, so skip them silently.
+					continue
+				}
+				otelSpan.Attributes = append(otelSpan.Attributes, kv)
 			}
 		}
 		if span == trace.RootSpan {

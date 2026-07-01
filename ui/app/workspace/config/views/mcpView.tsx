@@ -341,6 +341,27 @@ export default function MCPView() {
 					/>
 				</div>
 
+				{idpConfigured && (
+					/* Temp Token Auth */
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="mcp-enable-temp-token-auth" className="text-sm font-medium">
+								Allow Temp Token Auth Links
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, per-user MCP OAuth links can include a short-lived scoped token so someone without an active Bifrost dashboard session can complete the flow. Keep disabled to require normal dashboard authentication.
+							</p>
+						</div>
+						<Switch
+							id="mcp-enable-temp-token-auth"
+							checked={localConfig.mcp_enable_temp_token_auth ?? false}
+							onCheckedChange={handleTempTokenAuthChange}
+							disabled={!hasSettingsUpdateAccess}
+							data-testid="mcp-enable-temp-token-auth-switch"
+						/>
+					</div>
+				)}
+
 				{/* Disable Auto Tool Injection */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">

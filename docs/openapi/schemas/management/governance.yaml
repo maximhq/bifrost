@@ -195,6 +195,7 @@ VirtualKeyProviderConfig:
       type: boolean
     rate_limit_id:
       type: string
+      nullable: true
     budgets:
       type: array
       description: Budget quotas assigned to this provider config
