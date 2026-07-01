@@ -87,6 +87,14 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 	// covers both per-user-OAuth (Kind=oauth) and per-user-headers
 	// (Kind=headers) surfaces.
 	var authRequiredErr *schemas.MCPAuthRequiredError
+	// connectAttempted flips true only once we actually reach out to the
+	// upstream (transport built, client.Start about to run). It stays false for
+	// pre-connect failures that never touched the upstream — a PreConnectionHook
+	// policy/plugin denial, a credential-resolution error, or a TLS/transport
+	// build error. Those must NOT trip the circuit-breaker: the upstream is not
+	// known-unreachable, so a denial or config error would otherwise fail-fast
+	// every later valid per-user call for the whole cooldown against a healthy MCP.
+	connectAttempted := false
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(ctx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
@@ -133,6 +141,11 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
 		}
 		tempClient = client.NewClient(httpTransport)
+		// From here on we are actually contacting the upstream — a failure below
+		// (Start / Initialize) is a genuine connect-acquisition failure and may
+		// trip the breaker. Anything that failed above (hook denial, cred error,
+		// transport/TLS build) left connectAttempted false and must not.
+		connectAttempted = true
 		if err := tempClient.Start(ctx); err != nil {
 			return nil, fmt.Errorf("failed to start ephemeral MCP connection: %w", err)
 		}
@@ -197,6 +210,17 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			// Auth-required is a fast, actionable result (returns a submit/auth
 			// URL) — NOT a connect-acquisition failure. Do not trip the breaker.
 			return nil, nil, authRequiredErr
+		}
+		if !connectAttempted {
+			// Failure happened before we contacted the upstream (PreConnectionHook
+			// denial, credential-resolution error, or transport/TLS build error).
+			// The upstream is not known-unreachable — do NOT trip the breaker, or a
+			// policy denial would fail-fast every later valid per-user call for the
+			// whole cooldown against a perfectly healthy MCP server.
+			if gateErr.Error != nil {
+				return nil, nil, fmt.Errorf("%s", gateErr.Error.Message)
+			}
+			return nil, nil, fmt.Errorf("ephemeral connection setup failed for %s", config.Name)
 		}
 		// Real connect/acquisition failure (dead/unreachable upstream) → trip the
 		// breaker so the rest of this turn's per-call connects fail fast.
