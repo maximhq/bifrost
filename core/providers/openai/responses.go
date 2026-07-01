@@ -300,8 +300,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.Tools = normalizedTools
 		}
 
-		// Filter out tools that OpenAI doesn't support
-		req.filterUnsupportedTools()
+		// Filter out tools that OpenAI doesn't support.
+		// Pass the model so provider-specific fields (e.g. max_uses for Anthropic)
+		// are preserved when routing through OpenRouter.
+		req.filterUnsupportedTools(bifrostReq.Model)
 	}
 
 	if bifrostReq.Params != nil {
@@ -310,8 +312,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	return req
 }
 
-// filterUnsupportedTools removes tool types that OpenAI doesn't support
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
+// filterUnsupportedTools removes tool types that OpenAI doesn't support and strips
+// provider-specific fields that OpenAI does not accept (e.g. max_uses).
+// When model is an Anthropic model routed via OpenRouter (prefix "anthropic/"),
+// Anthropic-specific fields are preserved so OpenRouter can forward them correctly.
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(model string) {
 	if len(resp.Tools) == 0 {
 		return
 	}
@@ -366,20 +371,31 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 				newTool := tool
 				newWebSearch := &schemas.ResponsesToolWebSearch{}
 
-				// MaxUses is intentionally omitted (nil) - OpenAI doesn't support it
+				// MaxUses: preserve for Anthropic models routed via OpenRouter; strip for native OpenAI.
+				if strings.HasPrefix(model, "anthropic/") && tool.ResponsesToolWebSearch.MaxUses != nil {
+					newWebSearch.MaxUses = tool.ResponsesToolWebSearch.MaxUses
+				}
 
-				// Handle Filters: OpenAI doesn't support BlockedDomains or TimeRangeFilter
+				// Handle Filters: OpenAI supports AllowedDomains only (no BlockedDomains or TimeRangeFilter).
+				// Anthropic also supports BlockedDomains (mutually exclusive with AllowedDomains),
+				// so preserve it for anthropic/ models routed via OpenRouter.
 				if tool.ResponsesToolWebSearch.Filters != nil {
+					isAnthropic := strings.HasPrefix(model, "anthropic/")
 					hasAllowedDomains := len(tool.ResponsesToolWebSearch.Filters.AllowedDomains) > 0
+					hasBlockedDomains := isAnthropic && len(tool.ResponsesToolWebSearch.Filters.BlockedDomains) > 0
 
-					if hasAllowedDomains {
-						// Keep only AllowedDomains (copy the slice to avoid sharing)
-						newWebSearch.Filters = &schemas.ResponsesToolWebSearchFilters{
-							AllowedDomains: append([]string(nil), tool.ResponsesToolWebSearch.Filters.AllowedDomains...),
-							// BlockedDomains and TimeRangeFilter are intentionally omitted - OpenAI doesn't support it
+					if hasAllowedDomains || hasBlockedDomains {
+						newFilters := &schemas.ResponsesToolWebSearchFilters{}
+						if hasAllowedDomains {
+							newFilters.AllowedDomains = append([]string(nil), tool.ResponsesToolWebSearch.Filters.AllowedDomains...)
 						}
+						if hasBlockedDomains {
+							// BlockedDomains: preserve for Anthropic models routed via OpenRouter; strip for native OpenAI.
+							newFilters.BlockedDomains = append([]string(nil), tool.ResponsesToolWebSearch.Filters.BlockedDomains...)
+						}
+						newWebSearch.Filters = newFilters
 					}
-					// If only blocked domains or both empty, Filters stays nil
+					// TimeRangeFilter is intentionally omitted - not supported by OpenAI or Anthropic via this path
 				}
 
 				if tool.ResponsesToolWebSearch.ExternalWebAccess != nil {

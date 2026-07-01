@@ -1922,6 +1922,175 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 	}
 }
 
+func TestFilterUnsupportedTools_MaxUses(t *testing.T) {
+	maxUses := 1
+	tests := []struct {
+		name            string
+		model           string
+		expectMaxUses   bool
+	}{
+		{
+			name:          "anthropic model via OpenRouter preserves max_uses",
+			model:         "anthropic/claude-haiku-4-5-20251001",
+			expectMaxUses: true,
+		},
+		{
+			name:          "native OpenAI model strips max_uses",
+			model:         "gpt-5.4",
+			expectMaxUses: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Model: tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						{
+							Type: schemas.ResponsesToolTypeWebSearch,
+							ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+								MaxUses: &maxUses,
+							},
+						},
+					},
+				},
+			}
+
+			result := ToOpenAIResponsesRequest(bifrostReq)
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if len(result.Tools) != 1 {
+				t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+			}
+			webSearch := result.Tools[0].ResponsesToolWebSearch
+			if webSearch == nil {
+				t.Fatal("expected ResponsesToolWebSearch to be set")
+			}
+			if tt.expectMaxUses {
+				if webSearch.MaxUses == nil || *webSearch.MaxUses != maxUses {
+					t.Errorf("expected MaxUses=%d to be preserved, got %v", maxUses, webSearch.MaxUses)
+				}
+			} else {
+				if webSearch.MaxUses != nil {
+					t.Errorf("expected MaxUses to be nil for native OpenAI model, got %v", *webSearch.MaxUses)
+				}
+			}
+		})
+	}
+}
+
+func TestFilterUnsupportedTools_BlockedDomains(t *testing.T) {
+	blocked := []string{"example.com", "spam.org"}
+	allowed := []string{"trusted.com"}
+
+	tests := []struct {
+		name                 string
+		model                string
+		filters              *schemas.ResponsesToolWebSearchFilters
+		expectBlockedDomains []string
+		expectAllowedDomains []string
+	}{
+		{
+			name:  "anthropic model via OpenRouter preserves blocked_domains",
+			model: "anthropic/claude-haiku-4-5-20251001",
+			filters: &schemas.ResponsesToolWebSearchFilters{
+				BlockedDomains: blocked,
+			},
+			expectBlockedDomains: blocked,
+			expectAllowedDomains: nil,
+		},
+		{
+			name:  "native OpenAI model strips blocked_domains",
+			model: "gpt-5.4",
+			filters: &schemas.ResponsesToolWebSearchFilters{
+				BlockedDomains: blocked,
+			},
+			expectBlockedDomains: nil,
+			expectAllowedDomains: nil,
+		},
+		{
+			name:  "anthropic model preserves allowed_domains",
+			model: "anthropic/claude-haiku-4-5-20251001",
+			filters: &schemas.ResponsesToolWebSearchFilters{
+				AllowedDomains: allowed,
+			},
+			expectBlockedDomains: nil,
+			expectAllowedDomains: allowed,
+		},
+		{
+			name:  "native OpenAI model preserves allowed_domains",
+			model: "gpt-5.4",
+			filters: &schemas.ResponsesToolWebSearchFilters{
+				AllowedDomains: allowed,
+			},
+			expectBlockedDomains: nil,
+			expectAllowedDomains: allowed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Model: tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						{
+							Type: schemas.ResponsesToolTypeWebSearch,
+							ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+								Filters: tt.filters,
+							},
+						},
+					},
+				},
+			}
+
+			result := ToOpenAIResponsesRequest(bifrostReq)
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if len(result.Tools) != 1 {
+				t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+			}
+			webSearch := result.Tools[0].ResponsesToolWebSearch
+			if webSearch == nil {
+				t.Fatal("expected ResponsesToolWebSearch to be set")
+			}
+
+			// Check BlockedDomains
+			if tt.expectBlockedDomains != nil {
+				if webSearch.Filters == nil || len(webSearch.Filters.BlockedDomains) != len(tt.expectBlockedDomains) {
+					t.Errorf("expected BlockedDomains=%v, got %v", tt.expectBlockedDomains, webSearch.Filters)
+				}
+			} else {
+				if webSearch.Filters != nil && len(webSearch.Filters.BlockedDomains) > 0 {
+					t.Errorf("expected BlockedDomains to be nil/empty, got %v", webSearch.Filters.BlockedDomains)
+				}
+			}
+
+			// Check AllowedDomains
+			if tt.expectAllowedDomains != nil {
+				if webSearch.Filters == nil || len(webSearch.Filters.AllowedDomains) != len(tt.expectAllowedDomains) {
+					t.Errorf("expected AllowedDomains=%v, got %v", tt.expectAllowedDomains, webSearch.Filters)
+				}
+			} else {
+				if webSearch.Filters != nil && len(webSearch.Filters.AllowedDomains) > 0 {
+					t.Errorf("expected AllowedDomains to be nil/empty, got %v", webSearch.Filters.AllowedDomains)
+				}
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
