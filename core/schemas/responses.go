@@ -802,6 +802,22 @@ type ResponsesResponseIncompleteDetails struct {
 	Reason string `json:"reason"` // The reason why the response is incomplete
 }
 
+// ResponsesResponse.Status values (OpenAI Responses API).
+const (
+	ResponsesResponseStatusInProgress = "in_progress"
+	ResponsesResponseStatusCompleted  = "completed"
+	ResponsesResponseStatusIncomplete = "incomplete"
+	ResponsesResponseStatusFailed     = "failed"
+	ResponsesResponseStatusCancelled  = "cancelled"
+	ResponsesResponseStatusQueued     = "queued"
+)
+
+// ResponsesResponseIncompleteDetails.Reason values.
+const (
+	ResponsesResponseIncompleteReasonMaxOutputTokens = "max_output_tokens"
+	ResponsesResponseIncompleteReasonContentFilter   = "content_filter"
+)
+
 type ResponsesResponseUsage struct {
 	Type                *string                        `json:"type,omitempty"`        // type field is sent by anthropic
 	InputTokens         int                            `json:"input_tokens"`          // Number of input tokens (prompt tokens + cached tokens)
