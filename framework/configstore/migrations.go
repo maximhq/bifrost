@@ -8884,24 +8884,51 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 			// Gating on the legacy column would make ordering brittle: any
 			// reordering that drops the column before this runs would silently
 			// turn the refresh into a no-op and leave stale hashes behind.
-			// Read via an explicit, schema-derived column projection rather
-			// than GORM's default Find (SELECT *). Earlier migrations in this
-			// same run add and drop config_client columns; reusing a cached
-			// SELECT * plan whose projection has since drifted is what trips
-			// PostgreSQL's "cached plan must not change result type"
-			// (SQLSTATE 0A000) — an error that is unrecoverable inside a
-			// migration's transaction. An explicit column list is a distinct,
-			// previously-uncached query: it prepares fresh against the current
-			// schema and has a fixed result type. Same class of guard as
-			// migrate_calendar_aligned. The projection is derived from the
-			// TableClientConfig schema so it cannot drift from the struct.
+			// Read via an explicit column projection rather than GORM's default
+			// Find (SELECT *). Earlier migrations in this same run add and drop
+			// config_client columns; reusing a cached SELECT * plan whose
+			// projection has since drifted is what trips PostgreSQL's "cached
+			// plan must not change result type" (SQLSTATE 0A000), an error that
+			// is unrecoverable inside a migration's transaction. An explicit
+			// column list is a distinct, previously-uncached query: it prepares
+			// fresh against the current schema and has a fixed result type. Same
+			// class of guard as migrate_calendar_aligned.
+			//
+			// Derive the projection from the LIVE table columns intersected with
+			// the struct, not from the struct alone. TableClientConfig can be
+			// ahead of applied DDL: a declared column (e.g.
+			// dump_errors_in_console_logs, added by a later migration step) does
+			// not exist yet on upgrade, and naming a missing column in the SELECT
+			// fails with 42703. Intersecting with the columns that physically
+			// exist makes that impossible for any current or future column. Keep
+			// the read on .Find (not a raw Scan) so the AfterFind hook still
+			// deserializes the *_json columns into the virtual fields the hash
+			// depends on; a raw Scan bypasses AfterFind and would corrupt them.
+			existingCols, err := mg.ColumnTypes(&tables.TableClientConfig{})
+			if err != nil {
+				return fmt.Errorf("inspect config_client columns for hash recompute: %w", err)
+			}
+			present := make(map[string]struct{}, len(existingCols))
+			for _, ct := range existingCols {
+				present[ct.Name()] = struct{}{}
+			}
 			schemaStmt := &gorm.Statement{DB: tx}
 			if err := schemaStmt.Parse(&tables.TableClientConfig{}); err != nil {
 				return fmt.Errorf("parse config_client schema for hash recompute: %w", err)
 			}
+			projection := make([]string, 0, len(schemaStmt.Schema.DBNames))
+			for _, name := range schemaStmt.Schema.DBNames {
+				if _, ok := present[name]; ok {
+					projection = append(projection, name)
+				}
+			}
+			if len(projection) == 0 {
+				logger.Info("[configstore] %s: no columns in common between config_client and TableClientConfig, skipping hash recompute", migrationName)
+				return nil
+			}
 			var clientConfigs []tables.TableClientConfig
 			if err := tx.Model(&tables.TableClientConfig{}).
-				Select(schemaStmt.Schema.DBNames).
+				Select(projection).
 				Find(&clientConfigs).Error; err != nil {
 				return fmt.Errorf("fetch client configs for hash recompute: %w", err)
 			}
