@@ -127,7 +127,12 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="flex grow flex-col gap-6 pt-4">
 				<div className="grow px-8">
-					<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
+					<ApiKeyFormFragment
+						control={form.control}
+						providerName={provider.name}
+						baseProviderType={provider.custom_provider_config?.base_provider_type}
+						form={form}
+					/>
 					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
 				</div>
 				<div className="bg-card sticky bottom-0 border-t px-8 py-4">
