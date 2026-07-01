@@ -79,36 +79,37 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Normalize messages: handle AI21 Jamba where content can be a plain string
+	// Normalize messages:
+	//  - AI21 Jamba: content can be a plain string instead of []BedrockContentBlock
+	//  - Anthropic Messages API: tool_use/tool_result blocks use Anthropic field names
+	//    (type/id/tool_use_id) instead of the Bedrock Converse shape (toolUse/toolResult)
 	if len(aux.Messages) > 0 {
 		r.Messages = nil // Clear before re-parsing
 
-		// Try standard []BedrockMessage first
-		var standardMsgs []BedrockMessage
-		if err := sonic.Unmarshal(aux.Messages, &standardMsgs); err == nil {
-			r.Messages = standardMsgs
-		} else {
-			// Try AI21 format where content is a string
-			var rawMsgs []struct {
-				Role    BedrockMessageRole `json:"role"`
-				Content json.RawMessage    `json:"content"`
-			}
-			if err := sonic.Unmarshal(aux.Messages, &rawMsgs); err == nil {
-				for _, rm := range rawMsgs {
-					msg := BedrockMessage{Role: rm.Role}
-					// Try as string first (AI21 format)
-					var contentStr string
-					if err := sonic.Unmarshal(rm.Content, &contentStr); err == nil {
-						msg.Content = []BedrockContentBlock{{Text: &contentStr}}
-					} else {
-						// Fall back to standard content blocks
-						var blocks []BedrockContentBlock
-						if err := sonic.Unmarshal(rm.Content, &blocks); err == nil {
-							msg.Content = blocks
+		var rawMsgs []struct {
+			Role    BedrockMessageRole `json:"role"`
+			Content json.RawMessage    `json:"content"`
+		}
+		if err := sonic.Unmarshal(aux.Messages, &rawMsgs); err == nil {
+			for _, rm := range rawMsgs {
+				msg := BedrockMessage{Role: rm.Role}
+				// AI21 Jamba: content is a plain string
+				var contentStr string
+				if err := sonic.Unmarshal(rm.Content, &contentStr); err == nil {
+					msg.Content = []BedrockContentBlock{{Text: &contentStr}}
+				} else {
+					// Parse each content block individually so Anthropic-format
+					// tool_use/tool_result blocks are mapped to the Converse shape.
+					var rawBlocks []json.RawMessage
+					if err := sonic.Unmarshal(rm.Content, &rawBlocks); err == nil {
+						for _, rb := range rawBlocks {
+							if block, err := normalizeInvokeContentBlock(rb); err == nil {
+								msg.Content = append(msg.Content, block)
+							}
 						}
 					}
-					r.Messages = append(r.Messages, msg)
 				}
+				r.Messages = append(r.Messages, msg)
 			}
 		}
 	}
@@ -135,6 +136,84 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	return nil
+}
+
+// normalizeInvokeContentBlock parses a single message content block from an invoke
+// request. Anthropic Messages API tool blocks (type "tool_use"/"tool_result", using
+// id/tool_use_id field names) are mapped to the Bedrock Converse shape; all other blocks
+// (text, image, document, and already-Converse-shaped blocks) are unmarshalled directly.
+func normalizeInvokeContentBlock(raw json.RawMessage) (BedrockContentBlock, error) {
+	var typed struct {
+		Type string `json:"type"`
+	}
+	_ = sonic.Unmarshal(raw, &typed)
+
+	switch typed.Type {
+	case "tool_use":
+		var a struct {
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		}
+		if err := sonic.Unmarshal(raw, &a); err != nil {
+			return BedrockContentBlock{}, err
+		}
+		return BedrockContentBlock{
+			ToolUse: &BedrockToolUse{
+				ToolUseID: a.ID,
+				Name:      a.Name,
+				Input:     a.Input,
+			},
+		}, nil
+	case "tool_result":
+		var a struct {
+			ToolUseID string          `json:"tool_use_id"`
+			Content   json.RawMessage `json:"content"`
+			IsError   *bool           `json:"is_error"`
+		}
+		if err := sonic.Unmarshal(raw, &a); err != nil {
+			return BedrockContentBlock{}, err
+		}
+		toolResult := &BedrockToolResult{
+			ToolUseID: a.ToolUseID,
+			Content:   normalizeInvokeToolResultContent(a.Content),
+		}
+		if a.IsError != nil && *a.IsError {
+			toolResult.Status = schemas.Ptr("error")
+		}
+		return BedrockContentBlock{ToolResult: toolResult}, nil
+	default:
+		var block BedrockContentBlock
+		if err := sonic.Unmarshal(raw, &block); err != nil {
+			return BedrockContentBlock{}, err
+		}
+		return block, nil
+	}
+}
+
+// normalizeInvokeToolResultContent converts an Anthropic tool_result "content" value
+// (a plain string or an array of content blocks) into Bedrock toolResult content blocks.
+func normalizeInvokeToolResultContent(raw json.RawMessage) []BedrockContentBlock {
+	if len(raw) == 0 {
+		return nil
+	}
+	// Anthropic allows a plain string
+	var s string
+	if err := sonic.Unmarshal(raw, &s); err == nil {
+		return []BedrockContentBlock{{Text: &s}}
+	}
+	// Or an array of content blocks
+	var rawBlocks []json.RawMessage
+	if err := sonic.Unmarshal(raw, &rawBlocks); err == nil {
+		var blocks []BedrockContentBlock
+		for _, rb := range rawBlocks {
+			if block, err := normalizeInvokeContentBlock(rb); err == nil {
+				blocks = append(blocks, block)
+			}
+		}
+		return blocks
+	}
 	return nil
 }
 
@@ -1394,6 +1473,15 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		stopReason := "end_turn"
 		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
 			stopReason = resp.Response.IncompleteDetails.Reason
+		} else if resp.Response != nil {
+			// IncompleteDetails is nil on a normal tool_use completion, so detect a
+			// function call in the output and report "tool_use" (mirrors the non-streaming path).
+			for _, item := range resp.Response.Output {
+				if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall {
+					stopReason = "tool_use"
+					break
+				}
+			}
 		}
 
 		// Build message_delta event
