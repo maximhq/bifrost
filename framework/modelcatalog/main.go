@@ -367,21 +367,6 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 		}
 	}()
 
-	// MCP library sync runs alongside but is non-fatal: a failure here must not
-	// block a pricing/params force-reload. It is logged and the last-sync
-	// timestamp is only advanced on success.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := mc.syncMCPLibrary(ctx); err != nil {
-			mc.logger.Warn("MCP library sync during force-reload failed: %v", err)
-			return
-		}
-		mc.syncMu.Lock()
-		mc.lastMCPLibrarySyncedAt = time.Now()
-		mc.syncMu.Unlock()
-	}()
-
 	wg.Wait()
 	if pricingErr != nil {
 		return pricingErr
