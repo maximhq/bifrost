@@ -618,3 +618,90 @@ func TestHandleToken_RefreshUserLiveness(t *testing.T) {
 		assert.NotContains(t, string(ctx.Response.Body()), "user is no longer active")
 	})
 }
+
+// putConfigCtx builds an initialized PUT /api/config request carrying a JSON body.
+func putConfigCtx(body string) *fasthttp.RequestCtx {
+	var req fasthttp.Request
+	req.Header.SetMethod("PUT")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(body)
+	return initCtx(&req)
+}
+
+// TestUpdateConfig_RejectsAuthCodeTTLAboveMax covers the API-layer guard: a save
+// with auth_code_ttl above the cap is rejected with 400 in every mode — including
+// headers, so the API can never persist a value the load-time validator would
+// later reject at boot — before any live runtime mutation. The handler returns at
+// the validation, so configManager is never invoked (left nil).
+func TestUpdateConfig_RejectsAuthCodeTTLAboveMax(t *testing.T) {
+	for _, mode := range []configtables.MCPServerAuthMode{
+		configtables.MCPServerAuthModeOAuth,
+		configtables.MCPServerAuthModeBoth,
+		configtables.MCPServerAuthModeHeaders,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, mode, false)
+			h := &ConfigHandler{store: cfg}
+
+			body := `{"client_config":{"mcp_server_auth_mode":"` + string(mode) +
+				`","oauth2_server_config":{"auth_code_ttl":5000,"access_token_ttl":600}}}`
+			ctx := putConfigCtx(body)
+			h.updateConfig(ctx)
+
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+			assert.Contains(t, string(ctx.Response.Body()), "auth_code_ttl must not exceed")
+		})
+	}
+}
+
+// TestHandleAuthorize_AuthCodeTTLResolution covers the issuance-layer resolution
+// of the configured auth_code_ttl into the authorization code's ExpiresAt:
+// over-cap is clamped to the max, zero falls back to the default, and an in-range
+// value is used verbatim. The three expected values are far enough apart that the
+// generous timing tolerance cannot mask the wrong branch.
+func TestHandleAuthorize_AuthCodeTTLResolution(t *testing.T) {
+	cases := []struct {
+		name       string
+		configured int
+		wantTTL    int
+	}{
+		{"above cap is clamped", 5000, configtables.MaxAuthCodeTTL},
+		{"zero falls back to default", 0, configtables.DefaultAuthCodeTTL},
+		{"in-range used verbatim", 120, 120},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, cfg := newIssuanceHandler(t)
+			cfg.ClientConfig.OAuth2ServerConfig.AuthCodeTTL = tc.configured
+			cid := seedClient(t, store, []string{"http://127.0.0.1:1234/cb"})
+
+			v := url.Values{}
+			v.Set("client_id", cid)
+			v.Set("redirect_uri", "http://127.0.0.1:1234/cb")
+			v.Set("response_type", "code")
+			v.Set("code_challenge", "challenge")
+			v.Set("code_challenge_method", "S256")
+			v.Set("resource", testMCPResource)
+			v.Set("state", "xyz")
+
+			before := time.Now()
+			ctx := getCtx("/oauth2/authorize?" + v.Encode())
+			h.handleAuthorize(ctx)
+			require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+
+			loc := string(ctx.Response.Header.Peek("Location"))
+			u, err := url.Parse(loc)
+			require.NoError(t, err)
+			flowID := u.Query().Get("flow")
+			require.NotEmpty(t, flowID)
+
+			req, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), flowID)
+			require.NoError(t, err)
+
+			wantDeadline := before.Add(time.Duration(tc.wantTTL) * time.Second)
+			assert.WithinDuration(t, wantDeadline, req.ExpiresAt, 30*time.Second)
+		})
+	}
+}

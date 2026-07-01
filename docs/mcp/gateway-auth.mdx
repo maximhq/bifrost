@@ -117,7 +117,7 @@ curl -X PUT http://localhost:8080/api/config \
       "mcp_server_auth_mode": "both",
       "oauth2_server_config": {
         "issuer_url": "https://bifrost.example.com",
-        "auth_code_ttl": 600,
+        "auth_code_ttl": 300,
         "access_token_ttl": 600
       }
     }
@@ -133,7 +133,7 @@ curl -X PUT http://localhost:8080/api/config \
     "mcp_server_auth_mode": "both",
     "oauth2_server_config": {
       "issuer_url": "https://bifrost.example.com",
-      "auth_code_ttl": 600,
+      "auth_code_ttl": 300,
       "access_token_ttl": 600
     }
   }
@@ -144,7 +144,7 @@ curl -X PUT http://localhost:8080/api/config \
 |-------|------|----------|-------------|
 | `mcp_server_auth_mode` | string | No | `headers` (default), `both`, or `oauth`. |
 | `oauth2_server_config.issuer_url` | string | No | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. Required for multi-host deployments; single-host can omit it (falls back to the request `Host`). Supports `env.MY_VAR` syntax. |
-| `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `600`). |
+| `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
 
 </Tab>

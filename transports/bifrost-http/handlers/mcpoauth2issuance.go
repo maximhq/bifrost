@@ -247,6 +247,11 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	authCodeTTL := cfg.AuthCodeTTL
 	if authCodeTTL <= 0 {
 		authCodeTTL = configtables.DefaultAuthCodeTTL
+	} else if authCodeTTL > configtables.MaxAuthCodeTTL {
+		// Defense in depth: the API rejects an over-max value at save and config
+		// load rejects it at startup, so this should be unreachable — but clamp
+		// anyway so a code can never be minted with a lifetime above the cap.
+		authCodeTTL = configtables.MaxAuthCodeTTL
 	}
 
 	req := &configtables.TableOAuth2AuthorizeRequest{
