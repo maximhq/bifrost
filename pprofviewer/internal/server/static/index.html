@@ -1,0 +1,1724 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pprof viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #111827;
+      --muted: #5b6472;
+      --line: #d9dee8;
+      --accent: #0f766e;
+      --hot: #b42318;
+      --runtime: #6d28d9;
+      --shadow: 0 8px 24px rgba(15, 23, 42, .08);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      height: 100%;
+    }
+    body {
+      margin: 0;
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      flex: 0 0 auto;
+    }
+    h1 { font-size: 18px; margin: 0; letter-spacing: 0; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      gap: 16px;
+      padding: 16px;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+    form {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .file-field {
+      display: grid;
+      grid-template-columns: auto minmax(180px, 220px);
+      align-items: center;
+      gap: 8px;
+    }
+    .file-field span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      min-width: 64px;
+      text-align: right;
+    }
+    input, select, button {
+      height: 34px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 0 10px;
+      font: inherit;
+    }
+    input[type="file"] {
+      width: 220px;
+      max-width: 22vw;
+      padding: 4px 8px;
+      line-height: 24px;
+    }
+    .bulk-field {
+      grid-template-columns: auto minmax(220px, 300px);
+    }
+    .bulk-field input[type="file"] {
+      width: 300px;
+    }
+    select { min-width: 220px; }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      cursor: pointer;
+      font-weight: 650;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+      min-height: 0;
+    }
+    .panel h2 {
+      margin: 0;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+    .graph-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .graph-head h2 {
+      border: 0;
+      padding: 0;
+      white-space: nowrap;
+    }
+    .graph-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .active-filter {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 340px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .active-filter strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--ink);
+      font-weight: 650;
+    }
+    .graph-tools label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 260px;
+    }
+    input[type="range"] {
+      width: 160px;
+      min-width: 120px;
+      padding: 0;
+      border: 0;
+      height: 24px;
+    }
+    .ghost-btn {
+      height: 30px;
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--line);
+      font-weight: 600;
+    }
+    .report-panel {
+      margin: 0 14px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .report-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .report-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    #report-output {
+      width: 100%;
+      min-height: 280px;
+      max-height: 520px;
+      border: 0;
+      resize: vertical;
+      padding: 12px;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--ink);
+    }
+    .tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 14px 0;
+      flex-wrap: wrap;
+    }
+    .tab {
+      height: 30px;
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--line);
+      font-weight: 650;
+    }
+    .tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .view-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+    .view {
+      min-height: 0;
+      background: #fbfcfe;
+      border-radius: 0 0 8px 8px;
+    }
+    .hidden { display: none !important; }
+    #graph, .chart {
+      width: 100%;
+      height: calc(100vh - 180px);
+      min-height: 0;
+      display: block;
+      background: #fbfcfe;
+      border-radius: 0 0 8px 8px;
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+    }
+    .chart { cursor: default; }
+    #graph.dragging { cursor: grabbing; }
+    .node { cursor: grab; }
+    .node.dragging { cursor: grabbing; }
+    .node circle { transition: stroke-width .15s ease, opacity .15s ease; }
+    .node.dim, .edge.dim { opacity: .16; }
+    .node.selected circle {
+      stroke: #111827;
+      stroke-width: 3;
+    }
+    .edge {
+      transition: opacity .15s ease, stroke .15s ease;
+    }
+    aside {
+      display: grid;
+      gap: 16px;
+      align-content: start;
+      min-height: 0;
+      overflow: auto;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      padding: 12px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      min-width: 0;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .metric strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .list { padding: 8px 12px 12px; }
+    .ranked-list {
+      height: calc(100vh - 180px);
+      overflow: auto;
+      background: #fbfcfe;
+      border-radius: 0 0 8px 8px;
+    }
+    .rank-row {
+      border-bottom: 1px solid var(--line);
+      padding: 0;
+    }
+    .rank-row summary {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr) 130px 74px;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .rank-row summary::-webkit-details-marker { display: none; }
+    .rank-row strong, .rank-row code {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .rank-row code {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .rank-body {
+      padding: 0 14px 12px 80px;
+      color: var(--muted);
+    }
+    .rank-body code {
+      display: block;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      margin-top: 6px;
+    }
+    .scroll-list {
+      max-height: 32vh;
+      min-height: 0;
+      overflow: auto;
+    }
+    .item {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+    }
+    .item.clickable {
+      cursor: pointer;
+      border-radius: 6px;
+      padding: 8px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 30px;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .item.clickable:hover {
+      background: #f1f5f9;
+    }
+    .item:last-child { border-bottom: 0; }
+    .item strong {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .filter-btn {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      background: #fff;
+      color: var(--muted);
+      border-color: var(--line);
+      border-radius: 6px;
+      font-size: 15px;
+      line-height: 1;
+    }
+    .filter-btn:hover, .filter-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .item code {
+      display: block;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+      margin-top: 4px;
+    }
+    .bar {
+      height: 6px;
+      background: #e7ecef;
+      border-radius: 99px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .bar > i {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+    }
+    .status {
+      color: var(--muted);
+      min-width: 180px;
+    }
+    dialog {
+      width: min(760px, calc(100vw - 32px));
+      max-height: min(760px, calc(100vh - 32px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0;
+      color: var(--ink);
+      box-shadow: var(--shadow);
+    }
+    dialog::backdrop {
+      background: rgba(15, 23, 42, .45);
+    }
+    .detail-dialog-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .detail-dialog-head h2 {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      font-size: 15px;
+    }
+    .detail-dialog-head button {
+      height: 28px;
+      padding: 0 9px;
+    }
+    .detail-dialog-body {
+      padding: 14px;
+      overflow: auto;
+      max-height: calc(100vh - 130px);
+    }
+    .detail-dialog-body dl {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      gap: 8px 12px;
+      margin: 0 0 14px;
+    }
+    .detail-dialog-body dt {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .detail-dialog-body dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+    .detail-dialog-body code {
+      display: block;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      padding: 10px;
+      color: var(--muted);
+    }
+    @media (max-width: 980px) {
+      header { align-items: flex-start; flex-direction: column; }
+      form { margin-left: 0; width: 100%; }
+      .file-field { width: 100%; grid-template-columns: 82px minmax(0, 1fr); }
+      .file-field span { text-align: left; }
+      input[type="file"], select { width: 100%; max-width: none; }
+      .graph-head { align-items: flex-start; flex-direction: column; }
+      .graph-tools { width: 100%; justify-content: flex-start; }
+      .graph-tools label { min-width: 100%; }
+      main { grid-template-columns: 1fr; }
+      body { overflow: auto; }
+      main { overflow: visible; }
+      aside { overflow: visible; }
+      #graph, .chart, .ranked-list { height: 62vh; }
+      .rank-row summary { grid-template-columns: 42px minmax(0, 1fr); }
+      .rank-row summary span, .rank-row summary code { grid-column: 2; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>pprof viewer</h1>
+    <div id="status" class="status">Upload a pprof folder or profile files.</div>
+    <form id="upload">
+      <label class="file-field bulk-field"><span>Files</span><input id="profile-files" name="profiles" type="file" title="profile files" multiple></label>
+      <label class="file-field bulk-field"><span>Folder</span><input id="profile-folder" name="profile_folder" type="file" title="profile folder" multiple webkitdirectory directory></label>
+      <button type="submit">Analyze</button>
+    </form>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div id="tabs" class="tabs"></div>
+      <div id="view-tabs" class="view-tabs"></div>
+      <div class="graph-head">
+        <h2>Allocation / CPU Views</h2>
+        <div class="graph-tools">
+          <label>
+            min node
+            <input id="min-filter" type="range" min="0" max="100" value="0" step="1">
+            <strong id="min-filter-label">all</strong>
+          </label>
+          <div id="active-filter" class="active-filter hidden">
+            filter <strong id="active-filter-label"></strong>
+            <button id="clear-active-filter" class="ghost-btn" type="button">Clear</button>
+          </div>
+          <button id="reset-view" class="ghost-btn" type="button">Reset</button>
+          <button id="generate-report" class="ghost-btn" type="button">Report</button>
+        </div>
+      </div>
+      <div id="report-panel" class="report-panel hidden">
+        <div class="report-head">
+          <strong>Harness Report</strong>
+          <div class="report-actions">
+            <button id="copy-report" class="ghost-btn" type="button">Copy</button>
+            <button id="download-report" class="ghost-btn" type="button">Download</button>
+          </div>
+        </div>
+        <textarea id="report-output" spellcheck="false"></textarea>
+      </div>
+      <svg id="graph" class="view" role="img" aria-label="profile graph"></svg>
+      <div id="profile-list" class="view ranked-list hidden"></div>
+      <svg id="line-chart" class="view chart hidden" role="img" aria-label="ranked line chart"></svg>
+      <svg id="pie-chart" class="view chart hidden" role="img" aria-label="profile pie chart"></svg>
+    </section>
+    <aside>
+      <section class="panel">
+        <h2>Profile</h2>
+        <div class="metrics">
+          <div class="metric"><span>type</span><strong id="m-type">-</strong></div>
+          <div class="metric"><span>sample</span><strong id="m-sample">-</strong></div>
+          <div class="metric"><span>total</span><strong id="m-total">-</strong></div>
+          <div class="metric"><span>heap</span><strong id="m-heap">-</strong></div>
+          <div class="metric"><span>cpu</span><strong id="m-cpu">-</strong></div>
+          <div class="metric"><span>goroutines</span><strong id="m-goroutines">-</strong></div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Potential Leaks</h2>
+        <div id="leaks" class="list scroll-list"></div>
+      </section>
+      <section class="panel">
+        <h2>Hot Paths</h2>
+        <div id="paths" class="list scroll-list"></div>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="detail-dialog">
+    <div class="detail-dialog-head">
+      <h2 id="detail-title">Details</h2>
+      <button id="detail-close" class="ghost-btn" type="button">Close</button>
+    </div>
+    <div id="detail-body" class="detail-dialog-body"></div>
+  </dialog>
+
+  <script>
+    const form = document.querySelector('#upload');
+    const profileFiles = document.querySelector('#profile-files');
+    const profileFolder = document.querySelector('#profile-folder');
+    const statusEl = document.querySelector('#status');
+    const minFilter = document.querySelector('#min-filter');
+    const minFilterLabel = document.querySelector('#min-filter-label');
+    const activeFilterEl = document.querySelector('#active-filter');
+    const activeFilterLabel = document.querySelector('#active-filter-label');
+    const clearActiveFilter = document.querySelector('#clear-active-filter');
+    const resetView = document.querySelector('#reset-view');
+    const generateReport = document.querySelector('#generate-report');
+    const reportPanel = document.querySelector('#report-panel');
+    const reportOutput = document.querySelector('#report-output');
+    const copyReport = document.querySelector('#copy-report');
+    const downloadReport = document.querySelector('#download-report');
+    const tabs = document.querySelector('#tabs');
+    const viewTabs = document.querySelector('#view-tabs');
+    const graphView = document.querySelector('#graph');
+    const listView = document.querySelector('#profile-list');
+    const lineChart = document.querySelector('#line-chart');
+    const pieChart = document.querySelector('#pie-chart');
+    const detailDialog = document.querySelector('#detail-dialog');
+    const detailTitle = document.querySelector('#detail-title');
+    const detailBody = document.querySelector('#detail-body');
+    const detailClose = document.querySelector('#detail-close');
+    const profileSetNames = ['heap', 'allocs', 'cpu', 'goroutine', 'block', 'mutex'];
+    let currentData = null;
+    let currentSet = null;
+    let activeTab = 'cross';
+    let activeView = 'graph';
+    let activeFilter = null;
+    let graphState = newGraphState();
+
+    function newGraphState() {
+      return { scale: 1, tx: 0, ty: 0, selected: null, positions: {} };
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const files = selectedProfileFiles();
+      if (!files.length) return;
+      await analyzeSet(files);
+    });
+
+    profileFiles.addEventListener('change', () => updateUploadStatus());
+    profileFolder.addEventListener('change', () => updateUploadStatus());
+
+    minFilter.addEventListener('input', () => {
+      if (currentData) renderRepresentation(currentData);
+    });
+
+    resetView.addEventListener('click', () => {
+      activeFilter = null;
+      graphState = newGraphState();
+      renderFilterState();
+      if (currentData) renderRepresentation(currentData);
+    });
+
+    clearActiveFilter.addEventListener('click', () => {
+      activeFilter = null;
+      graphState = newGraphState();
+      renderFilterState();
+      if (currentData) renderRepresentation(currentData);
+    });
+
+    generateReport.addEventListener('click', () => {
+      if (!currentData && !currentSet) return;
+      reportOutput.value = buildHarnessReport();
+      reportPanel.classList.remove('hidden');
+      statusEl.textContent = 'Generated harness report.';
+    });
+
+    copyReport.addEventListener('click', async () => {
+      if (!reportOutput.value) return;
+      try {
+        await navigator.clipboard.writeText(reportOutput.value);
+        statusEl.textContent = 'Copied harness report.';
+      } catch {
+        reportOutput.focus();
+        reportOutput.select();
+        statusEl.textContent = 'Select-all report text for copying.';
+      }
+    });
+
+    downloadReport.addEventListener('click', () => {
+      if (!reportOutput.value) return;
+      const blob = new Blob([reportOutput.value], {type: 'text/markdown'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pprof-harness-report-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    detailClose.addEventListener('click', () => detailDialog.close());
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      const params = new URLSearchParams(location.search);
+      const resultID = params.get('result_id') || localStorage.getItem('pprofviewer:last_result_id');
+      if (resultID && !params.get('path') && !hasProfilePathParam(params)) {
+        await restoreResult(resultID);
+        return;
+      }
+      const path = params.get('path');
+      const sampleType = params.get('sample') || '';
+      if (path) {
+        await analyzePath(path, sampleType);
+        return;
+      }
+      if (hasProfilePathParam(params)) {
+        await analyzePathSet(params);
+      }
+    });
+
+    async function analyze(profileFile, sampleType) {
+      statusEl.textContent = 'Analyzing...';
+      const body = new FormData();
+      body.append('profile', profileFile);
+      const res = await fetch('/api/analyze' + (sampleType ? '?sample=' + encodeURIComponent(sampleType) : ''), {
+        method: 'POST',
+        body
+      });
+      if (!res.ok) {
+        statusEl.textContent = await res.text();
+        return;
+      }
+      const data = await res.json();
+      render(data);
+      rememberResult(data);
+      statusEl.textContent = `${data.nodes.length} nodes, ${data.edges.length} edges`;
+    }
+
+    async function analyzeSet(files) {
+      statusEl.textContent = 'Analyzing profiles...';
+      const body = new FormData();
+      for (const profileFile of files) {
+        body.append('profiles', profileFile, profileFile.webkitRelativePath || profileFile.name);
+      }
+      const res = await fetch('/api/analyze-set', { method: 'POST', body });
+      if (!res.ok) {
+        statusEl.textContent = await res.text();
+        return;
+      }
+      const data = await res.json();
+      renderSet(data);
+      rememberResult(data);
+      statusEl.textContent = `${(data.profiles || []).map(p => p.name).join(', ')} profiles loaded`;
+    }
+
+    function selectedProfileFiles() {
+      const files = [
+        ...Array.from(profileFiles.files || []),
+        ...Array.from(profileFolder.files || [])
+      ];
+      const seen = new Set();
+      return files.filter(file => {
+        const key = `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return isLikelyProfileFile(file);
+      });
+    }
+
+    function updateUploadStatus() {
+      const files = selectedProfileFiles();
+      if (!files.length) {
+        statusEl.textContent = 'Upload a pprof folder or profile files.';
+        return;
+      }
+      const inferred = files.map(file => inferProfileName(file.webkitRelativePath || file.name)).filter(Boolean);
+      statusEl.textContent = inferred.length
+        ? `Ready: ${[...new Set(inferred)].join(', ')}`
+        : `${files.length} profile file${files.length === 1 ? '' : 's'} selected`;
+    }
+
+    function isLikelyProfileFile(file) {
+      const path = (file.webkitRelativePath || file.name || '').toLowerCase();
+      if (path.endsWith('.prof') || path.endsWith('.pprof') || path.endsWith('.pb') || path.endsWith('.pb.gz')) return true;
+      return Boolean(inferProfileName(path));
+    }
+
+    function inferProfileName(path) {
+      const base = String(path || '').split('/').pop().toLowerCase()
+        .replace(/\.gz$/, '')
+        .replace(/\.pb$/, '')
+        .replace(/\.pprof$/, '')
+        .replace(/\.prof$/, '')
+        .replace(/\.txt$/, '')
+        .replace(/\.out$/, '');
+      if (['heap', 'inuse', 'mem', 'memory'].includes(base)) return 'heap';
+      if (['alloc', 'allocs', 'allocations'].includes(base)) return 'allocs';
+      if (['cpu', 'profile'].includes(base)) return 'cpu';
+      if (['goroutine', 'goroutines'].includes(base)) return 'goroutine';
+      if (['block', 'blocking'].includes(base)) return 'block';
+      if (['mutex', 'mutator'].includes(base)) return 'mutex';
+      for (const part of base.replace(/[-. ]/g, '_').split('_')) {
+        if (part === 'heap' || part === 'inuse') return 'heap';
+        if (part === 'alloc' || part === 'allocs') return 'allocs';
+        if (part === 'cpu') return 'cpu';
+        if (part === 'goroutine' || part === 'goroutines') return 'goroutine';
+        if (part === 'block') return 'block';
+        if (part === 'mutex') return 'mutex';
+      }
+      return '';
+    }
+
+    async function analyzePath(path, sampleType) {
+      statusEl.textContent = 'Analyzing path...';
+      const params = new URLSearchParams({ path });
+      if (sampleType) params.set('sample', sampleType);
+      const res = await fetch('/api/analyze?' + params.toString());
+      if (!res.ok) {
+        statusEl.textContent = await res.text();
+        return;
+      }
+      const data = await res.json();
+      render(data);
+      rememberResult(data);
+      statusEl.textContent = `${data.nodes.length} nodes, ${data.edges.length} edges`;
+    }
+
+    async function analyzePathSet(params) {
+      statusEl.textContent = 'Analyzing profile paths...';
+      const res = await fetch('/api/analyze-set?' + params.toString());
+      if (!res.ok) {
+        statusEl.textContent = await res.text();
+        return;
+      }
+      const data = await res.json();
+      renderSet(data);
+      rememberResult(data);
+    }
+
+    async function restoreResult(id) {
+      statusEl.textContent = 'Restoring cached profiles...';
+      const res = await fetch('/api/result?id=' + encodeURIComponent(id));
+      if (!res.ok) {
+        localStorage.removeItem('pprofviewer:last_result_id');
+        statusEl.textContent = 'Cached profiles expired. Upload the files again.';
+        return;
+      }
+      const data = await res.json();
+      if (data.profiles) {
+        renderSet(data);
+        statusEl.textContent = 'Restored cached profile set.';
+      } else {
+        render(data);
+        statusEl.textContent = 'Restored cached profile.';
+      }
+      rememberResult(data);
+    }
+
+    function rememberResult(data) {
+      if (!data || !data.id) return;
+      localStorage.setItem('pprofviewer:last_result_id', data.id);
+      const params = new URLSearchParams(location.search);
+      params.delete('path');
+      params.delete('sample');
+      for (const name of profileSetNames) params.delete(`${name}_path`);
+      params.set('result_id', data.id);
+      history.replaceState(null, '', `${location.pathname}?${params.toString()}`);
+    }
+
+    function hasProfilePathParam(params) {
+      return profileSetNames.some(name => params.get(`${name}_path`));
+    }
+
+    function render(data) {
+      currentSet = null;
+      currentData = data;
+      activeFilter = null;
+      graphState.selected = null;
+      activeTab = data.profile_type || 'profile';
+      renderTabs([{name: activeTab}]);
+      renderViewTabs();
+      document.querySelector('#m-type').textContent = data.profile_type;
+      document.querySelector('#m-sample').textContent = `${data.sample_type} (${data.unit})`;
+      document.querySelector('#m-total').textContent = formatValue(data.total, data.unit);
+      document.querySelector('#m-heap').textContent = data.profile_type === 'heap' ? formatValue(data.total, data.unit) : '-';
+      document.querySelector('#m-cpu').textContent = data.profile_type === 'cpu' ? formatValue(data.total, data.unit) : '-';
+      document.querySelector('#m-goroutines').textContent = data.profile_type === 'goroutine' ? formatValue(data.total, data.unit) : '-';
+      updateSampleOptions(data.sample_types, data.sample_type);
+      renderFilterState();
+      renderRepresentation(data);
+      renderLeaks(data);
+      renderPaths(data);
+    }
+
+    function updateSampleOptions(types, selected) {
+      void types;
+      void selected;
+    }
+
+    function renderSet(data) {
+      currentSet = data;
+      activeFilter = null;
+      graphState.selected = null;
+      const names = (data.profiles || []).map(p => p.name);
+      activeTab = names.length > 1 && data.cross_map ? 'cross' : names[0];
+      renderTabs([{name: 'cross'}, ...(data.profiles || [])].filter(t => t.name !== 'cross' || (data.cross_map || []).length));
+      renderViewTabs();
+      renderFilterState();
+      renderOverall(data);
+      renderActiveTab();
+    }
+
+    function renderTabs(items) {
+      tabs.innerHTML = '';
+      for (const item of items) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tab' + (item.name === activeTab ? ' active' : '');
+        btn.textContent = item.name;
+        btn.addEventListener('click', () => {
+          activeTab = item.name;
+          activeFilter = null;
+          graphState = newGraphState();
+          renderFilterState();
+          renderTabs(items);
+          renderActiveTab();
+        });
+        tabs.appendChild(btn);
+      }
+    }
+
+    function renderViewTabs() {
+      const views = [
+        ['graph', 'Graph Nodes'],
+        ['list', 'List'],
+        ['line', 'Line Graph'],
+        ['pie', 'Pie Chart']
+      ];
+      viewTabs.innerHTML = '';
+      for (const [id, label] of views) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tab' + (id === activeView ? ' active' : '');
+        btn.textContent = label;
+        btn.addEventListener('click', () => {
+          activeView = id;
+          renderViewTabs();
+          if (currentData) renderRepresentation(currentData);
+        });
+        viewTabs.appendChild(btn);
+      }
+    }
+
+    function renderOverall(data) {
+      document.querySelector('#m-type').textContent = (data.profiles || []).map(p => p.name).join(' + ') || '-';
+      document.querySelector('#m-sample').textContent = 'combined';
+      document.querySelector('#m-total').textContent = formatValue(data.overall?.profiled_samples || 0, 'samples');
+      document.querySelector('#m-heap').textContent = data.overall?.heap_bytes ? formatValue(data.overall.heap_bytes, 'bytes') : '-';
+      document.querySelector('#m-cpu').textContent = data.overall?.cpu_time_nanos ? formatValue(data.overall.cpu_time_nanos, 'nanoseconds') : (data.overall?.cpu_samples ? formatValue(data.overall.cpu_samples, 'samples') : '-');
+      document.querySelector('#m-goroutines').textContent = data.overall?.goroutines ? formatValue(data.overall.goroutines, 'goroutines') : '-';
+    }
+
+    function renderActiveTab() {
+      if (!currentSet) return;
+      if (activeTab === 'cross') {
+        const cross = crossAnalysis(currentSet);
+        currentData = cross;
+        renderRepresentation(cross);
+        renderCrossMap(currentSet);
+        renderPaths(cross);
+        return;
+      }
+      const found = (currentSet.profiles || []).find(p => p.name === activeTab);
+      if (!found) return;
+      currentData = found.profile;
+      document.querySelector('#m-sample').textContent = `${found.profile.sample_type} (${found.profile.unit})`;
+      document.querySelector('#m-total').textContent = formatValue(found.profile.total, found.profile.unit);
+      renderRepresentation(found.profile);
+      renderLeaks(found.profile);
+      renderPaths(found.profile);
+    }
+
+    function buildHarnessReport() {
+      const lines = [];
+      const resultID = currentSet?.id || currentData?.id || '';
+      lines.push('# pprof Harness Investigation Report');
+      lines.push('');
+      lines.push(`Generated: ${new Date().toISOString()}`);
+      if (resultID) lines.push(`Viewer result id: ${resultID}`);
+      lines.push(`Active profile tab: ${activeTab}`);
+      lines.push(`Active representation: ${activeView}`);
+      lines.push(`Minimum node filter: ${minFilter.value}%`);
+      lines.push('');
+
+      if (currentSet) {
+        appendSetSummary(lines, currentSet);
+        appendCrossMapReport(lines, currentSet);
+        for (const entry of currentSet.profiles || []) {
+          appendProfileReport(lines, entry.name, entry.profile);
+        }
+      } else if (currentData) {
+        appendProfileReport(lines, currentData.profile_type || 'profile', currentData);
+      }
+
+      lines.push('## Suggested Coding Harness Prompts');
+      lines.push('');
+      lines.push('- Inspect the top functions above in the repository and map them to long-lived owners, caches, goroutines, request paths, or provider clients.');
+      lines.push('- For heap-heavy functions, look for retained references, unbounded maps/slices, missed Close/Release calls, and pool objects not fully reset before Put.');
+      lines.push('- For CPU-heavy functions, inspect tight loops, repeated parsing/marshalling, lock contention, and retry/fallback amplification.');
+      lines.push('- For goroutine-heavy paths, inspect blocked channel sends/receives, missing context cancellation, background workers, stream readers, and HTTP client response handling.');
+      lines.push('- If cross-map rows exist, prioritize functions that are simultaneously heap-heavy and CPU/goroutine-heavy before isolated hotspots.');
+      lines.push('');
+      lines.push('## Raw JSON Pointers');
+      lines.push('');
+      lines.push('- `profiles[].profile.nodes[]`: ranked graph/list nodes with `flat`, `cumulative`, `file`, and `line`.');
+      lines.push('- `profiles[].profile.leaks[]`: retained heap candidates with stack paths.');
+      lines.push('- `profiles[].profile.top_paths[]`: hottest stack paths.');
+      lines.push('- `cross_map[]`: functions shared across heap, CPU, and goroutine profiles.');
+      return lines.join('\n');
+    }
+
+    function appendSetSummary(lines, data) {
+      lines.push('## Overall Usage');
+      lines.push('');
+      lines.push(`- Profiles: ${(data.profiles || []).map(p => p.name).join(', ') || 'none'}`);
+      lines.push(`- Heap: ${data.overall?.heap_bytes ? formatValue(data.overall.heap_bytes, 'bytes') : 'n/a'}`);
+      lines.push(`- CPU: ${data.overall?.cpu_time_nanos ? formatValue(data.overall.cpu_time_nanos, 'nanoseconds') : (data.overall?.cpu_samples ? formatValue(data.overall.cpu_samples, 'samples') : 'n/a')}`);
+      lines.push(`- Goroutines: ${data.overall?.goroutines ? formatValue(data.overall.goroutines, 'goroutines') : 'n/a'}`);
+      lines.push(`- Profiled samples total: ${formatValue(data.overall?.profiled_samples || 0, 'samples')}`);
+      lines.push('');
+    }
+
+    function appendCrossMapReport(lines, data) {
+      lines.push('## Cross-Profile Map');
+      lines.push('');
+      const rows = data.cross_map || [];
+      if (!rows.length) {
+        lines.push('No shared functions were found across the supplied profiles.');
+        lines.push('');
+        return;
+      }
+      lines.push('| Rank | Function | Profiles | Heap | CPU | Goroutines | File |');
+      lines.push('|---:|---|---|---:|---:|---:|---|');
+      rows.slice(0, 25).forEach((row, i) => {
+        lines.push(`| ${i + 1} | ${md(row.function)} | ${md((row.profiles || []).join(' + '))} | ${row.heap_bytes ? formatValue(row.heap_bytes, 'bytes') : '-'} | ${row.cpu_value ? formatValue(row.cpu_value, row.cpu_unit || 'samples') : '-'} | ${row.goroutines ? formatValue(row.goroutines, 'goroutines') : '-'} | ${md(row.file || '-')} |`);
+      });
+      lines.push('');
+    }
+
+    function appendProfileReport(lines, name, profile) {
+      if (!profile) return;
+      lines.push(`## ${name} Profile`);
+      lines.push('');
+      lines.push(`- Type: ${profile.profile_type}`);
+      lines.push(`- Sample: ${profile.sample_type} (${profile.unit})`);
+      lines.push(`- Total: ${formatValue(profile.total, profile.unit)}`);
+      lines.push('');
+      lines.push('### Top Nodes');
+      lines.push('');
+      lines.push('| Rank | Function | Cumulative | Flat | Percent | Location |');
+      lines.push('|---:|---|---:|---:|---:|---|');
+      filteredReportNodes(profile).slice(0, 30).forEach((node, i) => {
+        lines.push(`| ${i + 1} | ${md(node.name)} | ${formatValue(node.cumulative, profile.unit)} | ${formatValue(node.flat, profile.unit)} | ${node.percent.toFixed(1)}% | ${md(locationFor(node))} |`);
+      });
+      lines.push('');
+      if (profile.leaks && profile.leaks.length) {
+        lines.push('### Potential Leaks');
+        lines.push('');
+        profile.leaks.slice(0, 15).forEach((leak, i) => {
+          lines.push(`${i + 1}. ${leak.function} - ${formatValue(leak.retained_bytes, 'bytes')} retained`);
+          lines.push(`   - Reason: ${leak.reason}`);
+          lines.push(`   - Location: ${locationFor(leak)}`);
+          lines.push(`   - Path: ${(leak.path || []).join(' -> ')}`);
+        });
+        lines.push('');
+      }
+      if (profile.top_paths && profile.top_paths.length) {
+        lines.push('### Hot Paths');
+        lines.push('');
+        profile.top_paths.slice(0, 10).forEach((path, i) => {
+          lines.push(`${i + 1}. ${formatValue(path.value, profile.unit)} (${path.percent.toFixed(1)}%)`);
+          lines.push(`   - ${(path.path || []).join(' -> ')}`);
+        });
+        lines.push('');
+      }
+    }
+
+    function filteredReportNodes(profile) {
+      const nodes = filteredNodes(profile);
+      return nodes.length ? nodes : (profile.nodes || []);
+    }
+
+    function locationFor(item) {
+      if (!item.file) return '-';
+      return `${item.file}${item.line ? ':' + item.line : ''}`;
+    }
+
+    function md(value) {
+      return String(value || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    }
+
+    function renderLeaks(data) {
+      const leaks = document.querySelector('#leaks');
+      leaks.innerHTML = '';
+      if (!data.leaks || data.leaks.length === 0) {
+        leaks.textContent = data.profile_type === 'heap' ? 'No retained heap samples found.' : 'Leak hints are available for heap profiles.';
+        return;
+      }
+      for (const leak of data.leaks.slice(0, 12)) {
+        const el = document.createElement('div');
+        el.className = 'item clickable';
+        el.tabIndex = 0;
+        el.innerHTML = `<strong>${escapeHtml(shortName(leak.function))}</strong>`;
+        attachDetailOpen(el, () => showDetailDialog('Potential Leak', [
+          ['Function', leak.function],
+          ['Retained', formatValue(leak.retained_bytes, 'bytes')],
+          ['Allocated', leak.alloc_bytes ? formatValue(leak.alloc_bytes, 'bytes') : '-'],
+          ['Objects', leak.objects ? leak.objects.toLocaleString() : '-'],
+          ['Reason', leak.reason],
+          ['Location', locationFor(leak)]
+        ], (leak.path || []).join(' -> ')));
+        el.appendChild(filterButton(`Filter by ${shortName(leak.function)}`, leak.function, leakFilterTerms(leak)));
+        leaks.appendChild(el);
+      }
+    }
+
+    function renderCrossMap(data) {
+      const leaks = document.querySelector('#leaks');
+      leaks.innerHTML = '';
+      const rows = data.cross_map || [];
+      if (!rows.length) {
+        leaks.textContent = 'No shared functions found across the supplied profiles.';
+        return;
+      }
+      for (const row of rows.slice(0, 30)) {
+        const el = document.createElement('div');
+        el.className = 'item clickable';
+        el.tabIndex = 0;
+        el.innerHTML = `<strong>${escapeHtml(shortName(row.function))}</strong>`;
+        attachDetailOpen(el, () => showDetailDialog('Cross-Profile Hotspot', [
+          ['Function', row.function],
+          ['Profiles', (row.profiles || []).join(' + ')],
+          ['Heap', row.heap_bytes ? formatValue(row.heap_bytes, 'bytes') : '-'],
+          ['Allocated', row.allocated_bytes ? formatValue(row.allocated_bytes, 'bytes') : '-'],
+          ['CPU', row.cpu_value ? formatValue(row.cpu_value, row.cpu_unit || 'samples') : '-'],
+          ['Goroutines', row.goroutines ? formatValue(row.goroutines, 'goroutines') : '-'],
+          ['File', row.file || '-']
+        ], ''));
+        el.appendChild(filterButton(`Filter by ${shortName(row.function)}`, row.function, [row.function]));
+        leaks.appendChild(el);
+      }
+    }
+
+    function renderPaths(data) {
+      const paths = document.querySelector('#paths');
+      paths.innerHTML = '';
+      for (const path of (data.top_paths || []).slice(0, 10)) {
+        const el = document.createElement('div');
+        el.className = 'item clickable';
+        el.tabIndex = 0;
+        const title = (path.path || [])[0] || `${formatValue(path.value, data.unit)} path`;
+        el.innerHTML = `<strong>${escapeHtml(shortName(title))}</strong>`;
+        attachDetailOpen(el, () => showDetailDialog('Hot Path', [
+          ['Value', formatValue(path.value, data.unit)],
+          ['Percent', `${path.percent.toFixed(1)}%`],
+          ['Sample', `${data.sample_type} (${data.unit})`]
+        ], (path.path || []).join(' -> ')));
+        el.appendChild(filterButton(`Filter by ${shortName(title)}`, title, pathFilterTerms(path)));
+        paths.appendChild(el);
+      }
+    }
+
+    function attachDetailOpen(el, open) {
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          open();
+        }
+      });
+    }
+
+    function filterButton(title, label, terms) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'filter-btn' + (isSameFilter(terms) ? ' active' : '');
+      btn.title = title;
+      btn.setAttribute('aria-label', title);
+      btn.textContent = '⌕';
+      btn.addEventListener('click', event => {
+        event.stopPropagation();
+        activeFilter = { label, terms: normalizeTerms(terms) };
+        graphState = newGraphState();
+        renderFilterState();
+        if (currentData) renderRepresentation(currentData);
+      });
+      return btn;
+    }
+
+    function isSameFilter(terms) {
+      if (!activeFilter) return false;
+      const next = normalizeTerms(terms);
+      return next.length === activeFilter.terms.length && next.every((term, index) => term === activeFilter.terms[index]);
+    }
+
+    function renderFilterState() {
+      if (!activeFilter || !activeFilter.terms.length) {
+        activeFilterEl.classList.add('hidden');
+        activeFilterLabel.textContent = '';
+        return;
+      }
+      activeFilterEl.classList.remove('hidden');
+      activeFilterLabel.textContent = activeFilter.label;
+    }
+
+    function leakFilterTerms(leak) {
+      return [leak.function, leak.file, ...(leak.path || [])];
+    }
+
+    function pathFilterTerms(path) {
+      return path.path || [];
+    }
+
+    function normalizeTerms(terms) {
+      const out = [];
+      const seen = new Set();
+      for (const term of terms || []) {
+        for (const candidate of termCandidates(term)) {
+          if (!candidate || seen.has(candidate)) continue;
+          seen.add(candidate);
+          out.push(candidate);
+        }
+      }
+      return out;
+    }
+
+    function termCandidates(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return [];
+      const withoutLocation = raw.replace(/\s+\([^)]*\)$/, '');
+      const short = shortName(withoutLocation);
+      return [raw, withoutLocation, short].map(normalizeMatchText).filter(Boolean);
+    }
+
+    function normalizeMatchText(value) {
+      return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    }
+
+    function showDetailDialog(title, rows, code) {
+      detailTitle.textContent = title;
+      const dl = document.createElement('dl');
+      for (const [label, value] of rows) {
+        const dt = document.createElement('dt');
+        dt.textContent = label;
+        const dd = document.createElement('dd');
+        dd.textContent = value || '-';
+        dl.append(dt, dd);
+      }
+      detailBody.innerHTML = '';
+      detailBody.appendChild(dl);
+      if (code) {
+        const block = document.createElement('code');
+        block.textContent = code;
+        detailBody.appendChild(block);
+      }
+      detailDialog.showModal();
+    }
+
+    function crossAnalysis(data) {
+      const rows = data.cross_map || [];
+      const total = Math.max(rows.reduce((sum, row) => sum + Math.round(row.score * 1000), 0), 1);
+      const nodes = rows.slice(0, 80).map((row, i) => {
+        const value = Math.max(1, Math.round(row.score * 1000));
+        return {
+          id: `cross:${i}:${row.function}`,
+          name: row.function,
+          file: row.file,
+          flat: value,
+          cumulative: value,
+          percent: value / total * 100,
+          kind: row.profiles && row.profiles.length > 2 ? 'hot' : 'app'
+        };
+      });
+      return {
+        profile_type: 'cross',
+        sample_type: 'cross_score',
+        unit: 'score',
+        total,
+        nodes,
+        edges: [],
+        leaks: [],
+        top_paths: rows.slice(0, 20).map(row => ({
+          value: Math.round(row.score * 1000),
+          percent: row.score,
+          path: [
+            row.function,
+            `profiles: ${(row.profiles || []).join(' + ')}`,
+            [
+              row.heap_bytes ? `heap ${formatValue(row.heap_bytes, 'bytes')}` : '',
+              row.cpu_value ? `cpu ${formatValue(row.cpu_value, row.cpu_unit || 'samples')}` : '',
+              row.goroutines ? `goroutines ${formatValue(row.goroutines, 'goroutines')}` : ''
+            ].filter(Boolean).join(' · ')
+          ].filter(Boolean)
+        })),
+        sample_types: []
+      };
+    }
+
+    function renderRepresentation(data) {
+      for (const el of [graphView, listView, lineChart, pieChart]) el.classList.add('hidden');
+      graphHeadVisible(activeView === 'graph');
+      if (activeView === 'graph') {
+        graphView.classList.remove('hidden');
+        renderGraph(data);
+        return;
+      }
+      if (activeView === 'list') {
+        listView.classList.remove('hidden');
+        renderNodeList(data);
+        return;
+      }
+      if (activeView === 'line') {
+        lineChart.classList.remove('hidden');
+        renderLineChart(data);
+        return;
+      }
+      pieChart.classList.remove('hidden');
+      renderPieChart(data);
+    }
+
+    function graphHeadVisible(visible) {
+      void visible;
+      document.querySelector('.graph-head').style.display = 'flex';
+    }
+
+    function filteredNodes(data) {
+      const sourceNodes = data.nodes || [];
+      const activeNodes = activeFilter?.terms?.length ? sourceNodes.filter(nodeMatchesActiveFilter) : sourceNodes;
+      const fullMax = Math.max(...activeNodes.map(n => n.cumulative), 1);
+      const threshold = fullMax * Number(minFilter.value || 0) / 100;
+      minFilterLabel.textContent = threshold > 0 ? formatValue(threshold, data.unit) : 'all';
+      return activeNodes
+        .filter(n => n.cumulative >= threshold)
+        .sort((a, b) => b.cumulative - a.cumulative);
+    }
+
+    function nodeMatchesActiveFilter(node) {
+      if (!activeFilter?.terms?.length) return true;
+      const haystack = normalizeMatchText([node.name, node.file, node.kind].filter(Boolean).join(' '));
+      return activeFilter.terms.some(term => haystack.includes(term) || term.includes(normalizeMatchText(node.name)));
+    }
+
+    function renderNodeList(data) {
+      const nodes = filteredNodes(data);
+      listView.innerHTML = '';
+      const max = Math.max(...nodes.map(n => n.cumulative), 1);
+      nodes.forEach((node, index) => {
+        const row = document.createElement('details');
+        row.className = 'rank-row';
+        row.innerHTML = `<summary>
+            <span>#${index + 1}</span>
+            <strong>${escapeHtml(node.name)}</strong>
+            <span>${formatValue(node.cumulative, data.unit)}</span>
+            <span>${node.percent.toFixed(1)}%</span>
+          </summary>
+          <div class="rank-body">
+            <div class="bar"><i style="width:${Math.max(2, node.cumulative / max * 100)}%"></i></div>
+            <code>${escapeHtml(node.file || '')}${node.line ? ':' + node.line : ''}</code>
+            <code>flat ${formatValue(node.flat, data.unit)} · cumulative ${formatValue(node.cumulative, data.unit)} · kind ${escapeHtml(node.kind || '-')}</code>
+          </div>`;
+        listView.appendChild(row);
+      });
+      statusEl.textContent = `${nodes.length} ranked nodes`;
+    }
+
+    function renderLineChart(data) {
+      const svg = lineChart;
+      svg.innerHTML = '';
+      const nodes = filteredNodes(data).slice(0, 80);
+      const width = svg.clientWidth || 900;
+      const height = svg.clientHeight || 560;
+      const pad = {left: 56, right: 22, top: 28, bottom: 54};
+      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      drawAxes(svg, width, height, pad);
+      if (!nodes.length) return;
+      const max = Math.max(...nodes.map(n => n.cumulative), 1);
+      const points = nodes.map((node, i) => {
+        const x = pad.left + (nodes.length === 1 ? 0 : i / (nodes.length - 1)) * (width - pad.left - pad.right);
+        const y = height - pad.bottom - (node.cumulative / max) * (height - pad.top - pad.bottom);
+        return {x, y, node};
+      });
+      svg.appendChild(svgEl('polyline', {
+        points: points.map(p => `${p.x},${p.y}`).join(' '),
+        fill: 'none',
+        stroke: '#0f766e',
+        'stroke-width': 3
+      }));
+      for (const p of points) {
+        const dot = svgEl('circle', {cx: p.x, cy: p.y, r: 4, fill: colorFor(p.node)});
+        const title = svgEl('title', {});
+        title.textContent = `${p.node.name}\n${formatValue(p.node.cumulative, data.unit)}`;
+        dot.appendChild(title);
+        svg.appendChild(dot);
+      }
+      svg.appendChild(svgText(12, 18, `Highest to lowest ${data.sample_type}`, 13, '#111827'));
+      statusEl.textContent = `${nodes.length} ranked points`;
+    }
+
+    function renderPieChart(data) {
+      const svg = pieChart;
+      svg.innerHTML = '';
+      const nodes = filteredNodes(data).slice(0, 20);
+      const width = svg.clientWidth || 900;
+      const height = svg.clientHeight || 560;
+      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      if (!nodes.length) return;
+      const cx = Math.min(width * .38, width - 300);
+      const cy = height / 2;
+      const r = Math.min(width, height) * .32;
+      const total = nodes.reduce((sum, n) => sum + n.cumulative, 0);
+      let angle = -Math.PI / 2;
+      nodes.forEach((node, i) => {
+        const slice = node.cumulative / total * Math.PI * 2;
+        const path = pieSlice(cx, cy, r, angle, angle + slice);
+        const el = svgEl('path', {d: path, fill: palette(i), stroke: '#fff', 'stroke-width': 1.5});
+        const title = svgEl('title', {});
+        title.textContent = `${node.name}\n${formatValue(node.cumulative, data.unit)} · ${((node.cumulative / total) * 100).toFixed(1)}%`;
+        el.appendChild(title);
+        svg.appendChild(el);
+        angle += slice;
+      });
+      nodes.slice(0, 14).forEach((node, i) => {
+        const y = 38 + i * 28;
+        svg.appendChild(svgEl('rect', {x: width * .64, y: y - 10, width: 12, height: 12, fill: palette(i)}));
+        svg.appendChild(svgText(width * .64 + 18, y, `${shortName(node.name)} · ${formatValue(node.cumulative, data.unit)}`, 12, '#111827'));
+      });
+      statusEl.textContent = `${nodes.length} pie slices`;
+    }
+
+    function drawAxes(svg, width, height, pad) {
+      svg.appendChild(svgEl('line', {x1: pad.left, y1: height - pad.bottom, x2: width - pad.right, y2: height - pad.bottom, stroke: '#9aa5b1'}));
+      svg.appendChild(svgEl('line', {x1: pad.left, y1: pad.top, x2: pad.left, y2: height - pad.bottom, stroke: '#9aa5b1'}));
+      svg.appendChild(svgText(pad.left, height - 18, 'rank', 12, '#5b6472'));
+      svg.appendChild(svgText(12, pad.top + 8, 'value', 12, '#5b6472'));
+    }
+
+    function pieSlice(cx, cy, r, start, end) {
+      const large = end - start > Math.PI ? 1 : 0;
+      const x1 = cx + Math.cos(start) * r;
+      const y1 = cy + Math.sin(start) * r;
+      const x2 = cx + Math.cos(end) * r;
+      const y2 = cy + Math.sin(end) * r;
+      return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
+    }
+
+    function palette(i) {
+      return ['#0f766e', '#b42318', '#2563eb', '#d97706', '#7c3aed', '#059669', '#be185d', '#4f46e5', '#0891b2', '#ca8a04'][i % 10];
+    }
+
+    function svgText(x, y, text, size, fill) {
+      const el = svgEl('text', {x, y, 'font-size': size, fill});
+      el.textContent = text;
+      return el;
+    }
+
+    function renderGraph(data) {
+      const svg = document.querySelector('#graph');
+      svg.innerHTML = '';
+      const width = svg.clientWidth || 900;
+      const height = svg.clientHeight || 640;
+      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+
+      const sourceNodes = data.nodes || [];
+      const filtered = filteredNodes(data);
+      const keptIDs = new Set(filtered.map(n => n.id));
+      const nodes = sourceNodes.filter(n => keptIDs.has(n.id)).map(node => ({...node}));
+      const byID = new Map(nodes.map(n => [n.id, n]));
+      const edges = (data.edges || []).map(e => ({...e, source: byID.get(e.from), target: byID.get(e.to)})).filter(e => e.source && e.target);
+      const max = Math.max(...nodes.map(n => n.cumulative), 1);
+      const connected = connectedIDs(edges, graphState.selected);
+      for (const n of nodes) n.r = 7 + Math.sqrt(n.cumulative / max) * 42;
+
+      layoutTree(nodes, edges, width, height);
+      applyManualNodePositions(nodes);
+
+      const viewport = svgEl('g', {transform: transformAttr()});
+      const linkGroup = svgEl('g', {stroke: '#9aa5b1', 'stroke-opacity': .42});
+      const nodeGroup = svgEl('g', {});
+      viewport.append(linkGroup, nodeGroup);
+      svg.append(viewport);
+
+      for (const e of edges) {
+        const path = svgEl('path', {
+          d: edgePath(e),
+          fill: 'none',
+          'stroke-width': Math.max(1, Math.sqrt(e.value / max) * 8),
+          'data-from': e.from,
+          'data-to': e.to,
+          class: edgeClass(e, connected)
+        });
+        linkGroup.appendChild(path);
+      }
+
+      for (const n of nodes) {
+        const g = svgEl('g', {class: nodeClass(n, connected), transform: `translate(${n.x} ${n.y})`, 'data-node-id': n.id});
+        const title = svgEl('title', {});
+        title.textContent = `${n.name}\n${formatValue(n.cumulative, data.unit)} cumulative\n${formatValue(n.flat, data.unit)} flat`;
+        g.appendChild(title);
+        g.appendChild(svgEl('circle', {cx: 0, cy: 0, r: n.r, fill: colorFor(n), stroke: '#fff', 'stroke-width': 1.5}));
+        const label = svgEl('text', {x: n.r + 8, y: 4, 'text-anchor': 'start', 'font-size': 11, fill: '#1f2937'});
+        label.textContent = shortName(n.name);
+        g.appendChild(label);
+        attachNodeDrag(g, n, data, nodes, edges);
+        nodeGroup.appendChild(g);
+      }
+
+      attachViewportPanZoom(svg, viewport);
+      statusEl.textContent = `${nodes.length}/${sourceNodes.length} nodes, ${edges.length} edges`;
+    }
+
+    function applyManualNodePositions(nodes) {
+      const positions = graphState.positions || {};
+      for (const node of nodes) {
+        const saved = positions[node.id];
+        if (!saved) continue;
+        node.x = saved.x;
+        node.y = saved.y;
+      }
+    }
+
+    function layoutTree(nodes, edges, width, height) {
+      if (!nodes.length) return;
+      const incoming = new Map(nodes.map(n => [n.id, 0]));
+      const outgoing = new Map(nodes.map(n => [n.id, []]));
+      for (const e of edges) {
+        incoming.set(e.to, (incoming.get(e.to) || 0) + 1);
+        outgoing.get(e.from)?.push(e.to);
+      }
+      for (const ids of outgoing.values()) {
+        ids.sort((a, b) => (nodeValue(b, nodes) - nodeValue(a, nodes)) || String(a).localeCompare(String(b)));
+      }
+
+      const roots = nodes
+        .filter(n => (incoming.get(n.id) || 0) === 0)
+        .sort((a, b) => b.cumulative - a.cumulative);
+      if (!roots.length) roots.push(...[...nodes].sort((a, b) => b.cumulative - a.cumulative).slice(0, 1));
+
+      const depth = new Map();
+      const queue = roots.map(n => ({id: n.id, depth: 0}));
+      for (const root of roots) depth.set(root.id, 0);
+      while (queue.length) {
+        const item = queue.shift();
+        for (const child of outgoing.get(item.id) || []) {
+          const nextDepth = item.depth + 1;
+          if (depth.has(child) && depth.get(child) <= nextDepth) continue;
+          depth.set(child, nextDepth);
+          queue.push({id: child, depth: nextDepth});
+        }
+      }
+      for (const n of nodes) {
+        if (!depth.has(n.id)) depth.set(n.id, 0);
+      }
+
+      const levels = new Map();
+      for (const n of nodes) {
+        const d = depth.get(n.id) || 0;
+        if (!levels.has(d)) levels.set(d, []);
+        levels.get(d).push(n);
+      }
+      const maxDepth = Math.max(...levels.keys(), 0);
+      const xPad = 96;
+      const yPad = 76;
+      for (const [d, levelNodes] of levels) {
+        levelNodes.sort((a, b) => b.cumulative - a.cumulative);
+        const y = maxDepth === 0 ? height / 2 : yPad + (d / maxDepth) * Math.max(1, height - yPad * 2);
+        const usableWidth = Math.max(1, width - xPad * 2);
+        levelNodes.forEach((n, i) => {
+          n.x = xPad + ((i + 1) / (levelNodes.length + 1)) * usableWidth;
+          n.y = y;
+        });
+      }
+    }
+
+    function nodeValue(id, nodes) {
+      const n = nodes.find(node => node.id === id);
+      return n ? n.cumulative : 0;
+    }
+
+    function edgePath(edge) {
+      const sx = edge.source.x;
+      const sy = edge.source.y + edge.source.r;
+      const tx = edge.target.x;
+      const ty = edge.target.y - edge.target.r;
+      const mid = sy + Math.max(36, (ty - sy) / 2);
+      return `M ${sx} ${sy} C ${sx} ${mid}, ${tx} ${mid}, ${tx} ${ty}`;
+    }
+
+    function connectedIDs(edges, selected) {
+      if (!selected) return null;
+      const ids = new Set([selected]);
+      for (const e of edges) {
+        if (e.from === selected) ids.add(e.to);
+        if (e.to === selected) ids.add(e.from);
+      }
+      return ids;
+    }
+
+    function nodeClass(node, connected) {
+      const classes = ['node'];
+      if (graphState.selected === node.id) classes.push('selected');
+      if (connected && !connected.has(node.id)) classes.push('dim');
+      return classes.join(' ');
+    }
+
+    function edgeClass(edge, connected) {
+      const classes = ['edge'];
+      if (connected && edge.from !== graphState.selected && edge.to !== graphState.selected) classes.push('dim');
+      return classes.join(' ');
+    }
+
+    function transformAttr() {
+      return `translate(${graphState.tx} ${graphState.ty}) scale(${graphState.scale})`;
+    }
+
+    function attachViewportPanZoom(svg, viewport) {
+      let panning = false;
+      let startX = 0;
+      let startY = 0;
+      let startTx = 0;
+      let startTy = 0;
+
+      svg.onpointerdown = (event) => {
+        if (event.target.closest && event.target.closest('.node')) return;
+        panning = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        startTx = graphState.tx;
+        startTy = graphState.ty;
+        svg.classList.add('dragging');
+        svg.setPointerCapture(event.pointerId);
+      };
+      svg.onpointermove = (event) => {
+        if (!panning) return;
+        graphState.tx = startTx + event.clientX - startX;
+        graphState.ty = startTy + event.clientY - startY;
+        viewport.setAttribute('transform', transformAttr());
+      };
+      svg.onpointerup = (event) => {
+        panning = false;
+        svg.classList.remove('dragging');
+        if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+      };
+      svg.onpointercancel = svg.onpointerup;
+      svg.onwheel = (event) => {
+        event.preventDefault();
+        const oldScale = graphState.scale;
+        const nextScale = clamp(oldScale * (event.deltaY < 0 ? 1.12 : 0.88), 0.35, 4);
+        const rect = svg.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        graphState.tx = x - (x - graphState.tx) * (nextScale / oldScale);
+        graphState.ty = y - (y - graphState.ty) * (nextScale / oldScale);
+        graphState.scale = nextScale;
+        viewport.setAttribute('transform', transformAttr());
+      };
+    }
+
+    function attachNodeDrag(g, node, data, nodes, edges) {
+      let dragging = false;
+      let moved = false;
+      let startX = 0;
+      let startY = 0;
+      let nodeX = 0;
+      let nodeY = 0;
+
+      g.onpointerdown = event => {
+        dragging = true;
+        moved = false;
+        startX = event.clientX;
+        startY = event.clientY;
+        nodeX = node.x;
+        nodeY = node.y;
+        g.classList.add('dragging');
+        g.setPointerCapture(event.pointerId);
+        event.stopPropagation();
+      };
+      g.onpointermove = event => {
+        if (!dragging) return;
+        const dx = (event.clientX - startX) / graphState.scale;
+        const dy = (event.clientY - startY) / graphState.scale;
+        moved = moved || Math.abs(dx) + Math.abs(dy) > 3;
+        node.x = nodeX + dx;
+        node.y = nodeY + dy;
+        graphState.positions[node.id] = { x: node.x, y: node.y };
+        updateGraphPositions(nodes, edges);
+        event.stopPropagation();
+      };
+      g.onpointerup = event => {
+        dragging = false;
+        g.classList.remove('dragging');
+        if (g.hasPointerCapture(event.pointerId)) g.releasePointerCapture(event.pointerId);
+        if (!moved) {
+          graphState.selected = graphState.selected === node.id ? null : node.id;
+          renderGraph(data);
+        }
+        event.stopPropagation();
+      };
+      g.onpointercancel = event => {
+        dragging = false;
+        g.classList.remove('dragging');
+        if (g.hasPointerCapture(event.pointerId)) g.releasePointerCapture(event.pointerId);
+      };
+    }
+
+    function updateGraphPositions(nodes, edges) {
+      for (const n of nodes) {
+        const el = document.querySelector(`[data-node-id="${cssEscape(n.id)}"]`);
+        if (el) el.setAttribute('transform', `translate(${n.x} ${n.y})`);
+      }
+      for (const e of edges) {
+        const el = document.querySelector(`[data-from="${cssEscape(e.from)}"][data-to="${cssEscape(e.to)}"]`);
+        if (el) el.setAttribute('d', edgePath(e));
+      }
+    }
+
+    function cssEscape(value) {
+      if (window.CSS && CSS.escape) return CSS.escape(value);
+      return String(value).replace(/["\\]/g, '\\$&');
+    }
+
+    function svgEl(name, attrs) {
+      const el = document.createElementNS('http://www.w3.org/2000/svg', name);
+      for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+      return el;
+    }
+
+    function colorFor(n) {
+      if (n.kind === 'hot') return '#b42318';
+      if (n.kind === 'runtime') return '#7c3aed';
+      if (n.kind === 'http') return '#2563eb';
+      if (n.percent > 20) return '#b42318';
+      if (n.percent > 8) return '#d97706';
+      return '#0f766e';
+    }
+
+    function formatValue(value, unit) {
+      if (unit === 'bytes') {
+        const units = ['B', 'KiB', 'MiB', 'GiB'];
+        let n = value, i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
+      }
+      if (unit === 'nanoseconds') return `${(value / 1e6).toFixed(1)} ms`;
+      if (unit === 'goroutines') return `${value.toLocaleString()} goroutines`;
+      if (unit === 'samples') return `${value.toLocaleString()} samples`;
+      if (unit === 'score') return `${value.toLocaleString()} score`;
+      return `${value.toLocaleString()} ${unit || ''}`.trim();
+    }
+
+    function shortName(name) {
+      const parts = name.split('/');
+      const last = parts[parts.length - 1];
+      return last.length > 42 ? last.slice(0, 39) + '...' : last;
+    }
+
+    function escapeHtml(text) {
+      return String(text || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+  </script>
+</body>
+</html>

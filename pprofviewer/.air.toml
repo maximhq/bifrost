@@ -1,0 +1,21 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "GOWORK=off go build -o ./tmp/pprofviewer ./cmd/pprofviewer"
+bin = "./tmp/pprofviewer"
+delay = 500
+exclude_dir = ["tmp"]
+exclude_regex = ["_test.go"]
+include_dir = ["cmd", "internal"]
+include_ext = ["go", "html"]
+kill_delay = "500ms"
+log = "tmp/air-build.log"
+send_interrupt = true
+stop_on_error = true
+
+[log]
+time = true
+
+[misc]
+clean_on_exit = true
