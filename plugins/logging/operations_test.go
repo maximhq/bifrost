@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 type testLogger struct{}
@@ -188,7 +189,7 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 // TestPostLLMHookCancelledStreamLogsCost verifies #3357 at the logging layer: a
 // streaming request cancelled mid-flight (result==nil) whose error carries the
 // partial usage the provider already processed (BifrostError.ExtraFields.BilledUsage)
-// must produce a log row with status="error", the consumed tokens, AND an
+// must produce a log row with status="cancelled", the consumed tokens, AND an
 // accurate cost computed from the datasheet rates.
 func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	store := newTestStore(t)
@@ -255,8 +256,8 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindByID() error = %v", err)
 	}
-	if entry.Status != "error" {
-		t.Fatalf("expected error status, got %q", entry.Status)
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected cancelled status, got %q", entry.Status)
 	}
 	if entry.TokenUsageParsed == nil {
 		t.Fatalf("expected token usage recorded from BilledUsage on the cancel path")
@@ -271,6 +272,168 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5
 	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
+	}
+}
+
+func TestPostLLMHookContextTimeoutLogsCancelledStatus(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-context-timeout")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "Request timed out by context: context deadline exceeded",
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-context-timeout")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected cancelled status, got %q", entry.Status)
+	}
+}
+
+func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-timeout")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderRequestTimedOut,
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-provider-timeout")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.Status != "error" {
+		t.Fatalf("expected error status, got %q", entry.Status)
+	}
+}
+
+func TestLogStatusForErrorDoesNotTreatGenericDeadlineMessageAsCancelled(t *testing.T) {
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "provider request hit project deadline exceeded limit",
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+	}
+
+	if got := logStatusForError(bifrostErr); got != "error" {
+		t.Fatalf("expected generic provider deadline message to remain error, got %q", got)
+	}
+}
+
+func TestApplyStreamingOutputToEntryPreservesAccumulatorCancelledStatus(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+	statusCode := 499
+	streamResponse := &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{
+			ErrorDetails: &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Message: "Request cancelled: client disconnected",
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+				},
+			},
+			Latency: 42,
+		},
+	}
+
+	plugin.applyStreamingOutputToEntry(entry, streamResponse, false, true)
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected initial cancelled status, got %q", entry.Status)
+	}
+	if entry.ErrorDetails == "" {
+		t.Fatalf("expected serialized error details to be set")
+	}
+	if entry.ErrorDetailsParsed == nil {
+		t.Fatalf("expected parsed error details to be set")
+	}
+
+	// Match the downstream Path B re-derivation in PostLLMHook. If
+	// ErrorDetailsParsed is missing, this collapses accumulator-originated
+	// cancellations back to "error".
+	if entry.ErrorDetails != "" || entry.ErrorDetailsParsed != nil {
+		entry.Status = logStatusForError(entry.ErrorDetailsParsed)
+	}
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected downstream reclassification to preserve cancelled status, got %q", entry.Status)
 	}
 }
 
