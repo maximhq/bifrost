@@ -1,0 +1,4 @@
+- feat: add GitHub Copilot as an LLM provider with two-layer OAuth device-code flow, dynamic model listing, and a device-code OAuth callback handler [@mainaksarcar](https://github.com/mainaksarcar)
+- feat: ui/providers - Copilot auth-first key form with device-code auto-save [@mainaksarcar](https://github.com/mainaksarcar)
+- fix: refreshModels - look up stored provider config and return 404 for unknown providers [@mainaksarcar](https://github.com/mainaksarcar)
+- fix: Copilot handler - pass through slow_down status instead of mapping to pending [@mainaksarcar](https://github.com/mainaksarcar)

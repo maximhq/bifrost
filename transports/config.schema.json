@@ -373,6 +373,9 @@
         },
         "runware": {
           "$ref": "#/$defs/provider"
+        },
+        "copilot": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
