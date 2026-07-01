@@ -3,7 +3,7 @@ module github.com/maximhq/bifrost/plugins/compat
 go 1.26.4
 
 require (
-	github.com/bytedance/sonic v1.15.1
+	github.com/bytedance/sonic v1.15.2
 	github.com/maximhq/bifrost/core v1.6.2
 	github.com/maximhq/bifrost/framework v1.4.2
 )
