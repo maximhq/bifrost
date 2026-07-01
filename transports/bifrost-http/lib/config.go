@@ -4415,6 +4415,13 @@ func (c *Config) GetHeaderMatcher() *HeaderMatcher {
 	return c.headerMatcher.Load()
 }
 
+func (c *Config) GetModelCatalog() *modelcatalog.ModelCatalog {
+	if c == nil {
+		return nil
+	}
+	return c.ModelCatalog
+}
+
 // SetHeaderMatcher atomically stores a new precompiled header matcher.
 // Called when header filter config changes.
 func (c *Config) SetHeaderMatcher(m *HeaderMatcher) {
