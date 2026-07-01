@@ -189,9 +189,10 @@ func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	inputCost := float64(1)
 	outputCost := float64(2)
 	entry := Entry{
-		BaseModel: "gpt-4o",
-		Provider:  "openai",
-		Mode:      "chat",
+		BaseModel:    "gpt-4o",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: true,
 		Options: Options{
 			InputCostPerToken:  &inputCost,
 			OutputCostPerToken: &outputCost,
@@ -218,6 +219,9 @@ func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	}
 	if roundTrip.Architecture == nil || roundTrip.Architecture.Modality == nil || *roundTrip.Architecture.Modality != modality {
 		t.Fatalf("expected architecture to round-trip, got %#v", roundTrip.Architecture)
+	}
+	if !roundTrip.IsDeprecated {
+		t.Fatalf("expected is_deprecated to round-trip")
 	}
 }
 

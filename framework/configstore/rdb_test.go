@@ -88,6 +88,36 @@ func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 	}
 }
 
+func TestRDBConfigStore_UpsertModelPricesSyncsIsDeprecated(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: true,
+	}))
+
+	prices, err := store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.True(t, prices[0].IsDeprecated)
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: false,
+	}))
+
+	prices, err = store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.False(t, prices[0].IsDeprecated)
+}
+
 func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2245,4 +2275,41 @@ func TestUpsertModelPricesBatch_SQLite(t *testing.T) {
 	require.NotNil(t, updated)
 	require.NotNil(t, updated.InputCostPerToken)
 	assert.InDelta(t, 0.000005, *updated.InputCostPerToken, 1e-9)
+}
+
+func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelParameters{}))
+
+	ctx := context.Background()
+	params := []tables.TableModelParameters{
+		{Model: "model-a", Data: `{"max_output_tokens":100}`},
+		{Model: "model-b", Data: `{"max_output_tokens":200}`},
+		{Model: "model-c", Data: `{"max_output_tokens":300}`},
+	}
+
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, params))
+
+	got, err := s.GetModelParameters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+
+	params[1].Data = `{"max_output_tokens":250}`
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, params))
+
+	updated, err := s.GetModelParametersByModel(ctx, "model-b")
+	require.NoError(t, err)
+	assert.Equal(t, `{"max_output_tokens":250}`, updated.Data)
+
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, []tables.TableModelParameters{
+		{Model: "model-b", Data: `{"max_output_tokens":260}`},
+		{Model: "model-b", Data: `{"max_output_tokens":270}`},
+	}))
+	updated, err = s.GetModelParametersByModel(ctx, "model-b")
+	require.NoError(t, err)
+	assert.Equal(t, `{"max_output_tokens":270}`, updated.Data)
+
+	got, err = s.GetModelParameters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
 }
