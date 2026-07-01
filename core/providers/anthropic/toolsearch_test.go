@@ -315,3 +315,21 @@ func TestToolSearch_ReverseRebuildsAnthropicBlocks(t *testing.T) {
 		t.Fatalf("rebuilt tool_references = %+v, want one ref to %q", resultBlock.ToolReferences, tsDiscoveredTool)
 	}
 }
+
+// A JSON-decoded tool_search_call input item has an initialized ResponsesToolMessage
+// (arguments surfaced) but no CallID/ID, so there is no valid tool-use id to build
+// server_tool_use / tool_search_tool_result blocks — the reverse path must skip it,
+// not emit a nil-id pair Anthropic would reject.
+func TestToolSearch_ReverseSkipsWhenNoToolUseID(t *testing.T) {
+	t.Parallel()
+	msg := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Name:                    schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+			ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
+		},
+	}
+	if blocks := convertBifrostToolSearchCallToAnthropicBlocks(&msg); blocks != nil {
+		t.Fatalf("expected nil (no tool-use id), got %+v", blocks)
+	}
+}

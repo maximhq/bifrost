@@ -5905,6 +5905,13 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 	} else {
 		toolUseID = msg.ID
 	}
+	// A JSON-decoded tool_search_call input item carries no CallID/ID (only the
+	// preserved raw bytes + arguments), so toolUseID can be nil. Anthropic rejects
+	// server_tool_use / tool_search_tool_result blocks with a nil id — skip rather
+	// than emit an invalid pair, consistent with the nil-ResponsesToolMessage guard.
+	if toolUseID == nil {
+		return nil
+	}
 
 	// 1. server_tool_use block. Preserve the search variant name (regex/bm25);
 	// the query is not retained on the neutral item, so send an empty input.
