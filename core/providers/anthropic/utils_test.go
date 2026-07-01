@@ -2274,6 +2274,10 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6-20250514", true},
 		{"claude-sonnet-4.6-20250514", true},
+		// Sonnet 5+: adaptive is the only thinking-on mode.
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
 		// Fable/Mythos family: adaptive thinking is always on.
 		{"claude-fable-5", true},
 		{"claude-mythos-5", true},
@@ -2328,8 +2332,43 @@ func TestIsFableFamily(t *testing.T) {
 	}
 }
 
+// TestIsSonnet5Plus pins the Sonnet 5 predicate. Sonnet 5 adopts the Opus 4.7+
+// request surface (adaptive-only thinking, temperature/top_p/top_k removed). The
+// "sonnet-5" substring must NOT match "sonnet-4-5" or "3-5-sonnet".
+func TestIsSonnet5Plus(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"Claude-Sonnet-5", true},
+		{"global.anthropic.claude-sonnet-5", true},
+		{"anthropic.claude-sonnet-5-v1", true},
+		{"claude-sonnet-5@20260101", true},
+		// Must NOT match older Sonnets or other families.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
+		{"claude-sonnet-4-6", false},
+		{"claude-3-5-sonnet-20241022", false},
+		{"claude-opus-4-8", false},
+		{"claude-fable-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsSonnet5Plus(tt.model); got != tt.expected {
+				t.Errorf("IsSonnet5Plus(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestIsAdaptiveOnlyThinkingModel covers the union gate used for the thinking
-// and sampling-parameter surfaces: Opus 4.7+ OR the Fable/Mythos family.
+// and sampling-parameter surfaces: Opus 4.7+ OR Sonnet 5+ OR the Fable/Mythos family.
 func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 	tests := []struct {
 		model    string
@@ -2339,6 +2378,10 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		{"claude-opus-4-8", true},
 		{"claude-opus-4-7", true},
 		{"claude-opus-4.8-20260601", true},
+		// Sonnet 5+.
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
 		// Fable/Mythos.
 		{"claude-fable-5", true},
 		{"claude-mythos-5", true},
@@ -2346,6 +2389,9 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
 		{"claude-opus-4-6", false},
 		{"claude-sonnet-4-6", false},
+		// Sonnet 4.5 must NOT match the "sonnet-5" substring gate.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
 		// Other.
 		{"claude-opus-4-5", false},
 		{"claude-haiku-4-5", false},
@@ -2449,7 +2495,7 @@ func TestSupportsFastMode(t *testing.T) {
 
 // TestSupportsEffortParameter pins the helper against the explicit doc list
 // at https://platform.claude.com/docs/en/build-with-claude/effort:
-// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, Sonnet 4.6, Opus 4.5".
 func TestSupportsEffortParameter(t *testing.T) {
 	tests := []struct {
 		model    string
@@ -2468,6 +2514,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6", true},
 		{"claude-sonnet-4.6-20250514", true},
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
 		{"claude-opus-4-5", true},
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
@@ -2543,6 +2592,15 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 		{
 			name:  "sonnet 4.6 keeps effort",
 			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "sonnet 5 keeps effort",
+			model: "claude-sonnet-5",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
@@ -2644,6 +2702,13 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 			name:           "sonnet 4.6 keeps effort",
 			model:          "claude-sonnet-4-6",
 			body:           `{"model":"claude-sonnet-4-6","output_config":{"effort":"medium"}}`,
+			wantHasEffort:  true,
+			wantHasOCField: true,
+		},
+		{
+			name:           "sonnet 5 keeps effort",
+			model:          "claude-sonnet-5",
+			body:           `{"model":"claude-sonnet-5","output_config":{"effort":"medium"}}`,
 			wantHasEffort:  true,
 			wantHasOCField: true,
 		},
@@ -2937,6 +3002,10 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"claude-opus-4-6", ComputerUseGen20251124},
 		{"claude-sonnet-4-6", ComputerUseGen20251124},
 		{"claude-sonnet-4.6", ComputerUseGen20251124},
+		// Sonnet 5+ uses the new generation (same tool surface as Sonnet 4.6).
+		{"claude-sonnet-5", ComputerUseGen20251124},
+		{"claude-sonnet-5-20260101", ComputerUseGen20251124},
+		{"global.anthropic.claude-sonnet-5", ComputerUseGen20251124},
 		{"claude-opus-4-5", ComputerUseGen20251124},
 		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
 		// Fable/Mythos family uses the new generation, like Opus 4.8.
