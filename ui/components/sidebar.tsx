@@ -22,6 +22,7 @@ import {
 	Landmark,
 	Hexagon,
 	BadgeCheck,
+	BadgeInfo,
 	LaptopMinimalCheck,
 	LayoutGrid,
 	LogOut,
@@ -1055,6 +1056,17 @@ export default function AppSidebar() {
 						description: "Toggle feature flags",
 						hasAccess: hasFeatureFlagsAccess,
 					},
+					...(IS_ENTERPRISE
+						? [
+								{
+									title: "License Info",
+									url: "/workspace/config/license",
+									icon: BadgeInfo,
+									description: "Enterprise license information",
+									hasAccess: hasSettingsAccess,
+								},
+							]
+						: []),
 				],
 			},
 		],

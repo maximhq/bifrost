@@ -10,6 +10,8 @@ import (
 type UserAgentIdentifiers []string
 
 var (
+	// ClaudeChatWeb identifies requests from the Claude web app.
+	ClaudeChatWeb = UserAgentIdentifiers{"claude-chat-web", "claude-web"}
 	// ClaudeDesktop identifies requests from the Claude Desktop app.
 	ClaudeDesktop = UserAgentIdentifiers{"claude-desktop", "claude/"}
 	// ClaudeCLI identifies requests from Claude Code / Claude CLI clients.
@@ -19,7 +21,7 @@ var (
 	// CodexCLI identifies requests from Codex CLI clients.
 	CodexCLI = UserAgentIdentifiers{"codex-cli", "codex-tui"}
 	// CodexDesktop identifies requests from the Codex desktop app.
-	CodexDesktop = UserAgentIdentifiers{"codex-desktop", "codex/"}
+	CodexDesktop = UserAgentIdentifiers{"codex-desktop", "codex desktop/", "codex/"}
 	// Cursor identifies requests from Cursor clients.
 	Cursor = UserAgentIdentifiers{"cursor"}
 	// KiloCode identifies requests from Kilo Code clients.
@@ -66,6 +68,7 @@ const (
 // UserAgentAppMatchers is evaluated top-to-bottom. More specific identifiers
 // should appear before generic ancestors.
 var UserAgentAppMatchers = []UserAgentAppMatcher{
+	{App: "Claude Chat Web", Identifiers: ClaudeChatWeb},
 	{App: "Claude Desktop", Identifiers: ClaudeDesktop},
 	{App: "Claude Code", Identifiers: ClaudeCLI},
 	{App: "API", Identifiers: APIClient},

@@ -1,3 +1,5 @@
+import type { Middleware } from "redux";
+
 // Placeholder for enterprise reducers
 // Export noop reducers when enterprise features are not available
 
@@ -7,6 +9,9 @@ export const guardrailReducer = (state = {}) => state;
 
 // Empty reducers map when enterprise features are not available
 export const reducers = {};
+
+// Empty middleware list when enterprise features are not available
+export const middleware: Middleware[] = [];
 
 // Empty enterprise state type when enterprise features are not available
 export type EnterpriseState = {};

@@ -694,6 +694,9 @@ export default function DashboardPage() {
 									dimensionLabel="Virtual Key"
 									testIdPrefix="dashboard-virtual-key-rankings"
 									dataKey="virtualKeyRankingsData"
+								/>
+							</div>
+						</TabsContent>
 						{/* App Rankings Tab */}
 						<TabsContent value="app-rankings" {...(pdfMode && { forceMount: true })}>
 							<div id="dashboard-section-app-rankings">
