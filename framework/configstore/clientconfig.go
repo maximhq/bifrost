@@ -98,8 +98,17 @@ type ClientConfig struct {
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar               `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	MCPServerAuthMode                     tables.MCPServerAuthMode         `json:"mcp_server_auth_mode,omitempty"`       // How /mcp authenticates inbound clients: headers (default), both, or oauth.
+	OAuth2ServerConfig                    *tables.OAuth2ServerConfig       `json:"oauth2_server_config,omitempty"`       // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 	DumpErrorsInConsoleLogs               bool                             `json:"dump_errors_in_console_logs"`          // Dump error details in console logs
+}
+
+// IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
+// endpoints and JWKS endpoint should be live. True when MCPServerAuthMode is
+// both or oauth.
+func (c *ClientConfig) IsMCPOAuthDiscoveryEnabled() bool {
+	return c.MCPServerAuthMode == tables.MCPServerAuthModeBoth || c.MCPServerAuthMode == tables.MCPServerAuthModeOAuth
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -370,6 +379,26 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		} else {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
+	}
+
+	// Only hash non-default values to avoid legacy config hash churn on upgrade —
+	// existing configs carry an empty auth mode and a nil OAuth2 server config.
+	if c.MCPServerAuthMode != "" {
+		hash.Write([]byte("mcpServerAuthMode:" + string(c.MCPServerAuthMode)))
+	}
+	// Hash OAuth2ServerConfig field-by-field (not via Marshal) for a stable,
+	// deterministic byte stream that does not depend on serializer field order.
+	if c.OAuth2ServerConfig != nil {
+		oc := c.OAuth2ServerConfig
+		if oc.IssuerURL.IsSet() {
+			if oc.IssuerURL.IsFromEnv() {
+				hash.Write([]byte("oauth2IssuerURL:env:" + oc.IssuerURL.GetRawRef()))
+			} else {
+				hash.Write([]byte("oauth2IssuerURL:val:" + oc.IssuerURL.GetValue()))
+			}
+		}
+		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
+		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

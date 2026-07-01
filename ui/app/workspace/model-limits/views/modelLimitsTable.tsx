@@ -410,7 +410,7 @@ export default function ModelLimitsTable({
 														</Tooltip>
 													</TooltipProvider>
 												) : (
-													<span className="text-muted-foreground text-sm">—</span>
+													<span className="text-muted-foreground text-sm">-</span>
 												)}
 											</TableCell>
 											<TableCell className="min-w-[180px]">

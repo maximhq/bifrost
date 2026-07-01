@@ -279,6 +279,50 @@
             }
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
+        },
+        "mcp_server_auth_mode": {
+          "type": "string",
+          "enum": ["headers", "both", "oauth"],
+          "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — WARNING: disables VK/header MCP access."
+        },
+        "oauth2_server_config": {
+          "type": "object",
+          "properties": {
+            "issuer_url": {
+              "anyOf": [
+                { "type": "string" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": { "type": "string" },
+                    "env_var": { "type": "string" },
+                    "from_env": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required for multi-host deployments; single-host deployments can omit this (falls back to request Host header). Supports env var syntax: \"env.MY_VAR\"."
+            },
+            "auth_code_ttl": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 600,
+              "description": "Lifetime of the single-use authorization code in seconds (default: 600)."
+            },
+            "access_token_ttl": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 600,
+              "description": "Lifetime of the issued JWT Bearer token in seconds (default: 600)."
+            },
+            "disable_vk_identity": {
+              "type": "boolean",
+              "default": false,
+              "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
+            }
+          },
+          "additionalProperties": false,
+          "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
         }
       },
       "additionalProperties": false

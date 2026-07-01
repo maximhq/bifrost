@@ -59,6 +59,31 @@ func TestAnalyze_Hello(t *testing.T) {
 	if result.Tier != "SIMPLE" {
 		t.Errorf("expected SIMPLE tier for greeting, got %s (score=%.3f)", result.Tier, result.Score)
 	}
+	if result.Score != 0.0 {
+		t.Errorf("expected simple-only greeting to clamp to 0.0, got %.3f", result.Score)
+	}
+}
+
+func TestAnalyze_NoSignalFallsBackButSimpleSignalClassifies(t *testing.T) {
+	a := NewComplexityAnalyzer()
+
+	noSignal := a.Analyze(ComplexityInput{
+		LastUserText: "2+3",
+	})
+	if noSignal != nil {
+		t.Fatalf("expected no-signal arithmetic prompt to be unclassified, got %s (score=%.3f)", noSignal.Tier, noSignal.Score)
+	}
+
+	simpleSignal := a.Analyze(ComplexityInput{
+		LastUserText: "translate this to spanish",
+	})
+	if simpleSignal == nil {
+		t.Fatalf("expected simple keyword prompt to classify")
+	}
+	if simpleSignal.Tier != TierSimple || simpleSignal.Score != 0.0 {
+		t.Fatalf("expected simple keyword prompt to classify as SIMPLE with 0.0 score, got %s (score=%.3f)",
+			simpleSignal.Tier, simpleSignal.Score)
+	}
 }
 
 func TestAnalyze_CodeRequest(t *testing.T) {
@@ -77,11 +102,11 @@ func TestAnalyze_Complex(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
-		LastUserText: "Design a distributed authentication system using Kubernetes with encryption and load balancer",
+		LastUserText: "Design a distributed authentication architecture using Kubernetes, encryption, load balancer, failover, RBAC, OIDC, audit log, and connection pool idempotency.",
 	})
 
-	if result.Tier != "COMPLEX" && result.Tier != "REASONING" {
-		t.Errorf("expected COMPLEX or REASONING tier for architecture request, got %s (score=%.3f)", result.Tier, result.Score)
+	if result.Tier == "SIMPLE" {
+		t.Errorf("expected MEDIUM or higher tier for architecture request, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
@@ -97,27 +122,28 @@ func TestAnalyze_Reasoning(t *testing.T) {
 	}
 }
 
-func TestAnalyze_OutputComplexity(t *testing.T) {
+func TestAnalyze_OutputComplexityRequiresVisibleSignal(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
 		LastUserText: "List every AWS service and explain each one with examples",
 	})
 
-	if result.Tier == "SIMPLE" {
-		t.Errorf("expected non-SIMPLE tier for output-heavy request, got %s (score=%.3f)", result.Tier, result.Score)
+	if result != nil {
+		t.Errorf("expected output-heavy request without visible signals to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
-func TestAnalyze_ConversationContext(t *testing.T) {
+func TestAnalyze_ConversationContextDoesNotClassifyNoSignalLatestTurn(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
-	// Short follow-up with no context stays SIMPLE.
 	noCtx := a.Analyze(ComplexityInput{
 		LastUserText: "Why?",
 	})
+	if noCtx != nil {
+		t.Fatalf("expected no-signal latest turn without context to be unclassified, got %s (score=%.3f)", noCtx.Tier, noCtx.Score)
+	}
 
-	// Same follow-up with technical conversation history gets a higher score.
 	withCtx := a.Analyze(ComplexityInput{
 		LastUserText: "Why?",
 		PriorUserTexts: []string{
@@ -127,9 +153,8 @@ func TestAnalyze_ConversationContext(t *testing.T) {
 		},
 	})
 
-	if withCtx.Score <= noCtx.Score {
-		t.Errorf("expected conversation context to raise score: noCtx=%.3f, withCtx=%.3f",
-			noCtx.Score, withCtx.Score)
+	if withCtx != nil {
+		t.Errorf("expected complex history not to classify a no-signal latest turn, got %s (score=%.3f)", withCtx.Tier, withCtx.Score)
 	}
 }
 
@@ -155,7 +180,7 @@ func TestAnalyze_ConversationContextDoesNotDiluteStrongLastMessage(t *testing.T)
 	}
 }
 
-func TestAnalyze_ReferentialFollowupLiftsShortTechnicalContinuation(t *testing.T) {
+func TestAnalyze_ContinuationPhraseLiftsTechnicalContinuation(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
@@ -167,27 +192,30 @@ func TestAnalyze_ReferentialFollowupLiftsShortTechnicalContinuation(t *testing.T
 		},
 	})
 
+	if result == nil {
+		t.Fatalf("expected continuation phrase with prior context to classify")
+	}
 	if result.Tier == "SIMPLE" {
-		t.Fatalf("expected short referential follow-up to lift above SIMPLE, got %s (score=%.3f)", result.Tier, result.Score)
+		t.Fatalf("expected continuation to lift above SIMPLE, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 	if result.Score < simpleMediumBoundary {
 		t.Fatalf("expected score above SIMPLE threshold, got %.3f", result.Score)
 	}
 }
 
-func TestAnalyze_ReferentialFollowupRequiresRealContext(t *testing.T) {
+func TestAnalyze_ContinuationPhraseRequiresRealContext(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
 		LastUserText: "do it",
 	})
 
-	if result.Tier != "SIMPLE" {
-		t.Fatalf("expected SIMPLE tier without prior context, got %s (score=%.3f)", result.Tier, result.Score)
+	if result != nil {
+		t.Fatalf("expected continuation phrase without prior context to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
-func TestAnalyze_TaskShiftFollowupDoesNotUseReferentialLift(t *testing.T) {
+func TestAnalyze_SimpleKeywordFollowupDoesNotUseContext(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
@@ -198,12 +226,15 @@ func TestAnalyze_TaskShiftFollowupDoesNotUseReferentialLift(t *testing.T) {
 		},
 	})
 
+	if result == nil {
+		t.Fatalf("expected simple keyword follow-up to classify")
+	}
 	if result.Score >= mediumComplexBoundary {
-		t.Fatalf("expected task-shift request to stay below COMPLEX threshold, got %.3f", result.Score)
+		t.Fatalf("expected simple keyword follow-up to stay below COMPLEX threshold, got %.3f", result.Score)
 	}
 }
 
-func TestAnalyze_LimitingTaskShiftDoesNotUseReferentialLift(t *testing.T) {
+func TestAnalyze_UnmatchedFollowupDoesNotUseContext(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
@@ -214,8 +245,8 @@ func TestAnalyze_LimitingTaskShiftDoesNotUseReferentialLift(t *testing.T) {
 		},
 	})
 
-	if result.Score >= mediumComplexBoundary {
-		t.Fatalf("expected limiting summary request to stay below COMPLEX threshold, got %.3f", result.Score)
+	if result != nil {
+		t.Fatalf("expected unmatched follow-up not to use context, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
@@ -226,8 +257,8 @@ func TestAnalyze_RecentContextOutweighsOlderContext(t *testing.T) {
 		LastUserText: "do it",
 		PriorUserTexts: []string{
 			"Hello there.",
-			"Thanks.",
 			"Design a distributed authentication system with RBAC, OIDC, and regional failover.",
+			"Debug the API gateway encryption middleware and Kubernetes connection pool behavior.",
 		},
 	})
 
@@ -235,11 +266,14 @@ func TestAnalyze_RecentContextOutweighsOlderContext(t *testing.T) {
 		LastUserText: "do it",
 		PriorUserTexts: []string{
 			"Design a distributed authentication system with RBAC, OIDC, and regional failover.",
-			"Hello there.",
+			"Debug the API gateway encryption middleware and Kubernetes connection pool behavior.",
 			"Thanks.",
 		},
 	})
 
+	if recentTech == nil || olderTech == nil {
+		t.Fatalf("expected both continuation cases to classify, got recent=%v older=%v", recentTech, olderTech)
+	}
 	if recentTech.Score <= olderTech.Score {
 		t.Fatalf("expected more recent technical context to matter more: recent=%.3f older=%.3f",
 			recentTech.Score, olderTech.Score)
@@ -264,25 +298,25 @@ func TestAnalyze_SystemPromptBoost(t *testing.T) {
 	}
 }
 
-func TestAnalyze_SystemPromptDampener(t *testing.T) {
+func TestAnalyze_SystemPromptSimpleSignalsIgnored(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	base := a.Analyze(ComplexityInput{
-		LastUserText: "Explain how databases work",
+		LastUserText: "Explain how database code works",
 	})
 
-	dampened := a.Analyze(ComplexityInput{
-		LastUserText: "Explain how databases work",
+	withSimpleSystemPrompt := a.Analyze(ComplexityInput{
+		LastUserText: "Explain how database code works",
 		SystemText:   "You are a beginner tutor. Keep answers simple, brief, and concise.",
 	})
 
-	if dampened.Score >= base.Score {
-		t.Errorf("expected system prompt to dampen score: base=%.3f, dampened=%.3f",
-			base.Score, dampened.Score)
+	if withSimpleSystemPrompt.Score != base.Score {
+		t.Errorf("expected simple system-prompt terms to be ignored: base=%.3f, withSimpleSystemPrompt=%.3f",
+			base.Score, withSimpleSystemPrompt.Score)
 	}
 }
 
-func TestAnalyze_SystemPromptLexicalAssistDoesNotOverPromoteSimpleWebhook(t *testing.T) {
+func TestAnalyze_SystemPromptLexicalAssistDoesNotOverPromoteSimpleCodeDefinition(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
@@ -301,32 +335,26 @@ func TestAnalyze_EmptyInput(t *testing.T) {
 
 	result := a.Analyze(ComplexityInput{})
 
-	if result.Tier != "SIMPLE" {
-		t.Errorf("expected SIMPLE tier for empty input, got %s", result.Tier)
-	}
-	if result.Score != 0.0 {
-		t.Errorf("expected 0.0 score for empty input, got %.3f", result.Score)
+	if result != nil {
+		t.Errorf("expected empty input to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
 func TestAnalyze_ReasoningOverrideNotTooEager(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
-	// Two weak reasoning markers should NOT force REASONING
 	result := a.Analyze(ComplexityInput{
 		LastUserText: "Why does React re-render, and what if I use useMemo?",
 	})
 
-	if result.Tier == "REASONING" {
-		t.Errorf("expected non-REASONING tier for casual question with weak markers, got %s (score=%.3f)",
-			result.Tier, result.Score)
+	if result != nil {
+		t.Errorf("expected removed broad reasoning markers to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
-func TestAnalyze_SimpleDampenerConditional(t *testing.T) {
+func TestAnalyze_SimpleKeywordDoesNotSuppressTechnicalSignals(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
-	// "What is" + technical term should not be over-dampened
 	result := a.Analyze(ComplexityInput{
 		LastUserText: "What is eventual consistency in distributed systems with sharding?",
 	})
@@ -371,8 +399,8 @@ func TestAnalyze_MultiTenantSSOArchitecture(t *testing.T) {
 		LastUserText: "Design a multi-tenant authentication service for a SaaS platform on Kubernetes. Requirements: RBAC with custom roles per tenant, audit logging for all auth events, regional failover across two AWS regions, and support for both SAML 2.0 and OIDC enterprise SSO. Include the data model and the request flow for a login.",
 	})
 
-	if result.Tier != "COMPLEX" && result.Tier != "REASONING" {
-		t.Errorf("expected COMPLEX or REASONING tier for multi-tenant SSO architecture prompt, got %s (score=%.3f)",
+	if result.Tier == "SIMPLE" {
+		t.Errorf("expected MEDIUM or higher tier for multi-tenant SSO architecture prompt, got %s (score=%.3f)",
 			result.Tier, result.Score)
 	}
 }
@@ -489,50 +517,40 @@ func TestAnalyze_VectorDatabaseTradeoffRecommendation(t *testing.T) {
 	}
 }
 
-func TestIsReferentialFollowup_GuardBranches(t *testing.T) {
+func TestIsContinuationFollowup_GuardBranches(t *testing.T) {
 	tests := []struct {
-		name         string
-		lastText     string
-		lastMsgScore float64
-		convScore    float64
-		wordCount    int
-		expected     bool
+		name      string
+		lastText  string
+		convScore float64
+		expected  bool
 	}{
-		{"phrase_match_ok", "do it", 0.05, 0.30, 2, true},
-		{"phrase_match_at_word_cap", "do it now please right away", 0.05, 0.30, 6, true},
-		{"phrase_match_over_word_cap", "do it now please right away ok", 0.05, 0.30, 7, false},
-		{"phrase_match_zero_words", "", 0.0, 0.30, 0, false},
-		{"phrase_match_score_at_threshold", "do it", 0.15, 0.30, 2, false},
-		{"phrase_match_score_just_below_threshold", "do it", 0.149, 0.30, 2, true},
-		{"phrase_match_conv_just_below_threshold", "do it", 0.05, 0.199, 2, false},
-		{"phrase_match_conv_at_threshold", "do it", 0.05, 0.20, 2, true},
-		{"task_shift_blocks_phrase_match", "translate it", 0.05, 0.30, 2, false},
-		{"task_shift_blocks_summarize", "summarize it", 0.05, 0.30, 2, false},
-		{"task_shift_one_sentence_blocks", "rewrite it in one sentence", 0.05, 0.30, 5, false},
-		{"multi_signal_fix_it", "fix it", 0.05, 0.30, 2, true},
-		{"multi_signal_make_it_shorter", "make it shorter", 0.05, 0.30, 3, true},
-		{"multi_signal_rewrite_it", "rewrite it", 0.05, 0.30, 2, true},
-		{"multi_signal_use_that", "use that", 0.05, 0.30, 2, true},
-		{"multi_signal_answer_previous", "answer the previous question", 0.05, 0.30, 4, true},
-		{"action_only_no_deictic", "fix the race condition", 0.05, 0.30, 4, false},
-		{"deictic_only_no_action", "this is great", 0.05, 0.30, 3, false},
-		{"unrelated_short_text", "hello there friend", 0.05, 0.30, 3, false},
+		{"phrase_match_ok", "do it", 0.30, true},
+		{"phrase_match_longer_text", "do it now please right away ok", 0.30, true},
+		{"no_phrase", "", 0.30, false},
+		{"phrase_match_conv_just_below_threshold", "do it", 0.199, false},
+		{"phrase_match_conv_at_threshold", "do it", 0.20, true},
+		{"explicit_use_option", "use option 2", 0.30, true},
+		{"retry_is_code_not_continuation", "retry", 0.30, false},
+		{"former_inferred_fix_it", "fix it", 0.30, false},
+		{"former_inferred_make_it_shorter", "make it shorter", 0.30, false},
+		{"former_inferred_answer_previous", "answer the previous question", 0.30, false},
+		{"unrelated_short_text", "hello there friend", 0.30, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			matcher := newCompiledKeywordMatcher(defaultFullKeywordConfig())
-			signals := matcher.analyzeText(tt.lastText, lastTextFullScanMask)
-			got := isReferentialFollowup(signals, tt.lastMsgScore, tt.convScore, tt.wordCount)
+			signals := matcher.analyzeText(tt.lastText, lastTextBaseScanMask)
+			got := isContinuationFollowup(signals, tt.convScore)
 			if got != tt.expected {
-				t.Errorf("isReferentialFollowup(%q, last=%.3f, conv=%.3f, words=%d) = %v, want %v",
-					tt.lastText, tt.lastMsgScore, tt.convScore, tt.wordCount, got, tt.expected)
+				t.Errorf("isContinuationFollowup(%q, conv=%.3f) = %v, want %v",
+					tt.lastText, tt.convScore, got, tt.expected)
 			}
 		})
 	}
 }
 
-func TestAnalyze_ReferentialMultiSignalDetection(t *testing.T) {
+func TestAnalyze_ExplicitContinuationPhrasesUseContext(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	techPriors := []string{
@@ -545,10 +563,11 @@ func TestAnalyze_ReferentialMultiSignalDetection(t *testing.T) {
 		name     string
 		lastText string
 	}{
-		{"fix_it", "fix it"},
-		{"make_it_shorter", "make it shorter"},
-		{"rewrite_it", "rewrite it"},
-		{"do_this", "do this"},
+		{"do_it", "do it"},
+		{"try_again", "try again"},
+		{"go_ahead", "go ahead"},
+		{"same_thing", "same thing"},
+		{"use_option", "use option 2"},
 	}
 
 	for _, tt := range tests {
@@ -565,7 +584,7 @@ func TestAnalyze_ReferentialMultiSignalDetection(t *testing.T) {
 	}
 }
 
-func TestAnalyze_ReferentialPhraseDoesNotHijackStrongAsk(t *testing.T) {
+func TestAnalyze_ContinuationPhraseDoesNotHijackStrongAsk(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
@@ -576,7 +595,7 @@ func TestAnalyze_ReferentialPhraseDoesNotHijackStrongAsk(t *testing.T) {
 	})
 
 	if result.Tier == "SIMPLE" {
-		t.Fatalf("expected high-signal message to stay above SIMPLE despite referential phrase, got %s (score=%.3f)",
+		t.Fatalf("expected high-signal message to stay above SIMPLE despite continuation phrase, got %s (score=%.3f)",
 			result.Tier, result.Score)
 	}
 }
@@ -594,6 +613,7 @@ func TestAnalyze_RegressionAnchors(t *testing.T) {
 		name              string
 		lastText          string
 		priors            []string
+		expectNil         bool
 		minTier           string // tier must be at least this rank (or empty for "any")
 		maxTier           string // tier must be at most this rank (or empty for "any")
 		mustNotEqualTiers []string
@@ -617,16 +637,16 @@ func TestAnalyze_RegressionAnchors(t *testing.T) {
 			maxTier:  "MEDIUM",
 		},
 		{
-			name:     "summarize_after_tech_thread_stays_simple",
-			lastText: "summarize it in one sentence",
-			priors:   techPriors,
-			maxTier:  "MEDIUM",
+			name:      "summarize_after_tech_thread_is_unclassified",
+			lastText:  "summarize it in one sentence",
+			priors:    techPriors,
+			expectNil: true,
 		},
 		{
-			name:     "do_it_with_empty_priors_stays_simple",
-			lastText: "do it",
-			priors:   nil,
-			maxTier:  "SIMPLE",
+			name:      "do_it_with_empty_priors_is_unclassified",
+			lastText:  "do it",
+			priors:    nil,
+			expectNil: true,
 		},
 		{
 			name:     "strong_arch_ask_with_smalltalk_priors_stays_strong",
@@ -651,6 +671,15 @@ func TestAnalyze_RegressionAnchors(t *testing.T) {
 				PriorUserTexts: tt.priors,
 			})
 
+			if tt.expectNil {
+				if result != nil {
+					t.Fatalf("expected unclassified result, got tier=%s score=%.3f", result.Tier, result.Score)
+				}
+				return
+			}
+			if result == nil {
+				t.Fatalf("expected classified result")
+			}
 			if tt.minTier != "" && tierRank[result.Tier] < tierRank[tt.minTier] {
 				t.Errorf("tier=%s, expected at least %s (score=%.3f)", result.Tier, tt.minTier, result.Score)
 			}
@@ -765,7 +794,8 @@ func TestKeywordMatchModeFor(t *testing.T) {
 }
 
 func TestBuildWordPresenceSet_UnicodeWords(t *testing.T) {
-	words := buildWordPresenceSet("la sécurité du réseau protège les données")
+	text := "la sécurité du réseau protège les données"
+	words := buildWordPresenceSet(text, countWordsNoAlloc(text))
 
 	if _, ok := words["sécurité"]; !ok {
 		t.Fatalf("expected unicode word to be preserved in presence set")

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -51,8 +52,13 @@ func main() {
 	// Create HTTP server using StreamableHTTP transport
 	httpServer := server.NewStreamableHTTPServer(mcpServer)
 
-	port := 3001
-	addr := fmt.Sprintf("localhost:%d", port)
+	// Port defaults to 3001 but can be overridden via MCP_SERVER_PORT so multiple
+	// instances (or a test harness facing a port conflict) can bind elsewhere.
+	port := "3001"
+	if p := os.Getenv("MCP_SERVER_PORT"); p != "" {
+		port = p
+	}
+	addr := fmt.Sprintf("localhost:%s", port)
 
 	log.Printf("MCP server listening on http://%s/", addr)
 	log.Printf("Note: This server does NOT support ping. Use is_ping_available=false in Bifrost config.")
