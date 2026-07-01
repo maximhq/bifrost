@@ -3,6 +3,7 @@ package lib
 import (
 	"context"
 	"testing"
+	"time"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
@@ -32,6 +33,45 @@ func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return f
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                { return s.allowDirectKeys }
 func (s testHandlerStore) GetMCPExternalServerURL() string            { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string            { return "" }
+
+// TestConvertToBifrostContext_StreamIdleTimeoutOverride verifies the per-request
+// x-bf-stream-idle-timeout header is parsed (duration string or seconds integer),
+// clamped to streamIdleTimeoutOverrideMax, and that invalid/zero values are ignored
+// (leaving the provider default to apply downstream via SetStreamIdleTimeoutIfEmpty).
+func TestConvertToBifrostContext_StreamIdleTimeoutOverride(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   time.Duration
+		set    bool
+	}{
+		{"duration string", "540s", 540 * time.Second, true},
+		{"minutes string", "9m", 9 * time.Minute, true},
+		{"seconds integer", "300", 300 * time.Second, true},
+		{"clamped above max", "9000s", streamIdleTimeoutOverrideMax, true}, // 9000s > 30m → clamped
+		{"zero ignored", "0", 0, false},
+		{"garbage ignored", "soon", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-stream-idle-timeout", tc.header)
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			got, ok := bifrostCtx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration)
+			if tc.set {
+				if !ok {
+					t.Fatalf("expected stream idle timeout to be set for header %q", tc.header)
+				}
+				if got != tc.want {
+					t.Fatalf("header %q: got %v, want %v", tc.header, got, tc.want)
+				}
+			} else if ok && got > 0 {
+				t.Fatalf("header %q: expected no override, got %v", tc.header, got)
+			}
+		})
+	}
+}
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
