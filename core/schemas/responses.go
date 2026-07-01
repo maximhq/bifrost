@@ -1029,13 +1029,7 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
 		// preserved bytes verbatim, so this is additive and does not affect round-trip.
-		if raw := gjson.GetBytes(data, "arguments"); raw.Exists() {
-			args := responsesToolArgumentsToString(json.RawMessage(raw.Raw))
-			if m.ResponsesToolMessage == nil {
-				m.ResponsesToolMessage = &ResponsesToolMessage{}
-			}
-			m.Arguments = &args
-		}
+		m.setToolArguments(json.RawMessage(gjson.GetBytes(data, "arguments").Raw))
 		return nil
 	}
 
@@ -1051,15 +1045,24 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	if len(aux.Arguments) > 0 && string(aux.Arguments) != "null" {
-		args := responsesToolArgumentsToString(aux.Arguments)
-		if m.ResponsesToolMessage == nil {
-			m.ResponsesToolMessage = &ResponsesToolMessage{}
-		}
-		m.Arguments = &args
-	}
+	m.setToolArguments(aux.Arguments)
 
 	return nil
+}
+
+// setToolArguments normalizes a raw tool-call `arguments` value and records it on
+// the message when present and non-null, initializing the tool-message wrapper as
+// needed. Shared by the tool_search and function/tool-call decode paths so their
+// null handling can't drift apart.
+func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	args := responsesToolArgumentsToString(raw)
+	if m.ResponsesToolMessage == nil {
+		m.ResponsesToolMessage = &ResponsesToolMessage{}
+	}
+	m.Arguments = &args
 }
 
 // MarshalJSON re-emits preserved tool_search items verbatim and defers every
