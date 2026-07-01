@@ -784,6 +784,15 @@ export interface RecalculateCostResponse {
 	remaining: number;
 }
 
+export interface RecalculateCostProgress {
+	total_matched: number;
+	processed: number;
+	updated: number;
+	skipped: number;
+	remaining?: number;
+	done: boolean;
+}
+
 // Responses API types (for responses_output field)
 
 // Message roles for responses
