@@ -48,7 +48,10 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 	);
 }
 
-export function ApiKeyFormFragment({ control, providerName, form }: Props) {
+export function ApiKeyFormFragment({ control, providerName, baseProviderType, form }: Props) {
+	// Credential UI keys off the base provider type for custom providers; the
+	// model list, deployments table, and API calls still use the real providerName.
+	const effectiveProvider = baseProviderType ?? providerName;
 	const isBedrock = providerName === "bedrock";
 	const isBedrockMantle = providerName === "bedrock_mantle";
 	const isVertex = providerName === "vertex";
