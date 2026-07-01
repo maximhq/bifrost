@@ -3,5 +3,4 @@
 - fix: recover from idle-timeout timer-goroutine panic that could crash the process
 - fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)
 - fix: pass through `gs://` image URLs on Vertex Gemini (closes #4402)
-
-
+- fix: signal Bedrock max_output_tokens truncation on Responses API [@jeremym-tanium](https://github.com/jeremym-tanium)
