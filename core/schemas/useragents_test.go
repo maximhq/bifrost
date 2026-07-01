@@ -18,6 +18,7 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		{name: "codex tui terminal capture", userAgent: "codex-tui/0.137.0 (Mac OS 14.1.0; arm64) iTerm.app/3.6.6 (codex-tui; 0.137.0)", want: "Codex CLI"},
 		{name: "claude cowork runtime capture", userAgent: "claude-cli/2.1.170 (external, local-agent, agent-sdk/0.3.170)", want: "Claude Code"},
 		{name: "codex desktop mac", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
+		{name: "codex desktop native", userAgent: "Codex Desktop/0.142.2 (Mac OS 14.1.0; arm64) unknown (Codex Desktop; 26.623.30605)", want: "Codex Desktop"},
 		{name: "codex desktop windows", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
 		{name: "codex desktop linux", userAgent: "Mozilla/5.0 (X11; Linux x86_64) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
 		{name: "cursor", userAgent: "Cursor/0.47", want: "Cursor"},

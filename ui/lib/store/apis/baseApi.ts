@@ -45,7 +45,7 @@ const baseQuery = fetchBaseQuery({
 	prepareHeaders: async (headers, { arg }) => {
 		// Skip the JSON default for multipart/FormData uploads so the browser
 		// can set Content-Type with the multipart boundary itself (e.g. uploadSkillFile).
-		const isFormData = typeof arg === "object" && arg.body instanceof FormData;
+		const isFormData = arg !== null && typeof arg === "object" && arg.body instanceof FormData;
 		if (!isFormData && !headers.has("Content-Type")) {
 			headers.set("Content-Type", "application/json");
 		}

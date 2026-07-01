@@ -279,6 +279,7 @@ export default function DashboardPage() {
 			"bu-rankings": buRankingsRef,
 			"user-rankings": userRankingsRef,
 			"virtual-key-rankings": virtualKeyRankingsRef,
+			"app-rankings": appRankingsRef,
 		};
 
 		const refs = scope === "all" ? allRefs : [refsByTab[scope]];
@@ -732,6 +733,20 @@ export default function DashboardPage() {
 									testIdPrefix="dashboard-virtual-key-rankings"
 									dataKey="virtualKeyRankingsData"
 									pdfMode={isExportingTab("virtual-key-rankings")}
+								/>
+							</div>
+						</TabsContent>
+						{/* App Rankings Tab */}
+						<TabsContent value="app-rankings" {...(isExportingTab("app-rankings") && { forceMount: true })}>
+							<div id="dashboard-section-app-rankings">
+								<DimensionRankingsTabView
+									ref={appRankingsRef}
+									filters={filters}
+									active={activeTab === "app-rankings" || isExportingTab("app-rankings")}
+									dimension="app"
+									dimensionLabel="App"
+									testIdPrefix="dashboard-app-rankings"
+									dataKey="appRankingsData"
 								/>
 							</div>
 						</TabsContent>
