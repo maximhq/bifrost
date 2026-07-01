@@ -695,17 +695,23 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.6.1",
-              "changelogs/v1.6.0",
-              "changelogs/v1.5.16",
-              "changelogs/v1.5.15",
-              "changelogs/v1.5.14",
-              "changelogs/v1.5.13",
-              "changelogs/v1.5.12",
-              "changelogs/v1.5.11",
-              "changelogs/v1.5.10",
-              "changelogs/v1.5.9",
-              "changelogs/v1.5.8",
+              "changelogs/v1.6.2",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/v1.6.1",
+                  "changelogs/v1.6.0",
+                  "changelogs/v1.5.16",
+                  "changelogs/v1.5.15",
+                  "changelogs/v1.5.14",
+                  "changelogs/v1.5.13",
+                  "changelogs/v1.5.12",
+                  "changelogs/v1.5.11",
+                  "changelogs/v1.5.10",
+                  "changelogs/v1.5.9",
+                  "changelogs/v1.5.8"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [

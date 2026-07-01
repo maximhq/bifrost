@@ -1,2 +1,0 @@
-- fix: fixed plan cache issue with config-hash recompute migration on upgrade from pre-1.6 schemas (#4819)
-- fix: backfilled aspect_ratio into streaming image generation responses (#4798)

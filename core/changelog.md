@@ -1,3 +1,0 @@
-- feat: added Claude Sonnet 5 compatibility (adaptive-only thinking, effort parameter, adaptive thinking, computer-use and text-editor tool generations, dynamic web search filtering, and default max output tokens)
-- fix: fixed Bedrock error type extraction (#4808)
-- fix: fixed Gemini/Imagen aspect ratio handling in image generation and edit requests (#4798)
