@@ -770,14 +770,115 @@ func IsSonnet5Plus(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sonnet-5")
 }
 
+// claudeOpusSonnet4Minor extracts the minor version of a Claude Opus/Sonnet 4.x
+// model from a lowercased model id. It returns (minor, true) when m names such a
+// model, or (0, false) otherwise. Adaptive thinking arrived at the .6 minor, so
+// callers treat minor < 6 as pre-adaptive (legacy) and minor == 6 as dual-mode.
+//
+// Handles every id form Anthropic/Bedrock/Vertex use:
+//
+//	claude-opus-4-6-20250514      -> 6
+//	claude-sonnet-4-5-20250929    -> 5
+//	claude-sonnet-4-20250514      -> 0   (bare 4.0, dated)
+//	anthropic.claude-opus-4-v1    -> 0   (bare 4.0, bedrock)
+//	claude-opus-4                 -> 0   (bare 4.0, alias)
+//	claude-opus-4.6               -> 6
+//	claude-opus-4-16              -> 16
+//
+// A numeric run of 4+ digits immediately after the major (e.g. a 2025xxxx date)
+// is treated as no explicit minor (bare 4.0 -> minor 0).
+func claudeOpusSonnet4Minor(m string) (int, bool) {
+	for _, fam := range []string{"opus-4", "sonnet-4"} {
+		idx := strings.Index(m, fam)
+		if idx == -1 {
+			continue
+		}
+		rest := m[idx+len(fam):]
+		if rest == "" {
+			return 0, true // bare "…-4"
+		}
+		if rest[0] != '-' && rest[0] != '.' {
+			return 0, true // "…-4v1" etc. — treat as bare 4.0
+		}
+		// Read the numeric run right after the separator.
+		j := 1
+		for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+			j++
+		}
+		digits := rest[1:j]
+		if digits == "" {
+			return 0, true // "…-4-v1" (separator then non-digit)
+		}
+		if len(digits) >= 4 {
+			return 0, true // date run (e.g. -20250514) — bare 4.0
+		}
+		n := 0
+		for _, c := range digits {
+			n = n*10 + int(c-'0')
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+// isLegacyBudgetTokensOnlyModel reports whether a lowercased Claude model id
+// predates adaptive thinking and therefore only accepts budget_tokens extended
+// thinking (and still accepts temperature/top_p/top_k). This is the closed set
+// of legacy Claude models: Haiku (any), Claude 2.x/3.x, and Opus/Sonnet 4.x
+// below the .6 adaptive cutoff. Every other Claude model is assumed to support
+// adaptive thinking — the fail-open default so a new/unknown Claude model is not
+// downgraded to budget_tokens (which post-4.7 models reject with a 400).
+func isLegacyBudgetTokensOnlyModel(m string) bool {
+	// Haiku has never supported adaptive thinking. NOTE: this blanket match
+	// will very likely need to be narrowed to specific legacy Haiku versions
+	// once a new Haiku ships — Anthropic's trajectory (Opus 4.7+, Sonnet 5,
+	// Fable/Mythos) points at adaptive-only becoming the default for new
+	// models across every tier, Haiku included.
+	if strings.Contains(m, "haiku") {
+		return true
+	}
+	// Pre-Claude-4 generations.
+	if strings.Contains(m, "claude-2") || strings.Contains(m, "claude-instant") {
+		return true
+	}
+	if strings.Contains(m, "claude-3") {
+		return true
+	}
+	// Opus/Sonnet 4.x below the .6 adaptive cutoff (incl. bare 4.0).
+	if minor, ok := claudeOpusSonnet4Minor(m); ok && minor < 6 {
+		return true
+	}
+	return false
+}
+
+// isDualModeThinkingModel reports whether a lowercased Claude model id supports
+// BOTH adaptive thinking and budget_tokens extended thinking (and still accepts
+// sampling params) — adaptive is available but not the only mode. Only Opus 4.6
+// and Sonnet 4.6 qualify.
+func isDualModeThinkingModel(m string) bool {
+	minor, ok := claudeOpusSonnet4Minor(m)
+	return ok && minor == 6
+}
+
 // IsAdaptiveOnlyThinkingModel returns true for models where budget_tokens
 // extended thinking is removed (adaptive is the only thinking-on mode) and
-// temperature/top_p/top_k are rejected with a 400. Covers Opus 4.7+, Sonnet 5+,
-// and the Fable/Mythos family. Use this — not IsOpus47Plus — for the thinking and
-// sampling-parameter gates so Fable is handled correctly. (Fast mode is gated
-// on IsOpus47Plus instead, since Fable does not support speed:"fast".)
+// temperature/top_p/top_k are rejected with a 400. This covers Opus 4.7+,
+// Sonnet 5+, the Fable/Mythos family, and — by fail-open default — any new or
+// unrecognized Claude model. The only models excluded are known legacy models
+// (see isLegacyBudgetTokensOnlyModel) and the dual-mode Opus 4.6 / Sonnet 4.6,
+// which still accept budget_tokens and sampling params.
+//
+// Use this — not IsOpus47Plus — for the thinking and sampling-parameter gates so
+// the whole adaptive-only family is handled correctly. (Fast mode is gated on
+// IsOpus47Plus instead, since Fable does not support speed:"fast".)
 func IsAdaptiveOnlyThinkingModel(model string) bool {
-	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
+	m := strings.ToLower(model)
+	if !SupportsAdaptiveThinking(m) {
+		return false // legacy (budget_tokens-only) or non-Claude
+	}
+	// Opus 4.6 / Sonnet 4.6 accept budget_tokens and sampling params too, so
+	// adaptive is available but not the only thinking-on mode.
+	return !isDualModeThinkingModel(m)
 }
 
 // SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
@@ -885,20 +986,25 @@ func SupportsFastMode(model string) bool {
 }
 
 // SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
-// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 5+, Claude
-// Opus 4.7+, and the Claude Fable/Mythos family. On Opus 4.7+, Sonnet 5+, and
-// Fable/Mythos adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
+// It fails open: a Claude model is assumed to support adaptive thinking unless it is
+// a known legacy (budget_tokens-only) model — Haiku (any), Claude 2.x/3.x, or
+// Opus/Sonnet 4.x below the .6 cutoff (see isLegacyBudgetTokensOnlyModel). This
+// reverses the previous allowlist so a new/unrecognized Claude model (e.g. a future
+// claude-opus-5) is routed to adaptive thinking instead of being downgraded to
+// budget_tokens, which every Claude model since Opus 4.7 rejects with a 400.
+//
+// On Opus 4.7+, Sonnet 5+, Fable/Mythos, and unknown models adaptive is the only
+// thinking-on mode (see IsAdaptiveOnlyThinkingModel); on Opus 4.6 and Sonnet 4.6 it
 // coexists with the deprecated budget_tokens-based extended thinking. On Fable/Mythos
 // adaptive is always on and thinking:{type:"disabled"} is rejected (see IsFableFamily).
+//
+// Empty and non-Claude model strings return false.
 func SupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
-		return true
-	}
-	model = strings.ToLower(model)
-	if !strings.Contains(model, "4-6") && !strings.Contains(model, "4.6") {
+	m := strings.ToLower(model)
+	if !strings.Contains(m, "claude") {
 		return false
 	}
-	return strings.Contains(model, "opus") || strings.Contains(model, "sonnet")
+	return !isLegacyBudgetTokensOnlyModel(m)
 }
 
 // Computer-use tool generations.

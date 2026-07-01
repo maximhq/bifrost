@@ -1,4 +1,5 @@
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions
+- fix: Anthropic - default unrecognized Claude models to adaptive thinking instead of downgrading to budget_tokens [@adrianlyjak](https://github.com/adrianlyjak)
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
 - fix: recover from idle-timeout timer-goroutine panic that could crash the process
