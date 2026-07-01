@@ -231,3 +231,43 @@ func ToGeminiTranscriptionResponse(bifrostResp *schemas.BifrostTranscriptionResp
 	genaiResp.Candidates = []*Candidate{candidate}
 	return genaiResp
 }
+
+// ToGeminiTranscriptionStreamResponses converts a Bifrost transcription streaming chunk to
+// Gemini streamGenerateContent JSON (GenerateContentResponse) for GenAI HTTP SSE clients.
+func ToGeminiTranscriptionStreamResponses(resp *schemas.BifrostTranscriptionStreamResponse) *GenerateContentResponse {
+	if resp == nil {
+		return nil
+	}
+	switch resp.Type {
+	case schemas.TranscriptionStreamResponseTypeDelta:
+		text := ""
+		if resp.Delta != nil {
+			text = *resp.Delta
+		}
+		if text == "" {
+			return nil
+		}
+		return &GenerateContentResponse{
+			Candidates: []*Candidate{{
+				Content: &Content{
+					Parts: []*Part{{Text: text}},
+					Role:  string(RoleModel),
+				},
+			}},
+		}
+	case schemas.TranscriptionStreamResponseTypeDone:
+		gen := ToGeminiTranscriptionResponse(&schemas.BifrostTranscriptionResponse{
+			Text:  resp.Text,
+			Usage: resp.Usage,
+		})
+		if gen == nil {
+			gen = &GenerateContentResponse{}
+		}
+		if len(gen.Candidates) > 0 {
+			gen.Candidates[0].FinishReason = FinishReasonStop
+		}
+		return gen
+	default:
+		return nil
+	}
+}
