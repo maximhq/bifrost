@@ -184,7 +184,7 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -243,7 +243,7 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 			}},
 		}
 
-		result := ToOpenAIResponsesRequest(bifrostReq)
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
 		original := bifrostReq.Input[0].Content
 		if original == nil || original.ContentStr == nil || *original.ContentStr != "" {
 			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
@@ -278,7 +278,7 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 			}},
 		}
 
-		result := ToOpenAIResponsesRequest(bifrostReq)
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
 		original := bifrostReq.Input[0].Content
 		if original == nil || original.ContentStr == nil || *original.ContentStr != "thinking" {
 			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
@@ -302,8 +302,16 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 }
 
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
+	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
+
 	tests := []struct {
 		name     string
+		provider schemas.ModelProvider
 		model    string
 		effort   string
 		expected string
@@ -386,12 +394,54 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "high",
 		},
+		{
+			// DeepSeek V4 is routed via a custom OpenAI-compatible provider, so the
+			// OpenAI-only reasoning-stripping doesn't apply and "max" passes through.
+			name:     "preserves max for deepseek-v4-pro",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			// GLM-5.2 (Z.ai) natively supports "max" reasoning effort.
+			name:     "preserves max for glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := ToOpenAIResponsesRequest(&schemas.BifrostResponsesRequest{
-				Provider: schemas.OpenAI,
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
+			req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: provider,
 				Model:    tt.model,
 				Input: []schemas.ResponsesMessage{{
 					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -511,7 +561,7 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -1646,7 +1696,7 @@ func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1718,7 +1768,7 @@ func TestToOpenAIResponsesRequest_PreservesExplicitEmptyToolParameters(t *testin
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1844,7 +1894,7 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1925,4 +1975,46 @@ func valuesEqual(v1, v2 interface{}) bool {
 		// For primitives, use direct comparison
 		return v1 == v2
 	}
+}
+
+func TestToOpenAIResponsesRequest_OpenRouterServerToolsPreserved(t *testing.T) {
+	makeReq := func(provider schemas.ModelProvider, toolType schemas.ResponsesToolType) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-haiku-4.5",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				},
+			},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			},
+		}
+	}
+
+	// Any tool under the "openrouter:" namespace must survive for the OpenRouter
+	// provider (web_search, web_fetch, and any future server tool).
+	for _, toolType := range []schemas.ResponsesToolType{"openrouter:web_search", "openrouter:web_fetch"} {
+		t.Run("openrouter keeps "+string(toolType), func(t *testing.T) {
+			result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenRouter, toolType))
+			if result == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			if len(result.Tools) != 1 || result.Tools[0].Type != toolType {
+				t.Fatalf("expected %s to be preserved for OpenRouter, got %+v", toolType, result.Tools)
+			}
+		})
+	}
+
+	t.Run("openai strips openrouter: namespace tools", func(t *testing.T) {
+		result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenAI, "openrouter:web_search"))
+		if result == nil {
+			t.Fatal("ToOpenAIResponsesRequest returned nil")
+		}
+		if len(result.Tools) != 0 {
+			t.Fatalf("expected openrouter: tools to be stripped for OpenAI, got %+v", result.Tools)
+		}
+	})
 }

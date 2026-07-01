@@ -1,0 +1,209 @@
+---
+title: "Runware"
+description: "Runware API conversion guide - text-to-image, image editing, and text/image-to-video generation"
+icon: "/media/runware-nav.svg"
+---
+
+## Overview
+
+Runware exposes a single synchronous endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**. Bifrost wraps each request in this array envelope and maps the unified image and video schemas onto Runware's `imageInference` and `videoInference` task types. Image tasks return synchronously; video tasks are submitted asynchronously and polled to completion.
+
+### Supported Operations
+
+| Operation | Supported | Task Type |
+|-----------|-----------|-----------|
+| Image Generation | ✅ | `imageInference` |
+| Image Edit (inpainting / outpainting) | ✅ | `imageInference` |
+| Video Generation | ✅ | `videoInference` (async) |
+| Video Retrieve | ✅ | `getResponse` |
+| Video Download | ✅ | via Retrieve + URL download |
+| Image Variation | ❌ | - |
+| Image / Image Edit (stream) | ❌ | - |
+| Video Delete / List / Remix | ❌ | - |
+
+---
+
+# 1. Image Generation
+
+## Generate (`POST /v1/images/generations`)
+
+| Parameter | Type | Required | Runware field | Notes |
+|-----------|------|----------|---------------|-------|
+| `model` | string | ✅ | `model` | Runware model (AIR identifier) |
+| `prompt` | string | ✅ | `positivePrompt` | Text description of the image |
+| `negative_prompt` | string | ❌ | `negativePrompt` | What to avoid |
+| `size` | string | ❌ | `width` / `height` | `WxH` (e.g. `1024x1024`; default `1024x1024`) |
+| `num_inference_steps` | int | ❌ | `steps` | Diffusion steps |
+| `seed` | int | ❌ | `seed` | Seed for reproducibility |
+| `n` | int | ❌ | `numberResults` | Number of images |
+| `response_format` | string | ❌ | `outputType` | `url` → `URL`, `b64_json` → `base64Data` |
+| `output_format` | string | ❌ | `outputFormat` | `png`/`jpeg`/`webp` → `PNG`/`JPG`/`WEBP` |
+
+**Extra Params**: pass a `seedImage` (a Runware image UUID, public URL, or base64/data-URI) to run **image-to-image**. Any other provider-native fields flow through `extra_params`.
+
+**Response**: [`BifrostImageGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/images.go) with `data[].url` or `data[].b64_json`.
+
+### Example
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "runware/runware:100@1",
+    "prompt": "A serene mountain landscape at sunset",
+    "size": "1024x1024",
+    "n": 1
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
+    Provider: schemas.Runware,
+    Model:    "runware:100@1",
+    Input: &schemas.ImageGenerationInput{
+        Prompt: "A serene mountain landscape at sunset",
+    },
+    Params: &schemas.ImageGenerationParameters{
+        Size: schemas.Ptr("1024x1024"),
+        N:    schemas.Ptr(1),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 2. Image Edit
+
+## Edit (`POST /v1/images/edits`)
+
+The first input image becomes the `seedImage`; supplying a `mask` enables **inpainting**. Outpainting and other provider-native fields flow through `extra_params`.
+
+| Parameter | Runware field | Notes |
+|-----------|---------------|-------|
+| `image[]` (first) | `seedImage` | Base image being edited (bytes → data URI) |
+| `mask` | `maskImage` | Inpainting mask (bytes → data URI) |
+| `prompt` | `positivePrompt` | Edit instruction |
+| `negative_prompt`, `size`, `num_inference_steps`, `seed`, `n`, `response_format`, `output_format` | same as [Image Generation](#1-image-generation) | |
+
+### Example
+
+```bash
+curl -X POST 'http://localhost:8080/v1/images/edits' \
+  --form 'model="runware/runware:100@1"' \
+  --form 'image[]=@"image.png"' \
+  --form 'prompt="Replace the sky with a starry night"' \
+  --form 'mask=@"mask.png"'
+```
+
+**Response**: same shape as Image Generation (`data[].url` or `data[].b64_json`).
+
+---
+
+# 3. Video Generation
+
+## Generate (`POST /v1/videos`)
+
+Video tasks are submitted with `deliveryMethod: async` and return a queued job. Poll [Retrieve](#retrieve--download) until `status: completed`, then download.
+
+| Parameter | Type | Required | Runware field | Notes |
+|-----------|------|----------|---------------|-------|
+| `model` | string | ✅ | `model` | Runware video model |
+| `prompt` | string | ❌ | `positivePrompt` | Text description of the video |
+| `input_reference` | string | ❌ | `frameImages[0]` | Reference image anchored to the **first** frame → **image-to-video** |
+| `negative_prompt` | string | ❌ | `negativePrompt` | What to avoid |
+| `seed` | int | ❌ | `seed` | Seed for reproducibility |
+| `size` | string | ❌ | `width` / `height` | `WxH` (default `1920x1080`) |
+| `seconds` | string | ❌ | `duration` | Duration in seconds |
+
+**Extra Params**: provider-native fields flow through `extra_params`.
+
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) with `id`, `status`, `videos[]`.
+
+**Generation Modes** (auto-detected): **text-to-video** (`prompt` only) · **image-to-video** (`prompt` + `input_reference`).
+
+**Bifrost statuses** (normalized): `queued` → `in_progress` → `completed` / `failed`. Runware's native statuses are `processing`, `success`, `error`.
+
+## Retrieve / Download
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Get status | `GET /v1/videos/{id}` | Polls via a `getResponse` task; poll until `status: completed` |
+| Download content | `GET /v1/videos/{id}/content` | Downloads raw video bytes (MP4) from the task's output URL |
+
+<Note>
+Video Delete, List, and Remix are not supported by Runware.
+</Note>
+
+---
+
+## Setup & Configuration
+
+Configure Runware as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Runware** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Runware**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.RUNWARE_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "runware": {
+      "keys": [
+        {
+          "name": "runware-key-1",
+          "value": "env.RUNWARE_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Runware:
+    return []schemas.Key{{
+        Name:   "runware-key-1",
+        Value:  *schemas.NewEnvVar("env.RUNWARE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Reference Links
+
+- [Runware API Documentation](https://docs.runware.ai/)
+- [Runware Model Explorer](https://my.runware.ai/models)
+- [Bifrost Runware Provider Source](https://github.com/maximhq/bifrost/tree/main/core/providers/runware)

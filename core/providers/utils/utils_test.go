@@ -1878,27 +1878,3 @@ func TestExtractPassthroughProviderResponseHeaders(t *testing.T) {
 		t.Fatalf("benign header x-request-id was dropped: %v", headers)
 	}
 }
-
-// TestCheckAndSetDefaultProviderUsesResolvedProvider verifies routing-selected
-// providers take precedence over the route default when still allowed.
-func TestCheckAndSetDefaultProviderUsesResolvedProvider(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Anthropic, schemas.Azure})
-	ctx.SetValue(schemas.BifrostContextKeyResolvedProvider, schemas.Azure)
-
-	if got := CheckAndSetDefaultProvider(ctx, schemas.Anthropic); got != schemas.Azure {
-		t.Fatalf("CheckAndSetDefaultProvider() = %s, want %s", got, schemas.Azure)
-	}
-}
-
-// TestCheckAndSetDefaultProviderIgnoresDisallowedResolvedProvider verifies
-// selected-provider context cannot bypass available-provider constraints.
-func TestCheckAndSetDefaultProviderIgnoresDisallowedResolvedProvider(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Anthropic})
-	ctx.SetValue(schemas.BifrostContextKeyResolvedProvider, schemas.Azure)
-
-	if got := CheckAndSetDefaultProvider(ctx, schemas.Anthropic); got != schemas.Anthropic {
-		t.Fatalf("CheckAndSetDefaultProvider() = %s, want %s", got, schemas.Anthropic)
-	}
-}

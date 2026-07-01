@@ -8,7 +8,7 @@ import (
 )
 
 // ToBifrostListModelsResponse converts an OpenAI list models response to a Bifrost list models response
-func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -71,6 +71,11 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		}
 		if model.OwnedBy != nil {
 			openaiModel.OwnedBy = *model.OwnedBy
+		}
+		if model.ContextLength != nil {
+			openaiModel.ContextWindow = model.ContextLength
+		} else if model.MaxInputTokens != nil {
+			openaiModel.ContextWindow = model.MaxInputTokens // Fallback to MaxInputTokens if ContextLength is not set
 		}
 
 		openaiResponse.Data = append(openaiResponse.Data, openaiModel)

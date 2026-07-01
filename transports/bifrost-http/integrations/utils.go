@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -154,6 +153,11 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 // It propagates the provider's HTTP status code and returns a JSON error body (not SSE format),
 // since no streaming has begun and clients should receive a standard error response.
 func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, bifrostErr *schemas.BifrostError) {
+	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
+	if bifrostErr == nil {
+		bifrostErr = newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError)
+	}
+
 	// Forward provider response headers from context so streaming error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
@@ -192,6 +196,11 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 // sendError sends an error response with the appropriate status code and JSON body.
 // It handles different error types (string, error interface, or arbitrary objects).
 func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
+	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
+	if bifrostErr == nil {
+		bifrostErr = newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError)
+	}
+
 	// Forward provider response headers from context so error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
@@ -203,8 +212,16 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)
+	} else if !bifrostErr.IsBifrostError {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if bifrostErr.Error != nil &&
+			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
+				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 	}
 	ctx.SetContentType("application/json")
 
@@ -349,11 +366,6 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 	}
 
 	provider, _, _ := bifrostReq.GetRequestFields()
-	var availableProviders []schemas.ModelProvider
-	var hasAvailableProviders bool
-	if ctx != nil {
-		availableProviders, hasAvailableProviders = ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
-	}
 
 	// Parse fallbacks from strings to Fallback structs
 	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
@@ -364,9 +376,6 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 
 		// Use ParseModelString to extract provider and model
 		provider, model := schemas.ParseModelString(fallbackStr, provider)
-		if hasAvailableProviders && !slices.Contains(availableProviders, provider) {
-			continue
-		}
 
 		parsedFallback := schemas.Fallback{
 			Provider: provider,
@@ -376,7 +385,6 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 	}
 
 	if len(parsedFallbacks) == 0 {
-		bifrostReq.SetFallbacks(nil)
 		return nil // No valid fallbacks found
 	}
 

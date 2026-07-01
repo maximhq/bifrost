@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
 import { allowedRequestsSchema } from "@/lib/types/schemas";
@@ -23,6 +24,7 @@ const formSchema = z.object({
 	allowed_requests: allowedRequestsSchema,
 	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	is_key_less: z.boolean().optional(),
+	allow_private_network: z.boolean().optional(),
 });
 
 type FormData = z.infer<typeof formSchema>;
@@ -79,6 +81,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			},
 			request_path_overrides: undefined,
 			is_key_less: false,
+			allow_private_network: false,
 		},
 	});
 
@@ -99,7 +102,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			},
 			network_config: {
 				base_url: data.base_url,
-				default_request_timeout_in_seconds: 30,
+				allow_private_network: data.allow_private_network ?? false,
+				default_request_timeout_in_seconds: DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: 0,
 				retry_backoff_initial: 500,
 				retry_backoff_max: 5000,
@@ -190,6 +194,32 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 											/>
 										</FormControl>
 										<FormMessage />
+									</div>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="allow_private_network"
+							render={({ field }) => (
+								<FormItem>
+									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+										<div className="space-y-0.5">
+											<label htmlFor="allow-private-network" className="text-sm font-medium">
+												Allow Private Network
+											</label>
+											<p className="text-muted-foreground text-sm">
+												Allow connecting to private network IPs (e.g. 192.168.x.x, 10.x.x.x). Link-local addresses remain blocked.
+											</p>
+										</div>
+										<Switch
+											id="allow-private-network"
+											size="md"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasProviderCreateAccess}
+											data-testid="custom-provider-allow-private-network-switch"
+										/>
 									</div>
 								</FormItem>
 							)}

@@ -116,11 +116,14 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							name="maxim_config.request_headers"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>Request Headers <span className="text-muted-foreground font-normal">(Optional)</span></FormLabel>
+									<FormLabel>
+										Request Headers <span className="text-muted-foreground font-normal">(Optional)</span>
+									</FormLabel>
 									<FormDescription>
-										Comma-separated list of request headers to capture and attach as trace tags. Supports exact names and wildcard
-										patterns (e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> captures
-										all headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization).
+										Comma-separated list of request headers to capture and attach as trace tags. Supports exact names and wildcard patterns
+										(e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix,{" "}
+										<code className="text-xs">*</code> captures all headers — note that <code className="text-xs">*</code> will capture
+										sensitive headers like Authorization).
 									</FormDescription>
 									<FormControl>
 										<RequestHeadersTextarea

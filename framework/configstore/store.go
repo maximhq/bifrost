@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
@@ -37,6 +38,23 @@ type ModelConfigsQueryParams struct {
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
 }
 
+// SkillListQueryParams holds pagination, filtering, and search parameters for skill repository queries.
+type SkillListQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+	SortBy string // name, updated_at, created_at (default: created_at)
+	Order  string // asc, desc (default: desc)
+}
+
+type SkillVersionListQueryParams struct {
+	Limit  int
+	Offset int
+	SortBy string // version, created_at (default: created_at)
+	Order  string // asc, desc (default: desc)
+	Search string // substring match on the version string (optional)
+}
+
 // RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
 type RoutingRulesQueryParams struct {
 	Limit  int
@@ -46,9 +64,34 @@ type RoutingRulesQueryParams struct {
 
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
 type MCPClientsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string
+	Limit    int
+	Offset   int
+	Search   string
+	ClientID string
+}
+
+// MCPLibraryQueryParams holds pagination, filtering, search, and sort
+// parameters for MCP library catalog queries. All fields are optional — an
+// empty struct returns the first default-sized page ordered by name.
+type MCPLibraryQueryParams struct {
+	Limit           int
+	Offset          int
+	Search          string   // matches name/description/publisher (case-insensitive)
+	Categories      []string // exact category filter(s), OR semantics
+	ConnectionTypes []string // exact connection_type filter(s) (http | stdio | sse)
+	AuthTypes       []string // exact auth_type filter(s)
+	Tags            []string // match rows carrying any of these tags
+	SortBy          string   // name, category, publisher, created_at, updated_at (default: name)
+	Order           string   // asc, desc (default: asc)
+}
+
+// MCPLibraryFilterData holds the distinct facet values surfaced by the filter
+// sidebar on the MCP library page. Populated via GetMCPLibraryFilterData.
+type MCPLibraryFilterData struct {
+	Categories      []string `json:"categories"`
+	ConnectionTypes []string `json:"connection_types"`
+	AuthTypes       []string `json:"auth_types"`
+	Tags            []string `json:"tags"`
 }
 
 // TeamsQueryParams holds pagination, filtering, and search parameters for team queries.
@@ -84,6 +127,12 @@ type MCPSessionsFilterParams struct {
 	Statuses     []string
 	AuthModes    []string // matched against auth_mode (tokens, credentials) or flow_mode (sessions, flows)
 	MCPClientIDs []string
+	// Identity exact-matches a single resolved identity value against any of
+	// the row's identity columns (user_id, virtual_key_id, session_id). Unlike
+	// Search it is not a substring match — it pins the list to exactly one
+	// user, virtual key, or session. Typically paired with AuthModes to scope
+	// to that identity's rows for a known mode.
+	Identity string
 	// MatchedUserIDs is an optional set of user_ids that should be treated
 	// as a positive search hit alongside Search. Callers that maintain a
 	// user directory (display names, emails) resolve the search string
@@ -93,6 +142,18 @@ type MCPSessionsFilterParams struct {
 	// filter ORs `{table}.user_id IN (matched)` into the search WHERE.
 	// Only consulted when Search is non-empty.
 	MatchedUserIDs []string
+}
+
+// OAuth2SessionsQueryParams holds the filters + pagination for the OAuth2
+// grants list (Connected Clients UI). Search is a case-insensitive substring
+// matched against the client name/id, the bound identity (bf_sub), and the
+// joined virtual key name. Modes filters on bf_mode (user/vk/session); an
+// empty slice matches all. Limit/Offset paginate the filtered result in SQL.
+type OAuth2SessionsQueryParams struct {
+	Search string
+	Modes  []string
+	Limit  int
+	Offset int
 }
 
 // PricingOverrideFilters holds the filters for pricing overrides.
@@ -166,6 +227,23 @@ type ConfigStore interface {
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
+	// MCP library catalog (synced + org-custom)
+	GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error)
+	GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error)
+	UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error
+	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+	// Returns ErrAlreadyExists when the slug collides with an existing entry.
+	CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error
+	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
+	// so it is hidden from listings and never resurrected by the remote sync.
+	SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// DeleteMCPLibraryEntry removes a library row by ID, hard-deleting "custom"
+	// rows (freeing their slug for re-add) and tombstoning "remote" rows.
+	DeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must not
+	// overwrite or recreate: custom rows and soft-deleted (tombstoned) rows.
+	GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error)
+
 	// Vector store config CRUD
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
 	GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error)
@@ -177,6 +255,10 @@ type ConfigStore interface {
 	// Config CRUD
 	GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error)
 	UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error
+	// GetComplexityAnalyzerConfig retrieves the persisted analyzer config, if configured.
+	GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error)
+	// UpdateComplexityAnalyzerConfig persists the normalized analyzer config.
+	UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
@@ -306,6 +388,7 @@ type ConfigStore interface {
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
+	UpsertModelPricesBatch(ctx context.Context, pricing []tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
 	// UpsertModelPricingAttributes writes only the additional_attributes column
@@ -325,6 +408,7 @@ type ConfigStore interface {
 	GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error)
 	GetModelParametersByModel(ctx context.Context, model string) (*tables.TableModelParameters, error)
 	UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error
+	UpsertModelParametersBatch(ctx context.Context, params []tables.TableModelParameters, tx ...*gorm.DB) error
 
 	// Key management
 	GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error)
@@ -537,6 +621,23 @@ type ConfigStore interface {
 	CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error
 	DeletePromptVersion(ctx context.Context, id uint) error
 
+	// Skills Repository
+	CreateSkill(ctx context.Context, skill *tables.TableSkill, version string, objectStore objectstore.ObjectStore) error
+	GetSkill(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillLean(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillByName(ctx context.Context, name string) (*tables.TableSkill, error)
+	GetSkillVersion(ctx context.Context, skillID, version string) (*tables.TableSkillVersion, error)
+	ListSkillVersions(ctx context.Context, skillID string, params SkillVersionListQueryParams) ([]tables.TableSkillVersion, int64, error)
+	UpdateSkill(ctx context.Context, skill *tables.TableSkill, version string, serve bool, objectStore objectstore.ObjectStore) error
+	DeleteSkill(ctx context.Context, id string, objectStore objectstore.ObjectStore) error
+	ListSkills(ctx context.Context, params SkillListQueryParams) ([]tables.TableSkill, int64, error)
+	ShiftSkillVersion(ctx context.Context, skillID string, targetVersion string, objectStore objectstore.ObjectStore) error
+	GetAllSkillsVersion(ctx context.Context) (string, error)
+	BumpAllSkillsVersion(ctx context.Context, bump string) (string, error)
+	CreateSkillFileBlob(ctx context.Context, blob *tables.TableSkillFileBlob) error
+	CleanupOrphanSkillFileBlobs(ctx context.Context, force bool) (int64, error)
+	UpdateSkillConfigHash(ctx context.Context, skillID string, configHash string) error
+
 	// Prompt Repository - Sessions
 	GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error)
 	GetPromptSessionByID(ctx context.Context, id uint) (*tables.TablePromptSession, error)
@@ -573,6 +674,57 @@ type ConfigStore interface {
 	// pool complete before it closes; subsequent DB() calls return the new
 	// pool, whose connections carry no cached plans. SQLite is a no-op.
 	RefreshConnectionPool(ctx context.Context) error
+
+	// GetOAuth2SigningKey returns the signing key, creating and persisting one
+	// on first call. Always returns a usable key — never nil on a nil error.
+	GetOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error)
+
+	// OAuth2 clients (DCR)
+	CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error
+	GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error)
+
+	// OAuth2 authorize requests
+	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)
+	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
+	// to consented (recording the code hash and resolved identity) — returns
+	// ErrNotFound when no longer pending, so concurrent double-consent can't
+	// overwrite an already-minted code.
+	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
+
+	// OAuth2 refresh tokens
+	GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error)
+	// GetOAuth2RefreshTokenByHashAny returns the row including revoked tokens,
+	// used to detect token reuse attacks and trigger family revocation.
+	GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error)
+	// ConsumeOAuth2AuthorizeRequest atomically marks the authorize request as
+	// code_issued and creates the refresh token — if either fails the client can retry.
+	ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error
+	// RotateOAuth2RefreshToken atomically revokes the old token and creates the
+	// new one — if either fails the old token stays active and the client can retry.
+	RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error
+	// RevokeOAuth2RefreshTokensByFamilyID revokes all active tokens in a family
+	// when a stolen-token reuse is detected (RFC 9700 §2.2.2).
+	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
+	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
+	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
+	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
+	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
+	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh
+	// token and were registered before the grace cutoff. Run after the refresh
+	// token sweep so clients are not collected while their tokens are still
+	// retained for reuse detection.
+	SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error)
+	// ListOAuth2Sessions returns a page of active downstream grants for the
+	// Connected Clients UI, plus the total count matching the filters (before
+	// the limit/offset are applied). Filtering and pagination are pushed to SQL.
+	ListOAuth2Sessions(ctx context.Context, params OAuth2SessionsQueryParams) ([]OAuth2SessionRow, int64, error)
+	// GetOAuth2SessionByID returns a single active grant row for permission checks.
+	GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error)
+	// RevokeOAuth2Session revokes a specific downstream grant by refresh token ID.
+	RevokeOAuth2Session(ctx context.Context, id string) error
 
 	// Cleanup
 	Close(ctx context.Context) error

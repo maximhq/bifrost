@@ -13,25 +13,25 @@ import (
 
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
-	ID                      uint            `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
-	ClientID                string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
-	Name                    string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
-	IsCodeModeClient        bool            `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
-	ConnectionType          string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
-	ConnectionString        *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
-	StdioConfigJSON         *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
-	TLSConfigJSON           *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
-	ToolsToExecuteJSON      string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	ToolsToAutoExecuteJSON  string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	HeadersJSON             string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
-	AllowedExtraHeadersJSON string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	IsPingAvailable         *bool           `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
-	ToolPricingJSON         string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
-	ToolSyncInterval        int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
+	ID                      uint               `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
+	ClientID                string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
+	Name                    string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	IsCodeModeClient        bool               `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
+	ConnectionType          string             `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
+	ConnectionString        *schemas.SecretVar `gorm:"type:text" json:"connection_string,omitempty"`
+	StdioConfigJSON         *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
+	TLSConfigJSON           *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
+	ToolsToExecuteJSON      string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	ToolsToAutoExecuteJSON  string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	HeadersJSON             string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+	AllowedExtraHeadersJSON string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	IsPingAvailable         *bool              `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
+	ToolPricingJSON         string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
+	ToolSyncInterval        int                `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
-	DiscoveredToolsJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]schemas.ChatTool
-	ToolNameMappingJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
+	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers"
@@ -57,16 +57,16 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig               *schemas.MCPStdioConfig    `gorm:"-" json:"stdio_config,omitempty"`
-	TLSConfig                 *schemas.MCPTLSConfig      `gorm:"-" json:"tls_config,omitempty"`
-	ToolsToExecute            schemas.WhiteList          `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute        schemas.WhiteList          `gorm:"-" json:"tools_to_auto_execute"`
-	Headers                   map[string]schemas.EnvVar  `gorm:"-" json:"headers"`
-	AllowedExtraHeaders       schemas.WhiteList          `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing               map[string]float64         `gorm:"-" json:"tool_pricing"`
-	DiscoveredTools           map[string]schemas.ChatTool `gorm:"-" json:"-"`
-	DiscoveredToolNameMapping map[string]string           `gorm:"-" json:"-"`
-	PerUserHeaderKeys         []string                    `gorm:"-" json:"per_user_header_keys"`
+	StdioConfig               *schemas.MCPStdioConfig      `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig        `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute            schemas.WhiteList            `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute        schemas.WhiteList            `gorm:"-" json:"tools_to_auto_execute"`
+	Headers                   map[string]schemas.SecretVar `gorm:"-" json:"headers"`
+	AllowedExtraHeaders       schemas.WhiteList            `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing               map[string]float64           `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools           map[string]schemas.ChatTool  `gorm:"-" json:"-"`
+	DiscoveredToolNameMapping map[string]string            `gorm:"-" json:"-"`
+	PerUserHeaderKeys         []string                     `gorm:"-" json:"per_user_header_keys"`
 }
 
 // TableName sets the table name for each model
@@ -127,8 +127,8 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	if c.Headers != nil {
 		headersToSerialize := make(map[string]string, len(c.Headers))
 		for key, value := range c.Headers {
-			if value.IsFromEnv() {
-				headersToSerialize[key] = value.EnvVar
+			if value.IsFromSecret() {
+				headersToSerialize[key] = value.GetRawRef()
 			} else {
 				headersToSerialize[key] = value.GetValue()
 			}
@@ -195,7 +195,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
 	if encrypt.IsEnabled() {
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromSecret() && c.ConnectionString.GetValue() != "" {
 			// Copy to avoid encrypting the shared ConnectionString through the pointer
 			cs := *c.ConnectionString
 			enc, err := encrypt.Encrypt(cs.Val)
@@ -221,7 +221,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 // AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
 // and deserializes JSON columns back into runtime structs after reading from the database.
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
-	if c.EncryptionStatus == "encrypted" {
+	if c.EncryptionStatus == EncryptionStatusEncrypted {
 		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
 			decrypted, err := encrypt.Decrypt(c.HeadersJSON)
 			if err != nil {
@@ -229,7 +229,7 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			}
 			c.HeadersJSON = decrypted
 		}
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromSecret() && c.ConnectionString.GetValue() != "" {
 			decrypted, err := encrypt.Decrypt(c.ConnectionString.Val)
 			if err != nil {
 				return fmt.Errorf("failed to decrypt mcp connection string: %w", err)
@@ -293,3 +293,7 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+// VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
+// callback can compute the vault base path for this model automatically.
+func (c *TableMCPClient) VaultPathKey() string { return c.ClientID }

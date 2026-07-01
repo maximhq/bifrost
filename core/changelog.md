@@ -1,1 +1,7 @@
 - feat: add `Tracer.SetTraceAttributes` and `Trace.MergeAttributes` so request-scoped dimensions can be attached at the trace level and propagated to every exported span (#3770)
+- fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
+- fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
+- fix: recover from idle-timeout timer-goroutine panic that could crash the process
+- fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)
+- fix: pass through `gs://` image URLs on Vertex Gemini (closes #4402)
+- fix: signal Bedrock max_output_tokens truncation on Responses API [@jeremym-tanium](https://github.com/jeremym-tanium)

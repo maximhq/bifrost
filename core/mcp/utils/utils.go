@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -167,7 +168,7 @@ func CanonicalizeHeaderMap(m map[string]string) map[string]string {
 // those live on the upstream transport via StaticConfigHeaders and apply
 // automatically to every message it carries. This function exists for the
 // per-message CredentialStore.RequestHeaders path on shared connections.
-func ExtractFilteredExtras(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) http.Header {
+func ExtractFilteredExtras(ctx context.Context, config *schemas.MCPClientConfig) http.Header {
 	headers := make(http.Header)
 	if ctx == nil || config == nil {
 		return headers

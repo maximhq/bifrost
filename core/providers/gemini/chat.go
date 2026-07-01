@@ -9,7 +9,13 @@ import (
 )
 
 // ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
-func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
+	return ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, bifrostReq, defaultGeminiImageURLSchemes...)
+}
+
+// ToGeminiChatCompletionRequestWithImageURLSchemes converts a BifrostChatRequest
+// to Gemini format using the provider-specific allowlist for non-data image URLs.
+func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, allowedImageURLSchemes ...string) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -21,11 +27,14 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		Model: bifrostReq.Model,
 	}
 
+	// Canonical model for capability gating only; wire model is untouched.
+	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		var err error
-		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
+		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, capModel)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +81,10 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		}
 	}
 	// Convert chat completion messages to Gemini format
-	contents, systemInstruction := convertBifrostMessagesToGemini(bifrostReq.Input)
+	contents, systemInstruction, err := convertBifrostMessagesToGemini(bifrostReq.Input, allowedImageURLSchemes...)
+	if err != nil {
+		return nil, err
+	}
 	if systemInstruction != nil {
 		geminiReq.SystemInstruction = systemInstruction
 	}

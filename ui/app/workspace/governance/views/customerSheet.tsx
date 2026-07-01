@@ -66,6 +66,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		...createInitialState(customer),
 		isDirty: false,
 	});
+	const [nameError, setNameError] = useState<string | null>(null);
 
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
 
@@ -82,6 +83,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			const init = createInitialState(customer);
 			setInitialState(init);
 			setFormData({ ...init, isDirty: false });
+			setNameError(null);
 		}
 	}, [open, customer]);
 
@@ -124,7 +126,9 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		);
 		const hasAlignableRateLimit =
 			(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null && supportsCalendarAlignment(formData.tokenResetDuration)) ||
-			(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null && supportsCalendarAlignment(formData.requestResetDuration));
+			(formData.requestMaxLimit !== undefined &&
+				formData.requestMaxLimit !== null &&
+				supportsCalendarAlignment(formData.requestResetDuration));
 		return hasAlignableBudget || hasAlignableRateLimit;
 	}, [formData.budgets, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration]);
 
@@ -162,21 +166,24 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					: []),
 				...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 					? [
-						Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
-						Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
-					]
+							Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
+							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+						]
 					: []),
 				...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
 					? [
-						Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
-						Validator.required(formData.requestResetDuration, "Request reset duration is required"),
-					]
+							Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
+							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+						]
 					: []),
 			]),
 		[formData, hasDuplicateDuration, tokenMaxLimitNum, requestMaxLimitNum],
 	);
 
 	const updateField = <K extends keyof CustomerFormData>(field: K, value: CustomerFormData[K]) => {
+		if (field === "name") {
+			setNameError(null);
+		}
 		setFormData((prev) => ({ ...prev, [field]: value }));
 	};
 
@@ -244,7 +251,11 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 			onOpenChange(false);
 			onSuccess?.();
-		} catch (error) {
+		} catch (error: any) {
+			if (error?.status === 409) {
+				setNameError(getErrorMessage(error));
+				return;
+			}
 			toast.error(getErrorMessage(error));
 		}
 	};
@@ -261,7 +272,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="sm:max-w-2xl max-w-[900px] p-0 pt-4" data-testid="customer-dialog-content">
+			<SheetContent className="max-w-[900px] p-0 pt-4 sm:max-w-2xl" data-testid="customer-dialog-content">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? "Edit Customer" : "Create Customer"}</SheetTitle>
 					<SheetDescription>
@@ -285,6 +296,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 										maxLength={50}
 										onChange={(e) => updateField("name", e.target.value)}
 									/>
+									{nameError && <p className="text-destructive text-sm">{nameError}</p>}
 									<p className="text-muted-foreground text-sm">This name will be used to identify the customer account.</p>
 								</div>
 							</div>
@@ -324,8 +336,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 											Align to calendar cycle
 										</Label>
 										<p className="text-muted-foreground text-xs">
-											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from
-											creation date. Applies to durations of a day or longer.
+											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+											Applies to durations of a day or longer.
 										</p>
 									</div>
 									<Switch
@@ -342,10 +354,10 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 									<AlertDialogHeader>
 										<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
 										<AlertDialogDescription>
-											Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
-											token/request rate-limit counters to <span className="font-semibold">0</span> for this customer, then snap
-											each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage
-											reset cannot be undone, but calendar alignment can be turned off later. This will take effect when you save.
+											Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and token/request
+											rate-limit counters to <span className="font-semibold">0</span> for this customer, then snap each reset date to the
+											start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be undone, but calendar
+											alignment can be turned off later. This will take effect when you save.
 										</AlertDialogDescription>
 									</AlertDialogHeader>
 									<AlertDialogFooter>
@@ -365,7 +377,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 						</div>
 					</div>
 
-					<SheetFooter className="flex-row justify-end gap-2 border-t px-6 py-4 sticky bottom-0 bg-card">
+					<SheetFooter className="bg-card sticky bottom-0 flex-row justify-end gap-2 border-t px-6 py-4">
 						<Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
 							Cancel
 						</Button>

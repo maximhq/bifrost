@@ -39,6 +39,7 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
+import { AnalyzerConfig } from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -825,6 +826,32 @@ export const governanceApi = baseApi.injectEndpoints({
 				}
 			},
 		}),
+
+		// Complexity Analyzer Config
+		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "GET",
+			}),
+			providesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
+			query: (data) => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config/reset",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
 	}),
 });
 
@@ -887,6 +914,11 @@ export const {
 	useGetProviderGovernanceQuery,
 	useUpdateProviderGovernanceMutation,
 	useDeleteProviderGovernanceMutation,
+
+	// Complexity Analyzer Config
+	useGetComplexityAnalyzerConfigQuery,
+	useUpdateComplexityAnalyzerConfigMutation,
+	useResetComplexityAnalyzerConfigMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

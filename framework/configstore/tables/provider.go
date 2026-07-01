@@ -182,3 +182,4 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 
 	return nil
 }
+

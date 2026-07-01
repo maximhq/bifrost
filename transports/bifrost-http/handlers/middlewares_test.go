@@ -63,7 +63,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 				nextCalled = true
 			}
 
-			middleware := CorsMiddleware(config)
+			middleware := NewCorsMiddleware(config).Middleware()
 			handler := middleware(next)
 			handler(ctx)
 
@@ -109,7 +109,7 @@ func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -140,7 +140,7 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -172,7 +172,7 @@ func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -209,7 +209,7 @@ func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -246,7 +246,7 @@ func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -282,7 +282,7 @@ func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -635,8 +635,8 @@ func TestAuthMiddleware_DisabledAuthConfig(t *testing.T) {
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("password"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
 		IsEnabled:     false,
 	})
 
@@ -664,8 +664,8 @@ func TestAuthMiddleware_EnabledAuthConfig_NoAuth(t *testing.T) {
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -690,14 +690,58 @@ func TestAuthMiddleware_EnabledAuthConfig_NoAuth(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	t.Run("serve routes bypass auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills/serve/my-skill.git/info/refs?service=git-upload-pack")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if !nextCalled {
+			t.Fatal("expected public skills serving route to bypass auth")
+		}
+	})
+
+	t.Run("management routes require auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if nextCalled {
+			t.Fatal("expected skills management route to require auth")
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+			t.Fatalf("expected %d, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+		}
+	})
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -734,11 +778,10 @@ func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *tes
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
-
 	routes := []string{
 		"/v1/realtime",
 		"/openai/v1/realtime",
@@ -766,43 +809,81 @@ func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *tes
 	}
 }
 
-func TestAuthMiddleware_InferenceMiddleware_RealtimeMintingStillRequiresAuth(t *testing.T) {
+// TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance verifies that the
+// inference middleware passes every inference request through — including realtime minting
+// endpoints and credential-less requests — even with dashboard auth enabled. Inference
+// authentication is owned by the governance plugin downstream (the authoritative VK
+// validator), not by this dashboard-auth middleware. Re-introducing a credential check
+// here would reject virtual-key callers and break inference auth, so the middleware must
+// never short-circuit an inference request.
+func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
-	routes := []string{
-		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
-		"/openai/v1/realtime/client_secrets",
-		"/openai/v1/realtime/sessions",
+	cases := []struct {
+		name      string
+		uri       string
+		headerKey string
+		headerVal string
+	}{
+		{name: "chat completion with virtual key", uri: "/v1/chat/completions", headerKey: "x-bf-vk", headerVal: "sk-bf-abc123"},
+		{name: "chat completion without credentials", uri: "/v1/chat/completions"},
+		{name: "realtime minting (client_secrets)", uri: "/v1/realtime/client_secrets"},
+		{name: "realtime minting (sessions)", uri: "/openai/v1/realtime/sessions"},
 	}
 
-	for _, route := range routes {
-		t.Run(route, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx := &fasthttp.RequestCtx{}
-			ctx.Request.SetRequestURI(route)
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.headerKey != "" {
+				ctx.Request.Header.Set(tc.headerKey, tc.headerVal)
+			}
 
 			nextCalled := false
-			next := func(ctx *fasthttp.RequestCtx) {
-				nextCalled = true
-			}
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
 
-			handler := am.InferenceMiddleware()(next)
-			handler(ctx)
+			am.InferenceMiddleware()(next)(ctx)
 
-			if nextCalled {
-				t.Fatalf("expected realtime minting route %s to still require auth", route)
-			}
-			if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
-				t.Fatalf("expected %d for route %s, got %d", fasthttp.StatusUnauthorized, route, ctx.Response.StatusCode())
+			if !nextCalled {
+				t.Fatalf("expected inference request %q to pass the middleware (governance enforces auth downstream), got %d", tc.name, ctx.Response.StatusCode())
 			}
 		})
+	}
+}
+
+// TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass guards against the privilege-
+// escalation loophole: a virtual key must never grant access to admin/dashboard routes.
+func TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/config")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-abc123")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+	am.APIMiddleware()(next)(ctx)
+
+	if nextCalled {
+		t.Fatal("virtual key must not bypass auth on admin/dashboard routes")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected %d for admin route with VK, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
 	}
 }
 
@@ -832,8 +913,8 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 
 	// Now enable auth
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -859,8 +940,8 @@ func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 	am := &AuthMiddleware{}
 	// Start with auth enabled
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -883,8 +964,8 @@ func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 
 	// Now disable auth
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     false,
 	})
 
@@ -1002,7 +1083,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1038,7 +1119,7 @@ func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1075,7 +1156,7 @@ func TestCorsMiddleware_WildcardHeaders_CredentialedPreflight(t *testing.T) {
 		t.Error("Next handler should not be called for preflight")
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1112,7 +1193,7 @@ func TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1152,7 +1233,7 @@ func TestCorsMiddleware_CustomHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1198,7 +1279,7 @@ func TestCorsMiddleware_DuplicateHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1240,7 +1321,7 @@ func TestCorsMiddleware_CustomHeadersWithLocalhost(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1274,7 +1355,7 @@ func TestCorsMiddleware_CustomHeadersNotSetForNonAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -2128,9 +2209,6 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 // TracingMiddleware lands x-bf-dim-* headers on trace.Attributes (in addition
 // to the root HTTP span), so that observability plugins propagate them onto
 // every exported child span.
-//
-// This is the only test that catches a regression where the middleware refactor
-// (extractDimensionAttributes) drops the SetTraceAttributes call.
 func TestTracingMiddleware_PropagatesDimAttributesToTrace(t *testing.T) {
 	store := tracing.NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
@@ -2145,9 +2223,6 @@ func TestTracingMiddleware_PropagatesDimAttributesToTrace(t *testing.T) {
 		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
 		capturedTraceID = traceID
 		if trace := store.GetTrace(traceID); trace != nil {
-			// Snapshot the attributes map by copy so we can read it after the
-			// middleware defer runs (which doesn't modify Attributes today, but
-			// this isolates the assertion from any future cleanup).
 			capturedAttributes = make(map[string]any, len(trace.Attributes))
 			for k, v := range trace.Attributes {
 				capturedAttributes[k] = v
@@ -2160,8 +2235,6 @@ func TestTracingMiddleware_PropagatesDimAttributesToTrace(t *testing.T) {
 	ctx.Request.Header.SetMethod("POST")
 	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
 	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
-	// Reserved suffixes must be skipped — they would otherwise stomp on
-	// http.method and http.url on the root span.
 	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
 	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
 
@@ -2179,10 +2252,27 @@ func TestTracingMiddleware_PropagatesDimAttributesToTrace(t *testing.T) {
 	if got := capturedAttributes["environment"]; got != "prod" {
 		t.Errorf("trace.Attributes[environment] = %v, want %q", got, "prod")
 	}
-	if _, ok := capturedAttributes["method"]; ok {
-		t.Errorf("trace.Attributes contained reserved suffix 'method': %v", capturedAttributes["method"])
+}
+
+func TestCollectDimensionHeaders(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-team", "ml")
+	ctx.Request.Header.Set("x-bf-dim-", "ignored")  // empty dimension name
+	ctx.Request.Header.Set("x-request-id", "req-1") // non-dimension header
+
+	dims := collectDimensionHeaders(ctx)
+	if len(dims) != 2 {
+		t.Fatalf("collectDimensionHeaders() = %v, want 2 entries", dims)
 	}
-	if _, ok := capturedAttributes["path"]; ok {
-		t.Errorf("trace.Attributes contained reserved suffix 'path': %v", capturedAttributes["path"])
+	if dims["environment"] != "prod" || dims["team"] != "ml" {
+		t.Errorf("collectDimensionHeaders() = %v, want environment=prod team=ml", dims)
+	}
+
+	if got := collectDimensionHeaders(&fasthttp.RequestCtx{}); got != nil {
+		t.Errorf("collectDimensionHeaders(no dims) = %v, want nil", got)
+	}
+	if got := collectDimensionHeaders(nil); got != nil {
+		t.Errorf("collectDimensionHeaders(nil) = %v, want nil", got)
 	}
 }

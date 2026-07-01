@@ -202,6 +202,18 @@ func ListModelsByKey(
 	return response, nil
 }
 
+// BearerAuthHeader builds the auth header map for OpenAI-compatible providers that authenticate
+// with a bearer token. It returns an empty (non-nil) map when the key carries no value (e.g.
+// SigV4 / header-based auth supplied via extraHeaders), so callers can pass it directly to the
+// Handle*Request functions that take an authHeader map.
+func BearerAuthHeader(key schemas.Key) map[string]string {
+	headers := map[string]string{}
+	if key.Value.GetValue() != "" {
+		headers["Authorization"] = "Bearer " + key.Value.GetValue()
+	}
+	return headers
+}
+
 // HandleOpenAIListModelsRequest handles a list models request to OpenAI's API.
 func HandleOpenAIListModelsRequest(
 	ctx *schemas.BifrostContext,
@@ -239,7 +251,7 @@ func (provider *OpenAIProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/completions", schemas.TextCompletionRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -256,7 +268,7 @@ func HandleOpenAITextCompletionRequest(
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostTextCompletionRequest,
-	key schemas.Key,
+	authHeader map[string]string,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -285,12 +297,12 @@ func HandleOpenAITextCompletionRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeader, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -390,16 +402,12 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionStreamRequest); err != nil {
 		return nil, err
 	}
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
 	return HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/completions", schemas.TextCompletionStreamRequest),
 		request,
-		authHeader,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -505,7 +513,14 @@ func HandleOpenAITextCompletionStreaming(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -524,7 +539,7 @@ func HandleOpenAITextCompletionStreaming(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -540,7 +555,7 @@ func HandleOpenAITextCompletionStreaming(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -569,6 +584,9 @@ func HandleOpenAITextCompletionStreaming(
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream
+		// cancel/timeout can bill for tokens the provider already processed.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 		var finishReason *string
 		var messageID string
@@ -750,11 +768,12 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -767,13 +786,14 @@ func HandleOpenAIChatCompletionRequest(
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostChatRequest,
-	key schemas.Key,
+	authHeader map[string]string,
 	extraHeaders map[string]string,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	customResponseHandler responseHandler[schemas.BifrostChatResponse],
 	customErrorConverter ErrorConverter,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create request
@@ -796,12 +816,12 @@ func HandleOpenAIChatCompletionRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeader, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -828,6 +848,16 @@ func HandleOpenAIChatCompletionRequest(
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonData)
+		if bErr != nil {
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	req.SetBody(jsonData)
@@ -902,10 +932,6 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
 	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ChatParameters{}
@@ -919,13 +945,14 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionStreamRequest),
 		request,
-		authHeader,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -955,6 +982,7 @@ func HandleOpenAIChatCompletionStreaming(
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIChatRequest) *OpenAIChatRequest,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -1023,6 +1051,17 @@ func HandleOpenAIChatCompletionStreaming(
 		req.Header.Set(key, value)
 	}
 
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonBody)
+		if bErr != nil {
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
 
 	// Use streaming-aware client when large payload optimization is active — ensures
@@ -1047,7 +1086,14 @@ func HandleOpenAIChatCompletionStreaming(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -1066,7 +1112,7 @@ func HandleOpenAIChatCompletionStreaming(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -1084,7 +1130,7 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			// Release the responses stream state if it was acquired (for ResponsesToChatCompletions fallback)
 			schemas.ReleaseChatToResponsesStreamState(responsesStreamState)
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -1113,6 +1159,9 @@ func HandleOpenAIChatCompletionStreaming(
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream
+		// cancel/timeout can bill for tokens the provider already processed.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 		lastChunkTime := startTime
 
@@ -1408,11 +1457,12 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -1425,13 +1475,14 @@ func HandleOpenAIResponsesRequest(
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostResponsesRequest,
-	key schemas.Key,
+	authHeader map[string]string,
 	extraHeaders map[string]string,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	customResponseHandler responseHandler[schemas.BifrostResponsesResponse],
 	customErrorConverter ErrorConverter,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create request
@@ -1454,12 +1505,12 @@ func HandleOpenAIResponsesRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeader, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -1482,10 +1533,20 @@ func HandleOpenAIResponsesRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(request), nil
+			return ToOpenAIResponsesRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonData)
+		if bErr != nil {
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	req.SetBody(jsonData)
@@ -1563,10 +1624,6 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
 	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
@@ -1580,13 +1637,14 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
 		request,
-		authHeader,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -1614,6 +1672,7 @@ func HandleOpenAIResponsesStreaming(
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -1634,7 +1693,7 @@ func HandleOpenAIResponsesStreaming(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody := ToOpenAIResponsesRequest(request)
+			reqBody := ToOpenAIResponsesRequest(ctx, request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
 				if postRequestConverter != nil {
@@ -1665,6 +1724,17 @@ func HandleOpenAIResponsesStreaming(
 		req.Header.Set(key, value)
 	}
 
+	if signer != nil {
+		sigHeaders, bErr := signer(jsonBody)
+		if bErr != nil {
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+			return nil, bErr
+		}
+		for k, v := range sigHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
 
 	// Use streaming-aware client when large payload optimization is active — ensures
@@ -1689,7 +1759,14 @@ func HandleOpenAIResponsesStreaming(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -1708,7 +1785,7 @@ func HandleOpenAIResponsesStreaming(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -1724,7 +1801,7 @@ func HandleOpenAIResponsesStreaming(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -1822,6 +1899,14 @@ func HandleOpenAIResponsesStreaming(
 					if response.Code != nil {
 						bifrostErr.Error.Code = response.Code
 					}
+					if response.Error != nil {
+						if response.Error.Message != "" && bifrostErr.Error.Message == "" {
+							bifrostErr.Error.Message = response.Error.Message
+						}
+						if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+							bifrostErr.Error.Code = &response.Error.Code
+						}
+					}
 					if response.Response != nil && response.Response.Error != nil {
 						if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
 							bifrostErr.Error.Message = response.Response.Error.Message
@@ -1891,7 +1976,7 @@ func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/embeddings", schemas.EmbeddingRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -1908,7 +1993,7 @@ func HandleOpenAIEmbeddingRequest(
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostEmbeddingRequest,
-	key schemas.Key,
+	authHeader map[string]string,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -1936,12 +2021,12 @@ func HandleOpenAIEmbeddingRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeader, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -2106,7 +2191,7 @@ func HandleOpenAISpeechRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -2188,17 +2273,12 @@ func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		}
 	}
 
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
-
 	return HandleOpenAISpeechStreamRequest(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/audio/speech", schemas.SpeechStreamRequest),
 		request,
-		authHeader,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -2303,7 +2383,14 @@ func HandleOpenAISpeechStreamRequest(
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		// The request failed before the first response byte (connection refused, server
+		// closed an idle/pooled connection, broken pipe, DNS failure, etc.). Mirror the
+		// non-streaming path (makeRequestWithDoFunc) and surface this as a retriable upstream
+		// connection error (502, IsBifrostError=false) rather than NewBifrostOperationError
+		// (500, IsBifrostError=true). The latter caused the retry loop in executeRequestWithRetries
+		// to break early on IsBifrostError, so max_retries never applied to streaming connection
+		// failures - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -2319,7 +2406,7 @@ func HandleOpenAISpeechStreamRequest(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -2335,7 +2422,7 @@ func HandleOpenAISpeechStreamRequest(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -2478,7 +2565,7 @@ func HandleOpenAITranscriptionRequest(
 	logger schemas.Logger,
 ) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -2632,17 +2719,12 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		return nil, err
 	}
 
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
-
 	return HandleOpenAITranscriptionStreamRequest(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/audio/transcriptions", schemas.TranscriptionStreamRequest),
 		request,
-		authHeader,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -2761,7 +2843,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -2777,7 +2859,7 @@ func HandleOpenAITranscriptionStreamRequest(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -2964,7 +3046,7 @@ func HandleOpenAIImageGenerationRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -3065,17 +3147,13 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 		return nil, err
 	}
 
-	var authHeader map[string]string
-	if value := key.Value.GetValue(); value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + value}
-	}
 	// Use shared streaming logic
 	return HandleOpenAIImageGenerationStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationStreamRequest),
 		request,
-		authHeader,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -3200,7 +3278,7 @@ func HandleOpenAIImageGenerationStreaming(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -3216,7 +3294,7 @@ func HandleOpenAIImageGenerationStreaming(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -4068,7 +4146,7 @@ func (provider *OpenAIProvider) Compaction(ctx *schemas.BifrostContext, key sche
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/responses/compact", schemas.CompactionRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -4083,7 +4161,7 @@ func HandleOpenAICompactionRequest(
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostCompactionRequest,
-	key schemas.Key,
+	authHeader map[string]string,
 	extraHeaders map[string]string,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -4106,11 +4184,11 @@ func HandleOpenAICompactionRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
 	}
 
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeader, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -4131,7 +4209,7 @@ func HandleOpenAICompactionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAICompactionRequest(request), nil
+			return ToOpenAICompactionRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4222,7 +4300,7 @@ func HandleOpenAICountTokensRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -4243,7 +4321,7 @@ func HandleOpenAICountTokensRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(request), nil
+			return ToOpenAIResponsesRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4335,7 +4413,7 @@ func HandleOpenAIImageEditRequest(
 	logger schemas.Logger,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -4442,17 +4520,12 @@ func (provider *OpenAIProvider) ImageEditStream(ctx *schemas.BifrostContext, pos
 		return nil, err
 	}
 
-	var authHeader map[string]string
-	if value := key.Value.GetValue(); value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + value}
-	}
-
 	return HandleOpenAIImageEditStreamRequest(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/images/edits", schemas.ImageEditStreamRequest),
 		request,
-		authHeader,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		false,
@@ -4566,7 +4639,7 @@ func HandleOpenAIImageEditStreamRequest(
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		close(responseChan)
+		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
 
@@ -4582,7 +4655,7 @@ func HandleOpenAIImageEditStreamRequest(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -4864,7 +4937,7 @@ func HandleOpenAIImageVariationRequest(
 	logger schemas.Logger,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -6984,6 +7057,7 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", request.ContainerID, request.FileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileDeleteRequest))
 		req.Header.SetMethod(http.MethodDelete)
+		req.Header.SetContentType("application/json")
 
 		if key.Value.GetValue() != "" {
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())

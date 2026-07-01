@@ -107,8 +107,17 @@ func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 }
 
 func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
+	// DeepSeek is configured as a custom OpenAI-compatible provider, which registers
+	// itself so ParseModelString can strip its prefix from "deepseek/deepseek-v4-pro".
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
+
 	tests := []struct {
 		name     string
+		provider schemas.ModelProvider
 		model    string
 		effort   string
 		expected string
@@ -167,12 +176,51 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "high",
 		},
+		{
+			name:     "preserves max for deepseek-v4-pro",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
 			req := &schemas.BifrostChatRequest{
-				Provider: schemas.OpenAI,
+				Provider: provider,
 				Model:    tt.model,
 				Input: []schemas.ChatMessage{{
 					Role: schemas.ChatMessageRoleUser,
@@ -205,7 +253,88 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	}
 }
 
+// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking, minimax-m2)
+// reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
+// Vertex case should drop a "none" effort for these models while preserving it for
+// Mistral on Vertex (which does accept "none").
+func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		keepsEffort bool
+	}{
+		{
+			name:        "MaaS model drops none effort",
+			model:       "moonshotai/kimi-k2-thinking-maas",
+			keepsEffort: false,
+		},
+		{
+			name:        "minimax MaaS model drops none effort",
+			model:       "minimaxai/minimax-m2-maas",
+			keepsEffort: false,
+		},
+		{
+			name:        "Mistral on Vertex keeps none effort",
+			model:       "mistral-large",
+			keepsEffort: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("none"),
+					},
+				},
+			}
+
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+			if out == nil {
+				t.Fatal("expected OpenAI chat request")
+			}
+
+			if tt.keepsEffort {
+				if out.Reasoning == nil || out.Reasoning.Effort == nil || *out.Reasoning.Effort != "none" {
+					t.Fatalf("expected reasoning effort to be preserved as \"none\", got %+v", out.Reasoning)
+				}
+				return
+			}
+
+			// Effort must be dropped so reasoning_effort is omitted from the payload.
+			if out.Reasoning != nil && out.Reasoning.Effort != nil {
+				t.Fatalf("expected reasoning effort to be dropped, got %q", *out.Reasoning.Effort)
+			}
+
+			// Verify the marshalled body does not contain reasoning_effort.
+			body, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("failed to marshal request: %v", err)
+			}
+			if strings.Contains(string(body), "reasoning_effort") {
+				t.Fatalf("expected marshalled body to omit reasoning_effort, got %s", string(body))
+			}
+		})
+	}
+}
+
 func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort(t *testing.T) {
+	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
+
 	tests := []struct {
 		name     string
 		model    string
@@ -266,6 +395,36 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 			effort:   "max",
 			expected: "high",
 		},
+		{
+			name:     "preserves max for deepseek-v4-pro",
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.2",
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			model:    "zai/glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
@@ -280,7 +439,7 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 				},
 			}
 
-			req.filterOpenAISpecificParameters()
+			req.filterOpenAISpecificParameters(req.Model)
 
 			if req.Reasoning == nil || req.Reasoning.Effort == nil {
 				t.Fatal("expected reasoning effort to be set")
@@ -520,6 +679,73 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	}
 	if got, ok := assistantMessage["reasoning_content"].(string); !ok || got != reasoning {
 		t.Fatalf("expected reasoning_content %q in assistant payload, got %#v", reasoning, assistantMessage["reasoning_content"])
+	}
+}
+
+func TestToOpenAIChatRequest_CerebrasStripsAssistantReasoningContent(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	assistantContent := "The weather in Paris is mild today."
+	userContent := "What is the weather in Paris?"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Cerebras,
+		Model:    "gpt-oss-120b",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
+		t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
+	}
+	if result.Messages[1].OpenAIChatAssistantMessage.Reasoning != nil {
+		t.Fatalf("expected assistant reasoning_content to be stripped for cerebras, got %#v", result.Messages[1].OpenAIChatAssistantMessage.Reasoning)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, bifrostReq), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var jsonMap map[string]interface{}
+	if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled request body: %v", err)
+	}
+
+	messages, ok := jsonMap["messages"].([]interface{})
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
+	}
+	assistantMessage, ok := messages[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected assistant message object, got %#v", messages[1])
+	}
+	if _, ok := assistantMessage["reasoning_content"]; ok {
+		t.Fatalf("expected reasoning_content to be absent from cerebras assistant payload, got %#v", assistantMessage["reasoning_content"])
 	}
 }
 
@@ -892,5 +1118,110 @@ func TestApplyXAICompatibility(t *testing.T) {
 			// Validate the results
 			tt.validate(t, tt.request)
 		})
+	}
+}
+
+// TestToOpenAIChatRequest_CacheControl_OpenRouterOnly verifies that
+// Anthropic-style cache_control breakpoints on message content blocks and on
+// tools survive marshalling only when the originating provider is OpenRouter
+// (which forwards them to the underlying Claude/Gemini model). For OpenAI and
+// other OpenAI-format providers, cache_control is still stripped.
+func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
+	makeReq := func(provider schemas.ModelProvider) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-opus-4",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleSystem,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type:         schemas.ChatContentBlockTypeText,
+								Text:         schemas.Ptr("long cacheable system prompt"),
+								CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+							},
+						},
+					},
+				},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+			},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "lookup",
+							Description: schemas.Ptr("lookup something"),
+							Parameters: &schemas.ToolFunctionParameters{
+								Type: "object",
+								Properties: schemas.NewOrderedMapFromPairs(
+									schemas.KV("q", map[string]interface{}{"type": "string"}),
+								),
+							},
+						},
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		wantKept bool
+	}{
+		{name: "openrouter preserves cache_control", provider: schemas.OpenRouter, wantKept: true},
+		{name: "openai strips cache_control", provider: schemas.OpenAI, wantKept: false},
+		{name: "gemini strips cache_control", provider: schemas.Gemini, wantKept: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+
+			result := ToOpenAIChatRequest(ctx, makeReq(tt.provider))
+			require.NotNil(t, result)
+
+			wireBody, err := json.Marshal(result)
+			require.NoError(t, err)
+			s := string(wireBody)
+
+			if tt.wantKept {
+				require.Contains(t, s, "cache_control", "cache_control must be preserved for OpenRouter: %s", s)
+				// Both the content-block breakpoint and the tool breakpoint must survive.
+				require.Equal(t, 2, strings.Count(s, "cache_control"), "expected cache_control on both content block and tool: %s", s)
+			} else {
+				require.NotContains(t, s, "cache_control", "cache_control must be stripped for %s: %s", tt.provider, s)
+			}
+
+			// The tool identity must always survive regardless of stripping.
+			require.Contains(t, s, "lookup")
+		})
+	}
+}
+
+// TestOpenAIInbound_ServerToolNameSurvives is a diagnostic probe for the Bedrock
+// managed-tool harness 400s. It replicates the transport inbound path
+// (sonic.Unmarshal of the raw body into *OpenAIChatRequest, then
+// ToBifrostChatRequest) and asserts the top-level server-tool name survives.
+func TestOpenAIInbound_ServerToolNameSurvives(t *testing.T) {
+	body := `{"model":"bedrock/global.anthropic.claude-sonnet-4-6","max_tokens":1024,"tools":[{"type":"bash_20250124","name":"bash"}],"messages":[{"role":"user","content":"Run ls"}]}`
+
+	var req OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t.Logf("after Unmarshal: tools=%+v", req.ChatParameters.Tools)
+	if len(req.ChatParameters.Tools) != 1 || req.ChatParameters.Tools[0].Name != "bash" {
+		t.Fatalf("PARSE dropped name: %+v", req.ChatParameters.Tools)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifReq := req.ToBifrostChatRequest(ctx)
+	if bifReq.Params == nil || len(bifReq.Params.Tools) != 1 || bifReq.Params.Tools[0].Name != "bash" {
+		t.Fatalf("ToBifrostChatRequest dropped name: %+v", bifReq.Params)
 	}
 }

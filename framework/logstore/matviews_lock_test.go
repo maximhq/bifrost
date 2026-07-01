@@ -81,13 +81,13 @@ func TestMigrationLockContextCancellationAndSessionRelease(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	lock, err := acquireMigrationLock(ctx, db)
+	lock, err := acquireMigrationLock(ctx, db, testLogger{})
 	require.Error(t, err)
 	require.Nil(t, lock)
 
 	closeTestAdvisoryLockSession(t, holderDB, holder)
 
-	lock, err = acquireMigrationLock(context.Background(), db)
+	lock, err = acquireMigrationLock(context.Background(), db, testLogger{})
 	require.NoError(t, err)
 	lock.release(context.Background())
 }

@@ -367,6 +367,47 @@ export const createColumns = (
 		},
 	];
 
+	const attributionCell = (value?: string | null) => <div className="max-w-[180px] truncate font-mono text-xs">{value || "-"}</div>;
+
+	const attributionColumns: ColumnDef<LogEntry>[] = [
+		{
+			id: "virtual_key",
+			header: "Virtual Key",
+			size: 170,
+			cell: ({ row }) => attributionCell(row.original.virtual_key?.name ?? row.original.virtual_key_id),
+		},
+		{
+			id: "routing_rule",
+			header: "Routing Rule",
+			size: 170,
+			cell: ({ row }) => attributionCell(row.original.routing_rule?.name ?? row.original.routing_rule_id),
+		},
+		{
+			id: "team",
+			header: "Team",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.team_name ?? row.original.team_id),
+		},
+		{
+			id: "customer",
+			header: "Customer",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.customer_name ?? row.original.customer_id),
+		},
+		{
+			id: "user",
+			header: "User",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.user_name ?? row.original.user_id),
+		},
+		{
+			id: "business_unit",
+			header: "Business Unit",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.business_unit_name ?? row.original.business_unit_id),
+		},
+	];
+
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
 		id: `metadata_${key}`,
 		header: key.charAt(0).toUpperCase() + key.slice(1),
@@ -395,5 +436,5 @@ export const createColumns = (
 			]
 		: [];
 
-	return [...baseColumns, ...metadataColumns, ...actionsColumn];
+	return [...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];
 };

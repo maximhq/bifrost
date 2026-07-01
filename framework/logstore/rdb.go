@@ -327,17 +327,10 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 			switch dialect {
 			case "postgres":
-				// Use @> containment operator to leverage GIN index on metadata::jsonb
-				// Preserve value type (number/boolean) for JSON containment
-				var jsonFragment string
-				if value == "true" || value == "false" {
-					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, value)
-				} else if f, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
-					// Reject NaN/Inf which would produce invalid JSON; normalize the number
-					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, strconv.FormatFloat(f, 'f', -1, 64))
-				} else {
-					jsonFragment = fmt.Sprintf(`{%q: %q}`, key, value)
-				}
+				// Use @> containment operator to leverage GIN index on metadata::jsonb.
+				// Metadata values always originate from HTTP headers and are stored as JSON
+				// strings — always match as a string to avoid type mismatch with jsonb.
+				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
 				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
 			default:
 				// SQLite: quote the member name so dots/hyphens stay part of the key
@@ -691,6 +684,7 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 		}
 	}
 
+	pagination.TotalCount = totalCount
 	return &SearchResult{
 		Logs:       logs,
 		Pagination: pagination,
@@ -864,6 +858,7 @@ func normalizeAggregateTimestamp(value any) string {
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
 		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
+		"canonical_model_name", "alias_model_family",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
@@ -872,7 +867,8 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"business_unit_id", "business_unit_name",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		"latency", "token_usage", "cost", "status", "error_details", "stream",
-		"content_summary", "metadata", "cache_debug",
+		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
+		"metadata", "cache_debug",
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"created_at",
@@ -1823,8 +1819,12 @@ func (s *RDBLogStore) buildLatencyHistogramResult(computedBuckets map[int64]Late
 }
 
 // GetModelRankings returns models ranked by usage with trend comparison to the previous period.
+// Uses the same fresh-aggregate matview gate as GetStats: short windows go to
+// the raw table because mv_logs_hourly rounds the window out to full hour
+// buckets, which visibly inflates rankings against the raw-path stats and
+// cost-histogram totals shown on the same dashboard.
 func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		return s.getModelRankingsFromMatView(ctx, filters)
 	}
 	selectClause := `
@@ -1963,8 +1963,12 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 }
 
 // GetUserRankings returns users ranked by usage with trend comparison to the previous period.
+// Uses the same fresh-aggregate matview gate as GetStats: short windows go to
+// the raw table because mv_logs_hourly rounds the window out to full hour
+// buckets, which visibly inflates rankings against the raw-path stats and
+// cost-histogram totals shown on the same dashboard.
 func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		return s.getUserRankingsFromMatView(ctx, filters)
 	}
 	selectClause := `
@@ -2096,7 +2100,11 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		return q.Model(&Log{})
 	}
 
-	if fanoutFrom == "" && s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+	// Fresh-aggregate gate (not bare canUseMatView): short windows go to the
+	// raw table because mv_logs_hourly rounds the window out to full hour
+	// buckets, which visibly inflates rankings against the raw-path stats and
+	// cost-histogram totals shown on the same dashboard.
+	if fanoutFrom == "" && s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		return s.getDimensionRankingsFromMatView(ctx, filters, dimension)
 	}
 

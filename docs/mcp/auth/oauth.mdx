@@ -226,10 +226,11 @@ Status values:
 - `pending` — admin hasn't authorized yet
 - `authorized` — token is valid and active
 - `failed` — authorization failed or token is invalid
+- `revoked` — the token was revoked (via DELETE); the config row is retained with no live token
 
 ### Automatic refresh
 
-Bifrost refreshes the access token automatically before expiration using the stored refresh token. No action required.
+Bifrost refreshes the access token automatically on its next use after it has expired, using the stored refresh token. No action required.
 
 ### Rotation
 
@@ -241,7 +242,7 @@ The MCP client edit flow lets you rotate `client_id` / `client_secret` while pre
 curl -X DELETE http://localhost:8080/api/oauth/config/oauth_cfg_abc123
 ```
 
-This revokes the token with the OAuth provider (if a revocation endpoint is configured), deletes the token from Bifrost, and removes the OAuth configuration.
+This deletes the stored token from Bifrost and marks the OAuth configuration `revoked` (the config row is kept, not deleted). Bifrost does **not** call the upstream provider's revocation endpoint — revoke at the provider's dashboard if you need the upstream token invalidated there.
 
 ---
 

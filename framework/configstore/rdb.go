@@ -2,7 +2,11 @@ package configstore
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"sort"
@@ -215,9 +219,9 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 	return dbKey, nil
 }
 
-// mcpExternalURLToString converts an *schemas.EnvVar to its storage string form.
+// mcpExternalURLToString converts an *schemas.SecretVar to its storage string form.
 // Stores "env.MY_VAR" when sourced from an env var, or the raw URL otherwise.
-func mcpExternalURLToString(e *schemas.EnvVar) string {
+func mcpExternalURLToString(e *schemas.SecretVar) string {
 	if e == nil {
 		return ""
 	}
@@ -237,6 +241,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		EnableLogging:                         config.EnableLogging,
 		DisableContentLogging:                 config.DisableContentLogging,
 		DisableDBPingsInHealth:                config.DisableDBPingsInHealth,
+		DumpErrorsInConsoleLogs:               config.DumpErrorsInConsoleLogs,
 		LogRetentionDays:                      config.LogRetentionDays,
 		EnforceAuthOnInference:                config.EnforceAuthOnInference,
 		EnforceGovernanceHeader:               config.EnforceGovernanceHeader,
@@ -266,6 +271,8 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
 		AllowDirectKeys:                       config.AllowDirectKeys,
+		MCPServerAuthMode:                     config.MCPServerAuthMode,
+		OAuth2ServerConfig:                    config.OAuth2ServerConfig,
 		ConfigHash:                            config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction.
@@ -500,6 +507,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		EnableLogging:           dbConfig.EnableLogging,
 		DisableContentLogging:   dbConfig.DisableContentLogging,
 		DisableDBPingsInHealth:  dbConfig.DisableDBPingsInHealth,
+		DumpErrorsInConsoleLogs: dbConfig.DumpErrorsInConsoleLogs,
 		LogRetentionDays:        dbConfig.LogRetentionDays,
 		EnforceAuthOnInference:  dbConfig.EnforceAuthOnInference,
 		EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
@@ -525,11 +533,13 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
-		MCPExternalClientURL:                  schemas.NewEnvVar(dbConfig.MCPExternalClientURL),
+		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
 		AllowDirectKeys:                       dbConfig.AllowDirectKeys,
+		MCPServerAuthMode:                     dbConfig.MCPServerAuthMode,
+		OAuth2ServerConfig:                    dbConfig.OAuth2ServerConfig,
 		ConfigHash:                            dbConfig.ConfigHash,
 	}, nil
 }
@@ -1579,6 +1589,9 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
 	}
+	if params.ClientID != "" {
+		baseQuery = baseQuery.Where("client_id = ?", params.ClientID)
+	}
 
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {
@@ -1609,7 +1622,294 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 	return clients, totalCount, nil
 }
 
-// GetMCPClientByID retrieves an MCP client by ID from the database.
+// mcpLibrarySortColumns whitelists the columns the MCP library list endpoint
+// may sort by. Restricting to a fixed set keeps the ORDER BY clause free of
+// caller-supplied identifiers.
+var mcpLibrarySortColumns = map[string]string{
+	"name":       "name",
+	"category":   "category",
+	"publisher":  "publisher",
+	"created_at": "created_at",
+	"updated_at": "updated_at",
+}
+
+// GetMCPLibraryPaginated retrieves MCP library catalog entries with optional
+// search, filtering, sorting, and pagination. Returns the page of rows and the
+// total count matching the filters (before pagination).
+func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
+	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPLibrary{}).Where("deleted_at IS NULL")
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where(
+			"LOWER(name) LIKE ? OR LOWER(description) LIKE ? OR LOWER(publisher) LIKE ?",
+			search, search, search,
+		)
+	}
+	if len(params.Categories) > 0 {
+		baseQuery = baseQuery.Where("category IN ?", params.Categories)
+	}
+	if len(params.ConnectionTypes) > 0 {
+		baseQuery = baseQuery.Where("connection_type IN ?", params.ConnectionTypes)
+	}
+	if len(params.AuthTypes) > 0 {
+		baseQuery = baseQuery.Where("auth_type IN ?", params.AuthTypes)
+	}
+	// Tags are stored as a JSON-encoded array string; match rows whose JSON
+	// contains any requested tag as a quoted token. This is a substring match
+	// over the serialized array, which is sufficient for the catalog's small,
+	// well-formed tag values and avoids a DB-specific JSON operator. LIKE
+	// metacharacters in the tag are escaped (with an explicit ESCAPE clause) so
+	// a tag containing % or _ matches literally instead of as a wildcard.
+	likeEscaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	for _, tag := range params.Tags {
+		if tag == "" {
+			continue
+		}
+		escapedTag := likeEscaper.Replace(tag)
+		baseQuery = baseQuery.Where(`tags LIKE ? ESCAPE '\'`, `%"`+escapedTag+`"%`)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	sortColumn := "name"
+	if col, ok := mcpLibrarySortColumns[params.SortBy]; ok {
+		sortColumn = col
+	}
+	dir := "ASC"
+	if strings.EqualFold(params.Order, "desc") {
+		dir = "DESC"
+	}
+	// id as a stable tiebreaker so paging is deterministic across equal keys.
+	orderClause := fmt.Sprintf("%s %s, id ASC", sortColumn, dir)
+
+	var entries []tables.TableMCPLibrary
+	if err := baseQuery.
+		Order(orderClause).
+		Offset(offset).
+		Limit(limit).
+		Find(&entries).Error; err != nil {
+		return nil, 0, err
+	}
+	return entries, totalCount, nil
+}
+
+// GetMCPLibraryFilterData returns the distinct facet values for the MCP library
+// filter sidebar: categories, connection types, auth types, and tags. Empty
+// values are skipped. Tags are stored as JSON arrays, so they are decoded and
+// unioned in Go rather than via a DB-specific JSON operator.
+func (s *RDBConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error) {
+	db := s.DB().WithContext(ctx)
+	result := &MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}
+
+	distinct := func(column string, dst *[]string) error {
+		var values []string
+		if err := db.Model(&tables.TableMCPLibrary{}).
+			Distinct(column).
+			Where("deleted_at IS NULL").
+			Where(column+" IS NOT NULL AND "+column+" != ?", "").
+			Order(column+" ASC").
+			Pluck(column, &values).Error; err != nil {
+			return err
+		}
+		*dst = append(*dst, values...)
+		return nil
+	}
+
+	if err := distinct("category", &result.Categories); err != nil {
+		return nil, err
+	}
+	if err := distinct("connection_type", &result.ConnectionTypes); err != nil {
+		return nil, err
+	}
+	if err := distinct("auth_type", &result.AuthTypes); err != nil {
+		return nil, err
+	}
+
+	// Tags: gather distinct JSON blobs, decode, and union the values.
+	var tagBlobs []string
+	if err := db.Model(&tables.TableMCPLibrary{}).
+		Distinct("tags").
+		Where("deleted_at IS NULL").
+		Where("tags IS NOT NULL AND tags != ?", "").
+		Pluck("tags", &tagBlobs).Error; err != nil {
+		return nil, err
+	}
+	tagSet := make(map[string]struct{})
+	for _, blob := range tagBlobs {
+		var tags []string
+		if err := json.Unmarshal([]byte(blob), &tags); err != nil {
+			continue // skip malformed blobs rather than failing the whole request
+		}
+		for _, tag := range tags {
+			if tag == "" {
+				continue
+			}
+			tagSet[tag] = struct{}{}
+		}
+	}
+	for tag := range tagSet {
+		result.Tags = append(result.Tags, tag)
+	}
+	sort.Strings(result.Tags)
+
+	return result, nil
+}
+
+// mcpLibrarySyncUpdateColumns enumerates the columns the MCP library sync may
+// overwrite on conflict. The list is explicit (not UpdateAll) so id/created_at
+// are preserved and any future editorial-only columns can be excluded.
+var mcpLibrarySyncUpdateColumns = []string{
+	"name",
+	"description",
+	"category",
+	"connection_type",
+	"connection_url",
+	"stdio_config",
+	"auth_type",
+	"required_header_keys",
+	"icon_url",
+	"docs_url",
+	"publisher",
+	"tags",
+	"metadata",
+	"updated_at",
+}
+
+// UpsertMCPLibraryEntry creates or updates an MCP library catalog row, keyed by
+// the unique slug. Mirrors UpsertModelPrices: a single atomic ON CONFLICT
+// statement so concurrent syncs across nodes don't deadlock.
+func (s *RDBConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "slug"}},
+		DoUpdates: clause.AssignmentColumns(mcpLibrarySyncUpdateColumns),
+		// Atomically protect custom/tombstoned rows: only overwrite an existing
+		// row if it is still a live remote row. This closes the TOCTOU race where
+		// a row turns custom or is soft-deleted between the snapshot taken by
+		// GetProtectedMCPLibrarySlugs and this upsert. INSERTs are unaffected.
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "mcp_library.source = 'remote' AND mcp_library.deleted_at IS NULL"},
+		}},
+	}).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+// Source is forced to "custom" regardless of what the caller passed. The unique
+// slug index prevents duplicates; parseGormError maps that to ErrAlreadyExists.
+func (s *RDBConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
+	entry.Source = "custom"
+	if err := s.DB().WithContext(ctx).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at to
+// now) so it no longer appears in listings and the remote sync respects the
+// tombstone. Works on both "remote" and "custom" rows.
+func (s *RDBConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Update("deleted_at", time.Now())
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteMCPLibraryEntry removes a library row by ID, branching on its source:
+//   - "custom" (org-internal) rows are hard-deleted so their unique slug is
+//     freed and the same server can be added again later. There is no remote
+//     sync that could resurrect a custom slug, so no tombstone is needed.
+//   - "remote" (synced) rows are tombstoned via SoftDeleteMCPLibraryEntry so the
+//     remote sync respects the user's removal instead of recreating the row.
+func (s *RDBConfigStore) DeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var entry tables.TableMCPLibrary
+		if err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "source").
+			Where("id = ? AND deleted_at IS NULL", id).
+			First(&entry).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		if entry.Source != "custom" {
+			result := tx.
+				Model(&tables.TableMCPLibrary{}).
+				Where("id = ?", id).
+				Update("deleted_at", time.Now())
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return ErrNotFound
+			}
+			return nil
+		}
+
+		result := tx.
+			Where("id = ?", id).
+			Delete(&tables.TableMCPLibrary{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must skip:
+// custom rows (any source != "remote") and soft-deleted rows (deleted_at set).
+func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
+	var slugs []string
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("source != 'remote' OR deleted_at IS NOT NULL").
+		Pluck("slug", &slugs).Error; err != nil {
+		return nil, err
+	}
+	return slugs, nil
+}
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
 	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
@@ -1670,7 +1970,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	return s.DB().Transaction(func(tx *gorm.DB) error {
 		// Check if a client with the same name already exists
 		if _, err := s.GetMCPClientByName(ctx, clientConfig.Name); err == nil {
-			return fmt.Errorf("MCP client with name '%s' already exists", clientConfig.Name)
+			return fmt.Errorf("MCP client with name %q %w", clientConfig.Name, ErrAlreadyExists)
 		}
 		// Create a deep copy to avoid modifying the original
 		clientConfigCopy, err := deepCopy(*clientConfig)
@@ -1756,8 +2056,8 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		headersToSerialize := make(map[string]string)
 		if clientConfigCopy.Headers != nil {
 			for key, value := range clientConfigCopy.Headers {
-				if value.IsFromEnv() {
-					headersToSerialize[key] = value.EnvVar
+				if value.IsFromSecret() {
+					headersToSerialize[key] = value.GetRawRef()
 				} else {
 					headersToSerialize[key] = value.GetValue()
 				}
@@ -1876,7 +2176,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if clientConfigCopy.ConfigHash != "" {
 			connectionStringToPersist := clientConfigCopy.ConnectionString
 			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
-				!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
+				!connectionStringToPersist.IsFromSecret() && connectionStringToPersist.GetValue() != "" {
 				// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
 				cs := *connectionStringToPersist
 				encryptedConnString, encErr := encrypt.Encrypt(cs.Val)
@@ -2083,6 +2383,7 @@ var pricingSyncUpdateColumns = []string{
 	"max_input_tokens",
 	"max_output_tokens",
 	"architecture",
+	"is_deprecated",
 	// Costs - Text
 	"input_cost_per_token",
 	"output_cost_per_token",
@@ -2092,6 +2393,8 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_token_priority",
 	"input_cost_per_token_flex",
 	"output_cost_per_token_flex",
+	"input_cost_per_token_fast",
+	"output_cost_per_token_fast",
 	"input_cost_per_character",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
@@ -2181,6 +2484,59 @@ func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.
 		return s.parseGormError(err)
 	}
 	return nil
+}
+
+// pricingUpsertBatchSize bounds rows per multi-row INSERT on the PostgreSQL
+// pricing-sync path, sized well under PostgreSQL's 65535 bind-parameter ceiling
+// (TableModelPricing has ~76 columns, so ~860 rows would hit the limit; 500
+// leaves comfortable headroom). Only PostgreSQL batches — see
+// UpsertModelPricesBatch.
+const pricingUpsertBatchSize = 500
+
+// UpsertModelPricesBatch creates or updates many model pricing records with the
+// same semantics as UpsertModelPrices (pricingSyncUpdateColumns only, so
+// additional_attributes editorial metadata survives the sync). Callers must
+// dedup by (model, provider, mode) first: a conflict target may not appear
+// twice in one statement.
+//
+// The whole write runs in one transaction so the sync stays atomic. PostgreSQL
+// uses chunked multi-row ON CONFLICT statements to cut the per-model round-trips
+// that motivated batching against a remote DB. SQLite cannot batch these rows: a
+// multi-row VALUES list rejects the DEFAULT keyword GORM emits for the table's
+// many default:null columns ("near \"DEFAULT\": syntax error"), and its
+// bind-variable ceiling is lower. SQLite is a local file, so per-row writes are
+// ~free — it loops within the same transaction instead.
+func (s *RDBConfigStore) UpsertModelPricesBatch(ctx context.Context, pricing []tables.TableModelPricing, tx ...*gorm.DB) error {
+	if len(pricing) == 0 {
+		return nil
+	}
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	onConflict := clause.OnConflict{
+		Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}, {Name: "mode"}},
+		DoUpdates: clause.AssignmentColumns(pricingSyncUpdateColumns),
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		if tx.Dialector.Name() == "postgres" {
+			if err := tx.Clauses(onConflict).CreateInBatches(pricing, pricingUpsertBatchSize).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			return nil
+		}
+		for i := range pricing {
+			if err := tx.Clauses(onConflict).Create(&pricing[i]).Error; err != nil {
+				return s.parseGormError(err)
+			}
+		}
+		return nil
+	})
 }
 
 // UpsertModelPricingAttributes writes only the additional_attributes column
@@ -2395,6 +2751,51 @@ func (s *RDBConfigStore) UpsertModelParameters(ctx context.Context, params *tabl
 	return nil
 }
 
+const modelParametersUpsertBatchSize = 100
+
+// UpsertModelParametersBatch inserts or updates model parameters in batches.
+// The sync path uses this to avoid one DB round-trip per model parameter row.
+func (s *RDBConfigStore) UpsertModelParametersBatch(ctx context.Context, params []tables.TableModelParameters, tx ...*gorm.DB) error {
+	if len(params) == 0 {
+		return nil
+	}
+	deduped := make([]tables.TableModelParameters, 0, len(params))
+	seen := make(map[string]int, len(params))
+	for _, param := range params {
+		if idx, ok := seen[param.Model]; ok {
+			deduped[idx] = param
+			continue
+		}
+		seen[param.Model] = len(deduped)
+		deduped = append(deduped, param)
+	}
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	onConflict := clause.OnConflict{
+		Columns:   []clause.Column{{Name: "model"}},
+		UpdateAll: true,
+	}
+	upsert := func(tx *gorm.DB) error {
+		// Unlike TableModelPricing, TableModelParameters has no nullable default
+		// columns, so GORM's multi-row INSERT does not emit DEFAULT values that
+		// SQLite rejects.
+		if err := tx.Clauses(onConflict).CreateInBatches(deduped, modelParametersUpsertBatchSize).Error; err != nil {
+			return s.parseGormError(err)
+		}
+		return nil
+	}
+	if len(tx) > 0 {
+		return upsert(db)
+	}
+	return db.Transaction(upsert)
+}
+
 // PLUGINS METHODS
 
 func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error) {
@@ -2490,11 +2891,22 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		plugin.IsCustom = false
 	}
-	if err := txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", plugin.Name).Error; err != nil {
-		if localTx {
-			txDB.Rollback()
+	var existing tables.TablePlugin
+	if err := txDB.WithContext(ctx).Where("name = ?", plugin.Name).First(&existing).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			if localTx {
+				txDB.Rollback()
+			}
+			return err
 		}
-		return err
+		// not found — nothing to delete
+	} else {
+		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
+			if localTx {
+				txDB.Rollback()
+			}
+			return err
+		}
 	}
 	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
 		if localTx {
@@ -2516,7 +2928,14 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 	} else {
 		txDB = s.DB()
 	}
-	return txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", name).Error
+	var plugin tables.TablePlugin
+	if err := txDB.WithContext(ctx).Where("name = ?", name).First(&plugin).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return txDB.WithContext(ctx).Delete(&plugin).Error
 }
 
 // GOVERNANCE METHODS
@@ -3019,6 +3438,16 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
 			return err
 		}
+		// Revoke gateway-issued OAuth2 grants bound to this VK (vk-mode tokens are
+		// keyed by vk_id in bf_sub). They are revoked rather than deleted so they
+		// stop minting access tokens on refresh and drop off the active-grants
+		// view, while remaining available for reuse detection until the sweep.
+		now := time.Now()
+		if err := txDB.WithContext(ctx).Model(&tables.TableOAuth2RefreshToken{}).
+			Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", string(schemas.MCPAuthModeVK), id).
+			Update("revoked_at", &now).Error; err != nil {
+			return err
+		}
 		// Delete per-user MCP header credentials tied to this VK
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
 			return err
@@ -3038,8 +3467,8 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 			return err
 		}
 		rateLimitID := virtualKey.RateLimitID
-		// Delete the virtual key
-		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error; err != nil {
+		// Delete the virtual key (use hydrated struct so AfterDelete vault cleanup fires correctly)
+		if err := txDB.WithContext(ctx).Delete(&virtualKey).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -4698,12 +5127,12 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		return nil, nil
 	}
 	var authConfig *AuthConfig
+	var complexityAnalyzerConfig *ComplexityAnalyzerConfig
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
 		var username *string
 		var password *string
 		var isEnabled bool
-		var disableAuthOnInference bool
 		for _, entry := range governanceConfigs {
 			switch entry.Key {
 			case tables.ConfigAdminUsernameKey:
@@ -4712,31 +5141,105 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 				password = bifrost.Ptr(entry.Value)
 			case tables.ConfigIsAuthEnabledKey:
 				isEnabled = entry.Value == "true"
-			case tables.ConfigDisableAuthOnInferenceKey:
-				disableAuthOnInference = entry.Value == "true"
+			case tables.ConfigComplexityAnalyzerConfigKey:
+				if strings.TrimSpace(entry.Value) == "" {
+					continue
+				}
+				decoded, err := DecodeComplexityAnalyzerConfig([]byte(entry.Value))
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("failed to load complexity analyzer config from governance_config: %v", err)
+					}
+					continue
+				}
+				complexityAnalyzerConfig = decoded
 			}
 		}
 		if username != nil && password != nil {
 			authConfig = &AuthConfig{
-				AdminUserName:          schemas.NewEnvVar(*username),
-				AdminPassword:          schemas.NewEnvVar(*password),
-				IsEnabled:              isEnabled,
-				DisableAuthOnInference: disableAuthOnInference,
+				AdminUserName: schemas.NewSecretVar(*username),
+				AdminPassword: schemas.NewSecretVar(*password),
+				IsEnabled:     isEnabled,
 			}
 		}
 	}
 	return &GovernanceConfig{
-		VirtualKeys:      virtualKeys,
-		Teams:            teams,
-		Customers:        customers,
-		Budgets:          budgets,
-		RateLimits:       rateLimits,
-		ModelConfigs:     modelConfigs,
-		Providers:        providers,
-		RoutingRules:     routingRules,
-		PricingOverrides: pricingOverrides,
-		AuthConfig:       authConfig,
+		VirtualKeys:              virtualKeys,
+		Teams:                    teams,
+		Customers:                customers,
+		Budgets:                  budgets,
+		RateLimits:               rateLimits,
+		ModelConfigs:             modelConfigs,
+		Providers:                providers,
+		RoutingRules:             routingRules,
+		PricingOverrides:         pricingOverrides,
+		AuthConfig:               authConfig,
+		ComplexityAnalyzerConfig: complexityAnalyzerConfig,
 	}, nil
+}
+
+// GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config.
+func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
+	return s.getComplexityAnalyzerConfigWithDB(ctx, s.DB())
+}
+
+func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, db *gorm.DB) (*ComplexityAnalyzerConfig, error) {
+	if db == nil {
+		db = s.DB()
+	}
+
+	var configEntry tables.TableGovernanceConfig
+	err := db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(configEntry.Value) == "" {
+		return nil, nil
+	}
+	decoded, err := DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed analyzer config.
+func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if config == nil {
+		return fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+
+	txDB := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		txDB = tx[0]
+	}
+
+	if normalized.ConfigHashes.Empty() {
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, txDB)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			normalized.ConfigHashes = existing.ConfigHashes
+		}
+	}
+
+	raw, err := encodeComplexityAnalyzerConfig(normalized)
+	if err != nil {
+		return err
+	}
+	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: string(raw),
+	}, tx...)
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.
@@ -4744,7 +5247,6 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	var username *string
 	var password *string
 	var isEnabled bool
-	var disableAuthOnInference bool
 	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminUsernameKey).Select("value").Scan(&username).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
@@ -4760,23 +5262,13 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 			return nil, err
 		}
 	}
-	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigDisableAuthOnInferenceKey).Select("value").Scan(&disableAuthOnInference).Error; err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-	}
 	if username == nil || password == nil {
 		return nil, nil
 	}
-	// We are no longer keeping this option in the database
-	if !isEnabled {
-		disableAuthOnInference = true
-	}
 	return &AuthConfig{
-		AdminUserName:          schemas.NewEnvVar(*username),
-		AdminPassword:          schemas.NewEnvVar(*password),
-		IsEnabled:              isEnabled,
-		DisableAuthOnInference: disableAuthOnInference,
+		AdminUserName: schemas.NewSecretVar(*username),
+		AdminPassword: schemas.NewSecretVar(*password),
+		IsEnabled:     isEnabled,
 	}, nil
 }
 
@@ -4798,12 +5290,6 @@ func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfi
 		if err := tx.Save(&tables.TableGovernanceConfig{
 			Key:   tables.ConfigIsAuthEnabledKey,
 			Value: fmt.Sprintf("%t", config.IsEnabled),
-		}).Error; err != nil {
-			return err
-		}
-		if err := tx.Save(&tables.TableGovernanceConfig{
-			Key:   tables.ConfigDisableAuthOnInferenceKey,
-			Value: fmt.Sprintf("%t", config.DisableAuthOnInference),
 		}).Error; err != nil {
 			return err
 		}
@@ -4935,13 +5421,17 @@ func (s *RDBConfigStore) CreateSession(ctx context.Context, session *tables.Sess
 // DeleteSession deletes a session from the database.
 func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error {
 	tokenHash := encrypt.HashSHA256(token)
-	result := s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token_hash = ?", tokenHash)
+	var session tables.SessionsTable
+	if err := s.DB().WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Fall back to plaintext lookup for backward compatibility
+			return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error // vault token is saved via tokenHash, so this case will not hit the vault scenario, but we keep it for backward compatibility with any existing plaintext tokens
+		}
+		return err
+	}
+	result := s.DB().WithContext(ctx).Delete(&session)
 	if result.Error != nil {
 		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		// Fall back to plaintext lookup for backward compatibility
-		return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error
 	}
 	return nil
 }
@@ -5292,7 +5782,16 @@ func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Tab
 
 // DeleteOauthToken deletes an OAuth token by its ID
 func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthToken{})
+	var existing tables.TableOauthToken
+	// Check if the token exists before attempting to delete
+	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&existing).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil // Token doesn't exist, consider it deleted
+		}
+		return fmt.Errorf("failed to check existence of oauth token: %w", err)
+	}
+	result := s.DB().WithContext(ctx).Delete(&existing)
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete oauth token: %w", result.Error)
 	}
@@ -5302,8 +5801,18 @@ func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error 
 // GetExpiringOauthTokens retrieves tokens that are expiring before the given time
 func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
 	var tokens []*tables.TableOauthToken
+	// Exclude tokens whose owning oauth_config has already reached a terminal
+	// state — "expired" (set when a refresh is permanently rejected, e.g.
+	// invalid_grant / Grant not found) or "revoked". Without this, the refresh
+	// worker re-selects a permanently-dead token on every tick (its expires_at
+	// stays in the past) and logs the same failure indefinitely; a dead grant
+	// needs re-authorization, not perpetual retries.
 	result := s.DB().WithContext(ctx).
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).
+		Where("NOT EXISTS (?)",
+			s.DB().Model(&tables.TableOauthConfig{}).
+				Select("1").
+				Where("oauth_configs.token_id = oauth_tokens.id AND oauth_configs.status IN ?", []string{"expired", "revoked"})).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
@@ -6014,6 +6523,16 @@ func applyMCPSessionFilters(query *gorm.DB, params MCPSessionsFilterParams, t mc
 	if len(params.MCPClientIDs) > 0 {
 		query = query.Where(t.table+".mcp_client_id IN ?", params.MCPClientIDs)
 	}
+	if params.Identity != "" {
+		// Exact match against whichever identity column carries the value for this
+		// row's mode. Parenthesized explicitly so the OR group ANDs cleanly with the
+		// filters above — GORM does not wrap raw-string conditions in parentheses, so
+		// without the parens the trailing ORs would escape the AND chain.
+		query = query.Where(
+			"("+t.table+".user_id = ? OR "+t.table+".virtual_key_id = ? OR "+t.table+".session_id = ?)",
+			params.Identity, params.Identity, params.Identity,
+		)
+	}
 	if params.Search != "" {
 		needle := "%" + strings.ToLower(params.Search) + "%"
 		query = query.
@@ -6295,4 +6814,467 @@ func (s *RDBConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, 
 		}
 		return nil
 	})
+}
+
+// GetOAuth2SigningKey returns the signing key, creating and persisting a new
+// RS2048 keypair if none exists yet.
+func (s *RDBConfigStore) GetOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error) {
+	key, err := s.loadOAuth2SigningKey(ctx)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// No key persisted yet — generate and store one atomically.
+			return s.createOAuth2SigningKey(ctx)
+		}
+		return nil, err
+	}
+	return key, nil
+}
+
+// loadOAuth2SigningKey reads and decrypts the persisted signing key. It returns
+// ErrNotFound when no key has been generated yet.
+func (s *RDBConfigStore) loadOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error) {
+	row, err := s.GetConfig(ctx, tables.GovernanceConfigKeyOAuth2SigningKey)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get oauth2 signing key: %w", err)
+	}
+	if row == nil || row.Value == "" {
+		return nil, ErrNotFound
+	}
+	var key tables.OAuth2SigningKey
+	if err := json.Unmarshal([]byte(row.Value), &key); err != nil {
+		return nil, fmt.Errorf("unmarshal oauth2 signing key: %w", err)
+	}
+	// Decrypt off the stored marker, not the live encrypt.IsEnabled() flag, so a
+	// key persisted while encryption was disabled is not mangled once encryption
+	// is later turned on (mirrors the AfterFind hooks on secret-bearing tables).
+	if err := key.Decrypt(); err != nil {
+		return nil, err
+	}
+	return &key, nil
+}
+
+func (s *RDBConfigStore) createOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("generate RSA key: %w", err)
+	}
+
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("marshal RSA private key: %w", err)
+	}
+	privPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}))
+
+	pubBytes, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshal RSA public key: %w", err)
+	}
+	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}))
+
+	key := &tables.OAuth2SigningKey{
+		KID:           uuid.New().String(),
+		PrivateKeyPEM: privPEM,
+		PublicKeyPEM:  pubPEM,
+	}
+
+	// Encrypt the private key in place and stamp EncryptionStatus before storage
+	// (mirrors the BeforeSave hooks on secret-bearing tables).
+	if err := key.Encrypt(); err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(key)
+	if err != nil {
+		return nil, fmt.Errorf("marshal oauth2 signing key: %w", err)
+	}
+
+	// Persist atomically with INSERT ... ON CONFLICT DO NOTHING so concurrent
+	// first-use callers cannot last-writer-wins different keypairs. If the row
+	// already exists (RowsAffected == 0), another caller won the race — reload
+	// and return the persisted key so every caller agrees on a single keypair.
+	res := s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoNothing: true,
+	}).Create(&tables.TableGovernanceConfig{
+		Key:   tables.GovernanceConfigKeyOAuth2SigningKey,
+		Value: string(data),
+	})
+	if res.Error != nil {
+		return nil, fmt.Errorf("persist oauth2 signing key: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return s.loadOAuth2SigningKey(ctx)
+	}
+
+	// We won the insert — return with plaintext private key for immediate use.
+	key.PrivateKeyPEM = privPEM
+	return key, nil
+}
+
+// --- OAuth2 Clients (DCR) ---
+
+// CreateOAuth2Client persists a new DCR registration.
+func (s *RDBConfigStore) CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error {
+	if err := s.DB().WithContext(ctx).Create(client).Error; err != nil {
+		return fmt.Errorf("create oauth2 client: %w", err)
+	}
+	return nil
+}
+
+// GetOAuth2ClientByClientID returns the client with the given client_id, or nil
+// if not found.
+func (s *RDBConfigStore) GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error) {
+	var c tables.TableOAuth2Client
+	err := s.DB().WithContext(ctx).Where("client_id = ?", clientID).First(&c).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 client: %w", err)
+	}
+	return &c, nil
+}
+
+// --- OAuth2 Authorize Requests ---
+
+// CreateOAuth2AuthorizeRequest persists a new pending authorize request.
+func (s *RDBConfigStore) CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	if err := s.DB().WithContext(ctx).Create(req).Error; err != nil {
+		return fmt.Errorf("create oauth2 authorize request: %w", err)
+	}
+	return nil
+}
+
+// GetOAuth2AuthorizeRequestByID returns the authorize request with the given ID.
+func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request: %w", err)
+	}
+	return &req, nil
+}
+
+// GetOAuth2AuthorizeRequestByCodeHash finds a consented authorize request by
+// the hash of the auth code. Used by the token endpoint.
+func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).
+		Where("code_hash = ? AND status = ?", codeHash, tables.OAuth2AuthorizeRequestStatusConsented).
+		First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request by code hash: %w", err)
+	}
+	return &req, nil
+}
+
+// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending authorize
+// request to consented, recording the minted code hash and resolved identity in
+// a single conditional update. The status guard makes the transition idempotent
+// under concurrency: a second consent for the same flow matches zero rows and
+// returns ErrNotFound rather than overwriting the code hash the first one minted.
+func (s *RDBConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	result := s.DB().WithContext(ctx).Model(&tables.TableOAuth2AuthorizeRequest{}).
+		Where("id = ? AND status = ?", req.ID, tables.OAuth2AuthorizeRequestStatusPending).
+		Updates(map[string]any{
+			"status":     tables.OAuth2AuthorizeRequestStatusConsented,
+			"code_hash":  req.CodeHash,
+			"bf_mode":    req.BfMode,
+			"bf_sub":     req.BfSub,
+			"updated_at": req.UpdatedAt,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("consent authorize request: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SweepExpiredOAuth2AuthorizeRequests deletes pending/consented requests past
+// their TTL. Safe to call periodically.
+func (s *RDBConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
+	return s.DB().WithContext(ctx).
+		Where("expires_at < ? AND status != ?", time.Now(), tables.OAuth2AuthorizeRequestStatusCodeIssued).
+		Delete(&tables.TableOAuth2AuthorizeRequest{}).Error
+}
+
+// --- OAuth2 Refresh Tokens ---
+
+// GetOAuth2RefreshTokenByHash returns the refresh token row for the given hash.
+func (s *RDBConfigStore) GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
+	var rt tables.TableOAuth2RefreshToken
+	err := s.DB().WithContext(ctx).Where("token_hash = ? AND revoked_at IS NULL", hash).First(&rt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 refresh token: %w", err)
+	}
+	return &rt, nil
+}
+
+// ConsumeOAuth2AuthorizeRequest atomically marks the authorize request as
+// code_issued and creates the refresh token in a single transaction.
+// If either operation fails the transaction is rolled back — the authorize
+// request stays in "consented" state and the client can retry the token exchange.
+func (s *RDBConfigStore) ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Conditional update guards single-use: only a still-consented, unexpired
+		// request transitions. A zero-row result means the code was already
+		// consumed, expired, or never consented — reject before minting a token so
+		// a racing second exchange can't double-spend one authorization code.
+		result := tx.Model(&tables.TableOAuth2AuthorizeRequest{}).
+			Where("id = ? AND status = ? AND expires_at > ?", requestID, tables.OAuth2AuthorizeRequestStatusConsented, now).
+			Updates(map[string]any{
+				"status":     tables.OAuth2AuthorizeRequestStatusCodeIssued,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("consume authorize request: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if err := tx.Create(rt).Error; err != nil {
+			return fmt.Errorf("create refresh token: %w", err)
+		}
+		return nil
+	})
+}
+
+// RotateOAuth2RefreshToken atomically revokes the old refresh token and creates
+// the new one in a single transaction. If either operation fails the transaction
+// is rolled back — the old token stays active and the client can retry the refresh.
+func (s *RDBConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Only an active (not-yet-revoked) token may be rotated. A zero-row result
+		// means the token was already revoked — either by a concurrent rotation or
+		// as a replay — so reject before minting a replacement.
+		result := tx.Model(&tables.TableOAuth2RefreshToken{}).
+			Where("id = ? AND revoked_at IS NULL", oldID).
+			Update("revoked_at", &now)
+		if result.Error != nil {
+			return fmt.Errorf("revoke old refresh token: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if err := tx.Create(newRT).Error; err != nil {
+			return fmt.Errorf("create new refresh token: %w", err)
+		}
+		return nil
+	})
+}
+
+// GetOAuth2RefreshTokenByHashAny returns a refresh token row including revoked
+// ones. Used for stolen-token detection: if a revoked token is presented we can
+// identify its family and revoke all descendants (RFC 9700 §2.2.2).
+func (s *RDBConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
+	var rt tables.TableOAuth2RefreshToken
+	err := s.DB().WithContext(ctx).Where("token_hash = ?", hash).First(&rt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 refresh token (any): %w", err)
+	}
+	return &rt, nil
+}
+
+// RevokeOAuth2RefreshTokensByFamilyID revokes all active refresh tokens sharing
+// the same family ID. Called when a revoked token is re-presented, indicating
+// the token family has been compromised (RFC 9700 §2.2.2).
+func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).
+		Model(&tables.TableOAuth2RefreshToken{}).
+		Where("family_id = ? AND revoked_at IS NULL", familyID).
+		Update("revoked_at", &now).Error
+}
+
+// RevokeOAuth2RefreshTokensByMode revokes all active refresh tokens for a given
+// bf_mode — a bulk-revoke utility for invalidating every grant of one identity
+// type (vk, user, or session).
+func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
+	now := time.Now()
+	return s.DB().WithContext(ctx).
+		Model(&tables.TableOAuth2RefreshToken{}).
+		Where("bf_mode = ? AND revoked_at IS NULL", bfMode).
+		Update("revoked_at", &now).Error
+}
+
+// SweepOAuth2RefreshTokens deletes revoked refresh tokens older than the given
+// duration. Active tokens are never swept — only revoked ones that are past
+// their retention window.
+func (s *RDBConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
+	// A non-positive retention would put the cutoff at (or after) now, deleting
+	// nearly every revoked token — including the rows kept for stolen-token replay
+	// detection. Treat it as "don't sweep" rather than wiping the retention window.
+	if revokedOlderThan <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-revokedOlderThan)
+	result := s.DB().WithContext(ctx).
+		Where("revoked_at IS NOT NULL AND revoked_at < ?", cutoff).
+		Delete(&tables.TableOAuth2RefreshToken{})
+	return result.RowsAffected, result.Error
+}
+
+// SweepOrphanedOAuth2Clients deletes dynamically-registered clients that no
+// longer back any refresh token and were registered before the grace cutoff.
+//
+// Clients are minted per OAuth flow via Dynamic Client Registration, so they
+// accumulate unbounded without this. A client is safe to drop once it owns no
+// refresh token rows at all: either it never completed a flow (abandoned
+// registration) or every grant it issued has since been revoked and aged out.
+// This must run after the revoked-token sweep so a client whose tokens are
+// still within their retention window — and thus still needed for refresh-token
+// reuse detection — keeps its rows and is not collected prematurely.
+//
+// The grace cutoff protects a client mid-handshake (authorization code issued
+// but not yet exchanged for tokens), which legitimately owns no tokens yet;
+// registeredOlderThan must exceed the authorization code TTL.
+func (s *RDBConfigStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-registeredOlderThan)
+	result := s.DB().WithContext(ctx).
+		Where("created_at < ? AND NOT EXISTS (?)", cutoff,
+			s.DB().Model(&tables.TableOAuth2RefreshToken{}).
+				Select("1").
+				Where("oauth2_refresh_tokens.client_id = oauth2_clients.client_id")).
+		Delete(&tables.TableOAuth2Client{})
+	return result.RowsAffected, result.Error
+}
+
+// OAuth2SessionRow is the wire shape for a single downstream grant in the
+// Connected Clients list.
+type OAuth2SessionRow struct {
+	ID           string     `json:"id"`
+	ClientID     string     `json:"client_id"`
+	ClientName   string     `json:"client_name,omitempty"`
+	BfMode       string     `json:"bf_mode"`
+	BfSub        string     `json:"bf_sub"`
+	BfSubDisplay string     `json:"bf_sub_display,omitempty"` // human-readable: VK name for vk mode
+	Scope        string     `json:"scope"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ListOAuth2Sessions returns a page of active (non-revoked) refresh token rows,
+// joined with their client names from oauth2_clients and VK names from
+// governance_virtual_keys for vk-mode grants. Filtering (search + mode) and
+// pagination (limit/offset) are pushed to SQL; the second return value is the
+// total count matching the filters before the page slice. Uses ScopedDB so
+// callers can inject row-visibility predicates via the context.
+func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context, params OAuth2SessionsQueryParams) ([]OAuth2SessionRow, int64, error) {
+	// base carries the joins + filters shared by the count and the page query.
+	// Session() forks it so Count and Find don't pollute each other's statement.
+	base := s.ScopedDB(ctx).
+		Table("oauth2_refresh_tokens rt").
+		Joins("LEFT JOIN oauth2_clients c ON c.client_id = rt.client_id").
+		Joins("LEFT JOIN governance_virtual_keys vk ON vk.id = rt.bf_sub AND rt.bf_mode = 'vk'").
+		Where("rt.revoked_at IS NULL")
+
+	if search := strings.TrimSpace(params.Search); search != "" {
+		like := "%" + strings.ToLower(search) + "%"
+		// Match the columns the UI renders: client name/id, the bound identity
+		// (bf_sub), and the joined VK name shown as the display name for vk mode.
+		base = base.Where(
+			"LOWER(COALESCE(c.client_name, '')) LIKE ? OR LOWER(rt.client_id) LIKE ? OR LOWER(rt.bf_sub) LIKE ? OR LOWER(COALESCE(vk.name, '')) LIKE ?",
+			like, like, like, like,
+		)
+	}
+	if len(params.Modes) > 0 {
+		base = base.Where("rt.bf_mode IN ?", params.Modes)
+	}
+
+	var totalCount int64
+	if err := base.Session(&gorm.Session{}).Count(&totalCount).Error; err != nil {
+		return nil, 0, fmt.Errorf("count oauth2 sessions: %w", err)
+	}
+
+	rows := []struct {
+		tables.TableOAuth2RefreshToken
+		ClientName string `gorm:"column:client_name"`
+		VKName     string `gorm:"column:vk_name"`
+	}{}
+	query := base.Session(&gorm.Session{}).
+		Select("rt.*, c.client_name, vk.name as vk_name").
+		// id is the unique tiebreaker: created_at alone is not unique, and offset
+		// paging over a non-unique sort lets same-timestamp rows shuffle between
+		// pages (duplicated or skipped). id pins a deterministic order.
+		Order("rt.created_at DESC").
+		Order("rt.id DESC")
+	if params.Limit > 0 {
+		query = query.Limit(params.Limit)
+	}
+	if params.Offset > 0 {
+		query = query.Offset(params.Offset)
+	}
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("list oauth2 sessions: %w", err)
+	}
+	out := make([]OAuth2SessionRow, 0, len(rows))
+	for _, r := range rows {
+		row := OAuth2SessionRow{
+			ID:         r.ID,
+			ClientID:   r.ClientID,
+			ClientName: r.ClientName,
+			BfMode:     r.BfMode,
+			BfSub:      r.BfSub,
+			Scope:      r.Scope,
+			CreatedAt:  r.CreatedAt,
+			LastUsedAt: r.LastUsedAt,
+		}
+		// Populate human-readable display name for VK mode.
+		if r.BfMode == "vk" && r.VKName != "" {
+			row.BfSubDisplay = r.VKName
+		}
+		out = append(out, row)
+	}
+	return out, totalCount, nil
+}
+
+// RevokeOAuth2Session revokes a specific refresh token by ID (for use from the
+// Connected Clients UI). Returns ErrNotFound when the ID does not exist.
+func (s *RDBConfigStore) RevokeOAuth2Session(ctx context.Context, id string) error {
+	now := time.Now()
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableOAuth2RefreshToken{}).
+		Where("id = ? AND revoked_at IS NULL", id).
+		Update("revoked_at", &now)
+	if result.Error != nil {
+		return fmt.Errorf("revoke oauth2 session: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetOAuth2SessionByID returns a single active refresh token row by ID.
+// Uses ScopedDB so row-visibility predicates injected into the context apply.
+// Returns ErrNotFound when the ID does not exist or is already revoked.
+func (s *RDBConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error) {
+	var rt tables.TableOAuth2RefreshToken
+	err := s.ScopedDB(ctx).Where("id = ? AND revoked_at IS NULL", id).First(&rt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 session: %w", err)
+	}
+	return &rt, nil
 }

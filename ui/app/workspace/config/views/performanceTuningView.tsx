@@ -103,7 +103,7 @@ export default function PerformanceTuningView() {
 			<div className="space-y-4">
 				{/* Initial Pool Size */}
 				<div>
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="initial-pool-size" className="text-sm font-medium">
 								Initial Pool Size
@@ -124,7 +124,7 @@ export default function PerformanceTuningView() {
 
 				{/* Max Request Body Size */}
 				<div>
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="max-request-body-size-mb" className="text-sm font-medium">
 								Max Request Body Size (MB)

@@ -13,16 +13,7 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		return nil
 	}
 
-	defaultProvider := schemas.OpenAI
-
-	// for requests coming from azure sdk without provider prefix, we need to set the default provider to azure
-	if ctx != nil {
-		if isAzureUser, ok := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); ok && isAzureUser {
-			defaultProvider = schemas.Azure
-		}
-	}
-
-	provider, model := schemas.ParseModelString(resp.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
+	provider, model := schemas.ParseModelString(resp.Model, "")
 
 	input := resp.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
@@ -44,10 +35,13 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 }
 
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
-func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
+func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
+
+	// Canonical model for capability gating only; wire model is untouched.
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -99,8 +93,8 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 		}
 
 		if message.ResponsesReasoning != nil {
-			isGptOss := strings.Contains(bifrostReq.Model, "gpt-oss")
-			isReasoning := isOpenAIReasoningModel(bifrostReq.Model)
+			isGptOss := strings.Contains(capModel, "gpt-oss")
+			isReasoning := isOpenAIReasoningModel(capModel)
 
 			// For non-gpt-oss models, skip reasoning-only messages that have content blocks but no summaries.
 			// For non-reasoning models (e.g., gpt-4o), also skip when EncryptedContent is present since
@@ -226,7 +220,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(req.Model, effort))
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(capModel, effort))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
@@ -250,8 +244,8 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			// Handle xAI-specific parameter filtering
 			// Only grok-3-mini supports reasoning_effort
 			if bifrostReq.Provider == schemas.XAI &&
-				schemas.IsGrokReasoningModel(bifrostReq.Model) &&
-				!strings.Contains(bifrostReq.Model, "grok-3-mini") {
+				schemas.IsGrokReasoningModel(capModel) &&
+				!strings.Contains(capModel, "grok-3-mini") {
 				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
@@ -259,7 +253,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
-			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(bifrostReq.Model) {
+			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(capModel) {
 				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
 				req.ResponsesParameters.Reasoning = nil
 			}
@@ -267,9 +261,9 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 
 		// Strip top_p for OpenAI reasoning models (o1/o3 series) which reject it
 		// GPT-5.x accept top_p when reasoning.effort is "none" (defaults to "none" when omitted)
-		if isOpenAIReasoningModel(bifrostReq.Model) {
+		if isOpenAIReasoningModel(capModel) {
 			stripTopP := true
-			_, parsedModel := schemas.ParseModelString(bifrostReq.Model, schemas.OpenAI)
+			_, parsedModel := schemas.ParseModelString(capModel, schemas.OpenAI)
 			modelLower := strings.ToLower(parsedModel)
 			effort := ""
 			if req.ResponsesParameters.Reasoning != nil &&
@@ -348,7 +342,14 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
 	for _, tool := range resp.Tools {
-		if supportedTypes[tool.Type] {
+		// OpenRouter exposes server-side tools under the "openrouter:" namespace
+		// (web_search, web_fetch, datetime, image_generation, apply_patch, subagent, ...).
+		// They are native to OpenRouter and must not be stripped by the
+		// OpenAI-oriented whitelist. Match the whole namespace so future tools are
+		// covered without per-tool additions.
+		isOpenRouterServerTool := resp.Provider == schemas.OpenRouter &&
+			strings.HasPrefix(string(tool.Type), schemas.ResponsesToolTypeOpenRouterPrefix)
+		if supportedTypes[tool.Type] || isOpenRouterServerTool {
 			// check for computer use preview
 			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
 				newTool := tool
@@ -430,7 +431,7 @@ type OpenAICompactionRequest struct {
 func (r *OpenAICompactionRequest) GetExtraParams() map[string]interface{} { return r.ExtraParams }
 
 // ToOpenAICompactionRequest converts a BifrostCompactionRequest to the OpenAI wire format.
-func ToOpenAICompactionRequest(req *schemas.BifrostCompactionRequest) *OpenAICompactionRequest {
+func ToOpenAICompactionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCompactionRequest) *OpenAICompactionRequest {
 	if req == nil {
 		return nil
 	}
@@ -446,7 +447,7 @@ func ToOpenAICompactionRequest(req *schemas.BifrostCompactionRequest) *OpenAICom
 	if len(req.Input) > 0 {
 		// Run through the same normalization as ToOpenAIResponsesRequest so reasoning
 		// role cleanup, compaction-content conversion, etc. are applied consistently.
-		normalized := ToOpenAIResponsesRequest(&schemas.BifrostResponsesRequest{
+		normalized := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
 			Provider: req.Provider,
 			Model:    req.Model,
 			Input:    req.Input,
@@ -463,16 +464,8 @@ func (r *OpenAICompactionRequest) ToBifrostCompactionRequest(ctx *schemas.Bifros
 	if r == nil {
 		return nil
 	}
-	defaultProvider := schemas.OpenAI
 
-	// for requests coming from azure sdk without provider prefix, we need to set the default provider to azure
-	if ctx != nil {
-		if isAzureUser, ok := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); ok && isAzureUser {
-			defaultProvider = schemas.Azure
-		}
-	}
-
-	provider, model := schemas.ParseModelString(r.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
+	provider, model := schemas.ParseModelString(r.Model, "")
 	input := r.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 && r.Input.OpenAIResponsesRequestInputStr != nil {
 		input = []schemas.ResponsesMessage{

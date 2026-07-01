@@ -252,8 +252,18 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 // use POST, so without this they fail immediately on stale connections. Retrying is safe here
 // because the error occurs during response header parsing — before the server processes the
 // new request, or on a connection the server has already closed.
+// maxStaleConnRetries bounds how many times a single request will redial on a stale
+// pooled connection. With FIFO pooling, the oldest connection is tried first, and when
+// the upstream has a short keep-alive (e.g. vLLM's default 5s) several pooled connections
+// can be dead at once - so a single retry can hit a second stale connection and still fail
+// (see https://github.com/maximhq/bifrost/issues/4496). A small bound lets the request walk
+// past a few dead connections to a live one while staying well under fasthttp's internal
+// attempt cap. Retrying is safe here because the failure occurs before the server processes
+// the request (during dial / response-header parsing).
+const maxStaleConnRetries = 3
+
 func StaleConnectionRetryIfErr(_ *fasthttp.Request, attempts int, err error) (resetTimeout bool, retry bool) {
-	if attempts > 1 {
+	if attempts > maxStaleConnRetries {
 		return false, false
 	}
 	if err == nil {

@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -134,7 +133,7 @@ func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostCont
 	}
 
 	modelARN := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.ModelARN
-	provider, model := schemas.ParseModelString(modelARN, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelARN, "")
 
 	bifrostReq := &schemas.BifrostRerankRequest{
 		Provider: provider,

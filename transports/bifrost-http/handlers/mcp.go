@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -69,6 +70,11 @@ func NewMCPHandler(mcpManager MCPManager, governanceManager GovernanceManager, c
 // RegisterRoutes registers all MCP-related routes
 func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/mcp/clients", lib.ChainMiddlewares(h.getMCPClients, middlewares...))
+	r.GET("/api/mcp/library", lib.ChainMiddlewares(h.getMCPLibrary, middlewares...))
+	r.GET("/api/mcp/library/filterdata", lib.ChainMiddlewares(h.getMCPLibraryFilterData, middlewares...))
+	r.POST("/api/mcp/library/force-sync", lib.ChainMiddlewares(h.forceSyncMCPLibrary, middlewares...))
+	r.POST("/api/mcp/library", lib.ChainMiddlewares(h.createMCPLibraryEntry, middlewares...))
+	r.DELETE("/api/mcp/library/{id}", lib.ChainMiddlewares(h.deleteMCPLibraryEntry, middlewares...))
 	r.POST("/api/mcp/client", lib.ChainMiddlewares(h.addMCPClient, middlewares...))
 	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.updateMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
@@ -108,15 +114,143 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	searchStr := string(ctx.QueryArgs().Peek("search"))
+	serverStr := string(ctx.QueryArgs().Peek("server"))
 
-	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr)
+	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr, serverStr)
+}
+
+// getMCPLibrary handles GET /api/mcp/library — paginated, searchable, filterable
+// listing of the synced MCP server catalog. All query parameters are optional.
+func (h *MCPHandler) getMCPLibrary(ctx *fasthttp.RequestCtx) {
+	emptyResponse := map[string]interface{}{
+		"servers":     []configstoreTables.TableMCPLibrary{},
+		"count":       0,
+		"total_count": 0,
+		"limit":       0,
+		"offset":      0,
+	}
+	if h.store.ConfigStore == nil {
+		SendJSON(ctx, emptyResponse)
+		return
+	}
+
+	params := configstore.MCPLibraryQueryParams{
+		Search:          string(ctx.QueryArgs().Peek("search")),
+		Categories:      parseCommaSeparated(string(ctx.QueryArgs().Peek("category"))),
+		ConnectionTypes: parseCommaSeparated(string(ctx.QueryArgs().Peek("connection_type"))),
+		AuthTypes:       parseCommaSeparated(string(ctx.QueryArgs().Peek("auth_type"))),
+		Tags:            parseCommaSeparated(string(ctx.QueryArgs().Peek("tags"))),
+		SortBy:          string(ctx.QueryArgs().Peek("sort_by")),
+		Order:           string(ctx.QueryArgs().Peek("order")),
+	}
+
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+			return
+		}
+		params.Limit = n
+	}
+	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid offset parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+			return
+		}
+		params.Offset = n
+	}
+	params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+
+	entries, totalCount, err := h.store.ConfigStore.GetMCPLibraryPaginated(ctx, params)
+	if err != nil {
+		logger.Error("failed to retrieve MCP library entries: %v", err)
+		SendError(ctx, 500, "Failed to retrieve MCP library entries")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"servers":     entries,
+		"count":       len(entries),
+		"total_count": totalCount,
+		"limit":       params.Limit,
+		"offset":      params.Offset,
+	})
+}
+
+// getMCPLibraryFilterData handles GET /api/mcp/library/filterdata — returns the
+// distinct facet values (categories, connection types, auth types, tags) that
+// drive the MCP library filter sidebar.
+func (h *MCPHandler) getMCPLibraryFilterData(ctx *fasthttp.RequestCtx) {
+	emptyResponse := configstore.MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}
+	if h.store.ConfigStore == nil {
+		SendJSON(ctx, emptyResponse)
+		return
+	}
+
+	data, err := h.store.ConfigStore.GetMCPLibraryFilterData(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve MCP library filter data: %v", err)
+		SendError(ctx, 500, "Failed to retrieve MCP library filter data")
+		return
+	}
+	SendJSON(ctx, data)
+}
+
+// forceSyncMCPLibrary handles POST /api/mcp/library/force-sync — triggers an
+// immediate sync of the MCP server library catalog from the configured source.
+// Mirrors ConfigHandler.forceSyncPricing → ForceReloadPricing.
+func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	var count int
+	var err error
+	if h.store.ModelCatalog != nil {
+		count, err = h.store.ModelCatalog.ForceReloadMCPLibrary(ctx)
+	} else {
+		// Resolve the effective MCP library URL from framework config (DB → file → default).
+		mcpLibraryURL := modelcatalog.DefaultMCPLibraryURL
+		if h.store.FrameworkConfig != nil && h.store.FrameworkConfig.Pricing != nil && h.store.FrameworkConfig.Pricing.MCPLibraryURL != nil {
+			if u := *h.store.FrameworkConfig.Pricing.MCPLibraryURL; u != "" {
+				mcpLibraryURL = u
+			}
+		}
+		count, err = modelcatalog.SyncMCPLibrary(ctx, mcpLibraryURL, h.store.ConfigStore)
+	}
+	if err != nil {
+		logger.Error("failed to sync MCP library: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to sync MCP library: %v", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": fmt.Sprintf("MCP library sync completed, %d entries synced", count),
+	})
 }
 
 // getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients
-func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr string) {
+func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr, serverStr string) {
 	params := configstore.MCPClientsQueryParams{
-		Search: searchStr,
-		Limit:  100,
+		Search:   searchStr,
+		ClientID: serverStr,
+		Limit:    100,
 	}
 	if limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
@@ -249,7 +383,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 		if dbClient.OauthConfigID != nil {
 			if oauthCfg, ok := oauthConfigsByID[*dbClient.OauthConfigID]; ok {
 				clientConfig.OauthClientID = oauthCfg.ClientID
-				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsEnvVar()
+				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsSecretVar()
 			}
 		}
 		// Enrich VK assignments using the pre-fetched batch result.
@@ -335,12 +469,12 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 
 // OAuthConfigRequest represents OAuth configuration in the request
 type OAuthConfigRequest struct {
-	ClientID        *schemas.EnvVar `json:"client_id"`
-	ClientSecret    *schemas.EnvVar `json:"client_secret"`
-	AuthorizeURL    string          `json:"authorize_url"`
-	TokenURL        string          `json:"token_url"`
-	RegistrationURL string          `json:"registration_url"`
-	Scopes          []string        `json:"scopes"`
+	ClientID        *schemas.SecretVar `json:"client_id"`
+	ClientSecret    *schemas.SecretVar `json:"client_secret"`
+	AuthorizeURL    string             `json:"authorize_url"`
+	TokenURL        string             `json:"token_url"`
+	RegistrationURL string             `json:"registration_url"`
+	Scopes          []string           `json:"scopes"`
 }
 
 // MCPClientRequest represents the full MCP client creation request with OAuth support.
@@ -367,21 +501,21 @@ type MCPVKConfigRequest struct {
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
 // accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
-	Name                  *string                   `json:"name,omitempty"`
-	Disabled              *bool                     `json:"disabled,omitempty"`
-	AllowOnAllVirtualKeys *bool                     `json:"allow_on_all_virtual_keys,omitempty"`
-	IsCodeModeClient      *bool                     `json:"is_code_mode_client,omitempty"`
-	IsPingAvailable       *bool                     `json:"is_ping_available,omitempty"`
-	ToolSyncInterval      *int                      `json:"tool_sync_interval,omitempty"`
-	Headers               map[string]schemas.EnvVar `json:"headers,omitempty"`
-	AllowedExtraHeaders   *schemas.WhiteList        `json:"allowed_extra_headers,omitempty"`
-	ToolPricing           map[string]float64        `json:"tool_pricing,omitempty"`
-	ToolsToExecute        *schemas.WhiteList        `json:"tools_to_execute,omitempty"`
-	ToolsToAutoExecute    *schemas.WhiteList        `json:"tools_to_auto_execute,omitempty"`
-	PerUserHeaderKeys     *[]string                 `json:"per_user_header_keys,omitempty"`
-	TLSConfig             *schemas.MCPTLSConfig     `json:"tls_config,omitempty"`
-	VKConfigs             *[]MCPVKConfigRequest     `json:"vk_configs,omitempty"`
-	OauthConfig           *OAuthConfigRequest       `json:"oauth_config,omitempty"`
+	Name                  *string                      `json:"name,omitempty"`
+	Disabled              *bool                        `json:"disabled,omitempty"`
+	AllowOnAllVirtualKeys *bool                        `json:"allow_on_all_virtual_keys,omitempty"`
+	IsCodeModeClient      *bool                        `json:"is_code_mode_client,omitempty"`
+	IsPingAvailable       *bool                        `json:"is_ping_available,omitempty"`
+	ToolSyncInterval      *int                         `json:"tool_sync_interval,omitempty"`
+	Headers               map[string]schemas.SecretVar `json:"headers,omitempty"`
+	AllowedExtraHeaders   *schemas.WhiteList           `json:"allowed_extra_headers,omitempty"`
+	ToolPricing           map[string]float64           `json:"tool_pricing,omitempty"`
+	ToolsToExecute        *schemas.WhiteList           `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute    *schemas.WhiteList           `json:"tools_to_auto_execute,omitempty"`
+	PerUserHeaderKeys     *[]string                    `json:"per_user_header_keys,omitempty"`
+	TLSConfig             *schemas.MCPTLSConfig        `json:"tls_config,omitempty"`
+	VKConfigs             *[]MCPVKConfigRequest        `json:"vk_configs,omitempty"`
+	OauthConfig           *OAuthConfigRequest          `json:"oauth_config,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -395,7 +529,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 	var req MCPClientRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -517,6 +651,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -761,6 +899,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// Creating MCP client config in config store
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -797,7 +939,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	var req MCPClientUpdateRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -951,8 +1093,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// shouldRotateOAuthConfig := req.OauthConfig != nil && (existingConfig.AuthType == schemas.MCPAuthTypeOauth || existingConfig.AuthType == schemas.MCPAuthTypePerUserOauth)
-	// var oauthClientID *schemas.EnvVar
-	// var oauthClientSecret *schemas.EnvVar
+	// var oauthClientID *schemas.SecretVar
+	// var oauthClientSecret *schemas.SecretVar
 	// oauthAuthorizeURL := ""
 	// oauthTokenURL := ""
 	// oauthRegistrationURL := ""
@@ -1420,8 +1562,8 @@ func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExe
 // preserving stored raw values when an incoming header value is redacted and unchanged.
 // Only called when the caller explicitly provided a headers map (req.Headers != nil);
 // when headers are omitted entirely the caller retains the existing value directly.
-func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.EnvVar) map[string]schemas.EnvVar {
-	merged := make(map[string]schemas.EnvVar, len(incoming))
+func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.SecretVar) map[string]schemas.SecretVar {
+	merged := make(map[string]schemas.SecretVar, len(incoming))
 	for key, incomingValue := range incoming {
 		if redactedExisting != nil && rawExisting != nil {
 			if redactedValue, ok := redactedExisting[key]; ok {
@@ -1601,6 +1743,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			// Persist MCP client config in config store (BeforeSave hook serializes DiscoveredTools)
 			if h.store.ConfigStore != nil {
 				if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+					if errors.Is(err, configstore.ErrAlreadyExists) {
+						SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+						return
+					}
 					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 					return
 				}
@@ -1672,6 +1818,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	} else {
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+				if errors.Is(err, configstore.ErrAlreadyExists) {
+					SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+					return
+				}
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 				return
 			}
@@ -1745,4 +1895,153 @@ func perUserHeaderKeysAdded(oldKeys, newKeys []string) bool {
 		}
 	}
 	return false
+}
+
+// CreateMCPLibraryEntryRequest is the body for POST /api/mcp/library. It carries
+// the user-supplied fields of a custom library entry; DB-managed fields (id,
+// slug, source, timestamps) are derived server-side. The slug is generated from
+// Name, and the unique slug index enforces no-duplicate-name.
+type CreateMCPLibraryEntryRequest struct {
+	Name               string                    `json:"name"`
+	Description        string                    `json:"description,omitempty"`
+	Category           string                    `json:"category,omitempty"`
+	ConnectionType     schemas.MCPConnectionType `json:"connection_type"`
+	ConnectionURL      string                    `json:"connection_url,omitempty"`
+	StdioConfig        *schemas.MCPStdioConfig   `json:"stdio_config,omitempty"`
+	AuthType           schemas.MCPAuthType       `json:"auth_type,omitempty"`
+	RequiredHeaderKeys []string                  `json:"required_header_keys,omitempty"`
+	IconURL            string                    `json:"icon_url,omitempty"`
+	DocsURL            string                    `json:"docs_url,omitempty"`
+	Publisher          string                    `json:"publisher,omitempty"`
+	Tags               []string                  `json:"tags,omitempty"`
+}
+
+// createMCPLibraryEntry handles POST /api/mcp/library — publishes an org-internal
+// ("custom") MCP server into the library so other members can discover and
+// install it. The entry is protected from the remote sync (see Source/skip-set
+// in SyncMCPLibrary). A duplicate name (same generated slug) returns 409.
+func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+
+	var req CreateMCPLibraryEntryRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "name is required")
+		return
+	}
+
+	// Validate connection type and the matching connection field.
+	switch req.ConnectionType {
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE:
+		if strings.TrimSpace(req.ConnectionURL) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "connection_url is required for http/sse connection types")
+			return
+		}
+	case schemas.MCPConnectionTypeSTDIO:
+		if req.StdioConfig == nil || strings.TrimSpace(req.StdioConfig.Command) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "stdio_config.command is required for stdio connection type")
+			return
+		}
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, "connection_type must be one of: http, stdio, sse")
+		return
+	}
+
+	// Default and validate auth type.
+	if req.AuthType == "" {
+		req.AuthType = schemas.MCPAuthTypeNone
+	}
+	switch req.AuthType {
+	case schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth,
+		schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders:
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid auth_type")
+		return
+	}
+
+	slug := modelcatalog.Slugify(req.Name)
+	if slug == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "name must contain at least one alphanumeric character")
+		return
+	}
+
+	now := time.Now()
+	entry := &configstoreTables.TableMCPLibrary{
+		Slug:               slug,
+		Name:               req.Name,
+		Description:        req.Description,
+		Category:           req.Category,
+		ConnectionType:     req.ConnectionType,
+		ConnectionURL:      req.ConnectionURL,
+		StdioConfig:        req.StdioConfig,
+		AuthType:           req.AuthType,
+		RequiredHeaderKeys: req.RequiredHeaderKeys,
+		IconURL:            req.IconURL,
+		DocsURL:            req.DocsURL,
+		Publisher:          req.Publisher,
+		Tags:               req.Tags,
+		Source:             "custom",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+
+	if err := h.store.ConfigStore.CreateCustomMCPLibraryEntry(ctx, entry); err != nil {
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, "an MCP library server with this name already exists")
+			return
+		}
+		logger.Error("failed to create custom MCP library entry: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to create MCP library entry")
+		return
+	}
+
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": "MCP library server published successfully",
+		"entry":   entry,
+	})
+}
+
+// deleteMCPLibraryEntry handles DELETE /api/mcp/library/{id} — soft-deletes a
+// library entry (remote or custom) by numeric ID. The row is hidden from
+// listings and the remote sync respects the tombstone, so a hidden remote entry
+// is never resurrected. Also the escape hatch for a duplicate-name lockout.
+func (h *MCPHandler) deleteMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	idStr, err := getIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
+		return
+	}
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "id must be a positive integer")
+		return
+	}
+
+	if err := h.store.ConfigStore.DeleteMCPLibraryEntry(ctx, uint(id)); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "MCP library entry not found")
+			return
+		}
+		logger.Error("failed to delete MCP library entry %d: %v", id, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP library entry")
+		return
+	}
+
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": "MCP library server removed successfully",
+	})
 }

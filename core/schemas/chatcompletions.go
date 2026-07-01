@@ -40,6 +40,8 @@ type BifrostChatResponse struct {
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
 	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
+	Speed             *string                    `json:"speed,omitempty"` // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
@@ -200,7 +202,7 @@ type ChatParameters struct {
 	Prediction           *ChatPrediction       `json:"prediction,omitempty"`             // Predicted output content (OpenAI only)
 	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
 	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`       // Prompt cache key
-	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in-memory" or "24h")
+	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in_memory" or "24h")
 	Reasoning            *ChatReasoning        `json:"reasoning,omitempty"`              // Reasoning parameters
 	ResponseFormat       *interface{}          `json:"response_format,omitempty"`        // Format for the response
 	SafetyIdentifier     *string               `json:"safety_identifier,omitempty"`      // Safety identifier
@@ -1224,7 +1226,8 @@ func rewriteDocumentBlock(data []byte) ([]byte, error) {
 
 // CachePoint represents a cache point marker (Bedrock-specific)
 type CachePoint struct {
-	Type string `json:"type"` // "default"
+	Type string  `json:"type"`          // "default"
+	TTL  *string `json:"ttl,omitempty"` // "5m" | "1h"
 }
 
 type CacheControlType string
@@ -1436,12 +1439,17 @@ type ChatAssistantMessageAnnotationCitation struct {
 	Type       *string      `json:"type,omitempty"`
 }
 
-// ChatAssistantMessageToolCall represents a tool call in a message
+// ChatAssistantMessageToolCall represents a tool call in a message.
+// ExtraContent preserves provider-specific metadata (e.g. Gemini's
+// thought_signature for multi-turn continuation when extended thinking
+// is active). Stored as json.RawMessage so unknown nested fields are
+// forwarded verbatim through any proxy/gateway layer without loss.
 type ChatAssistantMessageToolCall struct {
-	Index    uint16                               `json:"index"`
-	Type     *string                              `json:"type,omitempty"`
-	ID       *string                              `json:"id,omitempty"`
-	Function ChatAssistantMessageToolCallFunction `json:"function"`
+	Index        uint16                               `json:"index"`
+	Type         *string                              `json:"type,omitempty"`
+	ID           *string                              `json:"id,omitempty"`
+	Function     ChatAssistantMessageToolCallFunction `json:"function"`
+	ExtraContent json.RawMessage                      `json:"extra_content,omitempty"`
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.

@@ -35,6 +35,10 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 		return nil, err
 	}
 	logger.Debug("db opened for configstore")
+	// Install the global vault store/remove callbacks so plaintext SecretVar
+	// fields are rewritten to vault refs before persistence and owned vault
+	// secrets are cleaned up on delete.
+	RegisterVaultCallbacks(db)
 	s := &RDBConfigStore{logger: logger}
 	s.db.Store(db)
 	// SQLite has no server-side prepared-plan cache, and opening a second
@@ -51,7 +55,7 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 		return nil, fmt.Errorf("failed to remove duplicate keys: %w", err)
 	}
 	// Run migrations
-	if err := triggerMigrations(ctx, db); err != nil {
+	if err := triggerMigrations(ctx, db, logger); err != nil {
 		return nil, err
 	}
 	// Encrypt any plaintext rows if encryption is enabled

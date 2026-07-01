@@ -251,6 +251,7 @@ func TestGenerateSpanID_Format(t *testing.T) {
 	}
 }
 
+
 // TestSetTraceAttributes_WritesToTrace verifies that SetTraceAttributes lands
 // the attributes on the underlying trace so observability plugins can read them.
 func TestSetTraceAttributes_WritesToTrace(t *testing.T) {
@@ -331,4 +332,33 @@ func TestSetTraceAttributes_MergesAcrossCalls(t *testing.T) {
 	if got := trace.Attributes["environment"]; got != "prod" {
 		t.Errorf("Attributes[environment] = %v, want %q (later write should win)", got, "prod")
 	}
+}
+
+func TestSetTraceAttribute(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	traceID := store.CreateTrace("")
+	dims := map[string]string{"environment": "prod"}
+	store.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, dims)
+	store.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, "sess-1")
+
+	trace := store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("GetTrace() returned nil")
+	}
+	dimsAttr, _ := trace.GetAttribute(schemas.TraceAttrDimensions)
+	got, ok := dimsAttr.(map[string]string)
+	if !ok || got["environment"] != "prod" {
+		t.Errorf("trace dimensions attribute = %v, want map with environment=prod", dimsAttr)
+	}
+	if sessionAttr, _ := trace.GetAttribute(schemas.TraceAttrSessionID); sessionAttr != "sess-1" {
+		t.Errorf("trace session attribute = %v, want sess-1", sessionAttr)
+	}
+	if _, ok := trace.GetAttribute("missing"); ok {
+		t.Error("GetAttribute(missing) reported present, want absent")
+	}
+
+	// Unknown trace ID must be a no-op, not a panic.
+	store.SetTraceAttribute("does-not-exist", "k", "v")
 }

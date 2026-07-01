@@ -272,7 +272,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		}
 	}
 	// 2. Check provider filtering
-	if requestType != schemas.MCPToolExecutionRequest && !r.isProviderAllowed(vk, provider) {
+	if requestType != schemas.MCPToolExecutionRequest && requestType != schemas.ListModelsRequest && !r.isProviderAllowed(vk, provider) {
 		return &EvaluationResult{
 			Decision:   DecisionProviderBlocked,
 			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", provider),
@@ -363,7 +363,7 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 
 	// Pass 1: if any matching provider config blacklists the model, block immediately.
 	for _, pc := range vk.ProviderConfigs {
-		if pc.Provider == string(provider) && isModelBlockedByList(pc.BlacklistedModels, model) {
+		if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(model) {
 			return false
 		}
 	}

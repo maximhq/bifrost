@@ -10,6 +10,10 @@ icon: "puzzle-piece"
 **Telemetry, logging, and governance are auto-loaded built-ins** - they are always active and configured via the `client` block and dedicated top-level keys, not the `plugins` array.
 </Note>
 
+<Note>
+In DB-backed deployments, plugin sync depends on the reconciliation mode. Split mode preserves DB plugins unless a file plugin has a higher `version` or changed placement/order. With `source_of_truth: "config.json"`, a present `plugins` array is authoritative; `plugins: []` removes stored opt-in plugins. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+</Note>
+
 ---
 
 ## Auto-Loaded Built-ins

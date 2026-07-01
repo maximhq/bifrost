@@ -248,10 +248,25 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
 	}
 
+	// Responses API requests carry their history in responses_input_history
+	// rather than input_history. Preserve the last user message there too, so
+	// the log list can render a preview instead of "-" once the full history is
+	// offloaded to object storage. Only needed when there is no chat input
+	// history (a request is either chat- or responses-shaped, never both).
+	var lastUserResponsesMessage string
+	if idx < 0 {
+		if responsesIdx := findLastUserResponsesMessageIndex(dbEntry.ResponsesInputHistoryParsed); responsesIdx >= 0 {
+			lastUserResponsesMessage, _ = sonic.MarshalString(dbEntry.ResponsesInputHistoryParsed[responsesIdx : responsesIdx+1])
+		}
+	}
+
 	ClearPayloadFiltered(dbEntry, excluded)
 
 	if _, hasInputHistoryExclusion := excluded["input_history"]; !hasInputHistoryExclusion {
 		dbEntry.InputHistory = sanitizeJSONForJSONB(lastUserMessage)
+	}
+	if _, hasResponsesInputHistoryExclusion := excluded["responses_input_history"]; !hasResponsesInputHistoryExclusion {
+		dbEntry.ResponsesInputHistory = sanitizeJSONForJSONB(lastUserResponsesMessage)
 	}
 }
 

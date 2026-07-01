@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hash"
 	"maps"
 	"math"
@@ -29,7 +30,7 @@ const (
 
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
-	EnvVar     string                // The environment variable name (without env. prefix)
+	SecretVar  string                // The environment variable name (without env. prefix)
 	Provider   schemas.ModelProvider // The provider this key belongs to (empty for core/mcp configs)
 	KeyType    EnvKeyType            // Type of key (e.g., "api_key", "azure_config", "vertex_config", "bedrock_config", "connection_string", "mcp_header")
 	ConfigPath string                // Path in config where this env var is used
@@ -96,8 +97,18 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalClientURL                  *schemas.EnvVar                  `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	MCPExternalClientURL                  *schemas.SecretVar               `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	MCPServerAuthMode                     tables.MCPServerAuthMode         `json:"mcp_server_auth_mode,omitempty"`       // How /mcp authenticates inbound clients: headers (default), both, or oauth.
+	OAuth2ServerConfig                    *tables.OAuth2ServerConfig       `json:"oauth2_server_config,omitempty"`       // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
+	DumpErrorsInConsoleLogs               bool                             `json:"dump_errors_in_console_logs"`          // Dump error details in console logs
+}
+
+// IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
+// endpoints and JWKS endpoint should be live. True when MCPServerAuthMode is
+// both or oauth.
+func (c *ClientConfig) IsMCPOAuthDiscoveryEnabled() bool {
+	return c.MCPServerAuthMode == tables.MCPServerAuthModeBoth || c.MCPServerAuthMode == tables.MCPServerAuthModeOAuth
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -235,6 +246,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("asyncJobResultTTL:0"))
 	}
 
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.DumpErrorsInConsoleLogs {
+		hash.Write([]byte("dumpErrorsInConsoleLogs:true"))
+	}
+
 	// Hash integer fields
 	data, err := sonic.Marshal(c.InitialPoolSize)
 	if err != nil {
@@ -358,11 +374,31 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	if c.MCPExternalClientURL.IsSet() {
-		if c.MCPExternalClientURL.IsFromEnv() {
-			hash.Write([]byte("externalClientURL:env:" + c.MCPExternalClientURL.EnvVar))
+		if c.MCPExternalClientURL.IsFromSecret() {
+			hash.Write([]byte("externalClientURL:ref:" + c.MCPExternalClientURL.GetRawRef()))
 		} else {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
+	}
+
+	// Only hash non-default values to avoid legacy config hash churn on upgrade —
+	// existing configs carry an empty auth mode and a nil OAuth2 server config.
+	if c.MCPServerAuthMode != "" {
+		hash.Write([]byte("mcpServerAuthMode:" + string(c.MCPServerAuthMode)))
+	}
+	// Hash OAuth2ServerConfig field-by-field (not via Marshal) for a stable,
+	// deterministic byte stream that does not depend on serializer field order.
+	if c.OAuth2ServerConfig != nil {
+		oc := c.OAuth2ServerConfig
+		if oc.IssuerURL.IsSet() {
+			if oc.IssuerURL.IsFromEnv() {
+				hash.Write([]byte("oauth2IssuerURL:env:" + oc.IssuerURL.GetRawRef()))
+			} else {
+				hash.Write([]byte("oauth2IssuerURL:val:" + oc.IssuerURL.GetValue()))
+			}
+		}
+		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
+		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -389,10 +425,10 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.
+// Redacted returns a copy of ClientConfig with any env-backed SecretVar fields masked.
 func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
-	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromEnv() {
+	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
 	}
 	return out
@@ -480,7 +516,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			if key.AzureKeyConfig.Endpoint.IsFromEnv() {
+			if key.AzureKeyConfig.Endpoint.IsFromSecret() {
 				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			} else {
 				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
@@ -538,6 +574,29 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
 			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
+		}
+
+		// Redact Bedrock Mantle key config if present
+		if key.BedrockMantleKeyConfig != nil {
+			mantleConfig := &schemas.BedrockMantleKeyConfig{}
+			mantleConfig.AccessKey = *key.BedrockMantleKeyConfig.AccessKey.Redacted()
+			mantleConfig.SecretKey = *key.BedrockMantleKeyConfig.SecretKey.Redacted()
+			if key.BedrockMantleKeyConfig.SessionToken != nil {
+				mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.Region != nil {
+				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.RoleARN != nil {
+				mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.ExternalID != nil {
+				mantleConfig.ExternalID = key.BedrockMantleKeyConfig.ExternalID.Redacted()
+			}
+			if key.BedrockMantleKeyConfig.RoleSessionName != nil {
+				mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
+			}
+			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}
 
 		if key.VLLMKeyConfig != nil {
@@ -649,9 +708,9 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
-	// Hash Value (prefix with source type to prevent collisions between env and literal)
-	if key.Value.IsFromEnv() {
-		hash.Write([]byte("env:" + key.Value.EnvVar))
+	// Hash Value (prefix with source type to prevent collisions between ref and literal)
+	if key.Value.IsFromSecret() {
+		hash.Write([]byte("ref:" + key.Value.GetRawRef()))
 	} else {
 		hash.Write([]byte("val:" + key.Value.Val))
 	}
@@ -780,11 +839,13 @@ type VirtualKeyHashInput struct {
 
 // VirtualKeyProviderConfigHashInput represents provider config fields for hashing
 type VirtualKeyProviderConfigHashInput struct {
-	Provider      string
-	Weight        *float64
-	AllowedModels []string
-	RateLimitID   *string
-	KeyIDs        []string // Only key IDs, not full key objects
+	Provider          string
+	Weight            *float64
+	AllowedModels     []string
+	BlacklistedModels []string
+	AllowAllKeys      bool
+	RateLimitID       *string
+	KeyIDs            []string // Only key IDs, not full key objects
 }
 
 // VirtualKeyMCPConfigHashInput represents MCP config fields for hashing
@@ -864,12 +925,19 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sortedAllowedModels := make([]string, len(pc.AllowedModels))
 			copy(sortedAllowedModels, pc.AllowedModels)
 			sort.Strings(sortedAllowedModels)
+
+			// Sort blacklisted models for deterministic hashing
+			sortedBlacklistedModels := make([]string, len(pc.BlacklistedModels))
+			copy(sortedBlacklistedModels, pc.BlacklistedModels)
+			sort.Strings(sortedBlacklistedModels)
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
-				Provider:      pc.Provider,
-				Weight:        pc.Weight,
-				AllowedModels: sortedAllowedModels,
-				RateLimitID:   pc.RateLimitID,
-				KeyIDs:        keyIDs,
+				Provider:          pc.Provider,
+				Weight:            pc.Weight,
+				AllowedModels:     sortedAllowedModels,
+				BlacklistedModels: sortedBlacklistedModels,
+				AllowAllKeys:      pc.AllowAllKeys,
+				RateLimitID:       pc.RateLimitID,
+				KeyIDs:            keyIDs,
 			}
 		}
 		data, err := sonic.Marshal(providerConfigsForHash)
@@ -1114,6 +1182,58 @@ func GenerateProviderGovernanceHash(p tables.TableProvider) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateComplexityAnalyzerConfigHashes returns stable section hashes for
+// config.json-sourced analyzer config.
+func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (ComplexityAnalyzerConfigHashes, error) {
+	if config == nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	normalized.ConfigHashes = ComplexityAnalyzerConfigHashes{}
+	if err := normalized.Validate(); err != nil {
+		return ComplexityAnalyzerConfigHashes{}, err
+	}
+
+	tierHash, err := hashComplexityValue(normalized.TierBoundaries)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
+	}
+	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
+	}
+	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
+	}
+	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
+	}
+	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
+	}
+
+	return ComplexityAnalyzerConfigHashes{
+		TierBoundaries:    tierHash,
+		CodeKeywords:      codeHash,
+		ReasoningKeywords: reasoningHash,
+		TechnicalKeywords: technicalHash,
+		SimpleKeywords:    simpleHash,
+	}, nil
+}
+
+func hashComplexityValue(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // writeHashField writes a field identifier and a length-prefixed value so the
 // resulting byte stream is unambiguous and cannot collide via concatenation.
 func writeHashField(hash hash.Hash, fieldID, value string) {
@@ -1272,8 +1392,8 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// Hash ConnectionString
 	if m.ConnectionString != nil {
-		if m.ConnectionString.IsFromEnv() {
-			hash.Write([]byte(m.ConnectionString.EnvVar))
+		if m.ConnectionString.IsFromSecret() {
+			hash.Write([]byte(m.ConnectionString.GetRawRef()))
 		} else {
 			hash.Write([]byte(m.ConnectionString.Val))
 		}
@@ -1318,8 +1438,8 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			val := m.Headers[k]
-			if val.FromEnv {
-				hash.Write([]byte(k + ":env:" + val.EnvVar))
+			if val.IsFromSecret() {
+				hash.Write([]byte(k + ":ref:" + val.GetRawRef()))
 			} else {
 				hash.Write([]byte(k + ":val:" + val.Val))
 			}
@@ -1386,14 +1506,42 @@ type frameworkConfigHashPayload struct {
 	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
 }
 
+type frameworkConfigHashPayloadWithMCP struct {
+	PricingURL             *string `json:"pricing_url"`
+	ModelParametersURL     *string `json:"model_parameters_url"`
+	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
+	MCPLibraryURL          *string `json:"mcp_library_url"`
+	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
+}
+
+// FrameworkConfigHashOptions adds optional framework config fields to the
+// config.json change-detection hash while preserving the legacy pricing-only
+// hash when omitted.
+type FrameworkConfigHashOptions struct {
+	MCPLibraryURL          *string
+	MCPLibrarySyncInterval *int64
+}
+
 // GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
 // This is used to detect changes to framework config between config.json and database.
-func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64) (string, error) {
-	data, err := sonic.Marshal(frameworkConfigHashPayload{
-		PricingURL:          pricingURL,
-		ModelParametersURL:  modelParametersURL,
-		PricingSyncInterval: pricingSyncInterval,
-	})
+func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64, opts ...FrameworkConfigHashOptions) (string, error) {
+	var data []byte
+	var err error
+	if len(opts) > 0 {
+		data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
+			PricingURL:             pricingURL,
+			ModelParametersURL:     modelParametersURL,
+			PricingSyncInterval:    pricingSyncInterval,
+			MCPLibraryURL:          opts[0].MCPLibraryURL,
+			MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
+		})
+	} else {
+		data, err = sonic.Marshal(frameworkConfigHashPayload{
+			PricingURL:          pricingURL,
+			ModelParametersURL:  modelParametersURL,
+			PricingSyncInterval: pricingSyncInterval,
+		})
+	}
 	if err != nil {
 		return "", err
 	}
@@ -1403,10 +1551,9 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
-	AdminUserName          *schemas.EnvVar `json:"admin_username"`
-	AdminPassword          *schemas.EnvVar `json:"admin_password"`
-	IsEnabled              bool            `json:"is_enabled"`
-	DisableAuthOnInference bool            `json:"disable_auth_on_inference"`
+	AdminUserName *schemas.SecretVar `json:"admin_username"`
+	AdminPassword *schemas.SecretVar `json:"admin_password"`
+	IsEnabled     bool               `json:"is_enabled"`
 }
 
 // ConfigMap maps provider names to their configurations.
@@ -1415,14 +1562,15 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
-	Teams            []tables.TableTeam            `json:"teams"`
-	Customers        []tables.TableCustomer        `json:"customers"`
-	Budgets          []tables.TableBudget          `json:"budgets"`
-	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
-	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
-	Providers        []tables.TableProvider        `json:"providers"`
-	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
-	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
-	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
+	VirtualKeys              []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams                    []tables.TableTeam            `json:"teams"`
+	Customers                []tables.TableCustomer        `json:"customers"`
+	Budgets                  []tables.TableBudget          `json:"budgets"`
+	RateLimits               []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs             []tables.TableModelConfig     `json:"model_configs"`
+	Providers                []tables.TableProvider        `json:"providers"`
+	RoutingRules             []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides         []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
+	AuthConfig               *AuthConfig                   `json:"auth_config,omitempty"`
+	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
 }

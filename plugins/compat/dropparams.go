@@ -21,6 +21,7 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 
 	if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 		params := req.ChatRequest.Params
+		hasSupportedTools := len(params.Tools) > 0 && isSupported["tools"]
 
 		if params.Audio != nil && !isSupported["audio"] {
 			params.Audio = nil
@@ -68,9 +69,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.PromptCacheRetention = nil
 			dropped = append(dropped, "prompt_cache_retention")
 		}
-		if params.Reasoning != nil && !isSupported["reasoning"] {
-			params.Reasoning = nil
-			dropped = append(dropped, "reasoning")
+		if params.Reasoning != nil {
+			// for chat completions, some models do not support reasoning_effort
+			// with tools
+			if !isSupported["reasoning"] || (hasSupportedTools && !isSupported["reasoning_with_tool_calls"]) {
+				params.Reasoning = nil
+				dropped = append(dropped, "reasoning")
+			}
 		}
 		if params.ResponseFormat != nil && !isSupported["response_format"] {
 			params.ResponseFormat = nil
@@ -128,7 +133,12 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 		params := req.ResponsesRequest.Params
 
-		if params.MaxOutputTokens != nil && !isSupported["max_output_tokens"] {
+		// max_output_tokens is the Responses-API equivalent of chat max_tokens / max_completion_tokens.
+		// so if any of those token-cap spellings is supported, we let max_output_tokens pass through.
+		if params.MaxOutputTokens != nil &&
+			!isSupported["max_output_tokens"] &&
+			!isSupported["max_tokens"] &&
+			!isSupported["max_completion_tokens"] {
 			params.MaxOutputTokens = nil
 			dropped = append(dropped, "max_output_tokens")
 		}

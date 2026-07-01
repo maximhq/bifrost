@@ -109,17 +109,34 @@ from .utils.common import (
     get_api_key,
     get_provider_voice,
     get_provider_voices,
+    # Vertex batch GCS utilities
+    get_vertex_batch_dest_uri,
+    get_vertex_project,
+    get_vertex_location,
+    get_bifrost_base_url,
+    is_vertex_gcs_configured,
+    skip_if_no_vertex_gcs,
+    skip_if_no_vertex_native_batch,
+    stage_vertex_batch_input,
     skip_if_no_api_key,
 )
-from .utils.config_loader import get_model
+from .utils.config_loader import get_config, get_model
 from .utils.parametrize import (
     format_provider_model,
     get_cross_provider_params_for_scenario,
 )
 
 
-def get_provider_google_client(provider: str = "gemini", passthrough: bool = False):
-    """Create Google GenAI client with x-model-provider header for given provider"""
+def get_provider_google_client(
+    provider: str = "gemini",
+    passthrough: bool = False,
+    extra_headers: Dict[str, str] | None = None,
+):
+    """Create Google GenAI client with x-model-provider header for given provider.
+
+    extra_headers: optional additional HTTP headers forwarded on every request
+    (e.g. to carry provider-specific routing/config the SDK doesn't model natively).
+    """
     from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key(provider)
@@ -135,8 +152,11 @@ def get_provider_google_client(provider: str = "gemini", passthrough: bool = Fal
     }
 
     # Add base URL support, timeout, and x-model-provider header through HttpOptions
+    headers = {"x-model-provider": provider}
+    if extra_headers:
+        headers.update(extra_headers)
     http_options_kwargs = {
-        "headers": {"x-model-provider": provider},
+        "headers": headers,
     }
     if base_url:
         http_options_kwargs["base_url"] = base_url
@@ -146,6 +166,58 @@ def get_provider_google_client(provider: str = "gemini", passthrough: bool = Fal
     client_kwargs["http_options"] = HttpOptions(**http_options_kwargs)
 
     return genai.Client(**client_kwargs)
+
+
+def get_vertex_job_service_client():
+    """Build a native Vertex AI JobServiceClient pointed at the Bifrost gateway.
+
+    Vertex batch prediction is a Vertex-native (aiplatform) API — not the Gemini
+    Developer batches surface — so these tests use the aiplatform gapic
+    JobServiceClient with the regional batchPredictionJobs methods, routed through
+    Bifrost via the gateway base URL. Auth is anonymous because Bifrost injects the
+    real Vertex credentials from its key config; Bifrost detects Vertex routing from
+    the /projects/{p}/locations/{l}/... request path.
+    """
+    from google.cloud import aiplatform
+    from google.api_core.client_options import ClientOptions
+    from google.auth.credentials import AnonymousCredentials
+
+    # Route through Bifrost's genai integration (the Vertex batch routes are mounted
+    # under the /genai prefix alongside the other GenAI endpoints).
+    api_endpoint = get_bifrost_base_url().rstrip("/") + "/genai"
+    return aiplatform.gapic.JobServiceClient(
+        client_options=ClientOptions(api_endpoint=api_endpoint),
+        transport="rest",
+        credentials=AnonymousCredentials(),
+    )
+
+
+def build_vertex_batch_prediction_job(
+    display_name: str,
+    model: str,
+    gcs_source_uri: str,
+    gcs_destination_output_uri_prefix: str,
+) -> Dict[str, Any]:
+    """Build a native Vertex BatchPredictionJob request body (jsonl GCS in/out).
+
+    Mirrors the official aiplatform create_batch_prediction_job sample. Gemini
+    publisher models do not require dedicated_resources/machine_spec, so those are
+    omitted (they apply to custom-trained models).
+    """
+    if "/" not in model:
+        model = "publishers/google/models/" + model
+    return {
+        "display_name": display_name,
+        "model": model,
+        "input_config": {
+            "instances_format": "jsonl",
+            "gcs_source": {"uris": [gcs_source_uri]},
+        },
+        "output_config": {
+            "predictions_format": "jsonl",
+            "gcs_destination": {"output_uri_prefix": gcs_destination_output_uri_prefix},
+        },
+    }
 
 
 @pytest.fixture
@@ -1660,6 +1732,211 @@ Joe: Pretty good, thanks for asking."""
         
         print("\n✓ Gemini 3 Pro Preview thought signature handling test completed successfully!")
 
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize("model,expect_image_understood", [
+        ("gemini-3-flash-preview", True),
+    ])
+    def test_30_multimodal_function_response_image(self, test_config, model, expect_image_understood):
+        """Test Case 30: Image returned inside a function response (functionResponse.parts).
+
+        A tool returns a solid red image as multimodal content nested in the function response.
+        The image must survive Bifrost's Gemini<->Bifrost translation instead of being dropped.
+        Regression guard for multimodal function_call_output (text + image), and for the
+        model-version gating Bifrost applies:
+
+          - gemini-3-flash-preview: Bifrost forwards the image as functionResponse.parts (no $ref;
+            the $ref form is rejected by the Gemini Developer API), so the model sees it -> "red".
+          - gemini-2.5-flash: multimodal function responses are unsupported (a hard 400 upstream),
+            so Bifrost drops the image and sends text only. The request must still SUCCEED; the
+            model just can't see the image. This proves gating prevents a regression.
+
+        Notes:
+          - No real first turn is needed: we inject the `skip_thought_signature_validator` sentinel
+            as the function call's thought signature (Gemini 3 requires a signature on tool calls).
+          - We deliberately do NOT put a {"$ref": ...} in `response` (Developer API rejects it).
+        """
+        from google.genai import types
+        import base64
+
+        client = get_provider_google_client(provider="gemini")
+
+        read_image_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "read_image",
+                    "description": "Reads an image file from disk and returns it.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Path to the image file"}
+                        },
+                        "required": ["path"],
+                    },
+                }
+            ]
+        )
+
+        # BASE64_IMAGE is a 64x64 solid red PNG. FunctionResponseBlob.data takes raw bytes;
+        # the SDK base64-encodes it on the wire (what Bifrost receives).
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+
+        # Bypass Gemini 3's thought-signature validation for this fabricated multi-turn history.
+        # The SDK base64-encodes these bytes on the wire; Gemini decodes and matches the sentinel.
+        skip_sig = b"skip_thought_signature_validator"
+
+        conversation = [
+            types.Content(
+                role="user",
+                parts=[types.Part(text=(
+                    "Call read_image to read 'photo.png', then tell me the single dominant "
+                    "color of the image it returns. Reply with only the color word."
+                ))],
+            ),
+            types.Content(
+                role="model",
+                parts=[types.Part(
+                    function_call=types.FunctionCall(
+                        id="call_1", name="read_image", args={"path": "photo.png"}
+                    ),
+                    thought_signature=skip_sig,
+                )],
+            ),
+            types.Content(
+                role="user",
+                parts=[types.Part(function_response=types.FunctionResponse(
+                    id="call_1",
+                    name="read_image",
+                    response={"output": "Here is the image."},
+                    parts=[types.FunctionResponsePart(
+                        inline_data=types.FunctionResponseBlob(
+                            mime_type="image/png",
+                            display_name="photo.png",
+                            data=image_bytes,
+                        )
+                    )],
+                ))],
+            ),
+        ]
+
+        response = client.models.generate_content(
+            model=model,
+            contents=conversation,
+            config=types.GenerateContentConfig(tools=[read_image_tool]),
+        )
+
+        assert response.candidates, "Response should have candidates"
+        text = (response.text or "").strip().lower()
+        print(f"\n[{model}] reply: {text!r}")
+        assert text, "Model should produce a text reply after the multimodal tool result"
+
+        if expect_image_understood:
+            assert "red" in text, (
+                f"[{model}] model did not identify the tool-returned image color (got: {text!r}). "
+                "The image was likely dropped during functionResponse translation."
+            )
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize("model,expect_image_understood", [
+        ("gemini-2.5-flash", False),
+        ("gemini-3-flash-preview", True),
+    ])
+    def test_30b_multimodal_function_response_full_workflow(self, test_config, model, expect_image_understood):
+        """Test Case 30b: Full two-turn multimodal function-calling workflow (mirrors the
+        Gemini docs example) through Bifrost.
+
+        Unlike test_30 (which fabricates the history), this drives a real round trip:
+          1. Send a prompt that triggers the tool -> the model returns a genuine functionCall
+             (carrying its own thought signature, required by Gemini 3).
+          2. Send the tool result back as a multimodal functionResponse: the response references
+             the image via {"image_ref": {"$ref": "<displayName>"}} and the bytes live in parts,
+             exactly like the docs/Vertex example.
+          3. The model produces a final answer describing the returned image.
+
+        Bifrost adapts the $ref per provider: it keeps it for Vertex and strips it for the Gemini
+        Developer API (where the $ref form is an upstream 400 bug), so this works on both.
+          - gemini-3-flash-preview: image reaches the model -> final answer says "red".
+          - gemini-2.5-flash: multimodal tool output is unsupported, so Bifrost drops the image and
+            the request still succeeds (gating prevents a hard 400); we only assert a text reply.
+        """
+        from google.genai import types
+        import base64
+
+        client = get_provider_google_client(provider="gemini")
+
+        get_image_declaration = types.FunctionDeclaration(
+            name="get_image",
+            description="Retrieves the image file for a specific item.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "item_name": {
+                        "type": "string",
+                        "description": "The name or description of the item (e.g., 'red shirt').",
+                    }
+                },
+                "required": ["item_name"],
+            },
+        )
+        tool_config = types.Tool(function_declarations=[get_image_declaration])
+
+        # Turn 1: a prompt that should make the model call get_image
+        prompt = (
+            "Use get_image to retrieve the shirt I ordered, then tell me its single dominant "
+            "color. Reply with only the color word."
+        )
+        response_1 = client.models.generate_content(
+            model=format_provider_model("vertex", model),
+            contents=[prompt],
+            config=types.GenerateContentConfig(tools=[tool_config]),
+        )
+
+        if not getattr(response_1, "function_calls", None):
+            pytest.skip(f"[{model}] model did not call the tool on turn 1; cannot drive the workflow")
+        function_call = response_1.function_calls[0]
+        print(f"\n[{model}] turn 1 called: {function_call.name}({dict(function_call.args)})")
+
+        # BASE64_IMAGE is a 64x64 solid red PNG; the tool "returns" it as multimodal content.
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        function_response_data = {"image_ref": {"$ref": "shirt.png"}}
+        function_response_multimodal_data = types.FunctionResponsePart(
+            inline_data=types.FunctionResponseBlob(
+                mime_type="image/png",
+                display_name="shirt.png",
+                data=image_bytes,
+            )
+        )
+
+        # Turn 2: append the real model turn + the tool result, then ask for the final answer.
+        history = [
+            types.Content(role="user", parts=[types.Part(text=prompt)]),
+            response_1.candidates[0].content,
+            types.Content(
+                role="tool",
+                parts=[types.Part.from_function_response(
+                    name=function_call.name,
+                    response=function_response_data,
+                    parts=[function_response_multimodal_data],
+                )],
+            ),
+        ]
+
+        response_2 = client.models.generate_content(
+            model=format_provider_model("vertex", model),
+            contents=history,
+            config=types.GenerateContentConfig(tools=[tool_config]),
+        )
+
+        assert response_2.candidates, "Turn 2 should have candidates"
+        text = (response_2.text or "").strip().lower()
+        print(f"[{model}] final reply: {text!r}")
+        assert text, "Model should produce a final text reply after the multimodal tool result"
+
+        if expect_image_understood:
+            assert "red" in text, (
+                f"[{model}] model did not identify the tool-returned image color (got: {text!r}). "
+                "The image was likely dropped during functionResponse translation."
+            )
+
     @skip_if_no_api_key("google")
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
     def test_29_structured_output_with_thinking(self, google_client, test_config, provider, model):
@@ -2840,6 +3117,187 @@ Joe: Pretty good, thanks for asking."""
                     print(f"Cleanup: Deleted file {uploaded_file.name}")
                 except Exception as e:
                     print(f"Cleanup warning: Failed to delete file: {e}")
+
+    # =========================================================================
+    # VERTEX AI BATCH API TEST CASES (native aiplatform JobServiceClient)
+    #
+    # Vertex batch prediction is a Vertex-native (aiplatform) API, distinct from
+    # the Gemini Developer batches surface. These tests use the aiplatform gapic
+    # JobServiceClient with the regional batchPredictionJobs methods, routed
+    # through Bifrost. Inputs/outputs live in GCS (instances_format /
+    # predictions_format = jsonl). Requires VERTEX_PROJECT_ID + VERTEX_GCS_BUCKET
+    # (and ADC for staging the input object); otherwise the tests skip.
+    # =========================================================================
+
+    @staticmethod
+    def _vertex_parent():
+        return f"projects/{get_vertex_project()}/locations/{get_vertex_location()}"
+
+    @staticmethod
+    def _cleanup_vertex_job(client, job_name):
+        """Best-effort cancel + delete of a native Vertex batch prediction job."""
+        if not job_name:
+            return
+        try:
+            client.cancel_batch_prediction_job(name=job_name)
+        except Exception as e:
+            print(f"Cleanup info: Could not cancel job: {e}")
+        try:
+            client.delete_batch_prediction_job(name=job_name)
+        except Exception as e:
+            print(f"Cleanup info: Could not delete job: {e}")
+
+    def test_vertex_batch_create(self, test_config):
+        """Vertex Batch: create a batch prediction job (jsonl GCS in/out)."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_create")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=2)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-create",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            assert job.name, "Created job should have a resource name"
+            print(f"Success: Created Vertex batch job {job.name}, state: {job.state.name}")
+        finally:
+            self._cleanup_vertex_job(client, job.name if job else None)
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_get(self, test_config):
+        """Vertex Batch: retrieve a batch prediction job by name."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_retrieve")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=1)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-get",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            retrieved = client.get_batch_prediction_job(name=job.name)
+            assert retrieved.name == job.name, (
+                f"Retrieved job name should match: expected {job.name}, got {retrieved.name}"
+            )
+            print(f"Success: Retrieved Vertex batch job {retrieved.name}, state: {retrieved.state.name}")
+        finally:
+            self._cleanup_vertex_job(client, job.name if job else None)
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_list(self, test_config):
+        """Vertex Batch: list batch prediction jobs for the project/location."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_create")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=1)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-list",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            found = any(
+                listed.name == job.name
+                for listed in client.list_batch_prediction_jobs(parent=self._vertex_parent())
+            )
+            assert found, f"Created job {job.name} should appear in the listing"
+            print(f"Success: Found created Vertex batch job {job.name} in listing")
+        finally:
+            self._cleanup_vertex_job(client, job.name if job else None)
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_cancel(self, test_config):
+        """Vertex Batch: cancel a running batch prediction job."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_cancel")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=2)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-cancel",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            client.cancel_batch_prediction_job(name=job.name)
+
+            retrieved = client.get_batch_prediction_job(name=job.name)
+            assert retrieved.state.name in ("JOB_STATE_CANCELLING", "JOB_STATE_CANCELLED"), (
+                f"Job state should be cancelling/cancelled, got {retrieved.state.name}"
+            )
+            print(f"Success: Cancelled Vertex batch job {job.name}, state: {retrieved.state.name}")
+        finally:
+            # Already cancelled above; just delete.
+            if job:
+                try:
+                    client.delete_batch_prediction_job(name=job.name)
+                except Exception as e:
+                    print(f"Cleanup info: Could not delete job: {e}")
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_delete(self, test_config):
+        """Vertex Batch: delete a batch prediction job."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_create")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=1)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-delete",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = client.create_batch_prediction_job(
+            parent=self._vertex_parent(), batch_prediction_job=body
+        )
+        # Cancel first so the job is deletable, then delete (returns an LRO).
+        try:
+            client.cancel_batch_prediction_job(name=job.name)
+        except Exception as e:
+            print(f"Info: Could not cancel before delete: {e}")
+        client.delete_batch_prediction_job(name=job.name)
+        print(f"Success: Deleted Vertex batch job {job.name}")
 
     # =========================================================================
     # INPUT TOKENS / TOKEN COUNTING TEST CASES
