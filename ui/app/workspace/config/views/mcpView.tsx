@@ -44,7 +44,7 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: "30",
 		mcp_code_mode_binding_level: "server",
 		mcp_tool_sync_interval: "10",
-    oauth2_auth_code_ttl: "600",
+    oauth2_auth_code_ttl: "300",
     oauth2_access_token_ttl: "600",
 	});
 
@@ -59,7 +59,7 @@ export default function MCPView() {
         // Coerce a stored 0 (which the backend treats as "use default") to the
         // displayed default so the inputs never show a confusing 0.
         oauth2_auth_code_ttl: (
-          config?.oauth2_server_config?.auth_code_ttl || 600
+          config?.oauth2_server_config?.auth_code_ttl || 300
         ).toString(),
         oauth2_access_token_ttl: (
           config?.oauth2_server_config?.access_token_ttl || 600
@@ -86,8 +86,8 @@ export default function MCPView() {
       (localConfig.mcp_server_auth_mode ?? "headers") !==
         (config.mcp_server_auth_mode ?? "headers") ||
       issuerURLChanged ||
-      (localConfig.oauth2_server_config?.auth_code_ttl ?? 600) !==
-        (config.oauth2_server_config?.auth_code_ttl ?? 600) ||
+      (localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !==
+        (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
       (localConfig.oauth2_server_config?.access_token_ttl ?? 600) !==
         (config.oauth2_server_config?.access_token_ttl ?? 600) ||
       (localConfig.oauth2_server_config?.disable_vk_identity ?? false) !==
@@ -176,7 +176,7 @@ export default function MCPView() {
   const handleAuthCodeTTLChange = useCallback((value: string) => {
     setLocalValues((prev) => ({ ...prev, oauth2_auth_code_ttl: value }));
     const num = Number.parseInt(value);
-    if (!isNaN(num) && num >= 60) {
+    if (!isNaN(num) && num >= 1) {
       setLocalConfig((prev) => ({
         ...prev,
         oauth2_server_config: { ...prev.oauth2_server_config, auth_code_ttl: num },
@@ -230,8 +230,13 @@ export default function MCPView() {
         localValues.oauth2_access_token_ttl,
       );
 
-      if (oauthModeActive && (isNaN(authCodeTTL) || authCodeTTL < 60)) {
-        toast.error("Authorization code TTL must be at least 60 seconds.");
+      if (
+        oauthModeActive &&
+        (isNaN(authCodeTTL) || authCodeTTL < 1 || authCodeTTL > 900)
+      ) {
+        toast.error(
+          "Authorization code TTL must be between 1 and 900 seconds (15 minutes).",
+        );
         return;
       }
 
@@ -590,14 +595,16 @@ export default function MCPView() {
                       </label>
                       <p className="text-muted-foreground text-xs">
                         How long the one-time code is valid after the consent
-                        page redirects back to the MCP client (default: 600).
+                        page redirects back to the MCP client (default: 300, max
+                        900 = 15 min).
                       </p>
                       <Input
                         id="oauth2-auth-code-ttl"
                         data-testid="oauth2-auth-code-ttl-input"
                         type="number"
                         className="w-28"
-                        min="60"
+                        min="1"
+                        max="900"
                         value={localValues.oauth2_auth_code_ttl}
                         onChange={(e) => handleAuthCodeTTLChange(e.target.value)}
                         disabled={!hasSettingsUpdateAccess}
