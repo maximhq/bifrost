@@ -10280,23 +10280,11 @@ func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *go
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_execution_timeout") {
-				logger.Info("[configstore] %s: adding column tool_execution_timeout to TableMCPClient", migrationName)
-				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_execution_timeout"); err != nil {
-					return err
-				}
-			}
-			return nil
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "tool_execution_timeout")
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			logger.Info("[configstore] %s: dropping column tool_execution_timeout from TableMCPClient", migrationName)
-			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_execution_timeout"); err != nil {
-				return err
-			}
-			return nil
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tool_execution_timeout")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
