@@ -163,6 +163,7 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 	t.Setenv("LEAK_TEST_VERTEX_PROJECT", "leaked-vertex-project-id")
 	t.Setenv("LEAK_TEST_BEDROCK_ACCESS", "AKIAIOSFODNN7LEAKED1")
 	t.Setenv("LEAK_TEST_OPENAI_KEY", "sk-leaked-openai-key-1234567890")
+	t.Setenv("LEAK_TEST_GIGACHAT_CREDENTIALS", "leaked-gigachat-credentials")
 
 	config := ProviderConfig{
 		Keys: []schemas.Key{
@@ -197,6 +198,17 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 					SecretKey: schemas.SecretVar{Val: ""},
 				},
 			},
+			{
+				ID:    "gigachat-k",
+				Name:  "gigachat",
+				Value: schemas.SecretVar{Val: ""},
+				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+					Credentials:  schemas.NewSecretVar("env.LEAK_TEST_GIGACHAT_CREDENTIALS"),
+					CertFile:     "/secure/client.pem",
+					KeyFile:      "/secure/client.key",
+					CABundleFile: "/secure/ca.pem",
+				},
+			},
 		},
 	}
 
@@ -210,6 +222,10 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 		"leaked-vertex-project-id",
 		"AKIAIOSFODNN7LEAKED1",
 		"sk-leaked-openai-key-1234567890",
+		"leaked-gigachat-credentials",
+		"/secure/client.pem",
+		"/secure/client.key",
+		"/secure/ca.pem",
 	}
 	for _, secret := range leakedSecrets {
 		assert.False(t, strings.Contains(jsonStr, secret),
@@ -222,6 +238,7 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 		"env.LEAK_TEST_AZURE_ENDPOINT",
 		"env.LEAK_TEST_VERTEX_PROJECT",
 		"env.LEAK_TEST_BEDROCK_ACCESS",
+		"env.LEAK_TEST_GIGACHAT_CREDENTIALS",
 	}
 	for _, ref := range expectedRefs {
 		assert.True(t, strings.Contains(jsonStr, ref),

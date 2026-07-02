@@ -1167,6 +1167,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 	for _, table := range criticalTables {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
+	assert.True(t, migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json"), "GigaChat key config column should exist")
 	assert.True(t, migrator.HasColumn(&tables.TableModelPricing{}, "is_deprecated"), "model pricing is_deprecated column should exist")
 }
 

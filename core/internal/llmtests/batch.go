@@ -152,7 +152,9 @@ func RunBatchListTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		response, err := WithBatchListTestRetry(t, batchListRetryConfig, retryContext, expectations, "BatchList", func() (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
 			request := &schemas.BifrostBatchListRequest{
 				Provider: testConfig.Provider,
-				Limit:    10,
+			}
+			if testConfig.Provider != schemas.GigaChat {
+				request.Limit = 10
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchListRequest(bfCtx, request)

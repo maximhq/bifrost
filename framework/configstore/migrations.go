@@ -368,6 +368,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_prompt_variables_columns"}, run: migrationAddPromptVariablesColumns},
 	{IDs: []string{"add_model_capability_columns"}, run: migrationAddModelCapabilityColumns},
 	{IDs: []string{"add_ollama_sgl_config_columns"}, run: migrationAddOllamaSGLConfigColumns},
+	{IDs: []string{"add_gigachat_key_config_column"}, run: migrationAddGigaChatKeyConfigColumn},
 	{IDs: []string{"add_multi_budget_tables"}, run: migrationAddMultiBudgetTables},
 	{IDs: []string{"add_per_user_oauth_tables"}, run: migrationAddPerUserOAuthTables},
 	{IDs: []string{"add_mcp_client_discovered_tools_columns"}, run: migrationAddMCPClientDiscoveredToolsColumns},
@@ -7075,6 +7076,42 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running ollama sgl key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddGigaChatKeyConfigColumn adds GigaChat key auth config storage.
+func migrationAddGigaChatKeyConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_gigachat_key_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json") {
+				logger.Info("[configstore] %s: adding column gigachat_key_config_json to TableKey", migrationName)
+				if err := migrator.AddColumn(&tables.TableKey{}, "gigachat_key_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json") {
+				logger.Info("[configstore] %s: dropping column gigachat_key_config_json from TableKey", migrationName)
+				if err := migrator.DropColumn(&tables.TableKey{}, "gigachat_key_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running gigachat key config column migration: %s", err.Error())
 	}
 	return nil
 }

@@ -86,8 +86,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
 	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
-	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
-	const entityLabelPlural = isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
+	const isGigaChat = providerName === "gigachat";
+	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : isGigaChat ? "credential" : "key";
+	const entityLabelPlural = isVLLM ? "models" : isOllamaOrSGL ? "servers" : isGigaChat ? "credentials" : "keys";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
@@ -188,7 +189,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 						</colgroup>
 						<TableHeader className="w-full">
 							<TableRow>
-								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
+								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : isGigaChat ? "Credential" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>
@@ -230,7 +231,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												)}
 												{key.status === "list_models_failed" &&
 													(() => {
-														// Check if the failure might be due to an env var that the server couldn't resolve
+														// Check if the failure might be due to a secret reference that the server couldn't resolve
 														const hasSecretVarConfig =
 															(key.azure_key_config?.endpoint?.type && key.azure_key_config.endpoint.type !== "plain_text") ||
 															(key.vertex_key_config?.project_id?.type && key.vertex_key_config.project_id.type !== "plain_text") ||
@@ -238,11 +239,15 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															(key.bedrock_key_config?.region?.type && key.bedrock_key_config.region.type !== "plain_text") ||
 															(key.bedrock_mantle_key_config?.region?.type && key.bedrock_mantle_key_config.region.type !== "plain_text") ||
 															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
+															(key.gigachat_key_config?.credentials?.type && key.gigachat_key_config.credentials.type !== "plain_text") ||
+															(key.gigachat_key_config?.access_token?.type && key.gigachat_key_config.access_token.type !== "plain_text") ||
+															(key.gigachat_key_config?.user?.type && key.gigachat_key_config.user.type !== "plain_text") ||
+															(key.gigachat_key_config?.password?.type && key.gigachat_key_config.password.type !== "plain_text") ||
 															(key.value?.type && key.value.type !== "plain_text");
-														const isEnvResolutionError =
+														const isSecretResolutionError =
 															hasSecretVarConfig && key.description && /not set|empty|missing/i.test(key.description);
 
-														return isEnvResolutionError ? (
+														return isSecretResolutionError ? (
 															<Tooltip>
 																<TooltipTrigger asChild>
 																	<button
