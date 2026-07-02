@@ -1352,6 +1352,17 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 	return routes
 }
 
+// CreateGenAIManagementRouteConfigs creates management passthrough route configurations for
+// Google GenAI admin endpoints not natively handled by Bifrost.
+// Note: GenAI model listing and detail routes (v1beta/models, v1beta/models/{model}) are
+// already registered by CreateGenAIRouteConfigs. This function is reserved for future
+// GenAI-specific management endpoints.
+func CreateGenAIManagementRouteConfigs(pathPrefix string) []RouteConfig {
+	// GenAI model routes are already covered by CreateGenAIRouteConfigs.
+	// Return empty slice; keeping this function for extensibility.
+	return nil
+}
+
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.
 func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *GenAIRouter {
 	routes := CreateGenAIRouteConfigs("/genai")
@@ -1359,6 +1370,7 @@ func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logg
 	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
 	routes = append(routes, CreateVertexBatchRouteConfigs("/genai")...)
 	routes = append(routes, CreateGenAICachedContentRouteConfigs("/genai", handlerStore)...)
+	routes = append(routes, CreateGenAIManagementRouteConfigs("/genai")...)
 
 	return &GenAIRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
