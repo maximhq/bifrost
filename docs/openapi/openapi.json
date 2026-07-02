@@ -50713,6 +50713,102 @@
         }
       }
     },
+    "/api/logs/{id}/reveal": {
+      "post": {
+        "operationId": "revealLogRedactionMapping",
+        "summary": "Reveal reversible log redactions",
+        "description": "Returns the placeholder-to-original-value mapping for a log that contains reversible guardrail redaction data.\n\nThis is an Enterprise endpoint gated by the `Logs:Reveal` permission. The reveal mapping is scoped to Bifrost logs and is not exported to observability connectors or object-storage payloads.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Log entry ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redaction mapping revealed successfully",
+            "headers": {
+              "Cache-Control": {
+                "description": "Set to `no-store` because the response contains original sensitive values",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogRevealResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller does not have the `Logs:Reveal` permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Log not found or no reversible redaction mapping exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs/sessions/{session_id}": {
       "get": {
         "operationId": "getLogSessionById",
@@ -77065,6 +77161,10 @@
           "raw_response": {
             "type": "string"
           },
+          "has_reversible_redaction": {
+            "type": "boolean",
+            "description": "Whether this log has a reversible guardrail redaction mapping available for reveal"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -77995,6 +78095,22 @@
             "description": "Number of semantic local-cache hits"
           }
         }
+      },
+      "LogRevealResponse": {
+        "type": "object",
+        "description": "Reversible guardrail redaction reveal response for a log",
+        "properties": {
+          "mapping": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Placeholder-to-original-value mapping for reversible redactions in this log"
+          }
+        },
+        "required": [
+          "mapping"
+        ]
       },
       "DeleteLogsRequest": {
         "type": "object",

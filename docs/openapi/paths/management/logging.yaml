@@ -348,6 +348,56 @@ logs-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+logs-reveal:
+  post:
+    operationId: revealLogRedactionMapping
+    summary: Reveal reversible log redactions
+    description: |
+      Returns the placeholder-to-original-value mapping for a log that contains reversible guardrail redaction data.
+
+      This is an Enterprise endpoint gated by the `Logs:Reveal` permission. The reveal mapping is scoped to Bifrost logs and is not exported to observability connectors or object-storage payloads.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Log entry ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Redaction mapping revealed successfully
+        headers:
+          Cache-Control:
+            description: Set to `no-store` because the response contains original sensitive values
+            schema:
+              type: string
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/LogRevealResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '403':
+        description: Authenticated caller does not have the `Logs:Reveal` permission
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '404':
+        description: Log not found or no reversible redaction mapping exists
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 logs-histogram:
   get:
     operationId: getLogsHistogram
