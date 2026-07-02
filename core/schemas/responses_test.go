@@ -277,6 +277,36 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageImageGenerationCallNullResultRoundTrip verifies that a
+// null "result" (image still generating, per OpenAI's schema) round-trips as
+// null rather than being coerced into an empty string.
+func TestResponsesMessageImageGenerationCallNullResultRoundTrip(t *testing.T) {
+	raw := []byte(`{"id":"ig_1","type":"image_generation_call","status":"in_progress","result":null}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesImageGenerationCall == nil {
+		t.Fatalf("expected ResponsesImageGenerationCall to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if msg.ResponsesToolMessage.ResponsesImageGenerationCall.Result != nil {
+		t.Fatalf("expected result to stay nil, got %#v", msg.ResponsesToolMessage.ResponsesImageGenerationCall.Result)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"result":null`) {
+		t.Fatalf("expected encoded message to preserve null result, got %s", encoded)
+	}
+	if strings.Contains(string(encoded), `"result":""`) {
+		t.Fatalf("null result was coerced into an empty string: %s", encoded)
+	}
+}
+
 // TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
 // normalized provider-format converters, e.g. openai/v1/responses) drops the
 // Anthropic-only code-execution fidelity carry while keeping the neutral

@@ -1686,7 +1686,10 @@ type ResponsesReasoningSummary struct {
 
 // ResponsesImageGenerationCall represents an image generation tool call
 type ResponsesImageGenerationCall struct {
-	Result string `json:"result"`
+	// Result is null while the image is still being generated (status
+	// "in_progress"/"generating") and a base64 string once "completed".
+	// Must stay a pointer so null round-trips as null, not "".
+	Result *string `json:"result"`
 }
 
 // -----------------------------------------------------------------------------
