@@ -1823,6 +1823,12 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 			clientConfig.ToolSyncInterval.String(),
 		)
 	}
+	if clientConfig.ToolExecutionTimeout < 0 {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf(
+			"tool_execution_timeout must be >= 0, got %q",
+			clientConfig.ToolExecutionTimeout.String(),
+		)
+	}
 	authType := string(clientConfig.AuthType)
 	if authType == "" {
 		authType = string(schemas.MCPAuthTypeHeaders)
@@ -1842,6 +1848,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,
 		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
 		Disabled:                  clientConfig.Disabled,
@@ -2285,26 +2292,18 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if forceFileSync || existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
-					// This is added for backward compatibility with existing configs
-					if configData.Governance.VirtualKeys[i].Value == "" && existingVirtualKey.Value != "" {
+					// Preserve stored value when config doesn't supply one
+					if configData.Governance.VirtualKeys[i].Value.ShouldPreserveStored() && existingVirtualKey.Value.IsSet() {
 						configData.Governance.VirtualKeys[i].Value = existingVirtualKey.Value
 					}
-					// Process environment variable for virtual key value
-					if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
-						// Resolving the environment variable value
-						envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
-						if err != nil {
-							logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
-							continue
-						}
-						configData.Governance.VirtualKeys[i].Value = envValue
+					resolvedVal := configData.Governance.VirtualKeys[i].Value.GetValue()
+					if resolvedVal == "" && configData.Governance.VirtualKeys[i].Value.IsFromSecret() {
+						logger.Warn("virtual key %s: env/vault ref %q could not be resolved, skipping update", newVirtualKey.ID, configData.Governance.VirtualKeys[i].Value.GetRawRef())
+						break
 					}
-					// If the virtual key value is not a valid virtual key, we will generate a new one
-					if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
-						if configData.Governance.VirtualKeys[i].Value != "" {
-							logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
-						}
-						configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+					if !strings.HasPrefix(resolvedVal, governance.VirtualKeyPrefix) {
+						logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
+						configData.Governance.VirtualKeys[i].Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
 					}
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
@@ -2322,22 +2321,14 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			if configData.Governance.VirtualKeys[i].ID == "" {
 				configData.Governance.VirtualKeys[i].ID = uuid.NewString()
 			}
-			// if the virtual key value is env.VIRTUAL_KEY_VALUE, then we will need to resolve the environment variable
-			// Process environment variable for virtual key value
-			if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
-				// Resolving the environment variable value
-				envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
-				if err != nil {
-					logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
-					continue
-				}
-				configData.Governance.VirtualKeys[i].Value = envValue
+			resolvedVal := configData.Governance.VirtualKeys[i].Value.GetValue()
+			if resolvedVal == "" && configData.Governance.VirtualKeys[i].Value.IsFromSecret() {
+				logger.Warn("virtual key %s: env/vault ref %q could not be resolved, skipping", newVirtualKey.ID, configData.Governance.VirtualKeys[i].Value.GetRawRef())
+				continue
 			}
-			if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
-				if configData.Governance.VirtualKeys[i].Value != "" {
-					logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
-				}
-				configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+			if !strings.HasPrefix(resolvedVal, governance.VirtualKeyPrefix) {
+				logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
+				configData.Governance.VirtualKeys[i].Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
 			}
 			// Resolve MCP client names to IDs for config file mcp_configs
 			configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
@@ -4364,29 +4355,6 @@ func (c *Config) GetRawConfigString() string {
 	return string(data)
 }
 
-// processEnvValue checks and replaces environment variable references in configuration values.
-// Returns the processed value and the environment variable name if it was an env reference.
-// Supports the "env.VARIABLE_NAME" syntax for referencing environment variables.
-// This enables secure configuration management without hardcoding sensitive values.
-//
-// Examples:
-//   - "env.OPENAI_API_KEY" -> actual value from OPENAI_API_KEY environment variable
-//   - "sk-1234567890" -> returned as-is (no env prefix)
-func (c *Config) processEnvValue(value string) (string, string, error) {
-	v := strings.TrimSpace(value)
-	if !strings.HasPrefix(v, "env.") {
-		return value, "", nil // do not trim non-env values
-	}
-	envKey := strings.TrimSpace(strings.TrimPrefix(v, "env."))
-	if envKey == "" {
-		return "", "", fmt.Errorf("environment variable name missing in %q", value)
-	}
-	if envValue, ok := os.LookupEnv(envKey); ok {
-		return envValue, envKey, nil
-	}
-	return "", envKey, fmt.Errorf("environment variable %s not found", envKey)
-}
-
 // GetProviderConfigRaw retrieves the raw, unredacted provider configuration from memory.
 // This method is for internal use only, particularly by the account implementation.
 //
@@ -5838,6 +5806,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
+	c.MCPConfig.ClientConfigs[configIndex].ToolExecutionTimeout = updatedConfig.ToolExecutionTimeout
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
@@ -6119,7 +6088,7 @@ func (c *Config) autoDetectProviders(ctx context.Context) {
 
 	for provider, envVars := range providerEnvVars {
 		for _, envVar := range envVars {
-			if apiKey := os.Getenv(envVar); apiKey != "" {
+			if os.Getenv(envVar) != "" {
 				// Generate a unique ID for the auto-detected key
 				keyID := uuid.NewString()
 				// Create default provider configuration
@@ -6128,7 +6097,7 @@ func (c *Config) autoDetectProviders(ctx context.Context) {
 						{
 							ID:     keyID,
 							Name:   fmt.Sprintf("%s_auto_detected", envVar),
-							Value:  *schemas.NewSecretVar(apiKey),
+							Value:  *schemas.NewSecretVar("env." + envVar),
 							Models: schemas.WhiteList{"*"},
 							Weight: 1.0,
 						},

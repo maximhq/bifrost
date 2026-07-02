@@ -863,8 +863,9 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Name))
 	// Hash Description
 	hash.Write([]byte(vk.Description))
-	// Hash Value
-	hash.Write([]byte(vk.Value))
+	// Hash the resolved value so that secret rotation (vault/env change) is
+	// detected as a config change and triggers a re-sync.
+	hash.Write([]byte(vk.Value.GetValue()))
 	// Hash IsActive (nil treated as DB default true)
 	if vk.IsActiveValue() {
 		hash.Write([]byte("isActive:true"))

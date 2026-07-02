@@ -230,7 +230,12 @@ Status values:
 
 ### Automatic refresh
 
-Bifrost refreshes the access token automatically on its next use after it has expired, using the stored refresh token. No action required.
+Bifrost refreshes access tokens automatically using the stored refresh token, in two layers:
+
+- **In the background** — a worker periodically refreshes tokens that are about to expire, so active clients always have a valid token ready.
+- **On use** — if a token is already expired when a request needs it, Bifrost refreshes it inline before forwarding the request.
+
+Background refresh only runs while the MCP client is enabled. Disabling a client pauses it; on re-enable, the token is refreshed on first use. If a client stays disabled long enough for the provider to expire the idle refresh token, re-authorization is required.
 
 ### Rotation
 
@@ -335,6 +340,7 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 <Accordion title="Token refresh fails / tools say `oauth token expired`">
 
 - Check that the refresh token is still valid (some providers expire refresh tokens after long idle)
+- If the client was disabled for a long stretch, background refresh was paused for it — the refresh token may have expired at the provider in the meantime
 - Verify scopes are still sufficient
 - Re-authorize: `DELETE /api/oauth/config/{id}` then create a new client
 </Accordion>
