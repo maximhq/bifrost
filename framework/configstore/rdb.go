@@ -5852,12 +5852,24 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 	// worker re-selects a permanently-dead token on every tick (its expires_at
 	// stays in the past) and logs the same failure indefinitely; a dead grant
 	// needs re-authorization, not perpetual retries.
+	//
+	// Refresh is also limited to tokens whose oauth_config is referenced by
+	// at least one enabled MCP client: nothing consumes a token while every
+	// client using it is disabled (or gone), so background refresh would keep
+	// calling the identity provider forever for an unused connection. When a
+	// client is re-enabled or attached later, GetAccessToken refreshes inline
+	// on first use.
 	result := s.DB().WithContext(ctx).
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).
 		Where("NOT EXISTS (?)",
 			s.DB().Model(&tables.TableOauthConfig{}).
 				Select("1").
 				Where("oauth_configs.token_id = oauth_tokens.id AND oauth_configs.status IN ?", []string{"expired", "revoked"})).
+		Where("EXISTS (?)",
+			s.DB().Model(&tables.TableMCPClient{}).
+				Select("1").
+				Joins("JOIN oauth_configs ON oauth_configs.id = config_mcp_clients.oauth_config_id").
+				Where("oauth_configs.token_id = oauth_tokens.id AND config_mcp_clients.disabled = ?", false)).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
