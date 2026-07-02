@@ -126,6 +126,51 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
+// SetErrorLatency stamps provider/request latency onto an error so downstream
+// logging and client-facing error details can show timing even without a response.
+func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *schemas.BifrostError {
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.Latency = latency.Milliseconds()
+	}
+	return bifrostErr
+}
+
+// SetProviderRequestLatency stashes the measured provider request latency on the context so
+// EnrichError can stamp it onto failed responses. Used by the unary request helpers below and
+// by streaming / net-http provider paths that bypass MakeRequestWithContext.
+func SetProviderRequestLatency(ctx context.Context, latency time.Duration) {
+	if bifrostCtx, ok := ctx.(*schemas.BifrostContext); ok && bifrostCtx != nil {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyProviderRequestLatency, latency.Milliseconds())
+	}
+}
+
+func providerRequestLatencyFromContext(ctx *schemas.BifrostContext) (time.Duration, bool) {
+	if ctx == nil {
+		return 0, false
+	}
+	latencyMs, ok := ctx.Value(schemas.BifrostContextKeyProviderRequestLatency).(int64)
+	if !ok {
+		return 0, false
+	}
+	return time.Duration(latencyMs) * time.Millisecond, true
+}
+
+// SetErrorLatencyFromContext stamps the provider request latency recorded on the context (by
+// MakeRequestWithContext or SetProviderRequestLatency) onto a BifrostError. Use on error returns
+// that bypass EnrichError so they still carry timing. No-op when the error is nil or the context
+// holds no recorded latency.
+func SetErrorLatencyFromContext(ctx context.Context, bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+	if bifrostErr == nil {
+		return bifrostErr
+	}
+	if bctx, ok := ctx.(*schemas.BifrostContext); ok {
+		if latency, ok := providerRequestLatencyFromContext(bctx); ok {
+			SetErrorLatency(bifrostErr, latency)
+		}
+	}
+	return bifrostErr
+}
+
 // makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.
@@ -168,6 +213,7 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 					Message: fmt.Sprintf("Request timed out by context: %v", ctx.Err()),
 					Error:   ctx.Err(),
 				},
+				ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 			}, func() { <-errChan }
 		}
 		statusCode := 499
@@ -180,6 +226,7 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 				Message: fmt.Sprintf("Request cancelled by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 		}, func() { <-errChan }
 	case err := <-errChan:
 		// The do() call completed.
@@ -194,25 +241,26 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 						Message: schemas.ErrRequestCancelled,
 						Error:   err,
 					},
+					ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 				}, noop
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
+				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true.
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
+				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks.
 			var opErr *net.OpError
 			var dnsErr *net.DNSError
 			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), noop
+				return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), latency), noop
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
-			return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), noop
+			return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency), noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
@@ -226,13 +274,17 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	return makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	SetProviderRequestLatency(ctx, latency)
+	return latency, bifrostErr, wait
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	return makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	SetProviderRequestLatency(ctx, latency)
+	return latency, bifrostErr, wait
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -1444,9 +1496,16 @@ func EnrichError(
 	responseBody []byte,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	latency ...time.Duration,
 ) *schemas.BifrostError {
 	if bifrostErr == nil {
 		return bifrostErr
+	}
+
+	if len(latency) > 0 {
+		SetErrorLatency(bifrostErr, latency[0])
+	} else if ctxLatency, ok := providerRequestLatencyFromContext(ctx); ok {
+		SetErrorLatency(bifrostErr, ctxLatency)
 	}
 
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {

@@ -153,7 +153,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, nil, latency, providerResponseHeaders, parseGeminiError(resp)
+		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -214,7 +214,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	// Parse Gemini's response
@@ -429,6 +429,7 @@ func HandleGeminiChatCompletionStream(
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
 	doErr := client.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -939,6 +940,7 @@ func HandleGeminiResponsesStream(
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
 	doErr := client.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -1437,6 +1439,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
@@ -1731,6 +1734,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
@@ -2730,7 +2734,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 				},
 			}, latency, nil
 		}
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2876,7 +2880,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2987,9 +2991,9 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 		if resp.StatusCode() == fasthttp.StatusNotFound || resp.StatusCode() == fasthttp.StatusMethodNotAllowed {
 			// 404 could mean batch not found or cancel not supported
 			// Return the error instead of assuming completed
-			return nil, parseGeminiError(resp)
+			return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 		}
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	now := time.Now().Unix()
@@ -3066,7 +3070,7 @@ func (provider *GeminiProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	return &schemas.BifrostBatchDeleteResponse{
@@ -3273,7 +3277,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3510,7 +3514,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3602,7 +3606,7 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3765,7 +3769,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3878,7 +3882,7 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 
 	// Handle error response - DELETE returns 200 with empty body on success
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	return &schemas.BifrostFileDeleteResponse{
@@ -4214,22 +4218,24 @@ func (provider *GeminiProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	if err := activeClient.Do(fasthttpReq, resp); err != nil {
+	err := activeClient.Do(fasthttpReq, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
+	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			})
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err))
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err))
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)

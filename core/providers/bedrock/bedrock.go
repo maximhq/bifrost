@@ -300,7 +300,9 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		}
 	}
 
-	return provider.executeBedrockRequest(req)
+	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	providerUtils.SetProviderRequestLatency(ctx, latency)
+	return body, latency, providerResponseHeaders, bErr
 }
 
 // executeBedrockRequest sends an already-built (and authenticated) request via the
@@ -491,7 +493,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, latency, providerResponseHeaders, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -536,7 +538,9 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	}
 
 	// Make the request
+	startTime := time.Now()
 	resp, respErr := provider.streamingClient.Do(req)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if respErr != nil {
 		if errors.Is(respErr, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -839,44 +843,46 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Execute the request
 	resp, err := provider.client.Do(req)
+	latency := time.Since(startTime)
+	providerUtils.SetProviderRequestLatency(ctx, latency)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	// Read response body and close
@@ -893,7 +899,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody)
+		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody), latency)
 	}
 
 	// Parse Bedrock-specific response
@@ -2124,6 +2130,7 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	}
 
 	rawResponseBody, latency, providerResponseHeaders, bifrostErr := provider.completeAgentRuntimeRequest(ctx, jsonData, "/rerank", key)
+	providerUtils.SetProviderRequestLatency(ctx, latency)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}

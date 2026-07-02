@@ -246,7 +246,7 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -772,6 +772,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	startTime := time.Now()
 	// Make the request
 	requestErr := provider.client.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if requestErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(requestErr, context.Canceled) {
@@ -1286,7 +1287,7 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1455,7 +1456,7 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1547,7 +1548,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -2078,7 +2079,7 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -2615,7 +2616,7 @@ func (provider *AzureProvider) ContainerCreate(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2920,7 +2921,7 @@ func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, 
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() >= 400 {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3028,7 +3029,7 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() >= 400 {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3481,26 +3482,28 @@ func (provider *AzureProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	if err := activeClient.Do(fasthttpReq, resp); err != nil {
+	err = activeClient.Do(fasthttpReq, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
+	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			})
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err))
 		}
 		// Request failed before the first response byte (server closed an idle/pooled connection,
 		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
 		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
 		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
-		return nil, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err))
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)

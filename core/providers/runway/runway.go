@@ -283,7 +283,7 @@ func (provider *RunwayProvider) retrieveRunwayTask(ctx *schemas.BifrostContext, 
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, nil, parseRunwayError(resp)
+		return nil, nil, providerUtils.SetErrorLatencyFromContext(ctx, parseRunwayError(resp))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)

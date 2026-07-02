@@ -203,7 +203,7 @@ func (provider *CohereProvider) completeRequest(ctx *schemas.BifrostContext, jso
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, latency, providerResponseHeaders, parseCohereError(resp)
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseCohereError(resp), latency)
 	}
 
 	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -271,7 +271,7 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseCohereError(resp)
+		return nil, providerUtils.SetErrorLatency(parseCohereError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -457,6 +457,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
@@ -737,6 +738,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}

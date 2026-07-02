@@ -316,7 +316,7 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 	statusCode := resp.StatusCode()
 	if statusCode != fasthttp.StatusOK {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, nil, nil, rawErrBody, statusCode, latency, openai.ParseOpenAIError(resp)
+		return nil, nil, nil, rawErrBody, statusCode, latency, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -483,22 +483,23 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		startTime := time.Now()
 		// Make the request
 		err := provider.streamingClient.Do(req, resp)
+		providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 		if err != nil {
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
+				return nil, providerUtils.SetErrorLatencyFromContext(ctx, &schemas.BifrostError{
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
 						Type:    schemas.Ptr(schemas.RequestCancelled),
 						Message: schemas.ErrRequestCancelled,
 						Error:   err,
 					},
-				}
+				})
 			}
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+				return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err))
 			}
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err))
 		}
 
 		// Store provider response headers in context before status check so error responses also forward them
@@ -507,7 +508,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		// Check for HTTP errors
 		if resp.StatusCode() != fasthttp.StatusOK {
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-			return nil, openai.ParseOpenAIError(resp)
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, openai.ParseOpenAIError(resp))
 		}
 
 		// Large payload streaming passthrough — pipe raw upstream SSE to client
