@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -76,6 +78,64 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 		if keys[i] != k {
 			t.Errorf("property %d: expected %q, got %q (full order: %v)", i, k, keys[i], keys)
 		}
+	}
+}
+
+func TestToAnthropicChatRequest_OpenAICompatibleFileIDUsesFileSource(t *testing.T) {
+	body := `{
+		"model": "anthropic/claude-sonnet-4-5-20250929",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "Read the attached PDF."},
+				{
+					"type": "file",
+					"file": {
+						"file_id": "file_abc123",
+						"filename": "tiny.pdf",
+						"format": "application/pdf"
+					}
+				}
+			]
+		}]
+	}`
+
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected one message, got %d", len(result.Messages))
+	}
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected two content blocks, got %d", len(blocks))
+	}
+
+	documentBlock := blocks[1]
+	if documentBlock.Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", documentBlock.Type)
+	}
+	if documentBlock.Title == nil || *documentBlock.Title != "tiny.pdf" {
+		t.Fatalf("expected document title tiny.pdf, got %v", documentBlock.Title)
+	}
+	if documentBlock.Source == nil || documentBlock.Source.SourceObj == nil {
+		t.Fatalf("expected document source object, got %#v", documentBlock.Source)
+	}
+	source := documentBlock.Source.SourceObj
+	if source.Type != "file" {
+		t.Fatalf("expected source type file, got %q", source.Type)
+	}
+	if source.FileID == nil || *source.FileID != "file_abc123" {
+		t.Fatalf("expected source file_id file_abc123, got %v", source.FileID)
 	}
 }
 

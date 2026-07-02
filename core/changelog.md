@@ -1,3 +1,4 @@
+- fix: preserve Anthropic uploaded file references in document sources [@mmacvicar](https://github.com/mmacvicar)
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
 - fix: recover from idle-timeout timer-goroutine panic that could crash the process
