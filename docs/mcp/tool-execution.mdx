@@ -65,7 +65,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
         "id": "call_xyz789",
         "type": "function",
         "function": {
-          "name": "filesystem_list_directory",
+          "name": "filesystem-list_directory",
           "arguments": "{\"path\": \".\"}"
         }
       }]
@@ -76,7 +76,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 <Note>
-Tool names are prefixed with the MCP client name (e.g., `filesystem_list_directory`). This ensures uniqueness across multiple MCP clients.
+Tool names are prefixed with the MCP client name (e.g., `filesystem-list_directory`). This ensures uniqueness across multiple MCP clients.
 </Note>
 
 ### Step 2: Execute the Tool
@@ -90,7 +90,7 @@ curl -X POST http://localhost:8080/v1/mcp/tool/execute \
     "id": "call_xyz789",
     "type": "function",
     "function": {
-      "name": "filesystem_list_directory",
+      "name": "filesystem-list_directory",
       "arguments": "{\"path\": \".\"}"
     }
   }'
@@ -126,7 +126,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
           "id": "call_xyz789",
           "type": "function",
           "function": {
-            "name": "filesystem_list_directory",
+            "name": "filesystem-list_directory",
             "arguments": "{\"path\": \".\"}"
           }
         }]
@@ -256,7 +256,7 @@ POST /v1/mcp/tool/execute?format=chat
   "id": "call_xyz789",
   "type": "function",
   "function": {
-    "name": "filesystem_read_file",
+    "name": "filesystem-read_file",
     "arguments": "{\"path\": \"config.json\"}"
   }
 }
@@ -284,7 +284,7 @@ POST /v1/mcp/tool/execute?format=responses
 {
   "type": "function_call_output",
   "call_id": "call_xyz789",
-  "name": "filesystem_read_file",
+  "name": "filesystem-read_file",
   "arguments": "{\"path\": \"config.json\"}"
 }
 ```
@@ -376,7 +376,7 @@ if err != nil {
 {
   "error": {
     "type": "tool_execution_error",
-    "message": "Tool 'filesystem_delete_file' is not allowed for this request"
+    "message": "Tool 'filesystem-delete_file' is not allowed for this request"
   }
 }
 ```
