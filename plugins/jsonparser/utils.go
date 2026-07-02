@@ -324,6 +324,37 @@ func (p *JsonParserPlugin) deepCopyChatStreamResponseChoice(original *schemas.Ch
 	return result
 }
 
+func deepCopyChatAnnotations(src []schemas.ChatAssistantMessageAnnotation) []schemas.ChatAssistantMessageAnnotation {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]schemas.ChatAssistantMessageAnnotation, len(src))
+	for i, a := range src {
+		c := schemas.ChatAssistantMessageAnnotation{
+			Type: a.Type,
+			URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+				StartIndex: a.URLCitation.StartIndex,
+				EndIndex:   a.URLCitation.EndIndex,
+				Title:      a.URLCitation.Title,
+			},
+		}
+		if a.URLCitation.URL != nil {
+			u := *a.URLCitation.URL
+			c.URLCitation.URL = &u
+		}
+		if a.URLCitation.Sources != nil {
+			s := *a.URLCitation.Sources
+			c.URLCitation.Sources = &s
+		}
+		if a.URLCitation.Type != nil {
+			t := *a.URLCitation.Type
+			c.URLCitation.Type = &t
+		}
+		dst[i] = c
+	}
+	return dst
+}
+
 // deepCopyChatStreamResponseChoiceDelta creates a deep copy of ChatStreamResponseChoiceDelta
 func (p *JsonParserPlugin) deepCopyChatStreamResponseChoiceDelta(original *schemas.ChatStreamResponseChoiceDelta) *schemas.ChatStreamResponseChoiceDelta {
 	if original == nil {
@@ -331,10 +362,11 @@ func (p *JsonParserPlugin) deepCopyChatStreamResponseChoiceDelta(original *schem
 	}
 
 	result := &schemas.ChatStreamResponseChoiceDelta{
-		Role:      original.Role,
-		Reasoning: original.Reasoning, // Shallow copy
-		Refusal:   original.Refusal,   // Shallow copy
-		ToolCalls: original.ToolCalls, // Shallow copy - we don't modify tool calls
+		Role:        original.Role,
+		Reasoning:   original.Reasoning, // Shallow copy
+		Refusal:     original.Refusal,   // Shallow copy
+		ToolCalls:   original.ToolCalls, // Shallow copy - we don't modify tool calls
+		Annotations: deepCopyChatAnnotations(original.Annotations),
 	}
 
 	// Deep copy Content pointer if it exists (this is what we modify)
