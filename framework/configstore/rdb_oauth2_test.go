@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -426,7 +427,7 @@ func TestListOAuth2Sessions_JoinsAndExcludesRevoked(t *testing.T) {
 		ID: "crow", ClientID: "client-1", ClientName: "Test Client",
 		RedirectURIs: []string{"http://127.0.0.1/cb"}, GrantTypes: []string{"authorization_code"}, CreatedAt: time.Now(),
 	}).Error)
-	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: "sk-bf-alpha"}).Error)
+	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: *schemas.NewSecretVar("sk-bf-alpha")}).Error)
 
 	vkTok := makeRefreshToken("rt-vk", "f1", "client-1", "h-vk")
 	vkTok.BfSub = "vk-1" // joins to governance_virtual_keys.id
@@ -481,7 +482,7 @@ func TestListOAuth2Sessions_FilterAndPaginate(t *testing.T) {
 		ID: "c2", ClientID: "client-2", ClientName: "Beta Server",
 		RedirectURIs: []string{"http://127.0.0.1/cb"}, GrantTypes: []string{"authorization_code"}, CreatedAt: time.Now(),
 	}).Error)
-	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: "sk-bf-alpha"}).Error)
+	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: *schemas.NewSecretVar("sk-bf-alpha")}).Error)
 
 	base := time.Now()
 	rtA := makeRefreshToken("rt-a", "fa", "client-1", "h-a") // vk mode, bf_sub vk-1 → display "Alpha VK"

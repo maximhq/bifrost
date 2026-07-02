@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -152,8 +153,8 @@ func TestConsentAvailableModes(t *testing.T) {
 }
 
 func TestConsentFlowSubmit_VK(t *testing.T) {
-	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-active", IsActive: new(true)}
-	inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-2", Value: "sk-bf-inactive", IsActive: new(false)}
+	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
+	inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-2", Value: *schemas.NewSecretVar("sk-bf-inactive"), IsActive: new(false)}
 
 	t.Run("active VK mints a code", func(t *testing.T) {
 		store := newConsentStore()
@@ -175,7 +176,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 
 	t.Run("inactive VK is rejected", func(t *testing.T) {
 		store := newConsentStore()
-		store.vksByValue[inactiveVK.Value] = inactiveVK
+		store.vksByValue[inactiveVK.Value.GetValue()] = inactiveVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		h := newConsentHandler(store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-inactive"}`)
@@ -203,7 +204,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 
 	t.Run("double submit returns 410 on the second attempt", func(t *testing.T) {
 		store := newConsentStore()
-		store.vksByValue[activeVK.Value] = activeVK
+		store.vksByValue[activeVK.Value.GetValue()] = activeVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		h := newConsentHandler(store, nil, false)
 
@@ -272,11 +273,11 @@ func TestConsentFlowSubmit_User(t *testing.T) {
 }
 
 func TestConsentFlowSubmit_VKUserBinding(t *testing.T) {
-	boundVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-bound", IsActive: new(true)}
+	boundVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-bound"), IsActive: new(true)}
 
 	t.Run("bound VK upgrades to user when logged-in user matches", func(t *testing.T) {
 		store := newConsentStore()
-		store.vksByValue[boundVK.Value] = boundVK
+		store.vksByValue[boundVK.Value.GetValue()] = boundVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "owner-1", vkBoundUserID: "owner-1"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-bound"}`)
@@ -288,7 +289,7 @@ func TestConsentFlowSubmit_VKUserBinding(t *testing.T) {
 
 	t.Run("bound VK rejected when logged-in user differs", func(t *testing.T) {
 		store := newConsentStore()
-		store.vksByValue[boundVK.Value] = boundVK
+		store.vksByValue[boundVK.Value.GetValue()] = boundVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "intruder", vkBoundUserID: "owner-1"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-bound"}`)
@@ -298,7 +299,7 @@ func TestConsentFlowSubmit_VKUserBinding(t *testing.T) {
 
 	t.Run("bound VK rejected when not signed in", func(t *testing.T) {
 		store := newConsentStore()
-		store.vksByValue[boundVK.Value] = boundVK
+		store.vksByValue[boundVK.Value.GetValue()] = boundVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "", vkBoundUserID: "owner-1"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-bound"}`)

@@ -144,7 +144,7 @@ func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, 
 		// the VK row ID (BifrostContextKeyGovernanceVirtualKeyID) on the connect
 		// path before the per-user credential resolver needs it — the same way the
 		// x-bf-vk header path does, which never stamps the row ID at ingress either.
-		bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, vk.Value)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, vk.Value.GetValue())
 	case schemas.MCPAuthModeSession:
 		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPSessionID, sub)
 	default:
