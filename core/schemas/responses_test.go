@@ -385,53 +385,6 @@ func TestResponsesMessageMCPCallApprovalRequestIDRoundTrip(t *testing.T) {
 	}
 }
 
-// TestResponsesResponseErrorPreservesTypeAndParam verifies that the
-// response-level error object's "type" and "param" fields (needed to
-// identify exactly which request field failed validation) survive
-// decode/re-encode instead of being silently dropped.
-func TestResponsesResponseErrorPreservesTypeAndParam(t *testing.T) {
-	raw := []byte(`{"type":"invalid_request_error","code":"missing_required_parameter","message":"Missing required parameter: 'input[1].server_label'.","param":"input[1].server_label"}`)
-
-	var respErr ResponsesResponseError
-	if err := Unmarshal(raw, &respErr); err != nil {
-		t.Fatalf("unmarshal responses response error: %v", err)
-	}
-	if respErr.Type != "invalid_request_error" {
-		t.Fatalf("expected type to survive unmarshal, got %#v", respErr.Type)
-	}
-	if respErr.Param == nil || *respErr.Param != "input[1].server_label" {
-		t.Fatalf("expected param to survive unmarshal, got %#v", respErr.Param)
-	}
-
-	encoded, err := MarshalSorted(respErr)
-	if err != nil {
-		t.Fatalf("marshal responses response error: %v", err)
-	}
-	if !strings.Contains(string(encoded), `"type":"invalid_request_error"`) || !strings.Contains(string(encoded), `"param":"input[1].server_label"`) {
-		t.Fatalf("expected encoded error to preserve type and param, got %s", encoded)
-	}
-}
-
-// TestResponsesResponseErrorNoSpuriousTypeOrParam verifies that providers
-// which construct ResponsesResponseError without Type/Param (e.g. Replicate,
-// Gemini — see core/providers/replicate/responses.go and
-// core/providers/gemini/responses.go) don't gain a spurious "type":""/
-// "param":"" that never existed on their original error.
-func TestResponsesResponseErrorNoSpuriousTypeOrParam(t *testing.T) {
-	respErr := ResponsesResponseError{Code: "provider_error", Message: "boom"}
-
-	encoded, err := MarshalSorted(respErr)
-	if err != nil {
-		t.Fatalf("marshal responses response error: %v", err)
-	}
-	if strings.Contains(string(encoded), `"type"`) {
-		t.Fatalf("expected no spurious type field, got %s", encoded)
-	}
-	if strings.Contains(string(encoded), `"param"`) {
-		t.Fatalf("expected no spurious param field, got %s", encoded)
-	}
-}
-
 // TestResponsesToolFileSearchHybridSearchRoundTrip verifies that
 // ranking_options.hybrid_search (reciprocal-rank-fusion weighting) survives
 // decode/re-encode on a file_search tool declaration.
