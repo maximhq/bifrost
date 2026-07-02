@@ -252,6 +252,133 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 			if *resp.Item.Arguments != want[name] {
 				t.Fatalf("[%s] expected arguments %q, got %q", name, want[name], *resp.Item.Arguments)
 			}
+			// execution field must survive unmarshal
+			if resp.Item.ResponsesToolMessage.Execution == nil || *resp.Item.ResponsesToolMessage.Execution != "client" {
+				t.Fatalf("[%s] expected execution=\"client\" after unmarshal, got %#v", name, resp.Item.ResponsesToolMessage.Execution)
+			}
+		}
+	})
+}
+
+// TestResponsesMessageToolSearchCallMarshal verifies the round-trip wire format
+// for tool_search_call items. OpenAI sends arguments as a JSON object; after
+// Bifrost normalizes them into a *string on unmarshal, MarshalJSON must expand
+// them back to an object so the client receives the original wire format.
+// It also verifies that the required "execution" field is always emitted
+// (defaulting to "client" when not set), which Codex requires to execute
+// the tool search.
+func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
+	msgType := ResponsesMessageTypeToolSearchCall
+
+	t.Run("completed frame marshals arguments as json object", func(t *testing.T) {
+		args := `{"query":"observability","limit":10}`
+		msg := ResponsesMessage{
+			Type: &msgType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call message: %v", err)
+		}
+		// arguments must be a JSON object, not a quoted string
+		if strings.Contains(string(encoded), `"arguments":"`) {
+			t.Fatalf("expected arguments as object, got string form: %s", encoded)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{"query":"observability","limit":10}`) {
+			t.Fatalf("expected arguments object in output, got: %s", encoded)
+		}
+		// execution must always be present (codex requires it)
+		if !strings.Contains(string(encoded), `"execution":"client"`) {
+			t.Fatalf("expected execution=client in output, got: %s", encoded)
+		}
+	})
+
+	t.Run("full round-trip from raw openai frame", func(t *testing.T) {
+		raw := []byte(`{"id":"tsc_abc","type":"tool_search_call","status":"completed","call_id":"call_xyz","execution":"client","arguments":{"query":"sentry grafana","limit":10}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal tool_search_call: %v", err)
+		}
+		if msg.Arguments == nil || *msg.Arguments != `{"query":"sentry grafana","limit":10}` {
+			t.Fatalf("unexpected arguments after unmarshal: %v", msg.Arguments)
+		}
+		if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Execution == nil || *msg.ResponsesToolMessage.Execution != "client" {
+			t.Fatalf("expected execution=client after unmarshal, got %#v", msg.ResponsesToolMessage)
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call after round-trip: %v", err)
+		}
+		if strings.Contains(string(encoded), `"arguments":"`) {
+			t.Fatalf("expected object form after round-trip, got string: %s", encoded)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{"`) {
+			t.Fatalf("expected arguments object after round-trip, got: %s", encoded)
+		}
+		if !strings.Contains(string(encoded), `"execution":"client"`) {
+			t.Fatalf("expected execution=client preserved in round-trip, got: %s", encoded)
+		}
+	})
+
+	t.Run("execution is preserved when set to non-default value", func(t *testing.T) {
+		args := `{"query":"test"}`
+		exec := "server"
+		msg := ResponsesMessage{
+			Type: &msgType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+				Execution: &exec,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call with custom execution: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"execution":"server"`) {
+			t.Fatalf("expected execution=server to be preserved, got: %s", encoded)
+		}
+	})
+
+	t.Run("invalid non-empty tool_search_call arguments return error", func(t *testing.T) {
+		for _, args := range []string{`{"query":`, `[]`, `42`, `null`, `"query"`} {
+			msg := ResponsesMessage{
+				Type: &msgType,
+				ResponsesToolMessage: &ResponsesToolMessage{
+					Arguments: &args,
+				},
+			}
+			_, err := MarshalSorted(msg)
+			if err == nil {
+				t.Fatalf("expected invalid tool_search_call arguments %q to return error", args)
+			}
+			if !strings.Contains(err.Error(), "tool_search_call arguments must be valid JSON object text") {
+				t.Fatalf("unexpected error for %q: %v", args, err)
+			}
+		}
+	})
+
+	t.Run("function_call still marshals arguments as json string", func(t *testing.T) {
+		fcType := ResponsesMessageTypeFunctionCall
+		args := `{"param":"value"}`
+		msg := ResponsesMessage{
+			Type: &fcType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal function_call message: %v", err)
+		}
+		// function_call arguments must remain a JSON string
+		if !strings.Contains(string(encoded), `"arguments":"{`) {
+			t.Fatalf("expected function_call arguments as string, got: %s", encoded)
+		}
+		// function_call must not emit execution
+		if strings.Contains(string(encoded), `"execution"`) {
+			t.Fatalf("execution must not appear in function_call output, got: %s", encoded)
 		}
 	})
 }
@@ -277,11 +404,143 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	}
 }
 
-// TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
-// normalized provider-format converters, e.g. openai/v1/responses) drops the
-// Anthropic-only code-execution fidelity carry while keeping the neutral
-// code_interpreter_call view — and does not mutate the source response (the raw
-// Bifrost superset path keeps the carry).
+func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		raw        string
+		wantFields []string
+		wantAbsent []string
+	}{
+		{
+			name: "namespace tool type is preserved",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-1",
+				"tools": [
+					{
+						"type": "namespace",
+						"name": "mcp__codexself",
+						"description": "Codex self-tools",
+						"tools": [
+							{"type": "function", "name": "codex_reply", "description": "Reply with a message"}
+						]
+					}
+				]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-1"`,
+				`"type":"namespace"`,
+				`"name":"mcp__codexself"`,
+				`"type":"function"`,
+				`"name":"codex_reply"`,
+			},
+		},
+		{
+			name: "empty tools array round-trips cleanly",
+			raw:  `{"type":"tool_search_output","call_id":"search-3","tools":[]}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-3"`,
+			},
+		},
+		{
+			name: "tool_search_output emits execution field (codex requires it)",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-4",
+				"tools": [{"type": "function", "name": "shell"}]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"execution":"client"`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var msg ResponsesMessage
+			if err := Unmarshal([]byte(tc.raw), &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			// Verify the type constant parsed correctly.
+			if msg.Type == nil || *msg.Type != ResponsesMessageTypeToolSearchOutput {
+				t.Fatalf("expected type tool_search_output, got %v", msg.Type)
+			}
+
+			// Tools must be non-nil for any non-empty tools array.
+			// (empty-array case is allowed to be nil or empty slice after round-trip)
+
+			encoded, err := MarshalSorted(msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(encoded)
+
+			for _, want := range tc.wantFields {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q in encoded output:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("unexpected %q present in encoded output:\n%s", absent, got)
+				}
+			}
+		})
+	}
+}
+
+// TestResponsesMessageMCPListToolsRoundTrip guards against a field collision:
+// ResponsesToolMessage.Tools (tool_search_output) and the embedded
+// ResponsesMCPListTools.Tools (mcp_list_tools) both use the wire key "tools".
+// If either field were left to struct-tag-based encoding, the shallower one
+// would silently win for every message type and the other would never survive
+// marshal/unmarshal.
+//
+// Note: this only asserts the "tools" field, which is what UnmarshalJSON/
+// MarshalJSON route manually. ResponsesMCPListTools.ServerLabel is a separate,
+// pre-existing bug (reproduces identically on a clean upstream/dev checkout,
+// unrelated to this collision or to tool_search at all): the JSON decoder
+// never auto-allocates the doubly-nested anonymous pointer chain
+// ResponsesMessage -> *ResponsesToolMessage -> *ResponsesMCPListTools, so no
+// field on ResponsesMCPListTools reaches the wire on unmarshal unless
+// something else (like this Tools routing) has already allocated the struct.
+func TestResponsesMessageMCPListToolsRoundTrip(t *testing.T) {
+	raw := `{"type":"mcp_list_tools","tools":[{"name":"query_prometheus","input_schema":{"type":"object"}}]}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal mcp_list_tools: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesMCPListTools == nil {
+		t.Fatalf("expected ResponsesMCPListTools to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if len(msg.ResponsesMCPListTools.Tools) != 1 || msg.ResponsesMCPListTools.Tools[0].Name != "query_prometheus" {
+		t.Fatalf("expected mcp_list_tools.tools to survive unmarshal, got %#v", msg.ResponsesMCPListTools.Tools)
+	}
+	// The unrelated tool_search_output field must stay untouched.
+	if msg.ResponsesToolMessage.Tools != nil {
+		t.Fatalf("expected ResponsesToolMessage.Tools to stay nil for mcp_list_tools, got %#v", msg.ResponsesToolMessage.Tools)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal mcp_list_tools: %v", err)
+	}
+	got := string(encoded)
+	if !strings.Contains(got, `"name":"query_prometheus"`) {
+		t.Fatalf("expected mcp_list_tools.tools to survive marshal, got: %s", got)
+	}
+}
+
 func TestWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	code := "print(1)"
 	resp := &BifrostResponsesResponse{

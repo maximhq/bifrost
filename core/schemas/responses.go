@@ -936,6 +936,8 @@ const (
 	ResponsesMessageTypeComputerCallOutput   ResponsesMessageType = "computer_call_output"
 	ResponsesMessageTypeWebSearchCall        ResponsesMessageType = "web_search_call"
 	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
+	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
+	ResponsesMessageTypeToolSearchOutput     ResponsesMessageType = "tool_search_output"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
@@ -952,14 +954,7 @@ const (
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
-	// Codex deferred-tool discovery (tool_search). OpenAI's Responses API
-	// supports these item types natively; Bifrost preserves them verbatim
-	// because its typed schema doesn't model them (the call's `arguments` is a
-	// JSON object — unlike function_call's string — and the output carries a
-	// `tools` array). See ResponsesMessage's (Un)MarshalJSON.
-	ResponsesMessageTypeToolSearchCall   ResponsesMessageType = "tool_search_call"
-	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
-	ResponsesMessageTypeAdvisorCall      ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -988,50 +983,31 @@ type ResponsesMessage struct {
 	// Reasoning
 	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning
-
-	// rawToolSearch preserves codex `tool_search_call` / `tool_search_output`
-	// items verbatim. OpenAI's Responses API accepts these natively, but
-	// Bifrost's typed schema doesn't model them (the call's `arguments` is a
-	// JSON object — unlike function_call's string — and the output carries a
-	// `tools` array). Rather than fail to deserialize the whole input array or
-	// drop/mangle these items, we round-trip the original bytes unchanged.
-	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
-	rawToolSearch []byte
 }
 
-// isToolSearchItem reports whether t is a codex tool_search item type, which
-// Bifrost preserves verbatim rather than modelling field-by-field.
-func isToolSearchItem(t string) bool {
-	return t == string(ResponsesMessageTypeToolSearchCall) ||
-		t == string(ResponsesMessageTypeToolSearchOutput)
-}
-
-// UnmarshalJSON preserves codex tool_search items verbatim (see rawToolSearch)
-// and otherwise normalizes function/tool-call arguments before decoding the rest
+// UnmarshalJSON normalizes function/tool-call arguments before decoding the rest
 // of the item. OpenAI's Responses API serializes `function_call` `arguments` as
-// a JSON string, but `tool_search_call` items serialize `arguments` as a JSON
-// object — e.g. {} while in_progress and {"query":"...","limit":10} when
-// completed. The embedded ResponsesToolMessage.Arguments field is a *string, so
-// an object value makes a plain decode fail with "Mismatch type string with
-// value object", which silently drops the item mid-stream and hangs streaming
-// clients. We shadow `arguments` as raw JSON, decode everything else as usual,
-// then store the canonical stringified form.
+// a JSON string, but `tool_search_call` items (emitted when the request enables
+// the `tool_search` deferred-tool-discovery tool, as Codex does) serialize
+// `arguments` as a JSON object — e.g. {} while in_progress and
+// {"query":"...","limit":10} when completed. The embedded
+// ResponsesToolMessage.Arguments field is a *string, so an object value makes a
+// plain decode fail with "Mismatch type string with value object", which
+// silently drops the item mid-stream and hangs streaming clients. We shadow
+// `arguments` as raw JSON, decode everything else as usual, then store the
+// canonical stringified form.
+//
+// It also shadows `tools`, which two different message types put under the
+// same wire key: tool_search_output's discovered-tools array (destined for
+// ResponsesToolMessage.Tools) and mcp_list_tools' tool list (destined for the
+// embedded ResponsesMCPListTools.Tools). Struct-tag-based decoding can only
+// bind one field per JSON key, so both are routed manually here based on
+// Type instead of relying on either field's own tag.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
-	// Clear the receiver first so a reused instance never retains a stale
-	// rawToolSearch (or other fields) from a prior decode — unmarshalling a
-	// non-tool-search payload must not leave preserved bytes that MarshalJSON
-	// would then re-emit.
-	*m = ResponsesMessage{}
-	if t := gjson.GetBytes(data, "type").String(); isToolSearchItem(t) {
-		mt := ResponsesMessageType(t)
-		m.Type = &mt
-		m.rawToolSearch = append([]byte(nil), data...)
-		return nil
-	}
-
 	type Alias ResponsesMessage
 	aux := &struct {
 		Arguments json.RawMessage `json:"arguments,omitempty"`
+		Tools     json.RawMessage `json:"tools,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -1049,17 +1025,33 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		m.Arguments = &args
 	}
 
-	return nil
-}
-
-// MarshalJSON re-emits preserved tool_search items verbatim and defers every
-// other item type to the default (sorted-key) struct encoding.
-func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	if m.rawToolSearch != nil {
-		return m.rawToolSearch, nil
+	if len(aux.Tools) > 0 && string(aux.Tools) != "null" {
+		switch {
+		case m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput:
+			var tools []ResponsesTool
+			if err := Unmarshal(aux.Tools, &tools); err != nil {
+				return fmt.Errorf("tool_search_output tools: %w", err)
+			}
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			m.ResponsesToolMessage.Tools = tools
+		case m.Type != nil && *m.Type == ResponsesMessageTypeMCPListTools:
+			var tools []ResponsesMCPTool
+			if err := Unmarshal(aux.Tools, &tools); err != nil {
+				return fmt.Errorf("mcp_list_tools tools: %w", err)
+			}
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			if m.ResponsesToolMessage.ResponsesMCPListTools == nil {
+				m.ResponsesToolMessage.ResponsesMCPListTools = &ResponsesMCPListTools{}
+			}
+			m.ResponsesToolMessage.ResponsesMCPListTools.Tools = tools
+		}
 	}
-	type alias ResponsesMessage
-	return MarshalSorted(alias(m))
+
+	return nil
 }
 
 // responsesToolArgumentsToString normalizes a function/tool-call `arguments`
@@ -1072,6 +1064,95 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 		return str
 	}
 	return string(raw)
+}
+
+// MarshalJSON preserves the OpenAI wire-format distinction for tool-call
+// arguments: function_call emits a JSON string, while tool_search_call emits a
+// JSON object per the OpenAI Responses API spec. All other message types (which
+// carry no arguments) are marshaled as usual.
+// tool_search_output items also require execution (same as tool_search_call).
+//
+// It also emits `tools`, shared on the wire by tool_search_output
+// (ResponsesToolMessage.Tools) and mcp_list_tools (the embedded
+// ResponsesMCPListTools.Tools) — see UnmarshalJSON for why these can't be
+// left to struct-tag-based encoding.
+func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	type Alias ResponsesMessage
+
+	clone := m
+	var argsValue interface{}
+	var execValue *string
+	var toolsValue interface{}
+
+	isToolSearchCall := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall
+	isToolSearchOutput := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput
+	isMCPListTools := m.Type != nil && *m.Type == ResponsesMessageTypeMCPListTools
+	needsExecution := isToolSearchCall || isToolSearchOutput
+
+	if m.ResponsesToolMessage != nil {
+		toolCopy := *clone.ResponsesToolMessage
+
+		if isToolSearchOutput && len(m.ResponsesToolMessage.Tools) > 0 {
+			toolsValue = m.ResponsesToolMessage.Tools
+		} else if isMCPListTools && m.ResponsesToolMessage.ResponsesMCPListTools != nil && len(m.ResponsesToolMessage.ResponsesMCPListTools.Tools) > 0 {
+			toolsValue = m.ResponsesToolMessage.ResponsesMCPListTools.Tools
+		}
+
+		if toolCopy.Arguments != nil {
+			// Suppress Arguments from the embedded struct so it doesn't appear
+			// twice; we inject it below with the correct JSON type.
+			toolCopy.Arguments = nil
+			argsStr := *m.ResponsesToolMessage.Arguments
+			if isToolSearchCall {
+				// tool_search_call.arguments must be a JSON object on the wire.
+				trimmed := strings.TrimSpace(argsStr)
+				if trimmed == "" {
+					argsValue = json.RawMessage("{}")
+				} else {
+					if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+						return nil, fmt.Errorf("tool_search_call arguments must be valid JSON object text, got %q", argsStr)
+					}
+					var rawObject map[string]json.RawMessage
+					if err := json.Unmarshal([]byte(trimmed), &rawObject); err != nil {
+						return nil, fmt.Errorf("tool_search_call arguments must be valid JSON object text, got %q", argsStr)
+					}
+					argsValue = json.RawMessage(trimmed)
+				}
+			} else {
+				// function_call and all other tool types: emit as a JSON string.
+				argsValue = argsStr
+			}
+		}
+
+		if needsExecution {
+			// Codex requires execution to always be present on tool_search_call and
+			// tool_search_output. Suppress from toolCopy to avoid double-emit via the
+			// Alias, then inject via aux struct, defaulting to "client" when not set.
+			toolCopy.Execution = nil
+			if m.ResponsesToolMessage.Execution != nil {
+				execValue = m.ResponsesToolMessage.Execution
+			} else {
+				e := "client"
+				execValue = &e
+			}
+		}
+
+		clone.ResponsesToolMessage = &toolCopy
+	}
+
+	aux := struct {
+		Arguments interface{} `json:"arguments,omitempty"`
+		Execution *string     `json:"execution,omitempty"`
+		Tools     interface{} `json:"tools,omitempty"`
+		*Alias
+	}{
+		Arguments: argsValue,
+		Execution: execValue,
+		Tools:     toolsValue,
+		Alias:     (*Alias)(&clone),
+	}
+
+	return MarshalSorted(aux)
 }
 
 type ResponsesMessageRoleType string
@@ -1249,8 +1330,20 @@ type ResponsesToolMessage struct {
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
+	Execution *string                           `json:"execution,omitempty"` // tool_search_call execution mode (e.g. "client")
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
+	// Tools holds the discovered tools array for tool_search_output items.
+	// Uses []ResponsesTool so each entry's "type" field round-trips via the
+	// existing ResponsesTool marshal/unmarshal pipeline (namespace, function, etc.).
+	// json:"-": ResponsesToolMessage also embeds *ResponsesMCPListTools, whose
+	// Tools []ResponsesMCPTool field is also tagged "tools" for mcp_list_tools
+	// items. Struct-tag-based encoding can't disambiguate two same-named
+	// fields at different embedding depths (the shallower one silently wins
+	// and the other is dropped from both marshal and unmarshal), so this
+	// field is populated/emitted manually in ResponsesMessage's custom
+	// (Un)MarshalJSON, keyed off Type, instead of via the struct tag.
+	Tools []ResponsesTool `json:"-"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
 

@@ -22,6 +22,7 @@ Release on `transports/v1.6.0`. Adds Runware and Runway providers (image and vid
 - **Cluster Discovery Env Refs** - Added `env.VAR_NAME` support to `dns_names` in cluster discovery config, so peer addresses can be supplied from the environment instead of being hard-coded.
 - **Server Logs Config** - Added configurable server logging so log verbosity and output can be tuned per deployment.
 - **Bedrock Streaming Errors** - Bedrock errors on streaming paths now carry the `__type` field, so clients receive a typed error instead of an opaque stream failure.
+- **Secret References** - Added typed `SecretVar` references across config and UI, replacing the old `EnvVar`. References currently resolve from environment variables (`env.VAR_NAME`); the typed form lets config declare where each secret comes from rather than inlining values.
 - **Secret Provider Support** - Connect AWS Secrets Manager, GCP Secret Manager, or HashiCorp Vault so Bifrost can store and read from secrets manager. [Docs](https://docs.getbifrost.ai/enterprise/secret-management)
 - **Generic OIDC Provider and SCIM Support** - Added a standards-compliant OIDC provider (`provider: "generic"`) for SSO and user provisioning with any OIDC-compliant IdP. [Docs](https://docs.getbifrost.ai/enterprise/user-provisioning)
 
