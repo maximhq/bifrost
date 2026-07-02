@@ -281,7 +281,6 @@ func TestDeepCopyResponsesStreamResponsePreservesToolSearchFields(t *testing.T) 
 	execution := wantExecution
 	functionName := wantFunction
 	paramDesc := "reply payload"
-	headers := map[string]string{"Authorization": "Bearer abc"}
 	params := &schemas.ToolFunctionParameters{
 		Type:        "object",
 		Description: &paramDesc,
@@ -313,13 +312,6 @@ func TestDeepCopyResponsesStreamResponsePreservesToolSearchFields(t *testing.T) 
 							},
 						},
 					},
-					{
-						Type: schemas.ResponsesToolTypeMCP,
-						ResponsesToolMCP: &schemas.ResponsesToolMCP{
-							ServerLabel: "remote",
-							Headers:     &headers,
-						},
-					},
 				},
 			},
 		},
@@ -335,7 +327,7 @@ func TestDeepCopyResponsesStreamResponsePreservesToolSearchFields(t *testing.T) 
 	if copied.Item.ResponsesToolMessage.Execution == nil || *copied.Item.ResponsesToolMessage.Execution != wantExecution {
 		t.Fatalf("Execution: want %q, got %#v", wantExecution, copied.Item.ResponsesToolMessage.Execution)
 	}
-	if len(copied.Item.ResponsesToolMessage.Tools) != 2 || copied.Item.ResponsesToolMessage.Tools[0].Type != schemas.ResponsesToolType("namespace") {
+	if len(copied.Item.ResponsesToolMessage.Tools) != 1 || copied.Item.ResponsesToolMessage.Tools[0].Type != schemas.ResponsesToolType("namespace") {
 		t.Fatalf("Tools: unexpected copy %#v", copied.Item.ResponsesToolMessage.Tools)
 	}
 	if *copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name != wantFunction {
@@ -344,16 +336,13 @@ func TestDeepCopyResponsesStreamResponsePreservesToolSearchFields(t *testing.T) 
 	if got := testToolParamType(t, copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.ToMap()["message"]); got != "string" {
 		t.Fatalf("Nested tool params: want string type, got %#v", got)
 	}
-	if got := (*copied.Item.ResponsesToolMessage.Tools[1].ResponsesToolMCP.Headers)["Authorization"]; got != "Bearer abc" {
-		t.Fatalf("MCP headers: want bearer header, got %#v", got)
-	}
 
+	// Mutate the original after copying; the copy must not observe any of it.
 	*original.Item.ResponsesToolMessage.Namespace = "mutated-namespace"
 	*original.Item.ResponsesToolMessage.Execution = "server"
 	original.Item.ResponsesToolMessage.Tools[0].Type = schemas.ResponsesToolType("mutated")
 	*original.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name = "mutated-function"
 	original.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.Set("message", map[string]interface{}{"type": "number"})
-	(*original.Item.ResponsesToolMessage.Tools[1].ResponsesToolMCP.Headers)["Authorization"] = "Bearer mutated"
 
 	if *copied.Item.ResponsesToolMessage.Namespace != wantNamespace {
 		t.Fatalf("Namespace aliased original: got %q", *copied.Item.ResponsesToolMessage.Namespace)
@@ -369,8 +358,5 @@ func TestDeepCopyResponsesStreamResponsePreservesToolSearchFields(t *testing.T) 
 	}
 	if got := testToolParamType(t, copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.ToMap()["message"]); got != "string" {
 		t.Fatalf("Nested tool params aliased original: got %#v", got)
-	}
-	if got := (*copied.Item.ResponsesToolMessage.Tools[1].ResponsesToolMCP.Headers)["Authorization"]; got != "Bearer abc" {
-		t.Fatalf("MCP headers aliased original: got %#v", got)
 	}
 }

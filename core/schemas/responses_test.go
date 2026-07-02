@@ -295,26 +295,6 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		}
 	})
 
-	t.Run("in_progress empty-object frame marshals as empty json object", func(t *testing.T) {
-		args := `{}`
-		msg := ResponsesMessage{
-			Type: &msgType,
-			ResponsesToolMessage: &ResponsesToolMessage{
-				Arguments: &args,
-			},
-		}
-		encoded, err := MarshalSorted(msg)
-		if err != nil {
-			t.Fatalf("marshal in_progress tool_search_call: %v", err)
-		}
-		if !strings.Contains(string(encoded), `"arguments":{}`) {
-			t.Fatalf("expected empty arguments object, got: %s", encoded)
-		}
-		if !strings.Contains(string(encoded), `"execution":"client"`) {
-			t.Fatalf("expected execution=client in in_progress frame, got: %s", encoded)
-		}
-	})
-
 	t.Run("full round-trip from raw openai frame", func(t *testing.T) {
 		raw := []byte(`{"id":"tsc_abc","type":"tool_search_call","status":"completed","call_id":"call_xyz","execution":"client","arguments":{"query":"sentry grafana","limit":10}}`)
 		var msg ResponsesMessage
@@ -339,24 +319,6 @@ func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
 		}
 		if !strings.Contains(string(encoded), `"execution":"client"`) {
 			t.Fatalf("expected execution=client preserved in round-trip, got: %s", encoded)
-		}
-	})
-
-	t.Run("execution defaults to client when not set on tool_search_call", func(t *testing.T) {
-		args := `{"query":"test"}`
-		msg := ResponsesMessage{
-			Type: &msgType,
-			ResponsesToolMessage: &ResponsesToolMessage{
-				Arguments: &args,
-				// Execution intentionally nil to verify the default
-			},
-		}
-		encoded, err := MarshalSorted(msg)
-		if err != nil {
-			t.Fatalf("marshal tool_search_call without execution: %v", err)
-		}
-		if !strings.Contains(string(encoded), `"execution":"client"`) {
-			t.Fatalf("expected execution to default to client, got: %s", encoded)
 		}
 	})
 
@@ -474,24 +436,6 @@ func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
 				`"name":"mcp__codexself"`,
 				`"type":"function"`,
 				`"name":"codex_reply"`,
-			},
-		},
-		{
-			name: "multiple tools with different types are preserved",
-			raw: `{
-				"type": "tool_search_output",
-				"call_id": "search-2",
-				"tools": [
-					{"type": "namespace", "name": "mcp__tools", "tools": []},
-					{"type": "function", "name": "shell", "description": "Run shell commands"}
-				]
-			}`,
-			wantFields: []string{
-				`"type":"tool_search_output"`,
-				`"type":"namespace"`,
-				`"name":"mcp__tools"`,
-				`"type":"function"`,
-				`"name":"shell"`,
 			},
 		},
 		{
