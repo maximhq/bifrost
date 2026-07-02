@@ -3908,7 +3908,7 @@ func ResolveFrameworkPricingConfig(
 	// Hash the file-resolved values; skip if nothing valid survived Phase 1.
 	fileHash := ""
 	fileHasHashableMCPConfig := (fileMCPLibraryURL != nil && !skipMCPLibraryURLBackfill) || fileMCPLibrarySyncSeconds != nil
-	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || fileSyncSeconds != nil || fileHasHashableMCPConfig) {
+	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || (fileModelParametersURL != nil && !skipModelParamsURLBackfill) || fileSyncSeconds != nil || fileHasHashableMCPConfig) {
 		var h string
 		var err error
 		if fileHasHashableMCPConfig {
@@ -3950,7 +3950,12 @@ func ResolveFrameworkPricingConfig(
 			needsDBUpdate = true
 		}
 		if dbConfig.ModelParametersURL != nil && *dbConfig.ModelParametersURL != "" {
-			resolvedModelParametersURL = dbConfig.ModelParametersURL
+			if fileChanged && fileModelParametersURL != nil {
+				logger.Info("model_parameters_url from config.json overrides DB (file hash changed) — updating DB")
+				needsDBUpdate = true
+			} else {
+				resolvedModelParametersURL = dbConfig.ModelParametersURL
+			}
 		} else if !skipModelParamsURLBackfill {
 			needsDBUpdate = true
 		}
