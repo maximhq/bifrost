@@ -40,7 +40,7 @@ func TestPrepareRequestInvalidPayloadDoesNotExposeDecoderDetails(t *testing.T) {
 		t.Fatal("expected error for invalid payload")
 	}
 	msg := err.Error()
-	if msg != "invalid request payload" {
+	if msg != "Invalid request payload" {
 		t.Fatalf("error = %q, want generic invalid payload message", msg)
 	}
 	if strings.Contains(msg, "cannot unmarshal") || strings.Contains(msg, "model") || strings.Contains(msg, "Go struct field") {

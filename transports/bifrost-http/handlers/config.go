@@ -342,6 +342,58 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	currentConfig := h.store.ClientConfig
 	updatedConfig := currentConfig
 
+	// Validate MCP auth-mode / OAuth2 server settings before any live mutation
+	// below (drop-excess flag, MCP tool-manager reload, compat plugin reload,
+	// in-memory MCP config). A late rejection would return 400 while runtime
+	// state had already changed but DB persistence was skipped, diverging
+	// in-memory, core, and DB state.
+
+	// Validate the inbound MCP auth mode against the allowed enum
+	// (config.schema.json is the source of truth: headers | both | oauth).
+	switch payload.ClientConfig.MCPServerAuthMode {
+	case "", configstoreTables.MCPServerAuthModeHeaders, configstoreTables.MCPServerAuthModeBoth, configstoreTables.MCPServerAuthModeOAuth:
+		// valid; empty means the field was omitted from a partial update
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_server_auth_mode must be one of: headers, both, oauth")
+		return
+	}
+
+	// oauth2_server_config only applies when discovery is enabled (both | oauth).
+	// Evaluate against the effective mode so a partial update that supplies only
+	// the config cannot smuggle it in while the stored mode is headers.
+	effectiveAuthMode := payload.ClientConfig.MCPServerAuthMode
+	if effectiveAuthMode == "" {
+		effectiveAuthMode = currentConfig.MCPServerAuthMode
+	}
+	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
+	if payload.ClientConfig.OAuth2ServerConfig != nil {
+		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
+	}
+
+	// disable_vk_identity only makes sense in oauth mode: in both mode virtual
+	// keys can still authenticate via headers, so suppressing them in the consent
+	// flow alone would be misleading. Evaluate the merged config so a partial
+	// update that switches the mode away from oauth (without resending the config)
+	// cannot leave a previously stored disable_vk_identity active.
+	if effectiveOAuth2Config != nil &&
+		effectiveOAuth2Config.DisableVKIdentity &&
+		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
+		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
+		return
+	}
+
+	// Cap auth_code_ttl so a leaked one-time code can't stay valid for long.
+	// This is an unconditional invariant on the stored value — enforced in every
+	// mode (not just both | oauth), mirroring the load-time validateClientConfig
+	// check — so a save can never persist a value that would then fail boot on the
+	// next restart. A zero/omitted value falls back to the default at issuance and
+	// is left alone here.
+	if effectiveOAuth2Config != nil &&
+		effectiveOAuth2Config.AuthCodeTTL > configstoreTables.MaxAuthCodeTTL {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth_code_ttl must not exceed %d seconds (15 minutes)", configstoreTables.MaxAuthCodeTTL))
+		return
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
@@ -538,46 +590,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
 	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
-	// Validate the inbound MCP auth mode against the allowed enum before persisting
-	// (config.schema.json is the source of truth: headers | both | oauth).
-	switch payload.ClientConfig.MCPServerAuthMode {
-	case "", configstoreTables.MCPServerAuthModeHeaders, configstoreTables.MCPServerAuthModeBoth, configstoreTables.MCPServerAuthModeOAuth:
-		// valid; empty means the field was omitted from a partial update
-	default:
-		SendError(ctx, fasthttp.StatusBadRequest, "mcp_server_auth_mode must be one of: headers, both, oauth")
-		return
-	}
-
-	// oauth2_server_config only applies when discovery is enabled (both | oauth).
-	// Evaluate against the effective mode so a partial update that supplies only
-	// the config cannot smuggle it in while the stored mode is headers.
-	effectiveAuthMode := payload.ClientConfig.MCPServerAuthMode
-	if effectiveAuthMode == "" {
-		effectiveAuthMode = currentConfig.MCPServerAuthMode
-	}
-	if payload.ClientConfig.OAuth2ServerConfig != nil && effectiveAuthMode == configstoreTables.MCPServerAuthModeHeaders {
-		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config is only valid when mcp_server_auth_mode is both or oauth")
-		return
-	}
-
-	// disable_vk_identity only makes sense in oauth mode: in both mode virtual
-	// keys can still authenticate via headers, so suppressing them in the consent
-	// flow alone would be misleading. Evaluate the merged config so a partial
-	// update that switches the mode away from oauth (without resending the config)
-	// cannot leave a previously stored disable_vk_identity active.
-	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
-	if payload.ClientConfig.OAuth2ServerConfig != nil {
-		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
-	}
-	if effectiveOAuth2Config != nil &&
-		effectiveOAuth2Config.DisableVKIdentity &&
-		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
-		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
-		return
-	}
-
 	// Only update each field when explicitly provided so partial /api/config
 	// payloads do not clear stored values (matches the MCP field handling above).
+	// The enum, disable_vk_identity, and auth_code_ttl validations for these
+	// fields run up front (before any live mutation) so a rejection can't leave
+	// runtime and DB state diverged.
 	if payload.ClientConfig.MCPServerAuthMode != "" {
 		updatedConfig.MCPServerAuthMode = payload.ClientConfig.MCPServerAuthMode
 	}

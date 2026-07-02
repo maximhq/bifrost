@@ -1168,6 +1168,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
 	assert.True(t, migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json"), "GigaChat key config column should exist")
+	assert.True(t, migrator.HasColumn(&tables.TableModelPricing{}, "is_deprecated"), "model pricing is_deprecated column should exist")
 }
 
 func TestTriggerMigrations_Idempotent(t *testing.T) {
@@ -2600,4 +2601,82 @@ func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
 		Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").
 		Count(&count).Error)
 	assert.Equal(t, int64(1), count, "re-run must not duplicate the wildcard config")
+}
+
+// TestMigrationRefreshConfigHash_ColumnAheadOfTable is the focused regression test
+// for issue #4797: the config-hash recompute must not fail when the
+// TableClientConfig struct declares a column the physical table does not have yet.
+//
+// On upgrade from a pre-1.6 schema, config_client lacks dump_errors_in_console_logs
+// (added by a later migration step). The old recompute derived its SELECT projection
+// from the struct, so it named the missing column and failed with 42703 on Postgres
+// (or "no such column" on SQLite). The fix intersects the struct columns with the
+// live table columns before selecting.
+func TestMigrationRefreshConfigHash_ColumnAheadOfTable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create config_client with the full current schema, then seed a row before
+	// dropping the column (GORM's struct-derived INSERT would fail once the column
+	// is gone). PrometheusLabels / AllowedOrigins exercise the AfterFind path the
+	// recompute depends on to compute the hash.
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{
+		ConfigHash:       "stale-hash",
+		PrometheusLabels: []string{"team", "env"},
+		AllowedOrigins:   []string{"https://example.com"},
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	// Simulate the pre-1.6 table: struct is ahead of the applied DDL.
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"),
+		"precondition: dump_errors_in_console_logs must be absent to reproduce the bug")
+
+	// Pre-fix this returned the 42703 / "no such column" error; post-fix the
+	// projection skips the absent column and the recompute succeeds.
+	require.NoError(t, migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db, testMigrationLogger))
+
+	// The stale hash was recomputed. Read via raw SQL to avoid the same
+	// struct-vs-table drift on the read path.
+	var gotHash string
+	require.NoError(t, db.Raw("SELECT config_hash FROM config_client WHERE id = ?", seed.ID).Scan(&gotHash).Error)
+	assert.NotEmpty(t, gotHash, "config_hash should have been recomputed")
+	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should differ from the seeded stale value")
+}
+
+// TestFullMigration_UpgradeFromPreDumpErrorsSchema runs the entire ordered chain
+// against a config_client that predates dump_errors_in_console_logs, reproducing
+// the real upgrade path from issue #4797.
+//
+// A fresh triggerMigrations run cannot reproduce the bug because init's CreateTable
+// builds config_client from the current struct (with the column). We instead
+// pre-create the table and drop the column so the chain hits the recompute step
+// (which runs before add_dump_errors_in_console_logs_column) while the column is
+// still missing.
+func TestFullMigration_UpgradeFromPreDumpErrorsSchema(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{
+		ConfigHash:       "stale-hash",
+		PrometheusLabels: []string{"team"},
+	}
+	require.NoError(t, db.Create(seed).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+
+	// The full chain must complete: init skips CreateTable (table exists), the
+	// recompute runs against the column-less table, and add_dump_errors re-adds it.
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger),
+		"full migration chain should complete on a pre-dump-errors config_client")
+
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"),
+		"chain should have re-added dump_errors_in_console_logs")
+
+	var gotHash string
+	require.NoError(t, db.Raw("SELECT config_hash FROM config_client WHERE id = ?", seed.ID).Scan(&gotHash).Error)
+	assert.NotEmpty(t, gotHash)
+	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should have been recomputed by the chain")
 }

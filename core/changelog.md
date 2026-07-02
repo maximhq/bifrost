@@ -1,5 +1,6 @@
 - fix: finalize GigaChat passthrough response stream lifecycle [@krakenalt](https://github.com/krakenalt)
 - fix: finalize GigaChat response streams through stream gate [@krakenalt](https://github.com/krakenalt)
+- fix: preserve Gemini file upload MIME types for GenAI file URI completions
 - fix: add GLM-5.2 to models supporting max reasoning effort [@is911](https://github.com/is911)
 - feat: add OpenCode gateway providers (Go, Zen) (thanks [@neta79](https://github.com/neta79)!)
 - feat: add advisor tool compatibility for Claude

@@ -123,6 +123,8 @@ type LogManager interface {
 
 	// RecalculateCosts recomputes missing costs for logs matching the filters
 	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
+	// RecalculateCostsWithProgress recomputes missing costs and emits batch progress updates
+	RecalculateCostsWithProgress(ctx context.Context, filters *logstore.SearchFilters, limit int, progress func(RecalculateCostProgress)) (*RecalculateCostResult, error)
 
 	// MCP Tool Log methods
 	// GetMCPToolLog retrieves a single MCP tool log entry by ID.
@@ -367,6 +369,13 @@ func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logsto
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.RecalculateCosts(ctx, *filters, limit)
+}
+
+func (p *PluginLogManager) RecalculateCostsWithProgress(ctx context.Context, filters *logstore.SearchFilters, limit int, progress func(RecalculateCostProgress)) (*RecalculateCostResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.RecalculateCostsWithProgress(ctx, *filters, limit, progress)
 }
 
 // GetMCPToolLog retrieves a single MCP tool log entry by ID.

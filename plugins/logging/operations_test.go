@@ -360,6 +360,186 @@ func TestApplyErrorBillingFromBilledUsage_FillsTokensAndCostWhenUnparsed(t *test
 	}
 }
 
+func TestRecalculateCostsProcessesAllBatches(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	now := time.Now().UTC()
+	for i := range 5 {
+		if err := store.Create(context.Background(), testRecalculateCostLog(
+			"req-recalc-batch-"+string(rune('a'+i)),
+			now.Add(time.Duration(i)*time.Second),
+			100+i,
+			50,
+		)); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 5 || result.Updated != 5 || result.Skipped != 0 || result.Remaining != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	for _, id := range []string{"req-recalc-batch-a", "req-recalc-batch-b", "req-recalc-batch-c", "req-recalc-batch-d", "req-recalc-batch-e"} {
+		entry, err := store.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v", id, err)
+		}
+		if entry.Cost == nil || *entry.Cost <= 0 {
+			t.Fatalf("expected positive cost for %s, got %v", id, entry.Cost)
+		}
+	}
+}
+
+func TestRecalculateCostsSkipsUnresolvableRowsAndContinues(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	now := time.Now().UTC()
+	if err := store.Create(context.Background(), &logstore.Log{
+		ID:        "req-recalc-skip",
+		Timestamp: now,
+		Object:    string(schemas.ChatCompletionRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o",
+		Status:    "success",
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	for i := range 3 {
+		if err := store.Create(context.Background(), testRecalculateCostLog(
+			"req-recalc-continue-"+string(rune('a'+i)),
+			now.Add(time.Duration(i+1)*time.Second),
+			100+i,
+			50,
+		)); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 4 || result.Updated != 3 || result.Skipped != 1 || result.Remaining != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	skipped, err := store.FindByID(context.Background(), "req-recalc-skip")
+	if err != nil {
+		t.Fatalf("FindByID(req-recalc-skip) error = %v", err)
+	}
+	if skipped.Cost != nil {
+		t.Fatalf("expected skipped row cost to remain nil, got %v", skipped.Cost)
+	}
+	for _, id := range []string{"req-recalc-continue-a", "req-recalc-continue-b", "req-recalc-continue-c"} {
+		entry, err := store.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v", id, err)
+		}
+		if entry.Cost == nil || *entry.Cost <= 0 {
+			t.Fatalf("expected positive cost for %s, got %v", id, entry.Cost)
+		}
+	}
+}
+
+func TestRecalculateCostsDoesNotWriteZeroForUnresolvedPricing(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	entry := testRecalculateCostLog("req-recalc-unpriced", time.Now().UTC(), 100, 50)
+	entry.Model = "unknown-model"
+	if err := store.Create(context.Background(), entry); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 1 || result.Updated != 0 || result.Skipped != 1 || result.Remaining != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-recalc-unpriced")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Cost != nil {
+		t.Fatalf("expected unresolved pricing to leave cost nil, got %v", *logEntry.Cost)
+	}
+}
+
+func TestRecalculateCostsNormalizesProviderObjectForPricing(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	entry := testRecalculateCostLog("req-recalc-provider-object", time.Now().UTC(), 100, 50)
+	entry.Object = "chat.completion"
+	zeroCost := 0.0
+	entry.Cost = &zeroCost
+	if err := store.Create(context.Background(), entry); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 1 || result.Updated != 1 || result.Skipped != 0 || result.Remaining != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-recalc-provider-object")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Cost == nil || *logEntry.Cost <= 0 {
+		t.Fatalf("expected legacy provider object to recalculate positive cost, got %v", logEntry.Cost)
+	}
+}
+
+func testRecalculateCostLog(id string, timestamp time.Time, promptTokens int, completionTokens int) *logstore.Log {
+	totalTokens := promptTokens + completionTokens
+	return &logstore.Log{
+		ID:               id,
+		Timestamp:        timestamp,
+		Object:           string(schemas.ChatCompletionRequest),
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		Status:           "success",
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+		},
+	}
+}
+
 func TestBuildInitialLogEntryPreservesMetadata(t *testing.T) {
 	metadata := map[string]any{"tenant": "acme"}
 	entry := buildInitialLogEntry(&PendingLogData{

@@ -27,11 +27,12 @@ import (
 type mockGovernanceManagerForVK struct {
 	GovernanceManager
 	getGovernanceDataCalls int
+	data                   *governance.GovernanceData
 }
 
 func (m *mockGovernanceManagerForVK) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	m.getGovernanceDataCalls++
-	return nil
+	return m.data
 }
 
 // mockConfigStoreForVK embeds the interface so unimplemented methods panic.
@@ -2080,13 +2081,18 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 	}
 }
 
-// TestGetVirtualKeys_FromMemoryUsesConfigStore verifies the legacy
-// from_memory flag no longer bypasses the DB-backed ConfigStore path.
-func TestGetVirtualKeys_FromMemoryUsesConfigStore(t *testing.T) {
+// TestGetVirtualKeys_FromMemoryUsesGovernanceData verifies the from_memory
+// flag serves virtual keys from the in-memory GovernanceData and bypasses the
+// DB-backed ConfigStore entirely.
+func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockConfigStoreForVK{}
-	manager := &mockGovernanceManagerForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
 	h := &GovernanceHandler{
 		configStore:       store,
 		governanceManager: manager,
@@ -2101,24 +2107,29 @@ func TestGetVirtualKeys_FromMemoryUsesConfigStore(t *testing.T) {
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
-	if store.getVirtualKeysCalls != 1 {
-		t.Fatalf("expected GetVirtualKeys to be called once, got %d", store.getVirtualKeysCalls)
+	if store.getVirtualKeysCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
 	}
 	if store.getVirtualKeysPaginatedCalls != 0 {
-		t.Fatalf("unexpected paginated call count %d", store.getVirtualKeysPaginatedCalls)
+		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
 }
 
-// TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore verifies
-// limit=0 plus from_memory still follows the DB-backed paginated path.
-func TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore(t *testing.T) {
+// TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit verifies the
+// from_memory flag is honored even when pagination parameters are present, so
+// the in-memory path is used and the paginated ConfigStore query is skipped.
+func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockConfigStoreForVK{}
-	manager := &mockGovernanceManagerForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
 	h := &GovernanceHandler{
 		configStore:       store,
 		governanceManager: manager,
@@ -2133,14 +2144,14 @@ func TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore(t *testing.T
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
-	if store.getVirtualKeysPaginatedCalls != 1 {
-		t.Fatalf("expected GetVirtualKeysPaginated to be called once, got %d", store.getVirtualKeysPaginatedCalls)
+	if store.getVirtualKeysPaginatedCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
 	if store.getVirtualKeysCalls != 0 {
-		t.Fatalf("unexpected non-paginated call count %d", store.getVirtualKeysCalls)
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
 	}
 }
 

@@ -37001,6 +37001,10 @@
                           "provider": {
                             "type": "string"
                           },
+                          "is_deprecated": {
+                            "type": "boolean",
+                            "description": "True when the model is marked deprecated in the Bifrost pricing datasheet. Deprecated models remain listable for migration and compatibility workflows."
+                          },
                           "accessible_by_keys": {
                             "type": "array",
                             "items": {
@@ -37148,6 +37152,10 @@
                                 }
                               }
                             }
+                          },
+                          "is_deprecated": {
+                            "type": "boolean",
+                            "description": "True when the model is marked deprecated in the Bifrost pricing datasheet. Deprecated models remain listable for migration and compatibility workflows."
                           },
                           "accessible_by_keys": {
                             "type": "array",
@@ -61459,6 +61467,10 @@
               }
             }
           },
+          "is_deprecated": {
+            "type": "boolean",
+            "description": "True when the model is marked deprecated in the Bifrost pricing datasheet. Deprecated models remain listable for migration and compatibility workflows."
+          },
           "pricing": {
             "type": "object",
             "properties": {
@@ -71560,8 +71572,9 @@
                   "auth_code_ttl": {
                     "type": "integer",
                     "minimum": 1,
-                    "default": 600,
-                    "description": "Lifetime of the single-use authorization code in seconds (default 600)."
+                    "maximum": 900,
+                    "default": 300,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes)."
                   },
                   "access_token_ttl": {
                     "type": "integer",
@@ -71880,8 +71893,9 @@
                   "auth_code_ttl": {
                     "type": "integer",
                     "minimum": 1,
-                    "default": 600,
-                    "description": "Lifetime of the single-use authorization code in seconds (default 600)."
+                    "maximum": 900,
+                    "default": 300,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes)."
                   },
                   "access_token_ttl": {
                     "type": "integer",
