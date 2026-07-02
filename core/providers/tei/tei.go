@@ -147,7 +147,7 @@ func (provider *TEIProvider) Embedding(ctx *schemas.BifrostContext, key schemas.
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/embeddings", schemas.EmbeddingRequest),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
