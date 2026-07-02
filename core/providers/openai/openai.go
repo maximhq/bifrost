@@ -3322,7 +3322,6 @@ func HandleOpenAIImageGenerationStreaming(
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
 		lastChunkTime := startTime
-		var collectedUsage *schemas.ImageUsage
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
 		imageChunkIndices := make(map[int]int) // image index -> chunk index
 		// Track images that have started (via partial chunks) but not yet completed
@@ -3391,15 +3390,6 @@ func HandleOpenAIImageGenerationStreaming(
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
 				return
-			}
-
-			// Collect usage from completed event
-			if response.Usage != nil {
-				collectedUsage = &schemas.ImageUsage{
-					InputTokens:  response.Usage.InputTokens,
-					OutputTokens: response.Usage.OutputTokens,
-					TotalTokens:  response.Usage.TotalTokens,
-				}
 			}
 
 			// Determine if this is the final chunk
@@ -3508,16 +3498,15 @@ func HandleOpenAIImageGenerationStreaming(
 			}
 
 			if isCompleted {
-				if collectedUsage != nil {
-					// Set NImages based on maximum image index seen (maxImageIndex + 1 since indices are 0-based)
-					if maxImageIndex >= 0 {
-						nImages := maxImageIndex + 1
-						collectedUsage.OutputTokensDetails = &schemas.ImageTokenDetails{
-							NImages: nImages,
-						}
+				if response.Usage != nil && maxImageIndex >= 0 {
+					if response.Usage.OutputTokensDetails == nil {
+						response.Usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
 					}
-					chunk.Usage = collectedUsage
+					if response.Usage.OutputTokensDetails.NImages == 0 {
+						response.Usage.OutputTokensDetails.NImages = maxImageIndex + 1
+					}
 				}
+				chunk.Usage = response.Usage
 				// For completed chunk, use total latency from start
 				chunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				chunk.BackfillParams(&schemas.BifrostRequest{
@@ -4683,7 +4672,6 @@ func HandleOpenAIImageEditStreamRequest(
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
 		lastChunkTime := startTime
-		var collectedUsage *schemas.ImageUsage
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
 		imageChunkIndices := make(map[int]int) // image index -> chunk index
 		// Track images that have started (via partial chunks) but not yet completed
@@ -4753,15 +4741,6 @@ func HandleOpenAIImageEditStreamRequest(
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
 				return
-			}
-
-			// Collect usage from completed event
-			if response.Usage != nil {
-				collectedUsage = &schemas.ImageUsage{
-					InputTokens:  response.Usage.InputTokens,
-					OutputTokens: response.Usage.OutputTokens,
-					TotalTokens:  response.Usage.TotalTokens,
-				}
 			}
 
 			// Determine if this is the final chunk
@@ -4870,16 +4849,15 @@ func HandleOpenAIImageEditStreamRequest(
 			}
 
 			if isCompleted {
-				if collectedUsage != nil {
-					// Set NImages based on maximum image index seen (maxImageIndex + 1 since indices are 0-based)
-					if maxImageIndex >= 0 {
-						nImages := maxImageIndex + 1
-						collectedUsage.OutputTokensDetails = &schemas.ImageTokenDetails{
-							NImages: nImages,
-						}
+				if response.Usage != nil && maxImageIndex >= 0 {
+					if response.Usage.OutputTokensDetails == nil {
+						response.Usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
 					}
-					chunk.Usage = collectedUsage
+					if response.Usage.OutputTokensDetails.NImages == 0 {
+						response.Usage.OutputTokensDetails.NImages = maxImageIndex + 1
+					}
 				}
+				chunk.Usage = response.Usage
 				// For completed chunk, use total latency from start
 				chunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				chunk.BackfillParams(&schemas.BifrostRequest{
