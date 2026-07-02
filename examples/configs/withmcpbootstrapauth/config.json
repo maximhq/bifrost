@@ -22,7 +22,7 @@
         "auth_type": "oauth",
         "oauth_config": {
           "client_id": "your-google-oauth-client-id",
-          "client_secret": "your-google-oauth-client-secret",
+          "client_secret": "env.GOOGLE_OAUTH_CLIENT_SECRET",
           "scopes": ["https://www.googleapis.com/auth/drive.readonly"]
         },
         "tools_to_execute": ["*"]

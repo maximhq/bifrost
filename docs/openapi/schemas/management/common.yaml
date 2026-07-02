@@ -25,11 +25,19 @@ MessageResponse:
 
 EnvVar:
   type: object
-  description: Environment variable configuration
+  description: |
+    A secret-capable value. Serialized as an object with the resolved `value` plus
+    reference metadata; on input, a bare string is also accepted — plain text,
+    `env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and
+    only the reference is persisted).
   properties:
-        value:
-          type: string
-        env_var:
-          type: string
-        from_env:
-          type: boolean
+    value:
+      type: string
+      description: Resolved value (redacted in GET responses for secret fields)
+    ref:
+      type: string
+      description: Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values
+    type:
+      type: string
+      enum: [plain_text, env, vault]
+      description: Source type of the value

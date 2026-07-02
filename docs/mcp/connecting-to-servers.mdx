@@ -266,7 +266,7 @@ All five auth types can be declared in `config.json`. The three that need an adm
         "auth_type": "oauth",
         "oauth_config": {
           "client_id": "your-client-id",
-          "client_secret": "your-client-secret",
+          "client_secret": "env.GOOGLE_OAUTH_CLIENT_SECRET",
           "scopes": ["drive.readonly"]
         },
         "tools_to_execute": ["*"]
