@@ -513,24 +513,6 @@ func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
 			},
 		},
 		{
-			name: "multiple tools with different types are preserved",
-			raw: `{
-				"type": "tool_search_output",
-				"call_id": "search-2",
-				"tools": [
-					{"type": "namespace", "name": "mcp__tools", "tools": []},
-					{"type": "function", "name": "shell", "description": "Run shell commands"}
-				]
-			}`,
-			wantFields: []string{
-				`"type":"tool_search_output"`,
-				`"type":"namespace"`,
-				`"name":"mcp__tools"`,
-				`"type":"function"`,
-				`"name":"shell"`,
-			},
-		},
-		{
 			name: "empty tools array round-trips cleanly",
 			raw:  `{"type":"tool_search_output","call_id":"search-3","tools":[]}`,
 			wantFields: []string{

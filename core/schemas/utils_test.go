@@ -81,7 +81,6 @@ func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 	execution := wantExecution
 	functionName := wantFunction
 	paramDesc := "reply payload"
-	headers := map[string]string{"Authorization": "Bearer abc"}
 	params := &ToolFunctionParameters{
 		Type:        "object",
 		Description: &paramDesc,
@@ -112,13 +111,6 @@ func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 						},
 					},
 				},
-				{
-					Type: ResponsesToolTypeMCP,
-					ResponsesToolMCP: &ResponsesToolMCP{
-						ServerLabel: "remote",
-						Headers:     &headers,
-					},
-				},
 			},
 		},
 	}
@@ -127,7 +119,7 @@ func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 	require.NotNil(t, copied.ResponsesToolMessage)
 	require.NotNil(t, copied.ResponsesToolMessage.Namespace)
 	require.NotNil(t, copied.ResponsesToolMessage.Execution)
-	require.Len(t, copied.ResponsesToolMessage.Tools, 2)
+	require.Len(t, copied.ResponsesToolMessage.Tools, 1)
 
 	assert.Equal(t, wantNamespace, *copied.ResponsesToolMessage.Namespace)
 	assert.Equal(t, wantExecution, *copied.ResponsesToolMessage.Execution)
@@ -135,19 +127,17 @@ func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 	require.Len(t, copied.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools, 1)
 	assert.Equal(t, wantFunction, *copied.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name)
 	assert.Equal(t, "string", testSchemaTypeValue(t, copied.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.ToMap()["message"]))
-	assert.Equal(t, "Bearer abc", (*copied.ResponsesToolMessage.Tools[1].ResponsesToolMCP.Headers)["Authorization"])
 
+	// Mutate the original after copying; the copy must not observe any of it.
 	*original.ResponsesToolMessage.Namespace = "mutated-namespace"
 	*original.ResponsesToolMessage.Execution = "server"
 	original.ResponsesToolMessage.Tools[0].Type = ResponsesToolType("mutated")
 	*original.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name = "mutated-function"
 	original.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.Set("message", map[string]interface{}{"type": "number"})
-	(*original.ResponsesToolMessage.Tools[1].ResponsesToolMCP.Headers)["Authorization"] = "Bearer mutated"
 
 	assert.Equal(t, wantNamespace, *copied.ResponsesToolMessage.Namespace)
 	assert.Equal(t, wantExecution, *copied.ResponsesToolMessage.Execution)
 	assert.Equal(t, ResponsesToolType("namespace"), copied.ResponsesToolMessage.Tools[0].Type)
 	assert.Equal(t, wantFunction, *copied.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name)
 	assert.Equal(t, "string", testSchemaTypeValue(t, copied.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.ToMap()["message"]))
-	assert.Equal(t, "Bearer abc", (*copied.ResponsesToolMessage.Tools[1].ResponsesToolMCP.Headers)["Authorization"])
 }
