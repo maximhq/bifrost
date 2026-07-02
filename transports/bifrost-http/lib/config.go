@@ -1921,24 +1921,24 @@ func rotateMCPOauthConfigFromFile(ctx context.Context, store configstore.ConfigS
 			return true
 		}
 	}
-	// NewSecretVar resolves env./vault. references immediately and sets Val
-	// to "" when the reference doesn't resolve (e.g. the env var isn't set
-	// on this boot). Guard against persisting that empty value: it would
+	// IsSet() is true for a declared env./vault. reference even when it
+	// doesn't resolve (ref present, Val ""; see its own doc comment). Guard
+	// against persisting that empty value on top of IsSet(): it would
 	// silently blank a real stored credential and RotateMCPOAuthConfig would
 	// see it as drift, cascading every bound token to needs_reauth over a
 	// transient env var absence. Skip the field (keep the stored value) and
 	// warn instead.
-	if fileBlock.ClientID != "" {
-		if declared := schemas.NewSecretVar(fileBlock.ClientID); declared.GetValue() != "" {
-			fields.ClientID = declared
+	if fileBlock.ClientID.IsSet() {
+		if fileBlock.ClientID.GetValue() != "" {
+			fields.ClientID = fileBlock.ClientID
 		} else {
 			logger.Warn("oauth client_id declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
 			incomplete = true
 		}
 	}
-	if fileBlock.ClientSecret != "" {
-		if declared := schemas.NewSecretVar(fileBlock.ClientSecret); declared.GetValue() != "" {
-			fields.ClientSecret = declared
+	if fileBlock.ClientSecret.IsSet() {
+		if fileBlock.ClientSecret.GetValue() != "" {
+			fields.ClientSecret = fileBlock.ClientSecret
 		} else {
 			logger.Warn("oauth client_secret declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
 			incomplete = true
@@ -6790,18 +6790,13 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 
 	// Redact credentials inside the inline `oauth_config` bootstrap block.
-	// Its fields are plain strings, so route them through the SecretVar
-	// redaction to keep the wire format identical to the sibling
-	// oauth_client_id / oauth_client_secret fields. Copy the struct first —
-	// configCopy shares the pointer with the live config.
+	// Copy the struct first — configCopy shares the pointer with the live
+	// config, and Redacted() returns a fresh SecretVar so the live stash is
+	// never mutated.
 	if config.PendingOAuthConfig != nil {
 		pendingCopy := *config.PendingOAuthConfig
-		if pendingCopy.ClientID != "" {
-			pendingCopy.ClientID = (&schemas.SecretVar{Val: pendingCopy.ClientID}).Redacted().Val
-		}
-		if pendingCopy.ClientSecret != "" {
-			pendingCopy.ClientSecret = (&schemas.SecretVar{Val: pendingCopy.ClientSecret}).Redacted().Val
-		}
+		pendingCopy.ClientID = pendingCopy.ClientID.Redacted()
+		pendingCopy.ClientSecret = pendingCopy.ClientSecret.Redacted()
 		configCopy.PendingOAuthConfig = &pendingCopy
 	}
 
