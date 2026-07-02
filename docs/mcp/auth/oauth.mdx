@@ -149,6 +149,10 @@ Declare the client with an inline `oauth_config` block:
 
 The `oauth_config` block itself is optional, and every inner field is optional. `authorize_url` / `token_url` come from RFC 8414 discovery off `connection_string` when the upstream supports it, and `client_id` / `client_secret` can be obtained via RFC 7591 Dynamic Client Registration. The minimum viable declaration is `{ "auth_type": "oauth", "connection_string": "..." }`.
 
+<Note>
+`client_id` and `client_secret` support `env.VAR_NAME` and `vault.path` references — `"client_secret": "env.GITHUB_SECRET"` resolves from the environment at runtime, and the reference (not the resolved secret) is what gets stored. Plain values also work (encrypted at rest, redacted in API responses). The other fields (`authorize_url`, `token_url`, `registration_url`, `scopes`) take literal values only.
+</Note>
+
 At boot the client lands in **`pending_verification`** state because the OAuth flow still needs a live admin browser session to complete. From the MCP Gateway UI, open the client and click **Authorize** — the same browser popup the Web UI Create flow uses. On success the OAuth tokens are stored, the tool list is discovered, and the client transitions to `connected`.
 
 The same flow is scriptable: `POST /api/mcp/client/{id}/initiate-verification` (this time `{id}` *is* the MCP client ID) returns the same `authorize_url` / `status_url` / `complete_url` payload as the create flow above — open `authorize_url` in a browser, poll `status_url`, then POST `complete_url`. Safe to call again if a previous attempt expired or was abandoned.

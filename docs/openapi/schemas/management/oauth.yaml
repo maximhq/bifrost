@@ -16,14 +16,18 @@ OAuthConfigRequest:
   description: OAuth configuration for MCP client creation
   properties:
     client_id:
-      type: string
+      allOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
       description: |
         OAuth client ID. Optional if client supports dynamic client registration (RFC 7591).
         If not provided, the server_url must be set for OAuth discovery and dynamic registration.
+        Supports env./vault. references.
     client_secret:
-      type: string
+      allOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
       description: |
         OAuth client secret. Optional for public clients using PKCE or clients obtained via dynamic registration.
+        Supports env./vault. references.
     authorize_url:
       type: string
       description: |
