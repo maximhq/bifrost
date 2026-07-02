@@ -41230,7 +41230,7 @@
                           },
                           "oauth_config": {
                             "$ref": "#/components/schemas/OAuthConfigRequest",
-                            "description": "OAuth configuration for initiating OAuth flow.\nOnly include this when creating a client with auth_type \"oauth\".\nThis will trigger the OAuth flow and return an authorization URL.\n"
+                            "description": "OAuth configuration for initiating OAuth flow.\nRequired when creating a client with auth_type \"oauth\" or \"per_user_oauth\".\nThis will trigger the OAuth flow and return an authorization URL\n(see the pending_oauth response variant).\n"
                           },
                           "tools_to_execute": {
                             "type": "array",
@@ -41390,7 +41390,7 @@
                           },
                           "oauth_config": {
                             "$ref": "#/components/schemas/OAuthConfigRequest",
-                            "description": "OAuth configuration for initiating OAuth flow.\nOnly include this when creating a client with auth_type \"oauth\".\nThis will trigger the OAuth flow and return an authorization URL.\n"
+                            "description": "OAuth configuration for initiating OAuth flow.\nRequired when creating a client with auth_type \"oauth\" or \"per_user_oauth\".\nThis will trigger the OAuth flow and return an authorization URL\n(see the pending_oauth response variant).\n"
                           },
                           "tools_to_execute": {
                             "type": "array",
@@ -41550,7 +41550,7 @@
                           },
                           "oauth_config": {
                             "$ref": "#/components/schemas/OAuthConfigRequest",
-                            "description": "OAuth configuration for initiating OAuth flow.\nOnly include this when creating a client with auth_type \"oauth\".\nThis will trigger the OAuth flow and return an authorization URL.\n"
+                            "description": "OAuth configuration for initiating OAuth flow.\nRequired when creating a client with auth_type \"oauth\" or \"per_user_oauth\".\nThis will trigger the OAuth flow and return an authorization URL\n(see the pending_oauth response variant).\n"
                           },
                           "tools_to_execute": {
                             "type": "array",
@@ -41662,11 +41662,18 @@
         ],
         "responses": {
           "200": {
-            "description": "MCP client added successfully",
+            "description": "MCP client added successfully. For auth_type \"oauth\" and\n\"per_user_oauth\" the client is not created yet — the response is the\npending_oauth variant carrying authorize_url plus status_url /\ncomplete_url / next_steps hints; the client is created when the flow\nis completed via complete_url.\n",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OAuthFlowInitiation"
+                    }
+                  ]
                 }
               }
             }
@@ -42004,7 +42011,7 @@
       "post": {
         "operationId": "reconnectMCPClient",
         "summary": "Reconnect MCP client",
-        "description": "Reconnects an MCP client that is in an error or disconnected state.",
+        "description": "Reconnects an MCP client that is in an error or disconnected state.\nNot applicable (400) to per-user auth clients (no shared upstream\nconnection) or to clients in pending_verification state — complete the\nadmin verification instead.\n",
         "tags": [
           "MCP"
         ],
@@ -42110,6 +42117,200 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{id}/initiate-verification": {
+      "post": {
+        "operationId": "initiateMCPClientVerification",
+        "summary": "Initiate verification for a pending MCP client",
+        "description": "Starts the one-time admin OAuth authorization for an MCP client sitting\nin pending_verification state (declared via config.json with auth_type\n\"oauth\" or \"per_user_oauth\"). Runs OAuth metadata discovery (RFC 8414)\nand dynamic client registration (RFC 7591) against the client's\nconnection_string when the declared oauth_config omits those fields,\ncreates a fresh OAuth flow, and returns the authorization URL.\n\nComplete the flow like a create-time OAuth flow: open authorize_url in a\nbrowser, poll status_url until \"authorized\", then POST complete_url.\nSafe to call again if a previous attempt expired or was abandoned — each\ncall starts a fresh flow.\n",
+        "tags": [
+          "MCP",
+          "OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OAuth flow initiated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthFlowInitiation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Client is not an OAuth-based auth type, has no pending bootstrap configuration, or has no connection_string",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{id}/verify-headers": {
+      "post": {
+        "operationId": "verifyMCPClientHeaders",
+        "summary": "Verify a pending per-user-headers MCP client",
+        "description": "Completes the one-time admin verification for an MCP client sitting in\npending_verification state with auth_type \"per_user_headers\" (declared\nvia config.json). The admin supplies sample values for every declared\nper_user_header_keys entry; Bifrost opens an upstream connection with\nthem, discovers the tool list, persists it, and transitions the client\nto connected. The sample values are discarded — each end-user submits\ntheir own values at runtime. Synchronous; no browser flow.\n",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user_headers"
+                ],
+                "properties": {
+                  "user_headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Sample value for every header name declared in the client's\nper_user_header_keys. Used once for the verification\nconnection, then discarded — never persisted.\n"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client verified; tools discovered and client connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "success"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "tools_count": {
+                      "type": "integer",
+                      "description": "Number of tools discovered during verification"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Client is not auth_type \"per_user_headers\", has no per_user_header_keys declared, or user_headers is missing required keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Client has already been verified (tools discovered); delete and recreate to re-verify",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Upstream verification failed with the supplied header values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
                 }
               }
             }
@@ -65311,6 +65512,16 @@
           }
         }
       },
+      "Conflict": {
+        "description": "Conflict with the current state of the resource",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
       "InternalError": {
         "description": "Internal server error",
         "content": {
@@ -78718,9 +78929,10 @@
               "disconnected",
               "error",
               "pending_tools",
+              "pending_verification",
               "disabled"
             ],
-            "description": "Connection state of an MCP client:\n- connected: Client is connected and ready to use\n- disconnected: Client is not connected (will be auto-recovered by health monitor)\n- error: Client is in an unrecoverable error state\n- pending_tools: Connected but tools not yet populated (per-user OAuth clients)\n- disabled: Client has been intentionally disabled; no connection or workers are active\n"
+            "description": "Connection state of an MCP client:\n- connected: Client is connected and ready to use\n- disconnected: Client is not connected (will be auto-recovered by health monitor)\n- error: Client is in an unrecoverable error state\n- pending_tools: Connected but tools not yet populated (per-user OAuth clients)\n- pending_verification: Declared (typically via config.json) but the one-time\n  admin verification has not been completed yet. Complete it via\n  POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /\n  per_user_oauth) or POST /api/mcp/client/{id}/verify-headers\n  (auth_type per_user_headers).\n- disabled: Client has been intentionally disabled; no connection or workers are active\n"
           },
           "vk_configs": {
             "type": "array",
@@ -79024,6 +79236,21 @@
           "mcp_client_id": {
             "type": "string",
             "description": "The MCP client ID that initiated this OAuth flow"
+          },
+          "complete_url": {
+            "type": "string",
+            "description": "Relative URL to POST once the flow is authorized\n(/api/mcp/client/{oauth_config_id}/complete-oauth). Note the path\nparameter is the oauth_config_id, not the MCP client ID.\n"
+          },
+          "status_url": {
+            "type": "string",
+            "description": "Relative URL to poll for the flow status\n(/api/oauth/config/{oauth_config_id}/status). Wait for\nstatus \"authorized\" before calling complete_url.\n"
+          },
+          "next_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Human-readable steps to complete the flow (authorize, poll, complete)"
           }
         }
       },
