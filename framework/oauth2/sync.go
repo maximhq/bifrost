@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -21,6 +22,9 @@ type TokenRefreshWorker struct {
 
 // NewTokenRefreshWorker creates a new token refresh worker
 func NewTokenRefreshWorker(provider *OAuth2Provider, logger schemas.Logger) *TokenRefreshWorker {
+	if logger == nil {
+		logger = bifrost.NewNoOpLogger()
+	}
 	if provider.configStore == nil {
 		logger.Warn("config store is nil, skipping token refresh worker")
 		return nil
@@ -39,9 +43,7 @@ func (w *TokenRefreshWorker) Start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	go w.run(runCtx)
-	if w.logger != nil {
-		w.logger.Info("Token refresh worker started")
-	}
+	w.logger.Info("Token refresh worker started")
 }
 
 // Stop gracefully stops the token refresh worker. Safe to call multiple times
@@ -55,9 +57,7 @@ func (w *TokenRefreshWorker) Stop() {
 			w.cancel()
 		}
 		close(w.stopCh)
-		if w.logger != nil {
-			w.logger.Info("Token refresh worker stopped")
-		}
+		w.logger.Info("Token refresh worker stopped")
 	})
 }
 
@@ -88,52 +88,42 @@ func (w *TokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
 	// Get tokens expiring before the threshold
 	tokens, err := w.provider.configStore.GetExpiringOauthTokens(ctx, expiryThreshold)
 	if err != nil {
-		if w.logger != nil {
-			w.logger.Error("Failed to get expiring tokens", "error", err)
-		}
+		w.logger.Error("Failed to get expiring tokens: %v", err)
 		return
 	}
 
 	if len(tokens) == 0 {
 		return
 	}
-
-	if w.logger != nil {
-		w.logger.Debug("Found expiring tokens to refresh: %d", len(tokens))
-	}
+	w.logger.Debug("Found expiring tokens to refresh: %d", len(tokens))
 
 	// Refresh each expiring token
 	for _, token := range tokens {
 		// Find the oauth_config that references this token
 		oauthConfig, err := w.provider.configStore.GetOauthConfigByTokenID(ctx, token.ID)
 		if err != nil {
-			if w.logger != nil {
-				w.logger.Error("Failed to find oauth config for token: %s, error: %s", token.ID, err.Error())
-			}
+			w.logger.Error("Failed to find oauth config for token: %s, error: %s", token.ID, err.Error())
 			continue
 		}
 
 		if oauthConfig == nil {
-			if w.logger != nil {
-				w.logger.Warn("No oauth config found for token: %s", token.ID)
-			}
+			w.logger.Warn("No oauth config found for token: %s", token.ID)
 			continue
 		}
 
-		// Attempt to refresh the token
+		// Attempt to refresh the token. Logged at Debug: transient failures
+		// (DNS, timeout, offline) recur on every tick and would spam the
+		// error log, while permanent rejections are already surfaced by the
+		// oauth_config status flipping to "expired" below.
 		if err := w.provider.RefreshAccessToken(ctx, oauthConfig.ID); err != nil {
-			if w.logger != nil {
-				w.logger.Error("Failed to refresh token", "oauth_config_id", oauthConfig.ID, "error", err)
-			}
+			w.logger.Debug("Failed to refresh token: oauth_config_id: %s, error: %s", oauthConfig.ID, err.Error())
 
 			// Only mark as expired for permanent auth rejections (e.g. invalid_grant, 401).
 			// Transient failures (DNS, timeout, offline) are skipped — the worker will
 			// retry on the next tick and the connection heals automatically when online.
 			w.provider.markExpiredIfPermanent(ctx, oauthConfig, err)
 		} else {
-			if w.logger != nil {
-				w.logger.Debug("Successfully refreshed token: %s", oauthConfig.ID)
-			}
+			w.logger.Debug("Successfully refreshed token: %s", oauthConfig.ID)
 		}
 	}
 }
@@ -169,10 +159,11 @@ type PerUserOAuthSweepWorker struct {
 // NewPerUserOAuthSweepWorker creates a sweep worker with sensible defaults.
 // orphanRetention <= 0 disables the orphan-token sweep.
 func NewPerUserOAuthSweepWorker(provider *OAuth2Provider, orphanRetention time.Duration, logger schemas.Logger) *PerUserOAuthSweepWorker {
+	if logger == nil {
+		logger = bifrost.NewNoOpLogger()
+	}
 	if provider == nil || provider.configStore == nil {
-		if logger != nil {
-			logger.Warn("per-user OAuth sweep worker not started: provider or config store is nil")
-		}
+		logger.Warn("per-user OAuth sweep worker not started: provider or config store is nil")
 		return nil
 	}
 	return &PerUserOAuthSweepWorker{
@@ -190,10 +181,8 @@ func (w *PerUserOAuthSweepWorker) Start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	go w.run(runCtx)
-	if w.logger != nil {
-		w.logger.Info("Per-user OAuth sweep worker started (flow=%s, orphan=%s, retention=%s)",
-			w.flowSweepEvery, w.orphanSweepEvery, w.orphanRetention)
-	}
+	w.logger.Info("Per-user OAuth sweep worker started (flow=%s, orphan=%s, retention=%s)",
+		w.flowSweepEvery, w.orphanSweepEvery, w.orphanRetention)
 }
 
 // Stop gracefully stops the sweep worker. sync.Once guards against double-close
@@ -206,9 +195,7 @@ func (w *PerUserOAuthSweepWorker) Stop() {
 			w.cancel()
 		}
 		close(w.stopCh)
-		if w.logger != nil {
-			w.logger.Info("Per-user OAuth sweep worker stopped")
-		}
+		w.logger.Info("Per-user OAuth sweep worker stopped")
 	})
 }
 
@@ -239,12 +226,10 @@ func (w *PerUserOAuthSweepWorker) run(ctx context.Context) {
 func (w *PerUserOAuthSweepWorker) sweepExpiredFlows(ctx context.Context) {
 	n, err := w.provider.configStore.DeleteExpiredOauthUserSessions(ctx)
 	if err != nil {
-		if w.logger != nil {
-			w.logger.Error("per-user OAuth flow sweep failed: %v", err)
-		}
+		w.logger.Error("per-user OAuth flow sweep failed: %v", err)
 		return
 	}
-	if n > 0 && w.logger != nil {
+	if n > 0 {
 		w.logger.Debug("per-user OAuth flow sweep removed %d expired pending flows", n)
 	}
 }
@@ -255,12 +240,10 @@ func (w *PerUserOAuthSweepWorker) sweepOrphanedTokens(ctx context.Context) {
 	}
 	n, err := w.provider.configStore.DeleteOrphanedOauthUserTokens(ctx, w.orphanRetention)
 	if err != nil {
-		if w.logger != nil {
-			w.logger.Error("per-user OAuth orphan-token sweep failed: %v", err)
-		}
+		w.logger.Error("per-user OAuth orphan-token sweep failed: %v", err)
 		return
 	}
-	if n > 0 && w.logger != nil {
+	if n > 0 {
 		w.logger.Info("per-user OAuth orphan-token sweep removed %d rows older than %s", n, w.orphanRetention)
 	}
 }
