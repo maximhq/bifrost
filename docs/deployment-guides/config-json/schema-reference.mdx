@@ -276,7 +276,7 @@ Auth-type-specific fields:
 
 | Field | Auth type | Description |
 |-------|-----------|-------------|
-| `oauth_config` | `oauth`, `per_user_oauth` | Optional inline OAuth provider block. The whole block can be omitted, and any inner field (`client_id`, `client_secret`, `authorize_url`, `token_url`, `registration_url`, `scopes`) can be omitted individually — RFC 8414 metadata discovery + RFC 7591 dynamic client registration fill the gaps off `connection_string` at admin-click time. |
+| `oauth_config` | `oauth`, `per_user_oauth` | Optional inline OAuth provider block. The whole block can be omitted, and any inner field (`client_id`, `client_secret`, `authorize_url`, `token_url`, `registration_url`, `scopes`) can be omitted individually — RFC 8414 metadata discovery + RFC 7591 dynamic client registration fill the gaps off `connection_string` at admin-click time. `client_id` / `client_secret` support `env.VAR_NAME` and `vault.path` references (resolved at runtime, reference stored); the other fields take literal values (encrypted at rest, redacted in API responses). |
 | `per_user_header_keys` | `per_user_headers` | Required, non-empty. Array of header names each end-user must supply. |
 
 The schema enforces these pairings: `oauth_config` is rejected on non-OAuth auth types, and `per_user_header_keys` is rejected on any auth type other than `per_user_headers` — a misplaced block fails `$schema` validation instead of being silently ignored.
