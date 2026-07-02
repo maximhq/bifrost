@@ -114,6 +114,23 @@ func TestSecretVar_UnmarshalJSON_BackwardCompat(t *testing.T) {
 	os.Setenv("MY_KEY", "resolved-value")
 	defer os.Unsetenv("MY_KEY")
 
+	t.Run("from_env without value field", func(t *testing.T) {
+		input := `{"env_var":"MY_KEY","from_env":true}`
+		var sv SecretVar
+		if err := sv.UnmarshalJSON([]byte(input)); err != nil {
+			t.Fatalf("UnmarshalJSON failed: %v", err)
+		}
+		if sv.GetRawRef() != "env.MY_KEY" {
+			t.Errorf("expected ref %q, got %q", "env.MY_KEY", sv.GetRawRef())
+		}
+		if !sv.IsFromSecret() {
+			t.Error("expected IsFromSecret=true")
+		}
+		if sv.Val != "resolved-value" {
+			t.Errorf("expected Val=%q, got %q", "resolved-value", sv.Val)
+		}
+	})
+
 	t.Run("old env_var/from_env format", func(t *testing.T) {
 		input := `{"value":"my-api-key","env_var":"env.MY_KEY","from_env":true}`
 		var secretVar SecretVar
@@ -218,6 +235,22 @@ func TestNewSecretVar_SecretVarReference(t *testing.T) {
 				t.Errorf("Expected IsFromSecret()=%v, got %v", tt.expectedFromSecret, secretVar.IsFromSecret())
 			}
 		})
+	}
+}
+
+func TestNewSecretVar_FromEnvWithoutValueField(t *testing.T) {
+	os.Setenv("MY_KEY", "resolved-value")
+	defer os.Unsetenv("MY_KEY")
+
+	sv := NewSecretVar(`{"env_var":"MY_KEY","from_env":true}`)
+	if sv.GetRawRef() != "env.MY_KEY" {
+		t.Errorf("expected ref %q, got %q", "env.MY_KEY", sv.GetRawRef())
+	}
+	if !sv.IsFromSecret() {
+		t.Error("expected IsFromSecret=true")
+	}
+	if sv.Val != "resolved-value" {
+		t.Errorf("expected Val=%q, got %q", "resolved-value", sv.Val)
 	}
 }
 
