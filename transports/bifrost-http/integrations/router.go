@@ -724,7 +724,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				if len(rawBody) > 0 {
 					if err := parseJSONRequestBody(rawBody, req); err != nil {
 						ctx.SetConnectionClose()
-						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, "Invalid JSON", fasthttp.StatusBadRequest))
+						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, fmt.Sprintf("Invalid JSON: %v", err), fasthttp.StatusBadRequest))
 						return
 					}
 				}
