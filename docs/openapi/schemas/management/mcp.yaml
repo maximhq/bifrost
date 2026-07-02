@@ -530,6 +530,34 @@ MCPClient:
         $ref: '#/MCPVKConfigResponse'
       description: Virtual key assignments for this MCP client
 
+MCPClientsListResponse:
+  type: object
+  description: Paginated list of MCP clients.
+  required:
+    - clients
+    - count
+    - total_count
+    - limit
+    - offset
+  properties:
+    clients:
+      type: array
+      items:
+        $ref: '#/MCPClient'
+    count:
+      type: integer
+      description: Number of clients returned in this page
+    total_count:
+      type: integer
+      format: int64
+      description: Total number of clients matching the query (before pagination)
+    limit:
+      type: integer
+      description: Page size used for the response
+    offset:
+      type: integer
+      description: Page offset used for the response
+
 ExecuteToolRequest:
   oneOf:
     - title: Chat (Default)
