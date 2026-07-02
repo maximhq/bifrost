@@ -3170,12 +3170,12 @@ func TestPinMCPClientImmutableFields(t *testing.T) {
 		// perturb mid-flight.
 		existing := baseExisting()
 		existing.OauthConfigID = nil
-		existing.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "abc", Scopes: []string{"read"}}
+		existing.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: schemas.NewSecretVar("abc"), Scopes: []string{"read"}}
 		fileClient := fileClientFor(existing)
-		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "xyz", Scopes: []string{"read"}}
+		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: schemas.NewSecretVar("xyz"), Scopes: []string{"read"}}
 		changed := pinMCPClientImmutableFields(fileClient, existing)
 		require.Empty(t, changed, "oauth_config is no longer part of the immutable-fields report")
-		require.Equal(t, "abc", fileClient.PendingOAuthConfig.ClientID)
+		require.Equal(t, "abc", fileClient.PendingOAuthConfig.ClientID.GetValue())
 	})
 
 	t.Run("per_user_headers key schema cannot be emptied", func(t *testing.T) {
@@ -3259,7 +3259,7 @@ func TestMergeMCPConfig_OauthCredentialDriftTriggersRotation(t *testing.T) {
 				ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
 				AuthType:         schemas.MCPAuthTypeOauth,
 				PendingOAuthConfig: &schemas.OAuth2Config{
-					ClientID: "new-client-id",
+					ClientID: schemas.NewSecretVar("new-client-id"),
 				},
 			},
 		},
@@ -3358,7 +3358,7 @@ func TestMergeMCPConfig_OauthNoDriftDoesNotTriggerRotation(t *testing.T) {
 				ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
 				AuthType:         schemas.MCPAuthTypeOauth,
 				PendingOAuthConfig: &schemas.OAuth2Config{
-					ClientID:     "stored-client-id",
+					ClientID:     schemas.NewSecretVar("stored-client-id"),
 					AuthorizeURL: "https://auth.example.com/authorize",
 					TokenURL:     "https://auth.example.com/token",
 					Scopes:       []string{"read"},
@@ -3398,7 +3398,7 @@ func TestMergeMCPConfig_UnresolvedSecretRefDoesNotCheckpointConfigHash(t *testin
 				ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
 				AuthType:         schemas.MCPAuthTypeOauth,
 				PendingOAuthConfig: &schemas.OAuth2Config{
-					ClientID: "env.BIFROST_TEST_UNSET_CLIENT_ID_XYZ",
+					ClientID: schemas.NewSecretVar("env.BIFROST_TEST_UNSET_CLIENT_ID_XYZ"),
 				},
 			},
 		},
@@ -3516,7 +3516,7 @@ func TestSyncMCPConfigFromFile_OauthCredentialDriftTriggersRotation(t *testing.T
 					ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
 					AuthType:         schemas.MCPAuthTypeOauth,
 					PendingOAuthConfig: &schemas.OAuth2Config{
-						ClientID: "new-client-id-sync",
+						ClientID: schemas.NewSecretVar("new-client-id-sync"),
 					},
 				},
 			},
