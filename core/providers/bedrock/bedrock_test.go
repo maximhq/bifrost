@@ -1504,6 +1504,49 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 			},
 		},
 		{
+			name: "MessageWithImage",
+			input: &bedrock.BedrockConverseRequest{
+				ModelID: "bedrock/claude-3-sonnet",
+				Messages: []bedrock.BedrockMessage{
+					{
+						Role: bedrock.BedrockMessageRoleUser,
+						Content: []bedrock.BedrockContentBlock{
+							{
+								Image: &bedrock.BedrockImageSource{
+									Format: "png",
+									Source: bedrock.BedrockImageSourceData{
+										Bytes: schemas.Ptr("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "claude-3-sonnet",
+				Input: []schemas.ResponsesMessage{
+					{
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Status: schemas.Ptr("completed"),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+									ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+										ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
+									},
+								},
+							},
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{},
+			},
+		},
+		{
 			name:    "NilRequest",
 			input:   nil,
 			wantErr: true,
