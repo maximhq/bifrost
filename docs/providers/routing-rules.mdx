@@ -116,6 +116,24 @@ tokens_used < 50           // Route to fast provider when below 50% token limit
 request > 90               // Switch providers when request limit near max
 ```
 
+#### Request Context Length
+
+```cel
+context_length   // Input context length for the request, in tokens
+```
+
+Bifrost uses provider-native token counting when the configured provider supports it. If exact counting is unavailable, it falls back to an estimated token count using `ceil(serialized_request_bytes / 4)`.
+
+<Note>
+`context_length` is computed only for routing rules that reference it. If it cannot be computed for a request, it is treated as **unknown** by the evaluator - the rule does not match and evaluation falls through.
+</Note>
+
+**Examples:**
+```cel
+context_length > 32000                       // Route long-context requests
+context_length >= 8192 && team_name == "ai"  // Long-context routing scoped to a team
+```
+
 #### Complexity Routing
 
 ```cel

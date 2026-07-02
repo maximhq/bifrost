@@ -364,6 +364,7 @@ func complexityRoutingVariables() map[string]interface{} {
 		"tokens_used":      0.0,
 		"request":          0.0,
 		"budget_used":      0.0,
+		"context_length":   int64(0),
 		"complexity_tier":  "",
 	}
 }
