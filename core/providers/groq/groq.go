@@ -37,6 +37,7 @@ func NewGroqProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Gr
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
+		ReadBufferSize:      schemas.DefaultClientReadBufferSize,
 	}
 
 	// // Pre-warm response pools
