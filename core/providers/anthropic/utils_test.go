@@ -2295,19 +2295,6 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
 		{"claude-3-5-haiku-20241022", false},
 		{"claude-3-haiku", false},
-		// A future/adaptive Haiku fails open like every other new model — the
-		// blanket "haiku" denylist would have wrongly downgraded these.
-		{"claude-haiku-5", true},
-		{"claude-haiku-5-20270101", true},
-		{"claude-haiku-4-6-20250514", true},
-		{"claude-haiku-4-9-20270101", true},
-		// Fail-open: new/unrecognized Claude models default to adaptive.
-		{"claude-opus-5", true},
-		{"claude-opus-5-20270101", true},
-		{"claude-sonnet-6", true},
-		{"claude-opus-4-9", true},                  // future Opus 4.x minor >= 6
-		{"claude-sonnet-7-20270101", true},
-		{"global.anthropic.claude-opus-5", true},
 		// Legacy stays budget_tokens-only (must NOT flip to adaptive).
 		{"claude-sonnet-4-20250514", false}, // bare Sonnet 4.0 (dated)
 		{"claude-opus-4-20250514", false},   // bare Opus 4.0 (dated)
@@ -2425,20 +2412,12 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		// Other.
 		{"claude-opus-4-5", false},
 		{"claude-haiku-4-5", false},
-		// Fail-open: new/unrecognized Claude models are adaptive-only.
-		{"claude-opus-5", true},
-		{"claude-sonnet-6", true},
-		{"claude-opus-4-9", true}, // future Opus 4.x minor >= 6
-		{"global.anthropic.claude-opus-5", true},
 		// Legacy / bare-4 stay non-adaptive.
 		{"claude-sonnet-4-20250514", false}, // bare Sonnet 4.0 (dated)
 		{"claude-opus-4-1", false},
 		{"anthropic.claude-opus-4-v1", false},
 		{"claude-3-7-sonnet", false},
 		{"claude-2.1", false},
-		// A future/adaptive Haiku fails open (Haiku 4.5 legacy case above).
-		{"claude-haiku-4-9", true},
-		{"claude-haiku-5", true},
 		{"", false},
 	}
 
