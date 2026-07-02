@@ -126,11 +126,8 @@ func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudg
 	return nil
 }
 
-func toolExecutionTimeoutDurationToStoredSeconds(timeout time.Duration) (int, error) {
-	if timeout < 0 {
-		return 0, fmt.Errorf("tool_execution_timeout must be non-negative, got %q", timeout.String())
-	}
-	return int(math.Ceil(timeout.Seconds())), nil
+func toolExecutionTimeoutDurationToStoredSeconds(timeout time.Duration) int {
+	return int(math.Ceil(timeout.Seconds()))
 }
 
 func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error) {
@@ -2038,10 +2035,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		if err != nil {
 			return err
 		}
-		toolExecutionTimeoutSec, err := toolExecutionTimeoutDurationToStoredSeconds(clientConfigCopy.ToolExecutionTimeout)
-		if err != nil {
-			return err
-		}
+		toolExecutionTimeoutSec := toolExecutionTimeoutDurationToStoredSeconds(clientConfigCopy.ToolExecutionTimeout)
 		dbClient := tables.TableMCPClient{
 			ClientID:              clientConfigCopy.ID,
 			Name:                  clientConfigCopy.Name,
