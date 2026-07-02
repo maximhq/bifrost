@@ -87,3 +87,30 @@ func TestToCohereEmbeddingRequestBodyIncludesModelForDirectCohere(t *testing.T) 
 		"texts": ["hello"]
 	}`, string(wireBody))
 }
+
+func TestCustomProviderExtraParamsForwardedAutomatically(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+
+	text := "hello"
+	req := &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.ModelProvider("custom-cohere"),
+		Model:    "embed-v4.0",
+		Input:    &schemas.EmbeddingInput{Text: &text},
+		Params: &schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{
+				"priority": "high",
+			},
+		},
+	}
+
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		req,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCohereEmbeddingRequest(req), nil
+		},
+	)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "high", providerUtils.GetJSONField(wireBody, "priority").String())
+}
