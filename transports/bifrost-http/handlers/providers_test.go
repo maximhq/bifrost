@@ -365,6 +365,7 @@ func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
 }
 
+
 func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 

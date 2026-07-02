@@ -1158,6 +1158,28 @@ func emitNovaGroundingDoneEvents(outputIndex, contentIndex int, itemID string, c
 	}
 }
 
+// applyStopReasonStatus maps a Bifrost finish reason to the appropriate
+// Status and IncompleteDetails on a ResponsesResponse. Returns the terminal
+// stream event type. Only sets Status when currently unset.
+func applyStopReasonStatus(resp *schemas.BifrostResponsesResponse, stopReason *string) schemas.ResponsesStreamResponseType {
+	if stopReason == nil {
+		return schemas.ResponsesStreamResponseTypeCompleted
+	}
+	switch *stopReason {
+	case string(schemas.BifrostFinishReasonLength):
+		resp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+		resp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+			Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+		}
+		return schemas.ResponsesStreamResponseTypeIncomplete
+	case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
+		if resp.Status == nil {
+			resp.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+		}
+	}
+	return schemas.ResponsesStreamResponseTypeCompleted
+}
+
 // FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
 func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage, trace *BedrockConverseTrace) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
@@ -1510,24 +1532,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		}
 	}
 
-	// Set Status/IncompleteDetails and the terminal event type per OpenAI's
-	// Responses-API contract, matching the non-streaming switch above so
-	// unmapped reasons leave Status unset on both paths.
-	terminalEventType := schemas.ResponsesStreamResponseTypeCompleted
-	if response.StopReason != nil {
-		switch *response.StopReason {
-		case string(schemas.BifrostFinishReasonLength):
-			terminalEventType = schemas.ResponsesStreamResponseTypeIncomplete
-			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
-			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
-				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
-			}
-		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
-			if response.Status == nil {
-				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
-			}
-		}
-	}
+	terminalEventType := applyStopReasonStatus(response, response.StopReason)
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           terminalEventType,
@@ -2715,19 +2720,7 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 			}
 		}
 		bifrostResp.StopReason = &stopReason
-		// Surface truncation via Status + IncompleteDetails per OpenAI's
-		// Responses-API contract; without these, truncations are silent.
-		switch stopReason {
-		case string(schemas.BifrostFinishReasonLength):
-			bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
-			bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
-				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
-			}
-		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
-			if bifrostResp.Status == nil {
-				bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
-			}
-		}
+		applyStopReasonStatus(bifrostResp, &stopReason)
 	}
 
 	if response.Trace != nil {

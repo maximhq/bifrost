@@ -335,12 +335,50 @@ func (p *JsonParserPlugin) deepCopyChatStreamResponseChoiceDelta(original *schem
 		Reasoning: original.Reasoning, // Shallow copy
 		Refusal:   original.Refusal,   // Shallow copy
 		ToolCalls: original.ToolCalls, // Shallow copy - we don't modify tool calls
+		Audio:     original.Audio,     // Shallow copy
+	}
+
+	// Deep copy ReasoningDetails — elements contain pointer fields
+	if len(original.ReasoningDetails) > 0 {
+		result.ReasoningDetails = make([]schemas.ChatReasoningDetails, len(original.ReasoningDetails))
+		for i, rd := range original.ReasoningDetails {
+			copyRD := schemas.ChatReasoningDetails{
+				Index: rd.Index,
+				Type:  rd.Type,
+			}
+			if rd.ID != nil {
+				v := *rd.ID
+				copyRD.ID = &v
+			}
+			if rd.Summary != nil {
+				v := *rd.Summary
+				copyRD.Summary = &v
+			}
+			if rd.Text != nil {
+				v := *rd.Text
+				copyRD.Text = &v
+			}
+			if rd.Signature != nil {
+				v := *rd.Signature
+				copyRD.Signature = &v
+			}
+			if rd.Data != nil {
+				v := *rd.Data
+				copyRD.Data = &v
+			}
+			result.ReasoningDetails[i] = copyRD
+		}
 	}
 
 	// Deep copy Content pointer if it exists (this is what we modify)
 	if original.Content != nil {
 		contentCopy := *original.Content
 		result.Content = &contentCopy
+	}
+
+	// Copy ExtraContent (provider metadata like google.thought / thought_signature)
+	if len(original.ExtraContent) > 0 {
+		result.ExtraContent = append(json.RawMessage(nil), original.ExtraContent...)
 	}
 
 	return result
