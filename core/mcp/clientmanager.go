@@ -353,6 +353,32 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	// This is to avoid deadlocks when the connection attempt is made
 	m.mu.Unlock()
 
+	// OAuth-type clients with PendingOAuthConfig set carry the inline
+	// `oauth_config` block from config.json but have not yet been
+	// authorized by an admin. For shared OAuth there is no oauth_configs
+	// row or token; for per-user OAuth admin verification + tool discovery
+	// has not run. In both cases the normal connect / per-call paths would
+	// either fail or land the client in a state that misrepresents the
+	// missing admin step. Park them in pending_verification until an admin
+	// completes the browser flow via
+	// POST /api/mcp/client/{id}/initiate-verification. PendingOAuthConfig
+	// is cleared once the OAuth callback completes; the subsequent
+	// reconnect skips this branch and the normal path runs.
+	if config.PendingOAuthConfig != nil &&
+		(config.AuthType == schemas.MCPAuthTypeOauth || config.AuthType == schemas.MCPAuthTypePerUserOauth) {
+		m.mu.Lock()
+		if client, exists := m.clientMap[config.ID]; exists {
+			if config.ConnectionString != nil {
+				url := config.ConnectionString.GetValue()
+				client.ConnectionInfo.ConnectionURL = &url
+			}
+			client.State = schemas.MCPConnectionStatePendingVerification
+		}
+		m.mu.Unlock()
+		m.logger.Debug("%s OAuth MCP client '%s' (auth_type=%s) registered in pending_verification (awaiting admin authorization)", MCPLogPrefix, config.Name, config.AuthType)
+		return nil
+	}
+
 	// Per-user auth types: skip persistent connection. Auth is per-request at
 	// runtime. The admin verifies the configuration via a sample login before
 	// this is called, and tools are populated separately via SetClientTools().
@@ -380,29 +406,6 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			}
 		}
 		m.mu.Unlock()
-		return nil
-	}
-
-	// Shared-OAuth clients with PendingOAuthConfig set carry the inline
-	// `oauth_config` block from config.json but have no oauth_configs row
-	// or token yet. Attempting to connect would fail in ConnectionHeaders
-	// → GetAccessToken. Park them in pending_verification until an admin
-	// completes the browser OAuth flow via
-	// POST /api/mcp/client/{id}/initiate-verification. PendingOAuthConfig
-	// is cleared once the OAuth callback marks the linked oauth_configs
-	// row authorized; the subsequent reconnect skips this branch and
-	// connectToMCPClient runs normally.
-	if config.AuthType == schemas.MCPAuthTypeOauth && config.PendingOAuthConfig != nil {
-		m.mu.Lock()
-		if client, exists := m.clientMap[config.ID]; exists {
-			if config.ConnectionString != nil {
-				url := config.ConnectionString.GetValue()
-				client.ConnectionInfo.ConnectionURL = &url
-			}
-			client.State = schemas.MCPConnectionStatePendingVerification
-		}
-		m.mu.Unlock()
-		m.logger.Debug("%s Shared-OAuth MCP client '%s' registered in pending_verification (awaiting admin authorization)", MCPLogPrefix, config.Name)
 		return nil
 	}
 
