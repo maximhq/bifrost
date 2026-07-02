@@ -3373,7 +3373,7 @@ func (provider *VertexProvider) gcsDownloadObject(ctx *schemas.BifrostContext, a
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download")
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download"))
 	}
 
 	content := make([]byte, len(resp.Body()))
@@ -3593,7 +3593,7 @@ func (provider *VertexProvider) gcsFileUploadDirect(
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "upload")
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseGCSAPIError(resp.Body(), resp.StatusCode(), "upload"))
 	}
 
 	return &schemas.BifrostFileUploadResponse{
@@ -3667,7 +3667,7 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "resumable session initiation")
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseGCSAPIError(resp.Body(), resp.StatusCode(), "resumable session initiation"))
 	}
 
 	sessionURL := string(resp.Header.Peek("Location"))
@@ -3765,7 +3765,7 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "list")
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseGCSAPIError(resp.Body(), resp.StatusCode(), "list"))
 	}
 
 	var listResp gcsObjectListResponse
@@ -3848,7 +3848,7 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "retrieve")
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseGCSAPIError(resp.Body(), resp.StatusCode(), "retrieve"))
 	}
 
 	var obj gcsObjectMetadata
@@ -3936,7 +3936,7 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "delete")
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseGCSAPIError(resp.Body(), resp.StatusCode(), "delete"))
 	}
 
 	return &schemas.BifrostFileDeleteResponse{
@@ -4001,7 +4001,7 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download")
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download"))
 	}
 
 	// Copy body before deferred ReleaseResponse invalidates the buffer.
@@ -4522,26 +4522,29 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	if err := activeClient.Do(fasthttpReq, resp); err != nil {
+	startTime := time.Now()
+	err := activeClient.Do(fasthttpReq, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
+	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			})
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err))
 		}
 		// Request failed before the first response byte (server closed an idle/pooled connection,
 		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
 		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
 		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
-		return nil, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err))
 	}
 
 	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {

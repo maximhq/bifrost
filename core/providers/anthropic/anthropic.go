@@ -278,7 +278,7 @@ func completeRequest(
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, latency, providerResponseHeaders, parseAnthropicError(resp)
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
 	}
 
 	// Count-tokens uses a buffered response (large-response streaming skipped above).
@@ -335,7 +335,7 @@ func (provider *AnthropicProvider) listModelsByKey(ctx *schemas.BifrostContext, 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseAnthropicError(resp)
+		return nil, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
 	}
 
 	// Parse Anthropic's response
@@ -769,6 +769,7 @@ func HandleAnthropicChatCompletionStreaming(
 	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
@@ -1333,6 +1334,7 @@ func HandleAnthropicResponsesStream(
 	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
@@ -1644,7 +1646,7 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseAnthropicError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseAnthropicError(resp))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1733,7 +1735,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseAnthropicError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseAnthropicError(resp))
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -2208,7 +2210,7 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseAnthropicError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseAnthropicError(resp))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2298,7 +2300,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseAnthropicError(resp)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, parseAnthropicError(resp))
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -2875,22 +2877,24 @@ func (provider *AnthropicProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	if err := activeClient.Do(fasthttpReq, resp); err != nil {
+	err := activeClient.Do(fasthttpReq, resp)
+	providerUtils.SetProviderRequestLatency(ctx, time.Since(startTime))
+	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			})
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err))
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+		return nil, providerUtils.SetErrorLatencyFromContext(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err))
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)

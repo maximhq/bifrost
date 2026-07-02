@@ -280,7 +280,7 @@ func (provider *RunwareProvider) sendTaskArray(ctx *schemas.BifrostContext, key 
 		return reqBody, nil, 0, bErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return reqBody, nil, 0, parseRunwareError(resp)
+		return reqBody, nil, 0, providerUtils.SetErrorLatencyFromContext(ctx, parseRunwareError(resp))
 	}
 	decoded, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
