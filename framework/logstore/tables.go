@@ -242,26 +242,32 @@ type Log struct {
 	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
 	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"`                          // Provider socket time across all attempts, ms; nil = unmeasured
-	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"`                          // Bifrost overhead (total minus upstream), ms; nil = unmeasured
-	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
-	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
-	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
-	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
-	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
-	ContentSummary          string    `gorm:"type:text" json:"content_summary,omitempty"`                                                 // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
-	RawRequest              string    `gorm:"type:text" json:"raw_request"`                                                               // Populated when `send-back-raw-request` is on
-	RawResponse             string    `gorm:"type:text" json:"raw_response"`                                                              // Populated when `send-back-raw-response` is on
-	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`                                        // Raw body for passthrough requests (UTF-8)
-	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"`                                       // Raw body for passthrough responses (UTF-8)
-	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`                                             // Formatted routing engine decision logs
-	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`                                                     // JSON serialized plugin log entries grouped by plugin name
-	Metadata                *string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
-	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
-	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
-	HasObject               bool      `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
-	ContentHidden           bool      `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
+	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
+	TokenUsage              string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
+	// Denormalized cost split for per-category quota aggregation. input + output +
+	// additional reconcile to the cost column. Additional holds internal sidecar
+	// costs with no input/output token category (guardrail, MCP).
+	InputCost               float64  `gorm:"default:0" json:"-"`
+	OutputCost              float64  `gorm:"default:0" json:"-"`
+	AdditionalCost          float64  `gorm:"default:0" json:"-"`
+	Cost                    *float64 `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
+	Status                  string   `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	StopReason              *string  `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
+	ErrorDetails            string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
+	Stream                  bool     `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
+	ContentSummary          string   `gorm:"type:text" json:"content_summary,omitempty"`                                                 // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
+	RawRequest              string   `gorm:"type:text" json:"raw_request"`                                                               // Populated when `send-back-raw-request` is on
+	RawResponse             string   `gorm:"type:text" json:"raw_response"`                                                              // Populated when `send-back-raw-response` is on
+	PassthroughRequestBody  string   `gorm:"type:text" json:"passthrough_request_body,omitempty"`                                        // Raw body for passthrough requests (UTF-8)
+	PassthroughResponseBody string   `gorm:"type:text" json:"passthrough_response_body,omitempty"`                                       // Raw body for passthrough responses (UTF-8)
+	RoutingEngineLogs       string   `gorm:"type:text" json:"routing_engine_logs,omitempty"`                                             // Formatted routing engine decision logs
+	PluginLogs              string   `gorm:"type:text" json:"plugin_logs,omitempty"`                                                     // JSON serialized plugin log entries grouped by plugin name
+	Metadata                *string  `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
+	IsLargePayloadRequest   bool     `gorm:"default:false" json:"is_large_payload_request"`
+	IsLargePayloadResponse  bool     `gorm:"default:false" json:"is_large_payload_response"`
+	HasObject               bool     `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
+	ContentHidden           bool     `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
 
 	// Aggregates over this log's child rows (rows whose parent_request_id equals
 	// this log's ID, i.e. fallback attempts). Populated only on roots_only list
@@ -660,6 +666,20 @@ func (l *Log) SerializeFields() error {
 		if l.TokenUsageParsed.PromptTokensDetails != nil {
 			l.CachedReadTokens = l.TokenUsageParsed.PromptTokensDetails.CachedReadTokens
 		}
+		// Denormalize the input/output/additional cost split so it can be summed in SQL.
+		if l.TokenUsageParsed.Cost != nil {
+			l.InputCost = l.TokenUsageParsed.Cost.InputCost
+			l.OutputCost = l.TokenUsageParsed.Cost.OutputCost
+			l.AdditionalCost = l.TokenUsageParsed.Cost.AdditionalCost
+		}
+	}
+
+	// Some providers report only an opaque total (e.g. xAI usd-ticks, Runware),
+	// leaving the per-category split empty. Attribute the total to the input side
+	// so the denormalized columns still reconcile to the cost column
+	// (input + output + additional == total) instead of summing short.
+	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && l.Cost != nil && *l.Cost > 0 {
+		l.InputCost = *l.Cost
 	}
 
 	if l.ErrorDetailsParsed != nil {

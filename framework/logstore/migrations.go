@@ -291,6 +291,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
+	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3029,6 +3030,45 @@ func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB, logger 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding canonical model columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCostBreakdownColumns adds the denormalized input/output/additional
+// cost columns (input_cost, output_cost, additional_cost) to the logs table. The
+// total cost already lives in the cost column; these split it so per-model quota
+// usage can be summed by category in SQL (input + output + additional == total).
+// New rows populate them on write from the TokenUsage cost breakdown; existing
+// rows keep 0 (their total cost column is unaffected).
+func migrationAddCostBreakdownColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_cost_breakdown_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"input_cost", "output_cost", "additional_cost"} {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"input_cost", "output_cost", "additional_cost"} {
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding cost breakdown columns: %s", err.Error())
 	}
 	return nil
 }
