@@ -290,6 +290,8 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 		return mc.refineNestedProviderModel(provider, model)
 	case schemas.Replicate:
 		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Perplexity:
+		return mc.refineNestedProviderModel(provider, model)
 	}
 	return model, nil
 }

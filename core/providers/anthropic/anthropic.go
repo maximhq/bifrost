@@ -616,6 +616,81 @@ func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 	usage.TotalTokens += cached
 }
 
+func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, billedUsage *schemas.BifrostLLMUsage, usageToProcess *AnthropicUsage) {
+	if usage == nil || usageToProcess == nil {
+		return
+	}
+	if usageToProcess.InputTokens > usage.InputTokens {
+		usage.InputTokens = usageToProcess.InputTokens
+		if billedUsage != nil {
+			billedUsage.PromptTokens = usageToProcess.InputTokens
+		}
+	}
+	if usageToProcess.OutputTokens > usage.OutputTokens {
+		usage.OutputTokens = usageToProcess.OutputTokens
+		if billedUsage != nil {
+			billedUsage.CompletionTokens = usageToProcess.OutputTokens
+		}
+	}
+	calculatedTotal := usage.InputTokens + usage.OutputTokens
+	if calculatedTotal > usage.TotalTokens {
+		usage.TotalTokens = calculatedTotal
+		if billedUsage != nil {
+			billedUsage.TotalTokens = calculatedTotal
+		}
+	}
+	// Handle cached tokens if present
+	if usageToProcess.CacheReadInputTokens > 0 {
+		if usage.InputTokensDetails == nil {
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+		}
+		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
+			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
+			usage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+			if billedUsage != nil {
+				billedUsage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+			}
+		}
+	}
+	// Handle cached tokens if present
+	if usageToProcess.CacheCreationInputTokens > 0 {
+		if usage.InputTokensDetails == nil {
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+		}
+		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
+			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CachedWriteTokens {
+			usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+			if billedUsage != nil {
+				billedUsage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+			}
+		}
+		if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
+			if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+				usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			if billedUsage != nil && billedUsage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+				billedUsage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
+				usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+				if billedUsage != nil {
+					billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+				}
+			}
+			if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
+				usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+				if billedUsage != nil {
+					billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+				}
+			}
+		}
+	}
+}
+
 // HandleAnthropicChatCompletionStreaming handles streaming for Anthropic-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE event format.
 func HandleAnthropicChatCompletionStreaming(
@@ -1347,6 +1422,25 @@ func HandleAnthropicResponsesStream(
 
 		// Track minimal state needed for response format
 		usage := &schemas.ResponsesResponseUsage{}
+		billedUsage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream cancel/timeout
+		// can bill for Anthropic Responses usage already reported by message_start
+		// or message_delta events before the stream was interrupted.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+
+		usageNormalized := false
+		normalizeBilledUsage := func() {
+			if usageNormalized {
+				return
+			}
+			usageNormalized = true
+			normalizeCachedUsage(billedUsage)
+		}
+		defer func() {
+			if ctx.Err() != nil {
+				normalizeBilledUsage()
+			}
+		}()
 
 		// Create stream state for stateful conversions
 		streamState := AcquireAnthropicResponsesStreamState()
@@ -1402,49 +1496,10 @@ func HandleAnthropicResponsesStream(
 			}
 
 			if usageToProcess != nil {
-				// Collect usage information and send at the end of the stream
-				// Here in some cases usage comes before final message
-				// So we need to check if the response.Usage is nil and then if usage != nil
-				// then add up all tokens
-				if usageToProcess.InputTokens > usage.InputTokens {
-					usage.InputTokens = usageToProcess.InputTokens
-				}
-				if usageToProcess.OutputTokens > usage.OutputTokens {
-					usage.OutputTokens = usageToProcess.OutputTokens
-				}
-				calculatedTotal := usage.InputTokens + usage.OutputTokens
-				if calculatedTotal > usage.TotalTokens {
-					usage.TotalTokens = calculatedTotal
-				}
-				// Handle cached tokens if present
-				if usageToProcess.CacheReadInputTokens > 0 {
-					if usage.InputTokensDetails == nil {
-						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-					}
-					if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
-						usage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
-					}
-				}
-				// Handle cached tokens if present
-				if usageToProcess.CacheCreationInputTokens > 0 {
-					if usage.InputTokensDetails == nil {
-						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-					}
-					if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CachedWriteTokens {
-						usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
-					}
-					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
-						if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
-							usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
-						}
-						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
-							usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
-						}
-						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
-							usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
-						}
-					}
-				}
+				// Collect usage information and send at the end of the stream.
+				// Also mirror it into billedUsage so cancellation/timeout paths can
+				// charge for provider-reported usage before the final chunk arrives.
+				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess)
 			}
 
 			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
