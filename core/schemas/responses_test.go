@@ -359,6 +359,58 @@ func TestResponsesToolMCPAllowedToolsFilterForm(t *testing.T) {
 	}
 }
 
+// TestResponsesToolMCPAllowedToolsEmptyArrayMarshalsToEmptyArray verifies that
+// a non-nil empty ToolNames slice (Anthropic's "deny all" case, e.g.
+// convertAnthropicToolsetToBifrostTool in core/providers/anthropic/responses.go)
+// marshals as "[]", not "{}" or "null" — the old bare struct encoding treated
+// a zero-length slice as empty via omitempty and dropped it entirely,
+// producing "{}", which is neither a valid array nor a valid filter object
+// per OpenAI's allowed_tools schema.
+func TestResponsesToolMCPAllowedToolsEmptyArrayMarshalsToEmptyArray(t *testing.T) {
+	at := ResponsesToolMCPAllowedTools{ToolNames: []string{}}
+
+	encoded, err := MarshalSorted(at)
+	if err != nil {
+		t.Fatalf("marshal responses tool mcp allowed tools: %v", err)
+	}
+	if string(encoded) != "[]" {
+		t.Fatalf("expected empty ToolNames to marshal as [], got %s", encoded)
+	}
+}
+
+// TestResponsesMessageMCPCallServerLabelAndApprovalRequestIDTogether verifies
+// that approval_request_id decodes correctly and isn't clobbered when
+// server_label is also present in the same mcp_call item (the common
+// production shape). Note: server_label itself does not round-trip on this
+// branch — that's a separate, already-tracked bug (server_label sits behind
+// two levels of anonymous pointer embedding that the JSON decoder doesn't
+// auto-promote through) fixed independently in maximhq/bifrost#4844. This
+// test only asserts that approval_request_id's manual routing doesn't
+// misbehave when ResponsesMCPToolCall is (or isn't) already allocated by
+// other decode paths.
+func TestResponsesMessageMCPCallServerLabelAndApprovalRequestIDTogether(t *testing.T) {
+	raw := []byte(`{"id":"mcp_1","type":"mcp_call","server_label":"my-srv","name":"tool1","arguments":"{}","status":"completed","approval_request_id":"apr_1"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesMCPToolCall == nil {
+		t.Fatalf("expected ResponsesMCPToolCall to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID == nil || *msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID != "apr_1" {
+		t.Fatalf("expected approval_request_id to survive unmarshal even with server_label present, got %#v", msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"approval_request_id":"apr_1"`) {
+		t.Fatalf("expected encoded message to preserve approval_request_id, got %s", encoded)
+	}
+}
+
 // TestResponsesMessageMCPCallApprovalRequestIDRoundTrip verifies that
 // mcp_call's approval_request_id (which links the call to a later
 // mcp_approval_response) survives decode/re-encode.
