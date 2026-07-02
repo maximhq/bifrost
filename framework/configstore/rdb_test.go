@@ -1872,6 +1872,61 @@ func TestGetVirtualKeysUsesInternalPagination(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("vk-page-%04d", totalVirtualKeys-1), virtualKeys[len(virtualKeys)-1].ID)
 }
 
+// TestGetVirtualKeysPaginatedFiltersByUserID verifies that the UserID filter
+// returns only virtual keys whose created_by_user_id matches.
+func TestGetVirtualKeysPaginatedFiltersByUserID(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	userA := "user-aaa"
+	userB := "user-bbb"
+
+	vk1 := &tables.TableVirtualKey{
+		ID:              "vk-user-a-1",
+		Name:            "Key for User A",
+		Value:           "vk-val-a-1",
+		IsActive:        schemas.Ptr(true),
+		CreatedByUserID: &userA,
+	}
+	vk2 := &tables.TableVirtualKey{
+		ID:              "vk-user-a-2",
+		Name:            "Another Key for User A",
+		Value:           "vk-val-a-2",
+		IsActive:        schemas.Ptr(true),
+		CreatedByUserID: &userA,
+	}
+	vk3 := &tables.TableVirtualKey{
+		ID:              "vk-user-b-1",
+		Name:            "Key for User B",
+		Value:           "vk-val-b-1",
+		IsActive:        schemas.Ptr(true),
+		CreatedByUserID: &userB,
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk1))
+	require.NoError(t, store.CreateVirtualKey(ctx, vk2))
+	require.NoError(t, store.CreateVirtualKey(ctx, vk3))
+
+	results, total, err := store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{UserID: userA})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, total)
+	require.Len(t, results, 2)
+	for _, vk := range results {
+		require.NotNil(t, vk.CreatedByUserID)
+		require.Equal(t, userA, *vk.CreatedByUserID)
+	}
+
+	results, total, err = store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{UserID: userB})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, results, 1)
+	require.Equal(t, "vk-user-b-1", results[0].ID)
+
+	results, total, err = store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{UserID: "user-nonexistent"})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, total)
+	require.Empty(t, results)
+}
+
 // =============================================================================
 // Helper function tests
 // =============================================================================
