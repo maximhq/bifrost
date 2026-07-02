@@ -4212,6 +4212,19 @@
             }
           ]
         },
+        "tool_execution_timeout": {
+          "description": "Per-client override for tool execution timeout. Accepts a Go duration string (e.g. '30s', '2m') or a bare integer treated as seconds. When set, overrides the global tool_manager_config.tool_execution_timeout for this MCP server only. Omit or set to 0 to use the global default.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
         "allowed_extra_headers": {
           "type": "array",
           "items": {

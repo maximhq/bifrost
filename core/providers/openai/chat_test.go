@@ -1225,3 +1225,109 @@ func TestOpenAIInbound_ServerToolNameSurvives(t *testing.T) {
 		t.Fatalf("ToBifrostChatRequest dropped name: %+v", bifReq.Params)
 	}
 }
+
+// When a conversation switches from Gemini to OpenAI, Gemini's thoughtSignature is
+// embedded in the tool call_id as "<baseID>_ts_<sig>" and can exceed OpenAI's 64-char
+// limit. The chat converter must strip it to the base ID on the wire while leaving the
+// caller's input intact (so a later Gemini turn can still recover the signature).
+func TestToOpenAIChatRequest_StripsThoughtSignatureFromToolCallIDs(t *testing.T) {
+	embeddedID := "search" + providerUtils.ThoughtSignatureSeparator + strings.Repeat("A", 6000)
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:   schemas.Ptr(embeddedID),
+						Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("search"),
+							Arguments: "{}",
+						},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(embeddedID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("result")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, result)
+
+	gotCallID := *result.Messages[0].OpenAIChatAssistantMessage.ToolCalls[0].ID
+	gotToolCallID := *result.Messages[1].ChatToolMessage.ToolCallID
+
+	if gotCallID != "search" {
+		t.Errorf("assistant tool call ID: got %q, want %q", gotCallID, "search")
+	}
+	if len(gotCallID) > 64 {
+		t.Errorf("assistant tool call ID exceeds OpenAI's 64-char limit: %d chars", len(gotCallID))
+	}
+	if gotToolCallID != gotCallID {
+		t.Errorf("tool result ID %q must match assistant call ID %q", gotToolCallID, gotCallID)
+	}
+
+	// The caller's history must be untouched.
+	if *req.Input[0].ChatAssistantMessage.ToolCalls[0].ID != embeddedID {
+		t.Error("original assistant tool call ID was mutated")
+	}
+	if *req.Input[1].ChatToolMessage.ToolCallID != embeddedID {
+		t.Error("original tool result tool_call_id was mutated")
+	}
+}
+
+// A short call id that merely contains "_ts_" (e.g. two distinct raw upstream ids) must be
+// left intact: stripping only kicks in above OpenAI's 64-char limit, so distinct ids never
+// collapse into one.
+func TestToOpenAIChatRequest_PreservesShortToolCallIDsContainingSeparator(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:       schemas.Ptr("search_ts_a"),
+							Type:     schemas.Ptr("function"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("search"), Arguments: "{}"},
+						},
+						{
+							ID:       schemas.Ptr("search_ts_b"),
+							Type:     schemas.Ptr("function"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("search"), Arguments: "{}"},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("search_ts_a")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("r")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, result)
+
+	got := result.Messages[0].OpenAIChatAssistantMessage.ToolCalls
+	if *got[0].ID != "search_ts_a" || *got[1].ID != "search_ts_b" {
+		t.Errorf("distinct short ids must be preserved, got %q and %q", *got[0].ID, *got[1].ID)
+	}
+	if *result.Messages[1].ChatToolMessage.ToolCallID != "search_ts_a" {
+		t.Errorf("short tool_call_id must be preserved, got %q", *result.Messages[1].ChatToolMessage.ToolCallID)
+	}
+}

@@ -3233,6 +3233,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					}
 
+					if part.ThoughtSignature == nil {
+						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+					}
+
 					content.Parts = append(content.Parts, part)
 				}
 

@@ -348,7 +348,7 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.MCPServer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	vkServer, ok := h.vkMCPServers[vk.Value]
+	vkServer, ok := h.vkMCPServers[vk.Value.GetValue()]
 	if !ok {
 		// Add new server
 		vkServer = server.NewMCPServer(
@@ -357,11 +357,11 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.M
 			server.WithToolCapabilities(true),
 		)
 		server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
-		h.vkMCPServers[vk.Value] = vkServer
+		h.vkMCPServers[vk.Value.GetValue()] = vkServer
 	}
 	availableTools, toolFilter := h.fetchToolsForVK(vk)
 	h.syncServer(vkServer, availableTools, toolFilter)
-	h.vkMCPServers[vk.Value] = vkServer
+	h.vkMCPServers[vk.Value.GetValue()] = vkServer
 	logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
 	return vkServer
 }
@@ -658,7 +658,7 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 			if !vk.IsActiveValue() {
 				return nil, fmt.Errorf("virtual key is inactive")
 			}
-			vkServer, err := h.ensureVKMCPServerByValue(ctx, vk.Value)
+			vkServer, err := h.ensureVKMCPServerByValue(ctx, vk.Value.GetValue())
 			if err != nil {
 				return nil, err
 			}
@@ -749,7 +749,7 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 				return nil, fmt.Errorf("virtual key is inactive")
 			}
 			res.jwtVK = vk
-			vkServer, serverErr := h.ensureVKMCPServerByValue(ctx, vk.Value)
+			vkServer, serverErr := h.ensureVKMCPServerByValue(ctx, vk.Value.GetValue())
 			if serverErr != nil {
 				return nil, serverErr
 			}
@@ -836,7 +836,7 @@ func (h *MCPServerHandler) userScopedServer(ctx *fasthttp.RequestCtx, claims *jw
 	if !vk.IsActiveValue() {
 		return nil, fmt.Errorf("virtual key is inactive")
 	}
-	return h.ensureVKMCPServerByValue(ctx, vk.Value)
+	return h.ensureVKMCPServerByValue(ctx, vk.Value.GetValue())
 }
 
 // ensureVKMCPServerByValue returns the per-VK server from cache or creates it.
