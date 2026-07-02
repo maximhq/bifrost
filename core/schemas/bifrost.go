@@ -361,6 +361,11 @@ const (
 	BifrostContextKeyConnectionClosed                    BifrostContextKey = "connection_closed"
 	BifrostContextKeyTempTokenScope                      BifrostContextKey = "bifrost-temp-token-scope"       // string (set by auth middleware when a temp token authorized the request - names the scope from the temptoken registry)
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
+
+	// ChatGPT subscription token auto-detection. Set by the OpenAI transport pre-hook
+	// when the incoming bearer JWT contains the chatgpt_account_id claim. The provider
+	// uses this to reroute to chatgpt.com/backend-api/codex/responses.
+	BifrostContextKeyChatGPTPassthrough BifrostContextKey = "bifrost-chatgpt-passthrough" // bool
 )
 
 const (
