@@ -497,6 +497,50 @@ func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageMCPListToolsRoundTrip guards against a field collision:
+// ResponsesToolMessage.Tools (tool_search_output) and the embedded
+// ResponsesMCPListTools.Tools (mcp_list_tools) both use the wire key "tools".
+// If either field were left to struct-tag-based encoding, the shallower one
+// would silently win for every message type and the other would never survive
+// marshal/unmarshal.
+//
+// Note: this only asserts the "tools" field, which is what UnmarshalJSON/
+// MarshalJSON route manually. ResponsesMCPListTools.ServerLabel is a separate,
+// pre-existing bug (reproduces identically on a clean upstream/dev checkout,
+// unrelated to this collision or to tool_search at all): the JSON decoder
+// never auto-allocates the doubly-nested anonymous pointer chain
+// ResponsesMessage -> *ResponsesToolMessage -> *ResponsesMCPListTools, so no
+// field on ResponsesMCPListTools reaches the wire on unmarshal unless
+// something else (like this Tools routing) has already allocated the struct.
+func TestResponsesMessageMCPListToolsRoundTrip(t *testing.T) {
+	raw := `{"type":"mcp_list_tools","tools":[{"name":"query_prometheus","input_schema":{"type":"object"}}]}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal mcp_list_tools: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesMCPListTools == nil {
+		t.Fatalf("expected ResponsesMCPListTools to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if len(msg.ResponsesMCPListTools.Tools) != 1 || msg.ResponsesMCPListTools.Tools[0].Name != "query_prometheus" {
+		t.Fatalf("expected mcp_list_tools.tools to survive unmarshal, got %#v", msg.ResponsesMCPListTools.Tools)
+	}
+	// The unrelated tool_search_output field must stay untouched.
+	if msg.ResponsesToolMessage.Tools != nil {
+		t.Fatalf("expected ResponsesToolMessage.Tools to stay nil for mcp_list_tools, got %#v", msg.ResponsesToolMessage.Tools)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal mcp_list_tools: %v", err)
+	}
+	got := string(encoded)
+	if !strings.Contains(got, `"name":"query_prometheus"`) {
+		t.Fatalf("expected mcp_list_tools.tools to survive marshal, got: %s", got)
+	}
+}
+
 func TestWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	code := "print(1)"
 	resp := &BifrostResponsesResponse{

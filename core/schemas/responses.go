@@ -996,10 +996,18 @@ type ResponsesMessage struct {
 // silently drops the item mid-stream and hangs streaming clients. We shadow
 // `arguments` as raw JSON, decode everything else as usual, then store the
 // canonical stringified form.
+//
+// It also shadows `tools`, which two different message types put under the
+// same wire key: tool_search_output's discovered-tools array (destined for
+// ResponsesToolMessage.Tools) and mcp_list_tools' tool list (destined for the
+// embedded ResponsesMCPListTools.Tools). Struct-tag-based decoding can only
+// bind one field per JSON key, so both are routed manually here based on
+// Type instead of relying on either field's own tag.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	type Alias ResponsesMessage
 	aux := &struct {
 		Arguments json.RawMessage `json:"arguments,omitempty"`
+		Tools     json.RawMessage `json:"tools,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -1015,6 +1023,32 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 			m.ResponsesToolMessage = &ResponsesToolMessage{}
 		}
 		m.Arguments = &args
+	}
+
+	if len(aux.Tools) > 0 && string(aux.Tools) != "null" {
+		switch {
+		case m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput:
+			var tools []ResponsesTool
+			if err := Unmarshal(aux.Tools, &tools); err != nil {
+				return fmt.Errorf("tool_search_output tools: %w", err)
+			}
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			m.ResponsesToolMessage.Tools = tools
+		case m.Type != nil && *m.Type == ResponsesMessageTypeMCPListTools:
+			var tools []ResponsesMCPTool
+			if err := Unmarshal(aux.Tools, &tools); err != nil {
+				return fmt.Errorf("mcp_list_tools tools: %w", err)
+			}
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			if m.ResponsesToolMessage.ResponsesMCPListTools == nil {
+				m.ResponsesToolMessage.ResponsesMCPListTools = &ResponsesMCPListTools{}
+			}
+			m.ResponsesToolMessage.ResponsesMCPListTools.Tools = tools
+		}
 	}
 
 	return nil
@@ -1037,19 +1071,32 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 // JSON object per the OpenAI Responses API spec. All other message types (which
 // carry no arguments) are marshaled as usual.
 // tool_search_output items also require execution (same as tool_search_call).
+//
+// It also emits `tools`, shared on the wire by tool_search_output
+// (ResponsesToolMessage.Tools) and mcp_list_tools (the embedded
+// ResponsesMCPListTools.Tools) — see UnmarshalJSON for why these can't be
+// left to struct-tag-based encoding.
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	type Alias ResponsesMessage
 
 	clone := m
 	var argsValue interface{}
 	var execValue *string
+	var toolsValue interface{}
 
 	isToolSearchCall := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall
 	isToolSearchOutput := m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput
+	isMCPListTools := m.Type != nil && *m.Type == ResponsesMessageTypeMCPListTools
 	needsExecution := isToolSearchCall || isToolSearchOutput
 
 	if m.ResponsesToolMessage != nil {
 		toolCopy := *clone.ResponsesToolMessage
+
+		if isToolSearchOutput && len(m.ResponsesToolMessage.Tools) > 0 {
+			toolsValue = m.ResponsesToolMessage.Tools
+		} else if isMCPListTools && m.ResponsesToolMessage.ResponsesMCPListTools != nil && len(m.ResponsesToolMessage.ResponsesMCPListTools.Tools) > 0 {
+			toolsValue = m.ResponsesToolMessage.ResponsesMCPListTools.Tools
+		}
 
 		if toolCopy.Arguments != nil {
 			// Suppress Arguments from the embedded struct so it doesn't appear
@@ -1096,10 +1143,12 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	aux := struct {
 		Arguments interface{} `json:"arguments,omitempty"`
 		Execution *string     `json:"execution,omitempty"`
+		Tools     interface{} `json:"tools,omitempty"`
 		*Alias
 	}{
 		Arguments: argsValue,
 		Execution: execValue,
+		Tools:     toolsValue,
 		Alias:     (*Alias)(&clone),
 	}
 
@@ -1285,11 +1334,16 @@ type ResponsesToolMessage struct {
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
 	// Tools holds the discovered tools array for tool_search_output items.
-	// Preserved as raw JSON so nested "type" fields (e.g. "namespace") and
-	// sub-tool arrays survive the Bifrost round-trip unchanged.
 	// Uses []ResponsesTool so each entry's "type" field round-trips via the
 	// existing ResponsesTool marshal/unmarshal pipeline (namespace, function, etc.).
-	Tools []ResponsesTool `json:"tools,omitempty"`
+	// json:"-": ResponsesToolMessage also embeds *ResponsesMCPListTools, whose
+	// Tools []ResponsesMCPTool field is also tagged "tools" for mcp_list_tools
+	// items. Struct-tag-based encoding can't disambiguate two same-named
+	// fields at different embedding depths (the shallower one silently wins
+	// and the other is dropped from both marshal and unmarshal), so this
+	// field is populated/emitted manually in ResponsesMessage's custom
+	// (Un)MarshalJSON, keyed off Type, instead of via the struct tag.
+	Tools []ResponsesTool `json:"-"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
 
