@@ -14,11 +14,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// GetExtraParams implements the RequestBodyWithExtraParams interface
-func (r *BedrockInvokeRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
-}
-
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *BedrockInvokeRequest) IsStreamingRequested() bool {
 	return r.Stream
@@ -225,11 +220,11 @@ func (r *BedrockInvokeRequest) IsCohereCommandRRequest() bool {
 // so we can reuse ToBifrostResponsesRequest() for messages-based requests.
 func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseRequest {
 	converseReq := &BedrockConverseRequest{
-		ModelID:     r.ModelID,
-		Messages:    r.Messages,
-		Stream:      r.Stream,
-		ExtraParams: r.ExtraParams,
+		ModelID:  r.ModelID,
+		Messages: r.Messages,
+		Stream:   r.Stream,
 	}
+	converseReq.ExtraParams = r.ExtraParams
 
 	// Convert system field: interface{} → []BedrockSystemMessage
 	converseReq.System = r.parseSystemMessages()
@@ -375,8 +370,8 @@ func (r *BedrockInvokeRequest) ToBifrostTextCompletionRequest(ctx *schemas.Bifro
 		System:            r.System,
 		AnthropicVersion:  r.AnthropicVersion,
 		Stream:            r.Stream,
-		ExtraParams:       r.ExtraParams,
 	}
+	textReq.ExtraParams = r.ExtraParams
 	return textReq.ToBifrostTextCompletionRequest(ctx)
 }
 
