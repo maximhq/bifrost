@@ -313,6 +313,35 @@ func TestResponsesMessageMCPListToolsServerLabelRoundTrip(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageMCPListToolsEmptyToolsPreserved guards against an
+// explicit empty tools: [] collapsing into an omitted field on remarshal.
+// OpenAI's mcp_list_tools schema requires tools to be present even when a
+// server exposes zero tools, so "absent" and "present but empty" must stay
+// distinguishable.
+func TestResponsesMessageMCPListToolsEmptyToolsPreserved(t *testing.T) {
+	raw := []byte(`{"id":"mcpl_1","type":"mcp_list_tools","server_label":"empty-server","tools":[]}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesMCPListTools == nil {
+		t.Fatalf("expected ResponsesMCPListTools to be populated")
+	}
+	if msg.ResponsesToolMessage.ResponsesMCPListTools.Tools == nil {
+		t.Fatalf("expected tools to unmarshal to a non-nil empty slice, got nil")
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"tools":[]`) {
+		t.Fatalf("expected encoded message to preserve explicit empty tools array, got %s", encoded)
+	}
+}
+
 // TestResponsesMessageMCPCallServerLabelRoundTrip guards against server_label
 // being dropped for mcp_call items — same doubly-nested-embedding cause as
 // mcp_list_tools, but for ResponsesMCPToolCall. OpenAI requires server_label
