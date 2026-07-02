@@ -40,7 +40,7 @@ type BifrostChatResponse struct {
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
 	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
-	Speed             *string                    `json:"speed,omitempty"` // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	Speed             *string                    `json:"speed,omitempty"`       // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
@@ -1702,6 +1702,7 @@ type ChatCompletionTokensDetails struct {
 type BifrostCost struct {
 	InputTokensCost     float64 `json:"input_tokens_cost,omitempty"`
 	OutputTokensCost    float64 `json:"output_tokens_cost,omitempty"`
+	CacheReadTokensCost float64 `json:"cache_read_tokens_cost,omitempty"`
 	ReasoningTokensCost float64 `json:"reasoning_tokens_cost,omitempty"`
 	CitationTokensCost  float64 `json:"citation_tokens_cost,omitempty"`
 	SearchQueriesCost   float64 `json:"search_queries_cost,omitempty"`

@@ -1176,6 +1176,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
 		}
+		// Attach the per-category cost split to the accumulated stream usage so
+		// log detail views can surface input / output / cache costs.
+		p.attachCostBreakdown(ctx, entry, result)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
@@ -1221,8 +1224,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
+		if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil && breakdown.TotalCost > 0 {
+			cost := breakdown.TotalCost
 			entry.Cost = &cost
+			// Attach the per-category split (input / output / cache) to the
+			// stored usage so log detail views can surface it. Preserve any
+			// provider-supplied breakdown.
+			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
+				entry.TokenUsageParsed.Cost = breakdown
+			}
 		}
 	}
 
