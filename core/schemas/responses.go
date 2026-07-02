@@ -796,7 +796,12 @@ type ResponsesResponseConversationStruct struct {
 type ResponsesResponseError struct {
 	Code    string `json:"code"`    // The error code for the response
 	Message string `json:"message"` // A human-readable description of the error
-	Type    string `json:"type"`    // The error type, e.g. "invalid_request_error"
+	// Type and Param are required (non-null) per OpenAI's own schema whenever
+	// a real OpenAI error is decoded, but omitempty here: other providers
+	// (e.g. Replicate, Gemini) construct this struct without either field,
+	// and neither should gain a spurious "type":""/"param":"" that never
+	// existed on their original error.
+	Type string `json:"type,omitempty"`
 	// Param names the specific request field that failed validation, if any
 	// (e.g. "input[1].server_label"). Nullable per OpenAI's schema.
 	Param *string `json:"param,omitempty"`

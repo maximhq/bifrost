@@ -412,6 +412,26 @@ func TestResponsesResponseErrorPreservesTypeAndParam(t *testing.T) {
 	}
 }
 
+// TestResponsesResponseErrorNoSpuriousTypeOrParam verifies that providers
+// which construct ResponsesResponseError without Type/Param (e.g. Replicate,
+// Gemini — see core/providers/replicate/responses.go and
+// core/providers/gemini/responses.go) don't gain a spurious "type":""/
+// "param":"" that never existed on their original error.
+func TestResponsesResponseErrorNoSpuriousTypeOrParam(t *testing.T) {
+	respErr := ResponsesResponseError{Code: "provider_error", Message: "boom"}
+
+	encoded, err := MarshalSorted(respErr)
+	if err != nil {
+		t.Fatalf("marshal responses response error: %v", err)
+	}
+	if strings.Contains(string(encoded), `"type"`) {
+		t.Fatalf("expected no spurious type field, got %s", encoded)
+	}
+	if strings.Contains(string(encoded), `"param"`) {
+		t.Fatalf("expected no spurious param field, got %s", encoded)
+	}
+}
+
 // TestResponsesToolFileSearchHybridSearchRoundTrip verifies that
 // ranking_options.hybrid_search (reciprocal-rank-fusion weighting) survives
 // decode/re-encode on a file_search tool declaration.
