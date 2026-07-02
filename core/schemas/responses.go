@@ -1119,11 +1119,20 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	}
 	clone.ResponsesToolMessage = &toolCopy
 
+	// omitempty on a *string only omits a nil pointer, not a pointer to an
+	// empty string — only take the address when server_label is actually
+	// set, or a response that never had it would gain a spurious
+	// "server_label":"" on remarshal.
+	var serverLabel *string
+	if action.ServerLabel != "" {
+		serverLabel = &action.ServerLabel
+	}
+
 	aux := struct {
 		ServerLabel *string `json:"server_label,omitempty"`
 		*alias
 	}{
-		ServerLabel: &action.ServerLabel,
+		ServerLabel: serverLabel,
 		alias:       (*alias)(&clone),
 	}
 

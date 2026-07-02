@@ -323,6 +323,28 @@ func TestResponsesMessageMCPApprovalRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageMCPApprovalRequestNoSpuriousServerLabel guards against
+// server_label:"" appearing on remarshal for an mcp_approval_request item
+// that never had it. omitempty on a *string only omits a nil pointer, not a
+// pointer to an empty string, so always taking &action.ServerLabel would
+// inject a field that wasn't in the original input.
+func TestResponsesMessageMCPApprovalRequestNoSpuriousServerLabel(t *testing.T) {
+	raw := []byte(`{"id":"mcpr_1","type":"mcp_approval_request","name":"ask_question","arguments":"{}"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if strings.Contains(string(encoded), `"server_label"`) {
+		t.Fatalf("expected no spurious server_label field, got %s", encoded)
+	}
+}
+
 // TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
 // normalized provider-format converters, e.g. openai/v1/responses) drops the
 // Anthropic-only code-execution fidelity carry while keeping the neutral
