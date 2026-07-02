@@ -57,6 +57,59 @@ func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_CustomSchemaURL(t *testing.T) {
+	config := `{
+		"$schema": "https://schema.internal/bifrost"
+	}`
+
+	err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected custom schema location to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_CustomSchemaFilePath(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	t.Setenv(ConfigSchemaURLEnv, schemaPath)
+
+	err := ValidateConfigSchema([]byte(`{"$schema":"/opt/bifrost/config.schema.json"}`))
+	if err != nil {
+		t.Errorf("expected custom schema filesystem path to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_ConfigSchemaFilePath(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	oldCandidates := localSchemaCandidates
+	localSchemaCandidates = nil
+	t.Cleanup(func() { localSchemaCandidates = oldCandidates })
+
+	config := []byte(`{"$schema":"` + schemaPath + `"}`)
+	err := ValidateConfigSchema(config)
+	if err != nil {
+		t.Errorf("expected config $schema filesystem path to load schema, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_LegacySchemaURLEnv(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	t.Setenv(LegacyConfigSchemaURLEnv, schemaPath)
+
+	err := ValidateConfigSchema([]byte(`{"$schema":"file:///opt/bifrost/config.schema.json"}`))
+	if err != nil {
+		t.Errorf("expected legacy SCHEMA_URL env to load schema from filesystem, got error: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_InvalidJSON(t *testing.T) {
 	invalidJSON := `{invalid json`
 

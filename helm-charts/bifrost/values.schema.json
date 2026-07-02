@@ -303,6 +303,11 @@
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
         },
+        "schemaUrl": {
+          "type": "string",
+          "default": "https://www.getbifrost.ai/schema",
+          "description": "Schema location written to config.json $schema. Override for isolated deployments that mirror the Bifrost schema internally. Accepts an HTTP(S) URL, file:// URL, or filesystem path."
+        },
         "sourceOfTruth": {
           "type": "string",
           "enum": ["split", "config.json"],

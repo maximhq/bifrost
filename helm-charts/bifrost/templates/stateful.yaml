@@ -93,6 +93,8 @@ spec:
               value: {{ .Values.bifrost.logLevel | quote }}
             - name: LOG_STYLE
               value: {{ .Values.bifrost.logStyle | quote }}
+            - name: BIFROST_SCHEMA_URL
+              value: {{ .Values.bifrost.schemaUrl | default "https://www.getbifrost.ai/schema" | quote }}
             {{- if .Values.bifrost.encryptionKeySecret.name }}
             - name: BIFROST_ENCRYPTION_KEY
               valueFrom:
@@ -319,4 +321,3 @@ spec:
           requests:
             storage: {{ .Values.storage.persistence.size }}
 {{- end }}
-

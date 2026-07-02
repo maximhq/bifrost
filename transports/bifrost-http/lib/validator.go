@@ -9,9 +9,65 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
+
+const (
+	DefaultConfigSchemaURL   = "https://www.getbifrost.ai/schema"
+	ConfigSchemaURLEnv       = "BIFROST_SCHEMA_URL"
+	LegacyConfigSchemaURLEnv = "SCHEMA_URL"
+)
+
+func ConfigSchemaURL() string {
+	if schemaLocation := configuredConfigSchemaLocation(); schemaLocation != "" {
+		return schemaLocation
+	}
+	return DefaultConfigSchemaURL
+}
+
+func configuredConfigSchemaLocation() string {
+	for _, envName := range []string{ConfigSchemaURLEnv, LegacyConfigSchemaURLEnv} {
+		if schemaLocation := strings.TrimSpace(os.Getenv(envName)); schemaLocation != "" {
+			return schemaLocation
+		}
+	}
+	return ""
+}
+
+func loadSchemaFromLocation(location string) ([]byte, error) {
+	if strings.HasPrefix(location, "http://") || strings.HasPrefix(location, "https://") {
+		resp, err := http.Get(location)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	}
+
+	path := location
+	if strings.HasPrefix(location, "file://") {
+		path = strings.TrimPrefix(location, "file://")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Clean(path)
+	}
+	return os.ReadFile(path)
+}
+
+func schemaLocationFromConfig(data []byte) string {
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return ""
+	}
+	schemaLocation, ok := config["$schema"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(schemaLocation)
+}
 
 // localSchemaCandidates lists paths (relative to CWD) where config.schema.json may be found
 // when running from a source checkout. Checked in order before falling back to the remote URL.
@@ -36,27 +92,33 @@ func tryLoadLocalSchema() []byte {
 
 // ValidateConfigSchema validates config data against the JSON schema.
 // Returns nil if valid, or a formatted error describing all validation failures.
-// An optional schemaOverride can be provided to use a local schema instead of fetching from the remote URL.
+// An optional schemaOverride can be provided to use a local schema instead of loading from the configured location.
 func ValidateConfigSchema(data []byte, schemaOverride ...[]byte) error {
 	var configSchemaJSONBytes []byte
 	if len(schemaOverride) > 0 && len(schemaOverride[0]) > 0 {
 		configSchemaJSONBytes = schemaOverride[0]
+	} else if schemaLocation := configuredConfigSchemaLocation(); schemaLocation != "" {
+		var err error
+		configSchemaJSONBytes, err = loadSchemaFromLocation(schemaLocation)
+		if err != nil {
+			return fmt.Errorf("failed to get config schema from %s: %w", schemaLocation, err)
+		}
+	} else if schemaLocation := schemaLocationFromConfig(data); schemaLocation != "" && schemaLocation != DefaultConfigSchemaURL {
+		var err error
+		configSchemaJSONBytes, err = loadSchemaFromLocation(schemaLocation)
+		if err != nil {
+			return fmt.Errorf("failed to get config schema from %s: %w", schemaLocation, err)
+		}
 	} else if localSchema := tryLoadLocalSchema(); localSchema != nil {
 		// Prefer the local schema file from the source checkout when available.
 		// This avoids validating against a potentially stale remote schema.
 		configSchemaJSONBytes = localSchema
 	} else {
-		// Pulling config.schema from https://www.getbifrost.ai/schema
-		configSchemaJSON, err := http.Get("https://www.getbifrost.ai/schema")
+		schemaURL := ConfigSchemaURL()
+		var err error
+		configSchemaJSONBytes, err = loadSchemaFromLocation(schemaURL)
 		if err != nil {
-			return fmt.Errorf("failed to get config schema: %w", err)
-		}
-		defer configSchemaJSON.Body.Close()
-		var readErr error
-		configSchemaJSONBytes, readErr = io.ReadAll(configSchemaJSON.Body)
-		if readErr != nil {
-			logger.Warn("failed to download config schema: %v. running without config.json schema validation", readErr)
-			return nil
+			return fmt.Errorf("failed to get config schema from %s: %w", schemaURL, err)
 		}
 	}
 	// Parse the schema JSON
