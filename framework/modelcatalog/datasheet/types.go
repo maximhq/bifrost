@@ -58,7 +58,8 @@ type Entry struct {
 
 // UnmarshalJSON handles the special case where search_context_cost_per_query
 // may arrive as either a plain float64 or a tiered object
-// {"search_context_size_low":…, "search_context_size_medium":…, "search_context_size_high":…}.
+// {"search_context_size_low":…, "search_context_size_medium":…, "search_context_size_high":…},
+// and folds the rerank-mode input_cost_per_query key onto the same field.
 func (p *Entry) UnmarshalJSON(data []byte) error {
 	type entryAlias Entry
 	var raw struct {
@@ -68,6 +69,7 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 			Medium *float64 `json:"search_context_size_medium"`
 			High   *float64 `json:"search_context_size_high"`
 		} `json:"search_context_cost_per_query,omitempty"`
+		InputCostPerQuery *float64 `json:"input_cost_per_query,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -87,6 +89,15 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 		case q.High != nil:
 			p.SearchContextCostPerQuery = q.High
 		}
+	}
+
+	// Rerank entries carry their per-query rate as input_cost_per_query; fold it
+	// onto SearchContextCostPerQuery so computeRerankCost can consume it. The
+	// fold is gated on rerank mode so the rate can never attach to other entry
+	// types and leak into the web-search pricing path. An explicit
+	// search_context_cost_per_query value always wins.
+	if p.Mode == "rerank" && p.SearchContextCostPerQuery == nil && raw.InputCostPerQuery != nil {
+		p.SearchContextCostPerQuery = schemas.Ptr(*raw.InputCostPerQuery)
 	}
 	return nil
 }
