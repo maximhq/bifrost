@@ -334,11 +334,13 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 //	  "my-gpt4" not in included → add {ID:"openai/my-gpt4", Alias:"gpt-4-turbo"}
 //	  "gpt-3.5" not in included → add {ID:"openai/gpt-3.5"}
 //
-// Case B — allowlist wildcard (*) only:
+// Case B — wildcard allowlist (*) OR empty restricted allowlist with aliases:
 //
 //	We don't know all model names (no explicit list), so we only backfill entries
 //	that were explicitly configured via aliases and not yet matched from the API.
-//	Note: an empty allowlist is deny-all (IsRestricted()==true), not wildcard.
+//	An empty restricted allowlist with aliases reaches this path so local/custom
+//	providers can still surface their configured alias names when upstream discovery
+//	returns nothing or is unavailable.
 //
 //	Example: aliases={"my-gpt4":"gpt-4-turbo"}, "my-gpt4" not in included
 //	  → add {ID:"openai/my-gpt4", Alias:"gpt-4-turbo"}
@@ -347,7 +349,7 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.Model {
 	var result []schemas.Model
 
-	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
+	if !p.Unfiltered && p.AllowedModels.IsRestricted() && !p.AllowedModels.IsEmpty() {
 		// Case A: backfill explicit allowlist entries not yet matched.
 		for _, entry := range p.AllowedModels {
 			if included[strings.ToLower(entry)] {
@@ -380,7 +382,7 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 		return result
 	}
 
-	// Case B: wildcard allowlist — backfill only explicitly configured aliases.
+	// Case B: wildcard or empty restricted allowlist — backfill only explicitly configured aliases.
 	if !p.Unfiltered && len(p.Aliases) > 0 {
 		for aliasKey, alias := range p.Aliases {
 			if included[strings.ToLower(aliasKey)] {
