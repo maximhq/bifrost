@@ -2289,10 +2289,18 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
-		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
-		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
-		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
-		{"claude-haiku-4-9-20270101", false}, // future haiku still legacy
+		// Haiku 4.5 (the latest Haiku) and 3.x Haiku stay budget_tokens-only.
+		{"claude-haiku-4-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"claude-3-haiku", false},
+		// A future/adaptive Haiku fails open like every other new model — the
+		// blanket "haiku" denylist would have wrongly downgraded these.
+		{"claude-haiku-5", true},
+		{"claude-haiku-5-20270101", true},
+		{"claude-haiku-4-6-20250514", true},
+		{"claude-haiku-4-9-20270101", true},
 		// Fail-open: new/unrecognized Claude models default to adaptive.
 		{"claude-opus-5", true},
 		{"claude-opus-5-20270101", true},
@@ -2428,7 +2436,9 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		{"anthropic.claude-opus-4-v1", false},
 		{"claude-3-7-sonnet", false},
 		{"claude-2.1", false},
-		{"claude-haiku-4-9", false},
+		// A future/adaptive Haiku fails open (Haiku 4.5 legacy case above).
+		{"claude-haiku-4-9", true},
+		{"claude-haiku-5", true},
 		{"", false},
 	}
 

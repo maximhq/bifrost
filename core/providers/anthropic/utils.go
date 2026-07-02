@@ -824,24 +824,29 @@ func claudeOpusSonnet4Minor(m string) (int, bool) {
 // isLegacyBudgetTokensOnlyModel reports whether a lowercased Claude model id
 // predates adaptive thinking and therefore only accepts budget_tokens extended
 // thinking (and still accepts temperature/top_p/top_k). This is the closed set
-// of legacy Claude models: Haiku (any), Claude 2.x/3.x, and Opus/Sonnet 4.x
-// below the .6 adaptive cutoff. Every other Claude model is assumed to support
+// of legacy Claude models: Claude 2.x/3.x (incl. 3.x Haiku), Haiku 4.5, and
+// Opus/Sonnet 4.x below the .6 adaptive cutoff. Every other Claude model is
+// assumed to support
 // adaptive thinking — the fail-open default so a new/unknown Claude model is not
 // downgraded to budget_tokens (which post-4.7 models reject with a 400).
 func isLegacyBudgetTokensOnlyModel(m string) bool {
-	// Haiku has never supported adaptive thinking. NOTE: this blanket match
-	// will very likely need to be narrowed to specific legacy Haiku versions
-	// once a new Haiku ships — Anthropic's trajectory (Opus 4.7+, Sonnet 5,
-	// Fable/Mythos) points at adaptive-only becoming the default for new
-	// models across every tier, Haiku included.
-	if strings.Contains(m, "haiku") {
-		return true
-	}
-	// Pre-Claude-4 generations.
+	// Pre-Claude-4 generations, including every 3.x Haiku (claude-3-haiku,
+	// claude-3-5-haiku).
 	if strings.Contains(m, "claude-2") || strings.Contains(m, "claude-instant") {
 		return true
 	}
 	if strings.Contains(m, "claude-3") {
+		return true
+	}
+	// Haiku 4.5 is the latest Haiku and is budget_tokens-only. Match the known
+	// legacy Haiku versions explicitly rather than any "haiku" so a future
+	// adaptive-only Haiku — e.g. claude-haiku-5, following Anthropic's trajectory
+	// of adaptive-by-default for new models across every tier (Opus 4.7+, Sonnet
+	// 5, Fable/Mythos) — fails open to adaptive like any other new/unknown model
+	// instead of being downgraded to budget_tokens (which adaptive-only models
+	// reject with a 400). Narrow this set when a new legacy Haiku ships; a new
+	// adaptive Haiku needs no change here.
+	if strings.Contains(m, "haiku-4-5") || strings.Contains(m, "haiku-4.5") {
 		return true
 	}
 	// Opus/Sonnet 4.x below the .6 adaptive cutoff (incl. bare 4.0).
@@ -987,8 +992,9 @@ func SupportsFastMode(model string) bool {
 
 // SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
 // It fails open: a Claude model is assumed to support adaptive thinking unless it is
-// a known legacy (budget_tokens-only) model — Haiku (any), Claude 2.x/3.x, or
-// Opus/Sonnet 4.x below the .6 cutoff (see isLegacyBudgetTokensOnlyModel). This
+// a known legacy (budget_tokens-only) model — Claude 2.x/3.x (incl. 3.x Haiku),
+// Haiku 4.5, or Opus/Sonnet 4.x below the .6 cutoff (see
+// isLegacyBudgetTokensOnlyModel). This
 // reverses the previous allowlist so a new/unrecognized Claude model (e.g. a future
 // claude-opus-5) is routed to adaptive thinking instead of being downgraded to
 // budget_tokens, which every Claude model since Opus 4.7 rejects with a 400.
