@@ -236,22 +236,9 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		registrationURL = &req.RegistrationURL
 	}
 
-	clientID := ""
-	if req.ClientID != nil {
-		if v, _ := req.ClientID.Value(); v != nil {
-			clientID, _ = v.(string)
-		}
-	}
-	clientSecret := ""
-	if req.ClientSecret != nil {
-		if v, _ := req.ClientSecret.Value(); v != nil {
-			clientSecret, _ = v.(string)
-		}
-	}
-
 	config := &schemas.OAuth2Config{
-		ClientID:        clientID,
-		ClientSecret:    clientSecret,
+		ClientID:        req.ClientID,
+		ClientSecret:    req.ClientSecret,
 		AuthorizeURL:    req.AuthorizeURL,
 		TokenURL:        req.TokenURL,
 		RegistrationURL: registrationURL,

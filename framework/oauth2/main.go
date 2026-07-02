@@ -479,10 +479,10 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 
 	// Dynamic Client Registration (RFC 7591)
 	// If client_id is NOT provided, attempt dynamic registration
-	clientID := config.ClientID // storage value — may be "env.MY_VAR" reference or plain ID
+	clientID := config.ClientID // carries env./vault. reference metadata; resolved at use time
 	clientSecret := config.ClientSecret
 
-	if clientID == "" {
+	if !clientID.IsSet() {
 		// Check if registration URL is available
 		if registrationURL == nil || *registrationURL == "" {
 			return nil, fmt.Errorf("client_id is required when the OAuth provider does not support dynamic client registration (RFC 7591). Please provide client_id manually or use an OAuth provider that supports dynamic registration")
@@ -511,10 +511,10 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		}
 
 		// Use dynamically registered credentials
-		clientID = regResp.ClientID
-		clientSecret = regResp.ClientSecret // May be empty for public clients
+		clientID = schemas.NewSecretVar(regResp.ClientID)
+		clientSecret = schemas.NewSecretVar(regResp.ClientSecret) // May be empty for public clients
 
-		logger.Debug("Dynamic client registration successful: client_id: %s, has_secret: %t", clientID, clientSecret != "")
+		logger.Debug("Dynamic client registration successful: client_id: %s, has_secret: %t", regResp.ClientID, clientSecret.IsSet())
 	}
 
 	// Generate PKCE challenge
@@ -533,8 +533,8 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	expiresAt := time.Now().Add(15 * time.Minute)
 	oauthConfigRecord := &tables.TableOauthConfig{
 		ID:              oauthConfigID,
-		ClientID:        schemas.NewSecretVar(clientID), // May be from dynamic registration
-		ClientSecret:    schemas.NewSecretVar(clientSecret),
+		ClientID:        clientID, // May be from dynamic registration
+		ClientSecret:    clientSecret,
 		AuthorizeURL:    authorizeURL,
 		TokenURL:        tokenURL,
 		RegistrationURL: registrationURL,
@@ -556,7 +556,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 
 	// Resolve env var reference to actual value for use in the authorize URL.
 	// The reference ("env.MY_VAR") is stored in DB; the resolved value is sent to the provider.
-	resolvedClientID := schemas.NewSecretVar(clientID).GetValue()
+	resolvedClientID := clientID.GetValue()
 
 	// Build authorize URL with PKCE (using dynamically registered or user-provided client_id)
 	authURL := p.buildAuthorizeURLWithPKCE(

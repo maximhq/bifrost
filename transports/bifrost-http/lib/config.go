@@ -1859,8 +1859,8 @@ func mcpOauthBlockChanged(fileBlock, storedStash *schemas.OAuth2Config, authoriz
 	var refScopes []string
 	switch {
 	case storedStash != nil:
-		refClientID = storedStash.ClientID
-		refClientSecret = storedStash.ClientSecret
+		refClientID = storedStash.ClientID.GetValue()
+		refClientSecret = storedStash.ClientSecret.GetValue()
 		refAuthorizeURL = storedStash.AuthorizeURL
 		refTokenURL = storedStash.TokenURL
 		refScopes = storedStash.Scopes
@@ -1875,10 +1875,12 @@ func mcpOauthBlockChanged(fileBlock, storedStash *schemas.OAuth2Config, authoriz
 	default:
 		return false
 	}
-	if fileBlock.ClientID != "" && fileBlock.ClientID != refClientID {
+	// Credentials compare by resolved value: an env./vault. reference that
+	// resolves to the stored credential is the same effective config.
+	if fileBlock.ClientID.IsSet() && fileBlock.ClientID.GetValue() != refClientID {
 		return true
 	}
-	if fileBlock.ClientSecret != "" && fileBlock.ClientSecret != refClientSecret {
+	if fileBlock.ClientSecret.IsSet() && fileBlock.ClientSecret.GetValue() != refClientSecret {
 		return true
 	}
 	if fileBlock.AuthorizeURL != "" && fileBlock.AuthorizeURL != refAuthorizeURL {
@@ -6608,18 +6610,13 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 
 	// Redact credentials inside the inline `oauth_config` bootstrap block.
-	// Its fields are plain strings, so route them through the SecretVar
-	// redaction to keep the wire format identical to the sibling
-	// oauth_client_id / oauth_client_secret fields. Copy the struct first —
-	// configCopy shares the pointer with the live config.
+	// Copy the struct first — configCopy shares the pointer with the live
+	// config, and Redacted() returns a fresh SecretVar so the live stash is
+	// never mutated.
 	if config.PendingOAuthConfig != nil {
 		pendingCopy := *config.PendingOAuthConfig
-		if pendingCopy.ClientID != "" {
-			pendingCopy.ClientID = (&schemas.SecretVar{Val: pendingCopy.ClientID}).Redacted().Val
-		}
-		if pendingCopy.ClientSecret != "" {
-			pendingCopy.ClientSecret = (&schemas.SecretVar{Val: pendingCopy.ClientSecret}).Redacted().Val
-		}
+		pendingCopy.ClientID = pendingCopy.ClientID.Redacted()
+		pendingCopy.ClientSecret = pendingCopy.ClientSecret.Redacted()
 		configCopy.PendingOAuthConfig = &pendingCopy
 	}
 

@@ -2934,12 +2934,12 @@ func TestPinMCPClientImmutableFields(t *testing.T) {
 	t.Run("pending stash edits are detected and the stored stash kept", func(t *testing.T) {
 		existing := baseExisting()
 		existing.OauthConfigID = nil
-		existing.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "abc", Scopes: []string{"read"}}
+		existing.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: schemas.NewSecretVar("abc"), Scopes: []string{"read"}}
 		fileClient := fileClientFor(existing)
-		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "xyz", Scopes: []string{"read"}}
+		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: schemas.NewSecretVar("xyz"), Scopes: []string{"read"}}
 		changed := pinMCPClientImmutableFields(fileClient, existing, nil)
 		require.Equal(t, []string{"oauth_config"}, changed)
-		require.Equal(t, "abc", fileClient.PendingOAuthConfig.ClientID)
+		require.Equal(t, "abc", fileClient.PendingOAuthConfig.ClientID.GetValue())
 	})
 
 	t.Run("authorized oauth drift detected via oauth row, absent fields not drift", func(t *testing.T) {
@@ -2959,7 +2959,7 @@ func TestPinMCPClientImmutableFields(t *testing.T) {
 
 		// An explicitly different client_id is drift.
 		fileClient = fileClientFor(existing)
-		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "different"}
+		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: schemas.NewSecretVar("different")}
 		require.Equal(t, []string{"oauth_config"}, pinMCPClientImmutableFields(fileClient, existing, row))
 		require.Nil(t, fileClient.PendingOAuthConfig)
 	})
@@ -2973,6 +2973,50 @@ func TestPinMCPClientImmutableFields(t *testing.T) {
 		fileClient := fileClientFor(existing)
 		require.Empty(t, pinMCPClientImmutableFields(fileClient, existing, nil))
 		require.Equal(t, []string{"x-api-key"}, fileClient.PerUserHeaderKeys)
+	})
+}
+
+func TestOAuth2ConfigSecretVarCredentials(t *testing.T) {
+	initTestLogger()
+	t.Setenv("TEST_OAUTH_SECRET", "resolved-secret")
+
+	t.Run("bare-string JSON parses and env refs resolve", func(t *testing.T) {
+		// Covers both config.json input and pre-migration pending_oauth_config_json
+		// blobs, which stored credentials as bare strings.
+		var cfg schemas.OAuth2Config
+		require.NoError(t, json.Unmarshal(
+			[]byte(`{"client_id":"plain-id","client_secret":"env.TEST_OAUTH_SECRET","redirect_uri":"","server_url":""}`), &cfg))
+		require.Equal(t, "plain-id", cfg.ClientID.GetValue())
+		require.Equal(t, "resolved-secret", cfg.ClientSecret.GetValue())
+		require.True(t, cfg.ClientSecret.IsFromSecret(), "env. prefix must parse as a reference, not a literal")
+	})
+
+	t.Run("marshal round-trip keeps the reference", func(t *testing.T) {
+		var cfg schemas.OAuth2Config
+		require.NoError(t, json.Unmarshal(
+			[]byte(`{"client_secret":"env.TEST_OAUTH_SECRET","redirect_uri":"","server_url":""}`), &cfg))
+		blob, err := json.Marshal(&cfg)
+		require.NoError(t, err)
+		var reloaded schemas.OAuth2Config
+		require.NoError(t, json.Unmarshal(blob, &reloaded))
+		require.Equal(t, "resolved-secret", reloaded.ClientSecret.GetValue())
+		require.True(t, reloaded.ClientSecret.IsFromSecret())
+	})
+
+	t.Run("redaction does not leak or mutate the live stash", func(t *testing.T) {
+		config := &schemas.MCPClientConfig{
+			Name:     "notion",
+			AuthType: schemas.MCPAuthTypeOauth,
+			PendingOAuthConfig: &schemas.OAuth2Config{
+				ClientID:     schemas.NewSecretVar("client-id-123456"),
+				ClientSecret: schemas.NewSecretVar("super-secret-value"),
+			},
+		}
+		redacted := (&Config{}).RedactMCPClientConfig(config)
+		require.NotNil(t, redacted.PendingOAuthConfig)
+		require.NotContains(t, redacted.PendingOAuthConfig.ClientSecret.GetValue(), "super-secret-value")
+		require.Equal(t, "super-secret-value", config.PendingOAuthConfig.ClientSecret.GetValue(),
+			"live stash must stay unredacted")
 	})
 }
 
