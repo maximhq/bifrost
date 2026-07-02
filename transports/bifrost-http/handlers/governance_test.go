@@ -41,10 +41,12 @@ type mockConfigStoreForVK struct {
 	configstore.ConfigStore
 	getVirtualKeysCalls          int
 	getVirtualKeysPaginatedCalls int
+	lastPaginatedParams          configstore.VirtualKeyQueryParams
 }
 
-func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
+func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, params configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
 	m.getVirtualKeysPaginatedCalls++
+	m.lastPaginatedParams = params
 	return nil, 0, nil
 }
 
@@ -2152,6 +2154,35 @@ func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
 	}
 	if store.getVirtualKeysCalls != 0 {
 		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
+	}
+}
+
+// TestGetVirtualKeys_UserIDParamUsesPaginatedPath verifies that providing
+// user_id triggers the paginated DB path and passes UserID through to the
+// query params.
+func TestGetVirtualKeys_UserIDParamUsesPaginatedPath(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockGovernanceManagerForVK{},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?user_id=user-abc-123")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if store.getVirtualKeysPaginatedCalls != 1 {
+		t.Fatalf("expected GetVirtualKeysPaginated to be called once, got %d", store.getVirtualKeysPaginatedCalls)
+	}
+	if store.lastPaginatedParams.UserID != "user-abc-123" {
+		t.Fatalf("expected UserID %q, got %q", "user-abc-123", store.lastPaginatedParams.UserID)
 	}
 }
 

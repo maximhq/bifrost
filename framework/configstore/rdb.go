@@ -3194,6 +3194,9 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
 	}
+	if params.UserID != "" {
+		baseQuery = baseQuery.Where("created_by_user_id = ?", params.UserID)
+	}
 
 	// Get total count before pagination
 	var totalCount int64
