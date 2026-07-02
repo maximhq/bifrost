@@ -1273,9 +1273,15 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	var serverLabelValue *string
 
 	if isMCPListTools && m.ResponsesToolMessage.ResponsesMCPListTools != nil {
-		if len(m.ResponsesToolMessage.ResponsesMCPListTools.Tools) > 0 {
-			toolsValue = m.ResponsesToolMessage.ResponsesMCPListTools.Tools
+		// Assign unconditionally (not just when non-empty) so an explicit
+		// empty tools: [] round-trips distinctly from an absent field —
+		// OpenAI's mcp_list_tools schema requires tools to be present, even
+		// when a server exposes zero tools.
+		tools := m.ResponsesToolMessage.ResponsesMCPListTools.Tools
+		if tools == nil {
+			tools = []ResponsesMCPTool{}
 		}
+		toolsValue = tools
 		serverLabelValue = &m.ResponsesToolMessage.ResponsesMCPListTools.ServerLabel
 	} else if isMCPCall && m.ResponsesToolMessage.ResponsesMCPToolCall != nil {
 		serverLabelValue = &m.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
