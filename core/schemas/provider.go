@@ -58,7 +58,7 @@ type NetworkConfig struct {
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
-	CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
+	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
@@ -82,7 +82,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
 		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
-		CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`
+		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
@@ -253,11 +253,11 @@ const (
 
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
-	Type      ProxyType `json:"type"`        // Type of proxy to use
-	URL       *SecretVar   `json:"url"`         // URL of the proxy server (supports env.*)
-	Username  *SecretVar   `json:"username"`    // Username for proxy authentication (supports env.*)
-	Password  *SecretVar   `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *SecretVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	Type      ProxyType  `json:"type"`        // Type of proxy to use
+	URL       *SecretVar `json:"url"`         // URL of the proxy server (supports env.*)
+	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
+	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
+	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
@@ -498,11 +498,16 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 }
 
 type CustomProviderConfig struct {
-	CustomProviderKey    string                 `json:"-"`                                // Custom provider key, internally set by Bifrost
-	IsKeyLess            bool                   `json:"is_key_less"`                      // Whether the custom provider requires a key (not allowed for Bedrock)
-	BaseProviderType     ModelProvider          `json:"base_provider_type"`               // Base provider type
-	AllowedRequests      *AllowedRequests       `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
-	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
+	CustomProviderKey    string                      `json:"-"`                                // Custom provider key, internally set by Bifrost
+	IsKeyLess            bool                        `json:"is_key_less"`                      // Whether the custom provider requires a key (not allowed for Bedrock)
+	BaseProviderType     ModelProvider               `json:"base_provider_type"`               // Base provider type
+	AllowedRequests      *AllowedRequests            `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
+	RequestPathOverrides map[RequestType]string      `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
+	ParamsConfig         *CustomProviderParamsConfig `json:"params_config,omitempty"`          // Provider-specific parameter serialization options
+}
+
+type CustomProviderParamsConfig struct {
+	PreserveCacheControl bool `json:"preserve_cache_control,omitempty"` // Preserve cache_control in compatible provider request payloads
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider

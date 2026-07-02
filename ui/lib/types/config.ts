@@ -357,11 +357,16 @@ export interface AllowedRequests {
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
+export interface CustomProviderParamsConfig {
+	preserve_cache_control?: boolean;
+}
+
 export interface CustomProviderConfig {
 	base_provider_type: KnownProvider;
 	is_key_less?: boolean;
 	allowed_requests?: AllowedRequests;
 	request_path_overrides?: Record<string, string>;
+	params_config?: CustomProviderParamsConfig;
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.

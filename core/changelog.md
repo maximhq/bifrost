@@ -5,3 +5,4 @@
 - fix: deterministic MCP tool ordering for prompt cache stability (closes #2347)
 - fix: pass through `gs://` image URLs on Vertex Gemini (closes #4402)
 - fix: signal Bedrock max_output_tokens truncation on Responses API [@jeremym-tanium](https://github.com/jeremym-tanium)
+- [feat]: add opt-in cache_control config for custom OpenAI providers [@GreyKa-x](https://github.com/GreyKa-x)

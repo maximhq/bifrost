@@ -92,6 +92,10 @@ type OpenAIChatRequest struct {
 	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
 	Provider schemas.ModelProvider `json:"-"`
 
+	// PreserveCacheControl keeps Anthropic-style cache_control fields on
+	// content blocks and tools for compatible providers. Not serialized itself.
+	PreserveCacheControl bool `json:"-"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
@@ -143,7 +147,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	// and tools) when targeting OpenRouter. Everything else (citations,
 	// file types, Anthropic server tools, Anthropic-only tool flags) is still
 	// stripped — OpenRouter is otherwise an OpenAI-format endpoint.
-	keepCacheControl := req.Provider == schemas.OpenRouter
+	keepCacheControl := req.Provider == schemas.OpenRouter || req.PreserveCacheControl
 
 	// First pass: check if we need to modify any messages
 	needsCopy := false

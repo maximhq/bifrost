@@ -25,6 +25,11 @@ const formSchema = z.object({
 	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	is_key_less: z.boolean().optional(),
 	allow_private_network: z.boolean().optional(),
+	params_config: z
+		.object({
+			preserve_cache_control: z.boolean().optional(),
+		})
+		.optional(),
 });
 
 type FormData = z.infer<typeof formSchema>;
@@ -82,6 +87,9 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			request_path_overrides: undefined,
 			is_key_less: false,
 			allow_private_network: false,
+			params_config: {
+				preserve_cache_control: false,
+			},
 		},
 	});
 
@@ -99,6 +107,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				allowed_requests: data.allowed_requests,
 				request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 				is_key_less: data.is_key_less ?? false,
+				params_config:
+					data.baseFormat === "openai" && data.params_config?.preserve_cache_control ? { preserve_cache_control: true } : undefined,
 			},
 			network_config: {
 				base_url: data.base_url,
@@ -244,6 +254,34 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												onCheckedChange={field.onChange}
 												disabled={!hasProviderCreateAccess}
 												data-testid="custom-provider-keyless-switch"
+											/>
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
+						{baseFormat === "openai" && (
+							<FormField
+								control={form.control}
+								name="params_config.preserve_cache_control"
+								render={({ field }) => (
+									<FormItem>
+										<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+											<div className="space-y-0.5">
+												<label htmlFor="custom-provider-preserve-cache-control" className="text-sm font-medium">
+													Preserve Cache Control
+												</label>
+												<p className="text-muted-foreground text-sm">
+													Preserve content block cache_control fields for OpenAI-compatible custom providers that support prompt caching.
+												</p>
+											</div>
+											<Switch
+												id="custom-provider-preserve-cache-control"
+												size="md"
+												checked={field.value ?? false}
+												onCheckedChange={field.onChange}
+												disabled={!hasProviderCreateAccess}
+												data-testid="custom-provider-preserve-cache-control-switch"
 											/>
 										</div>
 									</FormItem>
