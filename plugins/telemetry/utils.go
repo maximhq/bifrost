@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/valyala/fasthttp"
 )
@@ -76,6 +77,25 @@ func safeObserve(histogram *prometheus.HistogramVec, value float64, labels ...st
 			metric.Observe(value)
 		}
 	}
+}
+
+// filterDisabledLabels returns labels with any entry present in disabled
+// removed, using containsLabel's hyphen/underscore-insensitive match.
+func filterDisabledLabels(labels, disabled []string, setName string, logger schemas.Logger) []string {
+	if len(disabled) == 0 {
+		return labels
+	}
+	// Cap-clip ([:0:0]) so a downstream `append(defaultBifrostLabels, ...)`
+	// can't write through the caller's backing array.
+	out := labels[:0:0]
+	for _, label := range labels {
+		if containsLabel(disabled, label) {
+			logger.Info("%s label %s is disabled via disabled_labels, it will be omitted from all metrics", setName, label)
+			continue
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 // containsLabel checks if a string slice contains a specific label, ignoring differences
