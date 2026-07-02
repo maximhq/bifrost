@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,12 +112,86 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	limitStr := string(ctx.QueryArgs().Peek("limit"))
-	offsetStr := string(ctx.QueryArgs().Peek("offset"))
-	searchStr := string(ctx.QueryArgs().Peek("search"))
-	serverStr := string(ctx.QueryArgs().Peek("server"))
+	params := configstore.MCPClientsQueryParams{
+		Search:          string(ctx.QueryArgs().Peek("search")),
+		ClientID:        string(ctx.QueryArgs().Peek("server")),
+		ConnectionTypes: parseCommaSeparated(string(ctx.QueryArgs().Peek("connection_type"))),
+		AuthTypes:       parseCommaSeparated(string(ctx.QueryArgs().Peek("auth_type"))),
+		VirtualKeyIDs:   parseCommaSeparated(string(ctx.QueryArgs().Peek("virtual_keys"))),
+	}
+	if b, ok, err := parseBoolQueryArg(ctx, "all_virtual_keys"); err != nil {
+		SendError(ctx, 400, "Invalid all_virtual_keys parameter: must be a boolean")
+		return
+	} else if ok {
+		params.OnlyAllVirtualKeys = b
+	}
+	// Runtime state selection (connected/disconnected) — resolved against the
+	// live engine inside getMCPClientsPaginated since it isn't a DB column.
+	states := parseCommaSeparated(string(ctx.QueryArgs().Peek("state")))
+	for _, s := range states {
+		if s != "connected" && s != "disconnected" {
+			SendError(ctx, 400, "Invalid state parameter: must be 'connected' or 'disconnected'")
+			return
+		}
+	}
 
-	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr, serverStr)
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+			return
+		}
+		params.Limit = n
+	}
+	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid offset parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+			return
+		}
+		params.Offset = n
+	}
+	// Optional boolean facets — nil = no filter. Unparseable values are a hard
+	// error (like limit/offset) so a typo can't silently drop the filter.
+	if b, ok, err := parseBoolQueryArg(ctx, "code_mode"); err != nil {
+		SendError(ctx, 400, "Invalid code_mode parameter: must be a boolean")
+		return
+	} else if ok {
+		params.IsCodeModeClient = &b
+	}
+	if b, ok, err := parseBoolQueryArg(ctx, "disabled"); err != nil {
+		SendError(ctx, 400, "Invalid disabled parameter: must be a boolean")
+		return
+	} else if ok {
+		params.Disabled = &b
+	}
+
+	h.getMCPClientsPaginated(ctx, params, states)
+}
+
+// parseBoolQueryArg reads an optional boolean query parameter. It returns
+// (value, true, nil) when the parameter is present and parses as a bool,
+// (false, false, nil) when the parameter is absent (no filter), and
+// (false, false, err) when present but unparseable — callers should surface
+// the last case as an HTTP 400 rather than silently dropping the filter.
+func parseBoolQueryArg(ctx *fasthttp.RequestCtx, key string) (bool, bool, error) {
+	raw := string(ctx.QueryArgs().Peek(key))
+	if raw == "" {
+		return false, false, nil
+	}
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false, err
+	}
+	return b, true, nil
 }
 
 // getMCPLibrary handles GET /api/mcp/library — paginated, searchable, filterable
@@ -245,46 +320,12 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients
-func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr, serverStr string) {
-	params := configstore.MCPClientsQueryParams{
-		Search:   searchStr,
-		ClientID: serverStr,
-		Limit:    100,
-	}
-	if limitStr != "" {
-		n, err := strconv.Atoi(limitStr)
-		if err != nil {
-			SendError(ctx, 400, "Invalid limit parameter: must be a number")
-			return
-		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
-			return
-		}
-		params.Limit = n
-	}
-	if offsetStr != "" {
-		n, err := strconv.Atoi(offsetStr)
-		if err != nil {
-			SendError(ctx, 400, "Invalid offset parameter: must be a number")
-			return
-		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
-			return
-		}
-		params.Offset = n
-	}
-
-	dbClients, totalCount, err := h.store.ConfigStore.GetMCPClientsPaginated(ctx, params)
-	if err != nil {
-		logger.Error("failed to retrieve MCP clients: %v", err)
-		SendError(ctx, 500, "Failed to retrieve MCP clients")
-		return
-	}
-
-	// Get connected clients from Bifrost engine for state/tools merge
+// getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients.
+// states carries the raw connection-state selection (connected/disconnected);
+// it is resolved against the live engine here because state is not a DB column.
+func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params configstore.MCPClientsQueryParams, states []string) {
+	// Get connected clients from Bifrost engine — used both to resolve the
+	// runtime state filter and to merge live state/tools onto each row below.
 	clientsInBifrost, err := h.client.GetMCPClients()
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP clients from Bifrost: %v", err))
@@ -293,6 +334,34 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 	connectedClientsMap := make(map[string]schemas.MCPClient)
 	for _, client := range clientsInBifrost {
 		connectedClientsMap[client.Config.ID] = client
+	}
+
+	// Resolve the runtime state filter into a connected-id allow/block list the
+	// store can apply within the same paginated query. "connected" means the
+	// engine reports MCPConnectionStateConnected; everything else (disconnected,
+	// error, disabled, not-in-engine) counts as disconnected. Selecting both —
+	// or neither — is a no-op.
+	if wantConnected, wantDisconnected := slices.Contains(states, "connected"), slices.Contains(states, "disconnected"); wantConnected != wantDisconnected {
+		connectedIDs := make([]string, 0, len(clientsInBifrost))
+		for _, c := range clientsInBifrost {
+			if c.State == schemas.MCPConnectionStateConnected {
+				connectedIDs = append(connectedIDs, c.Config.ID)
+			}
+		}
+		params.StateClientIDs = connectedIDs
+		params.StateInclude = &wantConnected
+	}
+
+	// Normalise pagination (0 → 25 default, cap 100) before the query so the
+	// echoed limit/offset match the rows actually returned — same helper every
+	// other paginated handler uses.
+	params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+
+	dbClients, totalCount, err := h.store.ConfigStore.GetMCPClientsPaginated(ctx, params)
+	if err != nil {
+		logger.Error("failed to retrieve MCP clients: %v", err)
+		SendError(ctx, 500, "Failed to retrieve MCP clients")
+		return
 	}
 
 	// Batch-fetch all VK assignments for this page in a single query, then group by client ID.

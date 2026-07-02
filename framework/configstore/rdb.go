@@ -1592,6 +1592,51 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 	if params.ClientID != "" {
 		baseQuery = baseQuery.Where("client_id = ?", params.ClientID)
 	}
+	if len(params.ConnectionTypes) > 0 {
+		baseQuery = baseQuery.Where("connection_type IN ?", params.ConnectionTypes)
+	}
+	if len(params.AuthTypes) > 0 {
+		baseQuery = baseQuery.Where("auth_type IN ?", params.AuthTypes)
+	}
+	if params.IsCodeModeClient != nil {
+		baseQuery = baseQuery.Where("is_code_mode_client = ?", *params.IsCodeModeClient)
+	}
+	if params.Disabled != nil {
+		baseQuery = baseQuery.Where("disabled = ?", *params.Disabled)
+	}
+	// Runtime state filter, resolved by the caller into a connected-id set.
+	if params.StateInclude != nil {
+		if *params.StateInclude {
+			// connected: must be in the connected set. An empty set (nothing
+			// connected) yields IN (NULL) → matches no rows, which is correct.
+			baseQuery = baseQuery.Where("client_id IN ?", params.StateClientIDs)
+		} else if len(params.StateClientIDs) > 0 {
+			// disconnected: everything not currently connected. An empty
+			// connected set means all rows are disconnected → no constraint.
+			baseQuery = baseQuery.Where("client_id NOT IN ?", params.StateClientIDs)
+		}
+	}
+	// VK access filter: OR the "open to all VKs" flag with an explicit-assignment
+	// subquery over the VK⇄MCP join table (matched on the numeric primary key).
+	if params.OnlyAllVirtualKeys || len(params.VirtualKeyIDs) > 0 {
+		var assignedSub *gorm.DB
+		if len(params.VirtualKeyIDs) > 0 {
+			assignedSub = s.DB().WithContext(ctx).
+				Model(&tables.TableVirtualKeyMCPConfig{}).
+				Select("mcp_client_id").
+				Where("virtual_key_id IN ?", params.VirtualKeyIDs)
+		}
+		switch {
+		case params.OnlyAllVirtualKeys && assignedSub != nil:
+			baseQuery = baseQuery.Where(
+				s.DB().Where("allow_on_all_virtual_keys = ?", true).Or("id IN (?)", assignedSub),
+			)
+		case params.OnlyAllVirtualKeys:
+			baseQuery = baseQuery.Where("allow_on_all_virtual_keys = ?", true)
+		default:
+			baseQuery = baseQuery.Where("id IN (?)", assignedSub)
+		}
+	}
 
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {
