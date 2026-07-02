@@ -3950,7 +3950,7 @@ func ResolveFrameworkPricingConfig(
 			needsDBUpdate = true
 		}
 		if dbConfig.ModelParametersURL != nil && *dbConfig.ModelParametersURL != "" {
-			if fileChanged && fileModelParametersURL != nil {
+			if fileChanged && fileModelParametersURL != nil && !skipModelParamsURLBackfill {
 				logger.Info("model_parameters_url from config.json overrides DB (file hash changed) — updating DB")
 				needsDBUpdate = true
 			} else {
