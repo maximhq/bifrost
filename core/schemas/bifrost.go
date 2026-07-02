@@ -57,6 +57,7 @@ const (
 	Parasail      ModelProvider = "parasail"
 	Perplexity    ModelProvider = "perplexity"
 	Cerebras      ModelProvider = "cerebras"
+	DeepSeek      ModelProvider = "deepseek"
 	Gemini        ModelProvider = "gemini"
 	OpenRouter    ModelProvider = "openrouter"
 	Elevenlabs    ModelProvider = "elevenlabs"
@@ -89,6 +90,7 @@ var StandardProviders = []ModelProvider{
 	BedrockMantle,
 	Cerebras,
 	Cohere,
+	DeepSeek,
 	Gemini,
 	Groq,
 	Mistral,
