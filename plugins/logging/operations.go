@@ -1343,6 +1343,21 @@ func normalizeLogRequestType(object string) schemas.RequestType {
 	}
 }
 
+// attachCostBreakdown fills entry.TokenUsageParsed.Cost with the per-category
+// cost split (input / output / cache) computed from result, so log detail views
+// can surface it alongside the total. It is a no-op when pricing is
+// unavailable, usage is missing, or a breakdown is already present (e.g.
+// provider-supplied or already attached on the non-streaming path).
+func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *logstore.Log, result *schemas.BifrostResponse) {
+	if p.pricingManager == nil || result == nil || entry.TokenUsageParsed == nil || entry.TokenUsageParsed.Cost != nil {
+		return
+	}
+	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+	if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil {
+		entry.TokenUsageParsed.Cost = breakdown
+	}
+}
+
 func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, error) {
 	if logEntry == nil {
 		return 0, fmt.Errorf("log entry cannot be nil")

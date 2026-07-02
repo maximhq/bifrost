@@ -15,8 +15,20 @@ import (
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
-	if result == nil {
+	breakdown := s.CalculateCostBreakdown(result, scopes)
+	if breakdown == nil {
 		return 0
+	}
+	return breakdown.TotalCost
+}
+
+// CalculateCostBreakdown mirrors CalculateCost but returns the full per-category
+// cost breakdown (input / output / cache) instead of only the total. Returns nil
+// when there is no cost to record. CalculateCost is a thin wrapper over this that
+// returns breakdown.TotalCost, so both paths compute cost identically.
+func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *LookupScopes) *schemas.BifrostCost {
+	if result == nil {
+		return nil
 	}
 
 	var lookupScopes LookupScopes
@@ -55,32 +67,50 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 		return usage.Cost.TotalCost
 	}
 
-	return s.computeCostFromInput(
+	breakdown := s.computeCostFromInput(
 		costInput{usage: usage},
 		schemas.RoutingInfo{Provider: provider, Model: model},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
 	)
+	if breakdown == nil {
+		return 0
+	}
+	return breakdown.TotalCost
 }
 
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
+func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) *schemas.BifrostCost {
 	if cacheDebug.CacheHit {
 		// Direct cache hit — no LLM call, no cost
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
-			return 0
+			return nil
 		}
-		// Semantic cache hit — only the embedding lookup cost
+		// Semantic cache hit — only the embedding lookup cost (an input cost)
 		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-			return s.computeCacheEmbeddingCost(cacheDebug, scopes)
+			c := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+			if c == 0 {
+				return nil
+			}
+			return &schemas.BifrostCost{InputTokensCost: c, TotalCost: c}
 		}
-		return 0
+		return nil
 	}
 
-	// Cache miss — full LLM cost + embedding lookup cost
-	baseCost := s.calculateBaseCost(result, scopes)
+	// Cache miss — full LLM cost + embedding lookup cost (added on the input side)
+	base := s.calculateBaseCost(result, scopes)
 	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
-	return baseCost + embeddingCost
+	if embeddingCost == 0 {
+		return base
+	}
+	// Copy rather than mutate: base may alias the provider-supplied usage.Cost.
+	merged := &schemas.BifrostCost{}
+	if base != nil {
+		*merged = *base
+	}
+	merged.InputTokensCost += embeddingCost
+	merged.TotalCost += embeddingCost
+	return merged
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
@@ -105,18 +135,19 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 }
 
 // computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.
-func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) float64 {
+func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) *schemas.BifrostCost {
 	if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
-		return 0
+		return nil
 	}
-	return *pricing.CodeInterpreterCostPerSession
+	// Container creation is a flat per-session cost, not a token cost — total only.
+	return totalOnlyCost(*pricing.CodeInterpreterCostPerSession)
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
-func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes LookupScopes) float64 {
+func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes LookupScopes) *schemas.BifrostCost {
 	extraFields := result.GetExtraFields()
 	if extraFields == nil {
-		return 0
+		return nil
 	}
 
 	// Read routing info populated by core.bifrost at request time.
@@ -142,12 +173,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 
 	// If provider already computed cost, use it
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
-		return input.usage.Cost.TotalCost
+		return input.usage.Cost
 	}
 
 	// If no usage data at all, nothing to price
 	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
-		return 0
+		return nil
 	}
 
 	if result.PassthroughResponse != nil {
@@ -165,7 +196,7 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 // type and routes the extracted usage to the appropriate per-modality compute
 // function. Shared by calculateBaseCost (response-driven) and
 // CalculateCostForUsage (bare-usage-driven, for failed/cancelled requests).
-func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) float64 {
+func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *schemas.BifrostCost {
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to
@@ -181,10 +212,13 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 
 	pricing := s.resolvePricing(routingInfo, requestType, scopes)
 	if pricing == nil {
-		return 0
+		return nil
 	}
 
-	// Route to the appropriate compute function
+	// Route to the appropriate compute function. Each returns a per-category
+	// breakdown: token-based modalities populate input / output (and cache, for
+	// text); non-token modalities (OCR per-page, container per-session) report
+	// the total only.
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return computeTextCost(pricing, input.usage, input.tier)
@@ -205,7 +239,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	case schemas.ContainerCreateRequest:
 		return computeContainerCreationCost(pricing)
 	default:
-		return 0
+		return nil
 	}
 }
 
@@ -381,9 +415,12 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 // ---------------------------------------------------------------------------
 
 // computeTextCost handles chat, text completion, and responses requests.
-func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+// It returns a per-category cost breakdown; TotalCost equals the sum of every
+// component so callers that only need the total can read that field. Returns
+// nil when usage is nil.
+func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
-		return 0
+		return nil
 	}
 
 	totalTokens := usage.TotalTokens
@@ -424,10 +461,13 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	nonCachedPrompt := promptTokens - cachedReadTokens - cachedWriteTokens
 	inputCost := float64(nonCachedPrompt) * inputRate
 
-	// Add cached prompt tokens at cache read rate
+	// Cached read tokens at cache read rate — tracked separately for the cost
+	// breakdown, but still part of the input cost total.
+	cacheReadCost := 0.0
 	if cachedReadTokens > 0 {
-		inputCost += float64(cachedReadTokens) * cacheReadInputRate
+		cacheReadCost = float64(cachedReadTokens) * cacheReadInputRate
 	}
+	inputCost += cacheReadCost
 
 	// Add cached write tokens at cache creation rate
 	if cachedWriteTokens > 0 {
@@ -442,7 +482,10 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	// Audio token cost: when token details include audio tokens, price them
 	// at the dedicated audio rate and subtract from the text token costs above.
 	// Realtime and audio-enabled chat models report audio tokens in details.
-	audioCost := 0.0
+	// Tracked as separate input/output adjustments so each lands in the right
+	// bucket of the breakdown.
+	inputAudioAdj := 0.0
+	outputAudioAdj := 0.0
 	inputAudioTokens := 0
 	outputAudioTokens := 0
 	if usage.PromptTokensDetails != nil {
@@ -463,33 +506,45 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	}
 	if inputAudioTokens > 0 && pricing.InputCostPerAudioToken != nil {
 		// Subtract audio tokens charged at text rate, add at audio rate.
-		audioCost += float64(inputAudioTokens) * (*pricing.InputCostPerAudioToken - inputRate)
+		inputAudioAdj = float64(inputAudioTokens) * (*pricing.InputCostPerAudioToken - inputRate)
 	}
 	if outputAudioTokens > 0 && pricing.OutputCostPerAudioToken != nil {
-		audioCost += float64(outputAudioTokens) * (*pricing.OutputCostPerAudioToken - outputRate)
+		outputAudioAdj = float64(outputAudioTokens) * (*pricing.OutputCostPerAudioToken - outputRate)
 	}
 
-	// Search query cost
+	// Search query cost (billed on the output side)
 	searchCost := 0.0
 	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
 		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
 	}
 
-	return inputCost + outputCost + audioCost + searchCost
+	inputTokensCost := inputCost + inputAudioAdj
+	outputTokensCost := outputCost + outputAudioAdj + searchCost
+
+	return &schemas.BifrostCost{
+		InputTokensCost:     inputTokensCost,
+		OutputTokensCost:    outputTokensCost,
+		CacheReadTokensCost: cacheReadCost,
+		TotalCost:           inputTokensCost + outputTokensCost,
+	}
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).
-func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
-		return 0
+		return nil
 	}
-	return float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens, tier)
+	c := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens, tier)
+	if c == 0 {
+		return nil
+	}
+	return &schemas.BifrostCost{InputTokensCost: c, TotalCost: c}
 }
 
 // computeRerankCost handles rerank requests.
-func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
-		return 0
+		return nil
 	}
 	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens, tier)
 	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, usage.TotalTokens, tier)
@@ -499,7 +554,23 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
 	}
 
-	return inputCost + outputCost + searchCost
+	// Search queries are billed on the output side, matching computeTextCost.
+	outputTokensCost := outputCost + searchCost
+	return newInputOutputCost(inputCost, outputTokensCost)
+}
+
+// newInputOutputCost builds a BifrostCost from separate input and output costs,
+// or returns nil when both are zero (nothing to record).
+func newInputOutputCost(inputCost, outputCost float64) *schemas.BifrostCost {
+	total := inputCost + outputCost
+	if total == 0 {
+		return nil
+	}
+	return &schemas.BifrostCost{
+		InputTokensCost:  inputCost,
+		OutputTokensCost: outputCost,
+		TotalCost:        total,
+	}
 }
 
 // computeSpeechCost handles speech (TTS) requests.
@@ -510,7 +581,7 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // input text rather than per token. PromptTokens from usage is treated as the character count
 // since TTS providers report their billable unit in that field.
 // Output falls back to per-second duration when no audio token rate is configured.
-func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) float64 {
+func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
 	totalTokens := safeTotalTokens(usage)
 
 	// Input: per-character rate takes precedence for TTS/audio models
@@ -528,13 +599,13 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 	// Output: audio tokens first, then per-second fallback
 	outputCost := computeAudioOutputCost(pricing, usage, audioSeconds, totalTokens, tier)
 
-	return inputCost + outputCost
+	return newInputOutputCost(inputCost, outputCost)
 }
 
 // computeTranscriptionCost handles transcription (STT) requests.
 // Input is audio, output is text (CompletionTokens).
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) float64 {
+func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) *schemas.BifrostCost {
 	totalTokens := safeTotalTokens(usage)
 
 	// Input: audio tokens/details first, then per-second fallback
@@ -546,7 +617,7 @@ func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usag
 		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, totalTokens, tier)
 	}
 
-	return inputCost + outputCost
+	return newInputOutputCost(inputCost, outputCost)
 }
 
 // computeAudioInputCost calculates input cost for audio: audio token details first,
@@ -595,9 +666,9 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 // Input and output are calculated independently — each tries token-based pricing first,
 // then per-pixel pricing, falling back to per-image count pricing.
 // imageQuality must be one of "low", "medium", "high", "auto" to use quality-specific rates; other values use base rates.
-func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string, tier serviceTier) float64 {
+func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string, tier serviceTier) *schemas.BifrostCost {
 	if imageUsage == nil {
-		return 0
+		return nil
 	}
 
 	totalTokens := imageUsage.TotalTokens
@@ -605,7 +676,7 @@ func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *
 	inputCost := computeImageInputCost(pricing, imageUsage, totalTokens, pixels, tier)
 	outputCost := computeImageOutputCost(pricing, imageUsage, totalTokens, pixels, imageQuality, tier)
 
-	return inputCost + outputCost
+	return newInputOutputCost(inputCost, outputCost)
 }
 
 // computeImageInputCost calculates input cost: tokens first, then per-pixel, then per-image count fallback.
@@ -719,7 +790,7 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) *schemas.BifrostCost {
 	totalTokens := safeTotalTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
@@ -744,14 +815,14 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 		}
 	}
 
-	return inputCost + outputCost
+	return newInputOutputCost(inputCost, outputCost)
 }
 
 // computeOCRCost handles OCR requests, billing per page processed.
 // ocr_cost_per_page covers base processing; annotation_cost_per_page is added when set.
-func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPages *int, ocrIsAnnotated *bool) float64 {
+func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPages *int, ocrIsAnnotated *bool) *schemas.BifrostCost {
 	if ocrProcessedPages == nil {
-		return 0
+		return nil
 	}
 	pages := float64(*ocrProcessedPages)
 	cost := 0.0
@@ -761,7 +832,18 @@ func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPa
 	if ocrIsAnnotated != nil && *ocrIsAnnotated && pricing.AnnotationCostPerPage != nil {
 		cost += pages * *pricing.AnnotationCostPerPage
 	}
-	return cost
+	// OCR is billed per page, not per input/output token, so it has no
+	// input/output split — report the total only.
+	return totalOnlyCost(cost)
+}
+
+// totalOnlyCost wraps a non-token-based cost (per-page, per-session) into a
+// BifrostCost carrying only the total, or nil when there is nothing to record.
+func totalOnlyCost(c float64) *schemas.BifrostCost {
+	if c == 0 {
+		return nil
+	}
+	return &schemas.BifrostCost{TotalCost: c}
 }
 
 // ---------------------------------------------------------------------------
