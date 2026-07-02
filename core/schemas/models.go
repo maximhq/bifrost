@@ -82,6 +82,20 @@ type BifrostListModelsResponse struct {
 	HasMore *bool   `json:"-"`
 }
 
+func (response *BifrostListModelsResponse) FilterDeprecatedModels() {
+	if response == nil || len(response.Data) == 0 {
+		return
+	}
+	models := response.Data[:0]
+	for _, model := range response.Data {
+		if model.IsDeprecated {
+			continue
+		}
+		models = append(models, model)
+	}
+	response.Data = models
+}
+
 // ApplyPagination applies offset-based pagination to a BifrostListModelsResponse.
 // Uses opaque tokens with LastID validation to ensure cursor integrity.
 // Returns the paginated response with properly set NextPageToken.
@@ -151,12 +165,13 @@ type Model struct {
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
 	NormalizedName      *string            `json:"normalized_name,omitempty"` // Human-readable name derived from the datasheet base_model (e.g. "Claude Sonnet 4.5")
-	Alias               *string            `json:"alias,omitempty"` // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
+	Alias               *string            `json:"alias,omitempty"`           // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
 	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`
 	MaxInputTokens      *int               `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens     *int               `json:"max_output_tokens,omitempty"`
 	Architecture        *Architecture      `json:"architecture,omitempty"`
+	IsDeprecated        bool               `json:"is_deprecated,omitempty"`
 	Pricing             *Pricing           `json:"pricing,omitempty"`
 	TopProvider         *TopProvider       `json:"top_provider,omitempty"`
 	PerRequestLimits    *PerRequestLimits  `json:"per_request_limits,omitempty"`

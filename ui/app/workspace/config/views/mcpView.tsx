@@ -9,6 +9,8 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -20,6 +22,13 @@ export default function MCPView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
+
+	// The "require identity-provider login" toggle is enterprise-only and only
+	// meaningful when an identity provider is configured — the backend ignores
+	// disable_vk_identity otherwise, so surfacing it would be a no-op. The SCIM
+	// query is skipped (and stubbed to []) in OSS builds.
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
+	const idpConfigured = !!scimProviders?.some((p) => (p as { enabled?: boolean }).enabled);
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 
@@ -28,11 +37,15 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: string;
 		mcp_code_mode_binding_level: string;
 		mcp_tool_sync_interval: string;
+    oauth2_auth_code_ttl: string;
+    oauth2_access_token_ttl: string;
 	}>({
 		mcp_agent_depth: "10",
 		mcp_tool_execution_timeout: "30",
 		mcp_code_mode_binding_level: "server",
 		mcp_tool_sync_interval: "10",
+    oauth2_auth_code_ttl: "300",
+    oauth2_access_token_ttl: "600",
 	});
 
 	useEffect(() => {
@@ -43,6 +56,14 @@ export default function MCPView() {
 				mcp_tool_execution_timeout: config?.mcp_tool_execution_timeout?.toString() || "30",
 				mcp_code_mode_binding_level: config?.mcp_code_mode_binding_level || "server",
 				mcp_tool_sync_interval: config?.mcp_tool_sync_interval?.toString() || "10",
+        // Coerce a stored 0 (which the backend treats as "use default") to the
+        // displayed default so the inputs never show a confusing 0.
+        oauth2_auth_code_ttl: (
+          config?.oauth2_server_config?.auth_code_ttl || 300
+        ).toString(),
+        oauth2_access_token_ttl: (
+          config?.oauth2_server_config?.access_token_ttl || 600
+        ).toString(),
 			});
 		}
 	}, [config, bifrostConfig]);
@@ -50,6 +71,10 @@ export default function MCPView() {
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		const clientURLChanged = !secretVarEquals(localConfig.mcp_external_client_url, config.mcp_external_client_url);
+    const issuerURLChanged = !secretVarEquals(
+      localConfig.oauth2_server_config?.issuer_url,
+      config.oauth2_server_config?.issuer_url,
+    );
 		return (
 			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
@@ -57,7 +82,16 @@ export default function MCPView() {
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
-			clientURLChanged
+			clientURLChanged ||
+      (localConfig.mcp_server_auth_mode ?? "headers") !==
+        (config.mcp_server_auth_mode ?? "headers") ||
+      issuerURLChanged ||
+      (localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !==
+        (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
+      (localConfig.oauth2_server_config?.access_token_ttl ?? 600) !==
+        (config.oauth2_server_config?.access_token_ttl ?? 600) ||
+      (localConfig.oauth2_server_config?.disable_vk_identity ?? false) !==
+        (config.oauth2_server_config?.disable_vk_identity ?? false)
 		);
 	}, [config, localConfig]);
 
@@ -116,6 +150,58 @@ export default function MCPView() {
 		setLocalConfig((prev) => ({ ...prev, mcp_external_client_url: value }));
 	}, []);
 
+  const handleAuthModeChange = useCallback((value: string) => {
+    if (value === "headers" || value === "both" || value === "oauth") {
+      setLocalConfig((prev) => ({
+        ...prev,
+        mcp_server_auth_mode: value,
+        // disable_vk_identity is oauth-only and its toggle is hidden outside oauth
+        // mode; clear it on the way out so a hidden-stale value can't be saved and
+        // rejected by the backend (400) on the next save.
+        oauth2_server_config:
+          value === "oauth"
+            ? prev.oauth2_server_config
+            : { ...prev.oauth2_server_config, disable_vk_identity: false },
+      }));
+    }
+  }, []);
+
+  const handleIssuerURLChange = useCallback((value: SecretVar) => {
+    setLocalConfig((prev) => ({
+      ...prev,
+      oauth2_server_config: { ...prev.oauth2_server_config, issuer_url: value },
+    }));
+  }, []);
+
+  const handleAuthCodeTTLChange = useCallback((value: string) => {
+    setLocalValues((prev) => ({ ...prev, oauth2_auth_code_ttl: value }));
+    const num = Number.parseInt(value);
+    if (!isNaN(num) && num >= 1) {
+      setLocalConfig((prev) => ({
+        ...prev,
+        oauth2_server_config: { ...prev.oauth2_server_config, auth_code_ttl: num },
+      }));
+    }
+  }, []);
+
+  const handleAccessTokenTTLChange = useCallback((value: string) => {
+    setLocalValues((prev) => ({ ...prev, oauth2_access_token_ttl: value }));
+    const num = Number.parseInt(value);
+    if (!isNaN(num) && num >= 60) {
+      setLocalConfig((prev) => ({
+        ...prev,
+        oauth2_server_config: { ...prev.oauth2_server_config, access_token_ttl: num },
+      }));
+    }
+  }, []);
+
+  const handleDisableVKIdentityChange = useCallback((checked: boolean) => {
+    setLocalConfig((prev) => ({
+      ...prev,
+      oauth2_server_config: { ...prev.oauth2_server_config, disable_vk_identity: checked },
+    }));
+  }, []);
+
 	const handleSave = useCallback(async () => {
 		try {
 			const agentDepth = Number.parseInt(localValues.mcp_agent_depth);
@@ -131,13 +217,59 @@ export default function MCPView() {
 				return;
 			}
 
+      // The TTL fields are only shown (and only relevant) in OAuth modes; the
+      // backend likewise validates oauth2_server_config only then. Guard the
+      // checks so a stale value can't dead-end the save after switching back to
+      // headers mode, where the fields are hidden and unfixable.
+      const oauthModeActive =
+        localConfig.mcp_server_auth_mode === "both" ||
+        localConfig.mcp_server_auth_mode === "oauth";
+
+      const authCodeTTL = Number.parseInt(localValues.oauth2_auth_code_ttl);
+      const accessTokenTTL = Number.parseInt(
+        localValues.oauth2_access_token_ttl,
+      );
+
+      if (
+        oauthModeActive &&
+        (isNaN(authCodeTTL) || authCodeTTL < 1 || authCodeTTL > 900)
+      ) {
+        toast.error(
+          "Authorization code TTL must be between 1 and 900 seconds (15 minutes).",
+        );
+        return;
+      }
+
+      if (oauthModeActive && (isNaN(accessTokenTTL) || accessTokenTTL < 60)) {
+        toast.error("Access token TTL must be at least 60 seconds.");
+        return;
+      }
+
 			if (!bifrostConfig) {
 				toast.error("Configuration not loaded. Please refresh and try again.");
 				return;
 			}
+
+      // The TTLs live in localValues (the text inputs) and only sync into
+      // localConfig when the field is edited, so a setup that never touches them
+      // (e.g. only toggling a switch or setting the issuer URL) would serialize
+      // oauth2_server_config with the TTLs omitted — which the Go side unmarshals
+      // back as 0. Write the validated values so the stored config always matches
+      // what the form shows.
+      const clientConfigToSave: CoreConfig = oauthModeActive
+        ? {
+            ...localConfig,
+            oauth2_server_config: {
+              ...localConfig.oauth2_server_config,
+              auth_code_ttl: authCodeTTL,
+              access_token_ttl: accessTokenTTL,
+            },
+          }
+        : localConfig;
+
 			await updateCoreConfig({
 				...bifrostConfig,
-				client_config: localConfig,
+				client_config: clientConfigToSave,
 			}).unwrap();
 			toast.success("MCP settings updated successfully.");
 		} catch (error) {
@@ -340,6 +472,221 @@ export default function MCPView() {
 									</p>
 								</AlertDescription>
 							</Alert>
+              {/* MCP Server Auth Mode */}
+              <div className="mt-4 space-y-2 border-t pt-4">
+                <label
+                  htmlFor="mcp-server-auth-mode"
+                  className="text-sm font-medium"
+                >
+                  MCP Server Authentication Mode
+                </label>
+                <p className="text-muted-foreground text-sm">
+                  Controls how inbound MCP clients (e.g. Claude Code, Cursor)
+                  authenticate to the <code className="text-xs">/mcp</code>{" "}
+                  endpoint.{" "}
+                  <b>headers</b> (default) - VK / api-key / session headers
+                  only, OAuth discovery disabled.{" "}
+                  <b>both</b> - accepts header credentials and Bifrost-issued
+                  JWTs; existing integrations are unaffected.{" "}
+                  <b>oauth</b> - JWTs only; VK and header access is disabled.
+                </p>
+                <Select
+                  value={localConfig.mcp_server_auth_mode ?? "headers"}
+                  onValueChange={handleAuthModeChange}
+                  disabled={!hasSettingsUpdateAccess}
+                >
+                  <SelectTrigger
+                    id="mcp-server-auth-mode"
+                    data-testid="mcp-server-auth-mode-select"
+                    className="w-40"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="headers">Headers</SelectItem>
+                    <SelectItem value="both">Both</SelectItem>
+                    <SelectItem value="oauth">OAuth</SelectItem>
+                  </SelectContent>
+                </Select>
+                {/* oauth: VK/header access disabled */}
+                {localConfig.mcp_server_auth_mode === "oauth" && (
+                  <Alert variant="warning">
+                    <AlertTriangle className="size-4" />
+                    <AlertTitle>VK / header MCP access will be disabled</AlertTitle>
+                    <AlertDescription>
+                      All existing MCP integrations that use a virtual key,
+                      api-key, or session header will stop working immediately.
+                      Clients must re-authenticate via the OAuth consent flow to
+                      obtain a JWT before they can connect.
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {/* headers: warn if downgrading from oauth-enabled mode */}
+                {localConfig.mcp_server_auth_mode === "headers" &&
+                  (config?.mcp_server_auth_mode === "both" ||
+                    config?.mcp_server_auth_mode === "oauth") && (
+                  <Alert variant="warning">
+                    <AlertTriangle className="size-4" />
+                    <AlertTitle>OAuth discovery will be disabled</AlertTitle>
+                    <AlertDescription>
+                      All MCP clients that authenticated via the OAuth consent
+                      flow will lose access — their JWTs will be rejected and
+                      their refresh tokens will become unusable. They will need
+                      to reconfigure using a virtual key or api-key header.
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {/* both: informational note about additive nature */}
+                {localConfig.mcp_server_auth_mode === "both" &&
+                  (config?.mcp_server_auth_mode ?? "headers") !== "both" && (
+                  <Alert>
+                    <AlertDescription>
+                      Existing VK / header integrations continue to work
+                      unchanged. New MCP clients can connect via OAuth - they'll
+                      be redirected to the consent page to pick an identity.
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </div>
+
+              {/* OAuth2 AS Settings — only shown when auth mode is not headers */}
+              {(localConfig.mcp_server_auth_mode === "both" ||
+                localConfig.mcp_server_auth_mode === "oauth") && (
+                <div className="mt-4 space-y-4 border-t pt-4">
+                  <p className="text-sm font-medium">OAuth2 Server Settings</p>
+
+                  {/* Issuer URL */}
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="oauth2-issuer-url"
+                      className="text-sm font-medium"
+                    >
+                      Issuer URL
+                    </label>
+                    <p className="text-muted-foreground text-sm">
+                      Stable public URL advertised in discovery documents and
+                      embedded as the <code className="text-xs">iss</code> claim
+                      in every JWT. Leave blank to derive it from the request{" "}
+                      <code className="text-xs">Host</code> header (sufficient
+                      for most deployments). Multi-host or reverse-proxy
+                      deployments might need this. Supports env var syntax (e.g.{" "}
+                      <code className="text-xs">env.BIFROST_ISSUER_URL</code>).
+                    </p>
+                    <SecretVarInput
+                      id="oauth2-issuer-url"
+                      data-testid="oauth2-issuer-url-input"
+                      placeholder="https://bifrost.example.com or env.BIFROST_ISSUER_URL"
+                      value={localConfig.oauth2_server_config?.issuer_url}
+                      onChange={handleIssuerURLChange}
+                      disabled={!hasSettingsUpdateAccess}
+                    />
+                  </div>
+
+                  {/* Token TTLs */}
+                  <div className="flex gap-6">
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="oauth2-auth-code-ttl"
+                        className="text-sm font-medium"
+                      >
+                        Authorization code TTL (seconds)
+                      </label>
+                      <p className="text-muted-foreground text-xs">
+                        How long the one-time code is valid after the consent
+                        page redirects back to the MCP client (default: 300, max
+                        900 = 15 min).
+                      </p>
+                      <Input
+                        id="oauth2-auth-code-ttl"
+                        data-testid="oauth2-auth-code-ttl-input"
+                        type="number"
+                        className="w-28"
+                        min="1"
+                        max="900"
+                        value={localValues.oauth2_auth_code_ttl}
+                        onChange={(e) => handleAuthCodeTTLChange(e.target.value)}
+                        disabled={!hasSettingsUpdateAccess}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="oauth2-access-token-ttl"
+                        className="text-sm font-medium"
+                      >
+                        Access token TTL (seconds)
+                      </label>
+                      <p className="text-muted-foreground text-xs">
+                        Lifetime of issued JWT Bearer tokens. Clients silently
+                        refresh when expired (default: 600 = 10 min). Also bounds
+                        how long a revoked grant keeps working before it is cut off.
+                      </p>
+                      <Input
+                        id="oauth2-access-token-ttl"
+                        data-testid="oauth2-access-token-ttl-input"
+                        type="number"
+                        className="w-28"
+                        min="60"
+                        value={localValues.oauth2_access_token_ttl}
+                        onChange={(e) => handleAccessTokenTTLChange(e.target.value)}
+                        disabled={!hasSettingsUpdateAccess}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Require identity-provider login. Enterprise-only and only
+                      meaningful in oauth mode with an IdP configured. Stays visible
+                      when the setting is already enabled so it is never silently lost. */}
+                  {localConfig.mcp_server_auth_mode === "oauth" &&
+                    (idpConfigured ||
+                      localConfig.oauth2_server_config?.disable_vk_identity) && (
+                    <div className="mt-4 space-y-2 border-t pt-4">
+                      <div className="flex items-center justify-between space-x-2">
+                        <div className="space-y-0.5">
+                          <label
+                            htmlFor="oauth2-disable-vk-identity"
+                            className="text-sm font-medium"
+                          >
+                            Require identity-provider login
+                          </label>
+                          <p className="text-muted-foreground text-sm">
+                            When enabled, the OAuth consent flow only offers
+                            identity-provider login. Virtual keys can no longer be
+                            used to obtain an MCP token, and existing virtual-key
+                            OAuth sessions lose access immediately. Anonymous session
+                            access is unaffected (controlled by Enforce Authentication
+                            on Inference).
+                          </p>
+                        </div>
+                        <Switch
+                          id="oauth2-disable-vk-identity"
+                          data-testid="oauth2-disable-vk-identity-switch"
+                          size="md"
+                          checked={
+                            localConfig.oauth2_server_config?.disable_vk_identity ?? false
+                          }
+                          onCheckedChange={handleDisableVKIdentityChange}
+                          disabled={!hasSettingsUpdateAccess}
+                        />
+                      </div>
+                      {localConfig.oauth2_server_config?.disable_vk_identity && (
+                        <Alert variant="warning">
+                          <AlertTriangle className="size-4" />
+                          <AlertTitle>
+                            Virtual-key MCP access via OAuth will stop
+                          </AlertTitle>
+                          <AlertDescription>
+                            MCP clients that authenticated with a virtual key will
+                            lose access immediately and must sign in through your
+                            identity provider to reconnect.
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 						</AccordionContent>
 					</AccordionItem>
 				</Accordion>

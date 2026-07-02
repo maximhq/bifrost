@@ -15,6 +15,7 @@ type TokenRefreshWorker struct {
 	lookAheadWindow time.Duration // How far ahead to look for expiring tokens
 	stopCh          chan struct{}
 	stopOnce        sync.Once
+	cancel          context.CancelFunc
 	logger          schemas.Logger
 }
 
@@ -35,7 +36,9 @@ func NewTokenRefreshWorker(provider *OAuth2Provider, logger schemas.Logger) *Tok
 
 // Start begins the token refresh worker in a background goroutine
 func (w *TokenRefreshWorker) Start(ctx context.Context) {
-	go w.run(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	go w.run(runCtx)
 	if w.logger != nil {
 		w.logger.Info("Token refresh worker started")
 	}
@@ -46,6 +49,11 @@ func (w *TokenRefreshWorker) Start(ctx context.Context) {
 // can't panic by re-closing the channel.
 func (w *TokenRefreshWorker) Stop() {
 	w.stopOnce.Do(func() {
+		// Cancel any in-flight refresh so a blocked DB call unwinds promptly,
+		// then signal run() to exit its ticker loop.
+		if w.cancel != nil {
+			w.cancel()
+		}
 		close(w.stopCh)
 		if w.logger != nil {
 			w.logger.Info("Token refresh worker stopped")
@@ -154,6 +162,7 @@ type PerUserOAuthSweepWorker struct {
 	orphanRetention  time.Duration
 	stopCh           chan struct{}
 	stopOnce         sync.Once
+	cancel           context.CancelFunc
 	logger           schemas.Logger
 }
 
@@ -178,7 +187,9 @@ func NewPerUserOAuthSweepWorker(provider *OAuth2Provider, orphanRetention time.D
 
 // Start begins the sweep worker in a background goroutine.
 func (w *PerUserOAuthSweepWorker) Start(ctx context.Context) {
-	go w.run(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	go w.run(runCtx)
 	if w.logger != nil {
 		w.logger.Info("Per-user OAuth sweep worker started (flow=%s, orphan=%s, retention=%s)",
 			w.flowSweepEvery, w.orphanSweepEvery, w.orphanRetention)
@@ -189,6 +200,11 @@ func (w *PerUserOAuthSweepWorker) Start(ctx context.Context) {
 // panics when called from multiple shutdown paths.
 func (w *PerUserOAuthSweepWorker) Stop() {
 	w.stopOnce.Do(func() {
+		// Cancel any in-flight sweep so a blocked DB call unwinds promptly,
+		// then signal run() to exit its ticker loop.
+		if w.cancel != nil {
+			w.cancel()
+		}
 		close(w.stopCh)
 		if w.logger != nil {
 			w.logger.Info("Per-user OAuth sweep worker stopped")

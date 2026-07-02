@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -349,6 +352,19 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
+func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.ModelCatalog {
+	t.Helper()
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+}
+
 func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -395,7 +411,7 @@ func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o"}},
 			{ID: "key-b", Models: []string{"gpt-4o", "gpt-4o-mini"}},
-			{ID: "key-disabled", Enabled: boolPtr(false)},
+			{ID: "key-disabled", Enabled: new(false)},
 		},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
@@ -466,6 +482,103 @@ func TestListModels_AppliesQueryAndLimitAfterFiltering(t *testing.T) {
 	}
 	if resp.Models[0].Name != "gpt-4o" {
 		t.Fatalf("expected first filtered model to be gpt-4o, got %#v", resp.Models[0])
+	}
+}
+
+func TestListModels_FiltersDeprecatedModelsBeforePagination(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"deprecated-model", "current-model", "another-current-model"},
+		[]string{"deprecated-model", "current-model", "another-current-model"},
+	)
+
+	pricingJSON := []byte(`{
+		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
+		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"},
+		"another-current-model": {"provider":"openai","mode":"chat","base_model":"another-current-model"}
+	}`)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, pricingJSON)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&limit=1")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 after filtering deprecated models, got %d", resp.Total)
+	}
+	if len(resp.Models) != 1 {
+		t.Fatalf("expected limit to apply after deprecated filtering, got %#v", resp.Models)
+	}
+	if resp.Models[0].Name == "deprecated-model" || resp.Models[0].IsDeprecated {
+		t.Fatalf("deprecated model should not be returned, got %#v", resp.Models[0])
+	}
+}
+
+func TestListBaseModels_FiltersDeprecatedPricingRows(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		nil,
+		nil,
+	)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-base","is_deprecated":true},
+		"current-model": {"provider":"openai","mode":"chat","base_model":"current-base"}
+	}`))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/base?limit=10")
+
+	h.listBaseModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListBaseModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Models) != 1 || resp.Models[0] != "current-base" {
+		t.Fatalf("expected only current-base, got %#v", resp)
+	}
+}
+
+func TestEnrichAndFilterListModelsResponse_FiltersDeprecatedPricingRows(t *testing.T) {
+	catalog := modelCatalogForPricingJSON(t, []byte(`{
+		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
+		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"}
+	}`))
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "openai/deprecated-model"},
+		{ID: "openai/current-model"},
+		{ID: "openai/provider-deprecated", IsDeprecated: true},
+	}}
+
+	enrichAndFilterListModelsResponse(resp, catalog)
+
+	if len(resp.Data) != 1 || resp.Data[0].ID != "openai/current-model" {
+		t.Fatalf("expected only current model, got %#v", resp.Data)
+	}
+	if resp.Data[0].IsDeprecated {
+		t.Fatalf("current model should not be marked deprecated: %#v", resp.Data[0])
 	}
 }
 
@@ -638,7 +751,7 @@ func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o"}},
-			{ID: "key-disabled", Enabled: boolPtr(false)},
+			{ID: "key-disabled", Enabled: new(false)},
 		},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},

@@ -55,6 +55,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableOauthUserToken{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
+		&tables.TableOAuth2RefreshToken{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
@@ -85,6 +86,36 @@ func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 			SimpleKeywords:    []string{"hello"},
 		},
 	}
+}
+
+func TestRDBConfigStore_UpsertModelPricesSyncsIsDeprecated(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: true,
+	}))
+
+	prices, err := store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.True(t, prices[0].IsDeprecated)
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: false,
+	}))
+
+	prices, err = store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.False(t, prices[0].IsDeprecated)
 }
 
 func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
@@ -985,6 +1016,40 @@ func TestDeleteVirtualKey(t *testing.T) {
 
 	_, err = store.GetVirtualKey(ctx, "vk-delete")
 	assert.Error(t, err, "Should not find deleted virtual key")
+}
+
+func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-grant",
+		Name:     "Grant VK",
+		Value:    "vk-grant-value",
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// An active vk-mode inbound grant bound to this VK (vk-mode rows key bf_sub
+	// to the VK id).
+	rt := &tables.TableOAuth2RefreshToken{
+		ID:        "rt-vk-grant",
+		TokenHash: "hash-vk-grant",
+		FamilyID:  "fam-vk-grant",
+		ClientID:  "client-1",
+		BfMode:    string(schemas.MCPAuthModeVK),
+		BfSub:     vk.ID,
+		Scope:     "mcp",
+		Resource:  "https://example.test/mcp",
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, store.DB().WithContext(ctx).Create(rt).Error)
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+
+	var got tables.TableOAuth2RefreshToken
+	require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-grant").Error)
+	assert.NotNil(t, got.RevokedAt, "vk-mode grant should be revoked when its VK is deleted")
 }
 
 func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
@@ -2166,4 +2231,85 @@ func TestDeletePromptSession(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, versions, 2)
 	})
+}
+
+// TestUpsertModelPricesBatch_SQLite guards the pricing-sync write path on
+// SQLite. Batching these rows into a multi-row INSERT makes GORM emit the
+// DEFAULT keyword for the table's many default:null columns, which SQLite
+// rejects ("near \"DEFAULT\": syntax error"), so UpsertModelPricesBatch must
+// fall back to per-row writes on SQLite. The rows below intentionally leave
+// cost columns nil to exercise exactly that case.
+func TestUpsertModelPricesBatch_SQLite(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{
+		{Model: "google/gemini-2.5-flash", Provider: "vertex", Mode: "chat", InputCostPerToken: cost(0.000001)},
+		{Model: "openai/gpt-4o", Provider: "openai", Mode: "chat"}, // all costs nil
+		{Model: "anthropic/claude-3", Provider: "anthropic", Mode: "chat", OutputCostPerToken: cost(0.000015)},
+	}
+
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+
+	// Re-upsert with a changed cost to exercise the ON CONFLICT update path.
+	pricing[1].InputCostPerToken = cost(0.000005)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err = s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3) // upsert, not duplicate insert
+
+	var updated *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "openai/gpt-4o" {
+			updated = &got[i]
+		}
+	}
+	require.NotNil(t, updated)
+	require.NotNil(t, updated.InputCostPerToken)
+	assert.InDelta(t, 0.000005, *updated.InputCostPerToken, 1e-9)
+}
+
+func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelParameters{}))
+
+	ctx := context.Background()
+	params := []tables.TableModelParameters{
+		{Model: "model-a", Data: `{"max_output_tokens":100}`},
+		{Model: "model-b", Data: `{"max_output_tokens":200}`},
+		{Model: "model-c", Data: `{"max_output_tokens":300}`},
+	}
+
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, params))
+
+	got, err := s.GetModelParameters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+
+	params[1].Data = `{"max_output_tokens":250}`
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, params))
+
+	updated, err := s.GetModelParametersByModel(ctx, "model-b")
+	require.NoError(t, err)
+	assert.Equal(t, `{"max_output_tokens":250}`, updated.Data)
+
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, []tables.TableModelParameters{
+		{Model: "model-b", Data: `{"max_output_tokens":260}`},
+		{Model: "model-b", Data: `{"max_output_tokens":270}`},
+	}))
+	updated, err = s.GetModelParametersByModel(ctx, "model-b")
+	require.NoError(t, err)
+	assert.Equal(t, `{"max_output_tokens":270}`, updated.Data)
+
+	got, err = s.GetModelParameters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
 }

@@ -23,6 +23,10 @@ function isWorkspaceRoute(value: string): boolean {
 		value === DEFAULT_POST_LOGIN_PATH ||
 		value.startsWith(`${DEFAULT_POST_LOGIN_PATH}/`) ||
 		value.startsWith(`${DEFAULT_POST_LOGIN_PATH}?`) ||
-		value.startsWith(`${DEFAULT_POST_LOGIN_PATH}#`)
+		value.startsWith(`${DEFAULT_POST_LOGIN_PATH}#`) ||
+    value === "/oauth/consent" ||
+    value.startsWith("/oauth/consent?") ||
+    value.startsWith("/oauth/consent#") ||
+    value.startsWith("/oauth/consent/")
 	);
 }

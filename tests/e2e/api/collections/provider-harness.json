@@ -8803,6 +8803,24 @@
               }
             },
             {
+              "name": "Adaptive thinking (Sonnet 5)",
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"},
+                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+              }
+            },
+            {
+              "name": "Adaptive thinking + effort=high (Sonnet 5)",
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"output_config\": { \"effort\": \"high\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"},
+                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+              }
+            },
+            {
               "name": "Prompt caching (cache_control: ephemeral)",
               "request": {
                 "method": "POST",
@@ -8994,6 +9012,24 @@
               }
             },
             {
+              "name": "Computer use - Sonnet 5 canonical (new-gen tools, computer-use-2025-11-24)",
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"},
+                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+              }
+            },
+            {
+              "name": "Computer use - Sonnet 5 + old-gen tools (Bifrost auto-upgrades)",
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20250124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250124\", \"name\": \"str_replace_editor\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"},
+                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+              }
+            },
+            {
               "name": "Vision (base64 image)",
               "request": {
                 "method": "POST",
@@ -9062,6 +9098,401 @@
                   ]
                 }
               }
+            },
+            {
+              "name": "Code execution — python (code_execution_20250825)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python code execution to compute the mean and population standard deviation of [2, 4, 4, 4, 5, 5, 7, 9]. Show the code.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — bash sub-tool (bash_code_execution)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Using a bash shell command (not Python), print the Python version with `python3 --version` and list the directory with `ls -la`.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — text_editor (create / view / str_replace)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the file editor tool to: (1) create notes.txt containing 'debug=true', (2) view it, then (3) str_replace 'debug=true' with 'debug=false'. Use the editor, not Python.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});",
+                      "if (pm.response.code < 400) {",
+                      "  pm.test('Anthropic: text_editor input preserved (command + path)', function () {",
+                      "    var blocks = (pm.response.json().content) || [];",
+                      "    var te = blocks.find(function (b) { return b.type === 'server_tool_use' && b.name === 'text_editor_code_execution'; });",
+                      "    if (te) { pm.expect(te.input).to.have.property('command'); pm.expect(te.input).to.have.property('path'); }",
+                      "  });",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — streaming (SSE, well-formed blocks)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to list the first 15 Fibonacci numbers and print them.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ],\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: streaming code execution is well-formed', function () {",
+                      "  var raw = pm.response.text() || '';",
+                      "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+                      "  pm.expect(raw, 'no code-execution server_tool_use in stream').to.include('\"type\":\"server_tool_use\"');",
+                      "  pm.expect(raw).to.match(/\"name\":\"(code_execution|bash_code_execution|text_editor_code_execution)\"/);",
+                      "  var starts = (raw.match(/event: content_block_start/g) || []).length;",
+                      "  var stops = (raw.match(/event: content_block_stop/g) || []).length;",
+                      "  pm.expect(stops, 'content_block_start/stop unbalanced ' + starts + '/' + stops).to.equal(starts);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — version code_execution_20260120 (REPL persistence + PTC)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to compute 17 * 23 and print the result.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260120\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — version code_execution_20260521 (disclosed per-cell time limit)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to compute the factorial of 10 and print it.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260521\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution ran', function () {",
+                      "  var j = pm.response.json();",
+                      "  var blocks = j.content || [];",
+                      "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                      "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                      "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                      "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                      "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                      "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Code execution — programmatic tool calling (custom tool + allowed_callers)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Write Python that calls get_stock_price for 'AAPL' and 'GOOGL' in a loop and prints each result.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260120\",\n      \"name\": \"code_execution\"\n    },\n    {\n      \"name\": \"get_stock_price\",\n      \"description\": \"Get the current price for a stock ticker.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"ticker\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"ticker\"\n        ]\n      },\n      \"allowed_callers\": [\n        \"code_execution_20260120\"\n      ]\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: programmatic tool calling accepted (allowed_callers + auto beta header)', function () {",
+                      "  var blocks = (pm.response.json().content) || [];",
+                      "  var ran = blocks.some(function (b) {",
+                      "    return (b.type === 'server_tool_use' && b.name === 'code_execution') || (b.type === 'tool_use' && b.name === 'get_stock_price');",
+                      "  });",
+                      "  pm.expect(ran, 'neither code_execution nor the custom tool was invoked').to.be.ok;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
@@ -10229,6 +10660,26 @@
               }
             },
             {
+              "name": "anthropic/claude-sonnet-5",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Function call: get_weather invoked with city argument', function () { var j = pm.response.json(); var tc = null; if (j.choices && j.choices[0] && j.choices[0].message && Array.isArray(j.choices[0].message.tool_calls) && j.choices[0].message.tool_calls.length) { tc = j.choices[0].message.tool_calls[0]; } pm.expect(tc, 'no tool_calls in response').to.not.be.null; pm.expect(tc.function && tc.function.name).to.equal('get_weather'); var a; try { a = JSON.parse(tc.function.arguments); } catch (e) { pm.expect.fail('arguments not JSON: ' + e.message); return; } pm.expect(a).to.have.property('city').that.is.a('string'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-sonnet-5",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Function call: get_weather invoked with city argument', function () { var j = pm.response.json(); var tc = null; if (j.choices && j.choices[0] && j.choices[0].message && Array.isArray(j.choices[0].message.tool_calls) && j.choices[0].message.tool_calls.length) { tc = j.choices[0].message.tool_calls[0]; } pm.expect(tc, 'no tool_calls in response').to.not.be.null; pm.expect(tc.function && tc.function.name).to.equal('get_weather'); var a; try { a = JSON.parse(tc.function.arguments); } catch (e) { pm.expect.fail('arguments not JSON: ' + e.message); return; } pm.expect(a).to.have.property('city').that.is.a('string'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
+              }
+            },
+            {
               "name": "gemini/gemini-2.5-flash",
               "event": [
                 {
@@ -10377,6 +10828,24 @@
                     "completions"
                   ]
                 }
+              }
+            },
+            {
+              "name": "anthropic/claude-sonnet-5",
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
+              }
+            },
+            {
+              "name": "bedrock/global.anthropic.claude-sonnet-5",
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
               }
             },
             {
