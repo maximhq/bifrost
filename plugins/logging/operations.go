@@ -16,6 +16,52 @@ import (
 
 const realtimeMissingTranscriptText = "[Audio transcription unavailable]"
 
+const (
+	logStatusProcessing = "processing"
+	logStatusSuccess    = "success"
+	logStatusError      = "error"
+	logStatusCancelled  = "cancelled"
+)
+
+func logStatusForError(err *schemas.BifrostError) string {
+	if isCancelledLogError(err) {
+		return logStatusCancelled
+	}
+	return logStatusError
+}
+
+func isCancelledLogError(err *schemas.BifrostError) bool {
+	if err == nil {
+		return false
+	}
+	if err.StatusCode != nil && *err.StatusCode == 499 {
+		return true
+	}
+	if err.Error == nil || err.Error.Type == nil {
+		return false
+	}
+	switch *err.Error.Type {
+	case schemas.RequestCancelled:
+		return true
+	case schemas.RequestTimedOut:
+		return isContextTimeoutLogError(err)
+	default:
+		return false
+	}
+}
+
+func isContextTimeoutLogError(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error.Message))
+	if message == "" || message == strings.ToLower(schemas.ErrProviderRequestTimedOut) {
+		return false
+	}
+	return strings.Contains(message, "by context") ||
+		strings.Contains(message, "context deadline exceeded")
+}
+
 // insertInitialLogEntry creates a new log entry in the database using GORM
 func (p *LoggerPlugin) insertInitialLogEntry(
 	ctx context.Context,
@@ -33,7 +79,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		Provider:      data.Provider,
 		Model:         data.Model,
 		FallbackIndex: fallbackIndex,
-		Status:        "processing",
+		Status:        logStatusProcessing,
 		Stream:        false,
 		CreatedAt:     timestamp,
 		// Set parsed fields for serialization
@@ -339,7 +385,8 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
-		entry.Status = "error"
+		entry.Status = logStatusForError(streamResponse.Data.ErrorDetails)
+		entry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
 		// Serialize error details immediately to avoid use-after-free with pooled errors
 		if data, err := sonic.Marshal(streamResponse.Data.ErrorDetails); err == nil {
 			entry.ErrorDetails = string(data)
@@ -347,7 +394,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
 	} else {
-		entry.Status = "success"
+		entry.Status = logStatusSuccess
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
 	}
