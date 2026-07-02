@@ -112,3 +112,99 @@ func TestToBedrockCohereEmbeddingRequestBodyOmitsModel(t *testing.T) {
 		"embedding_types": ["float"]
 	}`, string(wireBody))
 }
+
+func TestParseBedrockInvokeUsageFromHeaders(t *testing.T) {
+	t.Run("returns nil for empty headers", func(t *testing.T) {
+		assert.Nil(t, parseBedrockInvokeUsageFromHeaders(nil))
+		assert.Nil(t, parseBedrockInvokeUsageFromHeaders(map[string]string{}))
+	})
+
+	t.Run("returns nil when neither token header is present", func(t *testing.T) {
+		headers := map[string]string{
+			"Content-Type":     "application/json",
+			"X-Amzn-Requestid": "abc-123",
+		}
+		assert.Nil(t, parseBedrockInvokeUsageFromHeaders(headers))
+	})
+
+	t.Run("parses input token count from canonical header", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Input-Token-Count": "42",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 42, usage.PromptTokens)
+		assert.Equal(t, 0, usage.CompletionTokens)
+		assert.Equal(t, 42, usage.TotalTokens)
+	})
+
+	t.Run("parses output-only token count when input header is absent", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Output-Token-Count": "17",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 0, usage.PromptTokens)
+		assert.Equal(t, 17, usage.CompletionTokens)
+		assert.Equal(t, 17, usage.TotalTokens)
+	})
+
+	t.Run("preserves zero input alongside positive output", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Input-Token-Count":  "0",
+			"X-Amzn-Bedrock-Output-Token-Count": "12",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 0, usage.PromptTokens)
+		assert.Equal(t, 12, usage.CompletionTokens)
+		assert.Equal(t, 12, usage.TotalTokens)
+	})
+
+	t.Run("parses both input and output token counts", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Input-Token-Count":  "100",
+			"X-Amzn-Bedrock-Output-Token-Count": "25",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 100, usage.PromptTokens)
+		assert.Equal(t, 25, usage.CompletionTokens)
+		assert.Equal(t, 125, usage.TotalTokens)
+	})
+
+	t.Run("header lookup is case insensitive", func(t *testing.T) {
+		headers := map[string]string{
+			"x-amzn-bedrock-input-token-count": "7",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 7, usage.PromptTokens)
+		assert.Equal(t, 7, usage.TotalTokens)
+	})
+
+	t.Run("tolerates whitespace around values", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Input-Token-Count": " 9 ",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 9, usage.PromptTokens)
+	})
+
+	t.Run("returns nil when values are unparsable", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Input-Token-Count":  "not-a-number",
+			"X-Amzn-Bedrock-Output-Token-Count": "",
+		}
+		assert.Nil(t, parseBedrockInvokeUsageFromHeaders(headers))
+	})
+
+	t.Run("returns nil when both counts are zero", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Input-Token-Count":  "0",
+			"X-Amzn-Bedrock-Output-Token-Count": "0",
+		}
+		assert.Nil(t, parseBedrockInvokeUsageFromHeaders(headers))
+	})
+}
