@@ -121,6 +121,10 @@ const (
 	ChatCompletionStreamRequest  RequestType = "chat_completion_stream"
 	ResponsesRequest             RequestType = "responses"
 	ResponsesStreamRequest       RequestType = "responses_stream"
+	ResponsesRetrieveRequest     RequestType = "responses_retrieve"
+	ResponsesDeleteRequest       RequestType = "responses_delete"
+	ResponsesCancelRequest       RequestType = "responses_cancel"
+	ResponsesInputItemsRequest   RequestType = "responses_input_items"
 	EmbeddingRequest             RequestType = "embedding"
 	SpeechRequest                RequestType = "speech"
 	SpeechStreamRequest          RequestType = "speech_stream"
@@ -478,6 +482,10 @@ type BifrostRequest struct {
 	TextCompletionRequest        *BifrostTextCompletionRequest
 	ChatRequest                  *BifrostChatRequest
 	ResponsesRequest             *BifrostResponsesRequest
+	ResponsesRetrieveRequest     *BifrostResponsesRetrieveRequest
+	ResponsesDeleteRequest       *BifrostResponsesDeleteRequest
+	ResponsesCancelRequest       *BifrostResponsesCancelRequest
+	ResponsesInputItemsRequest   *BifrostResponsesInputItemsRequest
 	CountTokensRequest           *BifrostResponsesRequest
 	CompactionRequest            *BifrostCompactionRequest
 	EmbeddingRequest             *BifrostEmbeddingRequest
@@ -533,6 +541,14 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ChatRequest.Provider, br.ChatRequest.Model, br.ChatRequest.Fallbacks
 	case br.ResponsesRequest != nil:
 		return br.ResponsesRequest.Provider, br.ResponsesRequest.Model, br.ResponsesRequest.Fallbacks
+	case br.ResponsesRetrieveRequest != nil:
+		return br.ResponsesRetrieveRequest.Provider, "", nil
+	case br.ResponsesDeleteRequest != nil:
+		return br.ResponsesDeleteRequest.Provider, "", nil
+	case br.ResponsesCancelRequest != nil:
+		return br.ResponsesCancelRequest.Provider, "", nil
+	case br.ResponsesInputItemsRequest != nil:
+		return br.ResponsesInputItemsRequest.Provider, "", nil
 	case br.CountTokensRequest != nil:
 		return br.CountTokensRequest.Provider, br.CountTokensRequest.Model, br.CountTokensRequest.Fallbacks
 	case br.CompactionRequest != nil:
@@ -676,6 +692,14 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ChatRequest.Provider = provider
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.Provider = provider
+	case br.ResponsesRetrieveRequest != nil:
+		br.ResponsesRetrieveRequest.Provider = provider
+	case br.ResponsesDeleteRequest != nil:
+		br.ResponsesDeleteRequest.Provider = provider
+	case br.ResponsesCancelRequest != nil:
+		br.ResponsesCancelRequest.Provider = provider
+	case br.ResponsesInputItemsRequest != nil:
+		br.ResponsesInputItemsRequest.Provider = provider
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.Provider = provider
 	case br.CompactionRequest != nil:
@@ -817,6 +841,14 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ChatRequest.RawRequestBody = rawRequestBody
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.RawRequestBody = rawRequestBody
+	case br.ResponsesRetrieveRequest != nil:
+		br.ResponsesRetrieveRequest.RawRequestBody = rawRequestBody
+	case br.ResponsesDeleteRequest != nil:
+		br.ResponsesDeleteRequest.RawRequestBody = rawRequestBody
+	case br.ResponsesCancelRequest != nil:
+		br.ResponsesCancelRequest.RawRequestBody = rawRequestBody
+	case br.ResponsesInputItemsRequest != nil:
+		br.ResponsesInputItemsRequest.RawRequestBody = rawRequestBody
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.RawRequestBody = rawRequestBody
 	case br.CompactionRequest != nil:
@@ -977,6 +1009,8 @@ type BifrostResponse struct {
 	ChatResponse                  *BifrostChatResponse
 	ResponsesResponse             *BifrostResponsesResponse
 	ResponsesStreamResponse       *BifrostResponsesStreamResponse
+	ResponsesDeleteResponse       *BifrostResponsesDeleteResponse
+	ResponsesInputItemsResponse   *BifrostResponsesInputItemsResponse
 	CountTokensResponse           *BifrostCountTokensResponse
 	CompactionResponse            *BifrostCompactionResponse
 	EmbeddingResponse             *BifrostEmbeddingResponse
@@ -1032,6 +1066,10 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ResponsesResponse.ExtraFields
 	case r.ResponsesStreamResponse != nil:
 		return &r.ResponsesStreamResponse.ExtraFields
+	case r.ResponsesDeleteResponse != nil:
+		return &r.ResponsesDeleteResponse.ExtraFields
+	case r.ResponsesInputItemsResponse != nil:
+		return &r.ResponsesInputItemsResponse.ExtraFields
 	case r.CountTokensResponse != nil:
 		return &r.CountTokensResponse.ExtraFields
 	case r.CompactionResponse != nil:
@@ -1252,6 +1290,16 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.ResponsesResponse.ExtraFields.Provider = provider
 		r.ResponsesResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.ResponsesResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ResponsesDeleteResponse != nil:
+		r.ResponsesDeleteResponse.ExtraFields.RequestType = requestType
+		r.ResponsesDeleteResponse.ExtraFields.Provider = provider
+		r.ResponsesDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ResponsesDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ResponsesInputItemsResponse != nil:
+		r.ResponsesInputItemsResponse.ExtraFields.RequestType = requestType
+		r.ResponsesInputItemsResponse.ExtraFields.Provider = provider
+		r.ResponsesInputItemsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ResponsesInputItemsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.ResponsesStreamResponse != nil:
 		r.ResponsesStreamResponse.ExtraFields.RequestType = requestType
 		r.ResponsesStreamResponse.ExtraFields.Provider = provider

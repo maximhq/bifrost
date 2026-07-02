@@ -725,6 +725,14 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
 	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, baseMiddlewares...))
 	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, baseMiddlewares...))
+	responsesRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ResponsesRetrieveRequest)}, middlewares...)
+	responsesDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ResponsesDeleteRequest)}, middlewares...)
+	responsesCancelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ResponsesCancelRequest)}, middlewares...)
+	responsesInputItemsMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ResponsesInputItemsRequest)}, middlewares...)
+	r.GET("/v1/responses/{response_id}", lib.ChainMiddlewares(h.responsesRetrieve, responsesRetrieveMW...))
+	r.DELETE("/v1/responses/{response_id}", lib.ChainMiddlewares(h.responsesDelete, responsesDeleteMW...))
+	r.POST("/v1/responses/{response_id}/cancel", lib.ChainMiddlewares(h.responsesCancel, responsesCancelMW...))
+	r.GET("/v1/responses/{response_id}/input_items", lib.ChainMiddlewares(h.responsesInputItems, responsesInputItemsMW...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
 	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
@@ -1542,6 +1550,14 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response)
 }
 
+func responsesLifecycleProviderFromQuery(ctx *fasthttp.RequestCtx) schemas.ModelProvider {
+	p := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
+	if p == "" {
+		return schemas.OpenAI
+	}
+	return p
+}
+
 // prepareCompactionRequest prepares a BifrostCompactionRequest from the HTTP request body
 func prepareCompactionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*CompactionHTTPRequest, *schemas.BifrostCompactionRequest, error) {
 	req, base, err := prepareRequest[CompactionHTTPRequest](ctx, config, compactionParamsKnownFields)
@@ -1577,6 +1593,60 @@ func prepareCompactionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Co
 	}, nil
 }
 
+// responsesRetrieve handles GET /v1/responses/{response_id}.
+func (h *CompletionHandler) responsesRetrieve(ctx *fasthttp.RequestCtx) {
+	responseID, ok := ctx.UserValue("response_id").(string)
+	if !ok || responseID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "response_id is required")
+		return
+	}
+	bifrostReq := &schemas.BifrostResponsesRetrieveRequest{
+		Provider:   responsesLifecycleProviderFromQuery(ctx),
+		ResponseID: responseID,
+	}
+	ctx.QueryArgs().VisitAll(func(key, value []byte) {
+		switch string(key) {
+		case "include":
+			bifrostReq.Include = append(bifrostReq.Include, string(value))
+		}
+	})
+	if raw := ctx.QueryArgs().Peek("starting_after"); len(raw) > 0 {
+		n, err := strconv.Atoi(string(raw))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "starting_after must be an integer")
+			return
+		}
+		bifrostReq.StartingAfter = schemas.Ptr(n)
+	}
+	if raw := ctx.QueryArgs().Peek("include_obfuscation"); len(raw) > 0 {
+		b, err := strconv.ParseBool(string(raw))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "include_obfuscation must be a boolean")
+			return
+		}
+		bifrostReq.IncludeObfuscation = &b
+	}
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	resp, bifrostErr := h.client.ResponsesRetrieveRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
 // compaction handles POST /v1/responses/compact - Compact a conversation context window
 func (h *CompletionHandler) compaction(ctx *fasthttp.RequestCtx) {
 	_, bifrostCompactionReq, err := prepareCompactionRequest(ctx, h.config)
@@ -1586,11 +1656,11 @@ func (h *CompletionHandler) compaction(ctx *fasthttp.RequestCtx) {
 	}
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	defer cancel()
 
 	response, bifrostErr := h.client.CompactionRequest(bifrostCtx, bifrostCompactionReq)
 	if bifrostErr != nil {
@@ -1606,6 +1676,120 @@ func (h *CompletionHandler) compaction(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, response)
+}
+
+// responsesDelete handles DELETE /v1/responses/{response_id}.
+func (h *CompletionHandler) responsesDelete(ctx *fasthttp.RequestCtx) {
+	responseID, ok := ctx.UserValue("response_id").(string)
+	if !ok || responseID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "response_id is required")
+		return
+	}
+	bifrostReq := &schemas.BifrostResponsesDeleteRequest{
+		Provider:   responsesLifecycleProviderFromQuery(ctx),
+		ResponseID: responseID,
+	}
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	resp, bifrostErr := h.client.ResponsesDeleteRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// responsesCancel handles POST /v1/responses/{response_id}/cancel.
+func (h *CompletionHandler) responsesCancel(ctx *fasthttp.RequestCtx) {
+	responseID, ok := ctx.UserValue("response_id").(string)
+	if !ok || responseID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "response_id is required")
+		return
+	}
+	bifrostReq := &schemas.BifrostResponsesCancelRequest{
+		Provider:   responsesLifecycleProviderFromQuery(ctx),
+		ResponseID: responseID,
+	}
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	resp, bifrostErr := h.client.ResponsesCancelRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// responsesInputItems handles GET /v1/responses/{response_id}/input_items.
+func (h *CompletionHandler) responsesInputItems(ctx *fasthttp.RequestCtx) {
+	responseID, ok := ctx.UserValue("response_id").(string)
+	if !ok || responseID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "response_id is required")
+		return
+	}
+	bifrostReq := &schemas.BifrostResponsesInputItemsRequest{
+		Provider:   responsesLifecycleProviderFromQuery(ctx),
+		ResponseID: responseID,
+	}
+	ctx.QueryArgs().VisitAll(func(key, value []byte) {
+		switch string(key) {
+		case "after":
+			bifrostReq.After = string(value)
+		case "include":
+			bifrostReq.Include = append(bifrostReq.Include, string(value))
+		case "order":
+			bifrostReq.Order = string(value)
+		}
+	})
+	if raw := ctx.QueryArgs().Peek("limit"); len(raw) > 0 {
+		n, err := strconv.Atoi(string(raw))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "limit must be an integer")
+			return
+		}
+		bifrostReq.Limit = schemas.Ptr(n)
+	}
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	resp, bifrostErr := h.client.ResponsesInputItemsRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
 }
 
 // handleStreamingTextCompletion handles streaming text completion requests using Server-Sent Events (SSE)
