@@ -220,6 +220,11 @@ type Log struct {
 	TotalTokens      int `gorm:"index:idx_logs_total_tokens;default:0" json:"-"`
 	CachedReadTokens int `gorm:"default:0" json:"-"`
 
+	// Denormalized cost fields for per-category quota aggregation.
+	InputCost     float64 `gorm:"default:0" json:"-"`
+	OutputCost    float64 `gorm:"default:0" json:"-"`
+	CacheReadCost float64 `gorm:"default:0" json:"-"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
@@ -532,6 +537,12 @@ func (l *Log) SerializeFields() error {
 		l.TotalTokens = l.TokenUsageParsed.TotalTokens
 		if l.TokenUsageParsed.PromptTokensDetails != nil {
 			l.CachedReadTokens = l.TokenUsageParsed.PromptTokensDetails.CachedReadTokens
+		}
+		// Denormalize the per-category cost split so it can be summed in SQL.
+		if l.TokenUsageParsed.Cost != nil {
+			l.InputCost = l.TokenUsageParsed.Cost.InputTokensCost
+			l.OutputCost = l.TokenUsageParsed.Cost.OutputTokensCost
+			l.CacheReadCost = l.TokenUsageParsed.Cost.CacheReadTokensCost
 		}
 	}
 
