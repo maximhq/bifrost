@@ -64,10 +64,27 @@ type RoutingRulesQueryParams struct {
 
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
 type MCPClientsQueryParams struct {
-	Limit    int
-	Offset   int
-	Search   string
-	ClientID string
+	Limit            int
+	Offset           int
+	Search           string   // matches name (case-insensitive)
+	ClientID         string   // exact client_id match
+	ConnectionTypes  []string // exact connection_type filter(s), OR semantics (http | sse | stdio)
+	AuthTypes        []string // exact auth_type filter(s), OR semantics (none | headers | oauth | per_user_oauth | per_user_headers)
+	IsCodeModeClient *bool    // nil = no filter; true/false = filter on is_code_mode_client
+	Disabled         *bool    // nil = no filter; true/false = filter on disabled
+
+	// Runtime connection-state filter. State is not persisted, so the caller
+	// resolves the set of currently-connected client_ids from the engine and
+	// passes it here. StateInclude nil = no filter; true = client_id IN set
+	// (connected); false = client_id NOT IN set (disconnected).
+	StateClientIDs []string
+	StateInclude   *bool
+
+	// Virtual-key access filter (OR semantics within the group). When both are
+	// set, a client matches if it is open to all VKs OR explicitly assigned to
+	// one of VirtualKeyIDs.
+	OnlyAllVirtualKeys bool     // include clients with allow_on_all_virtual_keys=true
+	VirtualKeyIDs      []string // include clients explicitly assigned to any of these VK IDs
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
