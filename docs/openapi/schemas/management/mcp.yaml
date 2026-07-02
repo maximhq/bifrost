@@ -18,13 +18,18 @@ MCPConnectionType:
 
 MCPConnectionState:
   type: string
-  enum: [connected, disconnected, error, pending_tools, disabled]
+  enum: [connected, disconnected, error, pending_tools, pending_verification, disabled]
   description: |
     Connection state of an MCP client:
     - connected: Client is connected and ready to use
     - disconnected: Client is not connected (will be auto-recovered by health monitor)
     - error: Client is in an unrecoverable error state
     - pending_tools: Connected but tools not yet populated (per-user OAuth clients)
+    - pending_verification: Declared (typically via config.json) but the one-time
+      admin verification has not been completed yet. Complete it via
+      POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /
+      per_user_oauth) or POST /api/mcp/client/{id}/verify-headers
+      (auth_type per_user_headers).
     - disabled: Client has been intentionally disabled; no connection or workers are active
 
 MCPStdioConfig:
@@ -126,8 +131,9 @@ MCPClientCreateRequestBase:
       $ref: '../../schemas/management/oauth.yaml#/OAuthConfigRequest'
       description: |
         OAuth configuration for initiating OAuth flow.
-        Only include this when creating a client with auth_type "oauth".
-        This will trigger the OAuth flow and return an authorization URL.
+        Required when creating a client with auth_type "oauth" or "per_user_oauth".
+        This will trigger the OAuth flow and return an authorization URL
+        (see the pending_oauth response variant).
     tools_to_execute:
       type: array
       items:

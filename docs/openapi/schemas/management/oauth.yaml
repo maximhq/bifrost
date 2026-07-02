@@ -66,6 +66,23 @@ OAuthFlowInitiation:
     mcp_client_id:
       type: string
       description: The MCP client ID that initiated this OAuth flow
+    complete_url:
+      type: string
+      description: |
+        Relative URL to POST once the flow is authorized
+        (/api/mcp/client/{oauth_config_id}/complete-oauth). Note the path
+        parameter is the oauth_config_id, not the MCP client ID.
+    status_url:
+      type: string
+      description: |
+        Relative URL to poll for the flow status
+        (/api/oauth/config/{oauth_config_id}/status). Wait for
+        status "authorized" before calling complete_url.
+    next_steps:
+      type: array
+      items:
+        type: string
+      description: Human-readable steps to complete the flow (authorize, poll, complete)
 
 OAuthConfigStatus:
   type: object
