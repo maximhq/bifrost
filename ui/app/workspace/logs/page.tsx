@@ -36,6 +36,7 @@ export default function LogsPage() {
 	const hasCheckedEmptyState = useRef(false);
 
 	const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete);
+	const hasRevealAccess = useRbac(RbacResource.Logs, RbacOperation.Reveal);
 
 	const [deleteLogs] = useDeleteLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
@@ -722,6 +723,7 @@ export default function LogsPage() {
 						open={selectedLog !== null}
 						onOpenChange={(open) => !open && setUrlState({ selected_log: "" })}
 						handleDelete={hasDeleteAccess ? handleDelete : undefined}
+						canReveal={hasRevealAccess}
 						onNavigate={handleLogNavigate}
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}

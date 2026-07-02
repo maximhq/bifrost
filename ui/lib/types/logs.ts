@@ -579,6 +579,13 @@ export interface LogEntry {
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
+	has_reversible_redaction?: boolean; // True when this log has a reversible redaction mapping that can be revealed
+}
+
+/** Response shape for the log redaction reveal endpoint. */
+export interface LogRedactionRevealResponse {
+	/** Maps redaction placeholder keys, such as EMAIL-1, to original sensitive values. */
+	mapping: Record<string, string>;
 }
 
 export interface LogFilters {

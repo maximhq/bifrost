@@ -5,6 +5,7 @@ import {
 	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
+	LogRedactionRevealResponse,
 	LogSessionDetailResponse,
 	LogSessionSummaryResponse,
 	LogsHistogramResponse,
@@ -369,6 +370,13 @@ export const logsApi = baseApi.injectEndpoints({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
 			providesTags: (result, error, id) => [{ type: "Logs", id }],
 		}),
+
+		revealLogRedactionMapping: builder.mutation<LogRedactionRevealResponse, string>({
+			query: (id) => ({
+				url: `/logs/${encodeURIComponent(id)}/reveal`,
+				method: "POST",
+			}),
+		}),
 	}),
 });
 
@@ -405,6 +413,7 @@ export const {
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
+	useRevealLogRedactionMappingMutation,
 	useLazyGetLogByIdQuery,
 	useGetLogByIdQuery,
 } = logsApi;

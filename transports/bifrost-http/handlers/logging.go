@@ -355,6 +355,7 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 		if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
 			result.Logs[i].RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
 		}
+		result.Logs[i].HasReversibleRedaction = log.RedactionMapping != ""
 	}
 
 	SendJSON(ctx, result)
@@ -579,6 +580,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
 			result.Logs[i].RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
 		}
+		result.Logs[i].HasReversibleRedaction = log.RedactionMapping != ""
 	}
 
 	SendJSON(ctx, result)
@@ -601,6 +603,10 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get log: %v", err))
 		return
 	}
+
+	// Expose whether this log carries a reversible redaction mapping so the UI can
+	// conditionally show the inline reveal toggle.
+	log.HasReversibleRedaction = log.RedactionMapping != ""
 
 	// Assemble virtual key, selected key, and routing rule objects (gorm:"-" fields not
 	// populated by GetLog) so the detail view receives the same structure as the list endpoint.
