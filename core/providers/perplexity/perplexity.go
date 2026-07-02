@@ -121,8 +121,19 @@ func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext,
 }
 
 // ListModels performs a list models request to Perplexity's API.
+// Perplexity's /v1/models endpoint is OpenAI-compatible, so the OpenAI handler is reused.
 func (provider *PerplexityProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
+	return openai.HandleOpenAIListModelsRequest(
+		ctx,
+		provider.client,
+		request,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		keys,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	)
 }
 
 // TextCompletion is not supported by the Perplexity provider.
@@ -214,26 +225,68 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 }
 
 // Responses performs a responses request to the Perplexity API.
+// Models available on Perplexity's /v1/responses endpoint are routed there via the
+// OpenAI-compatible handler; sonar-* models not supported on responses fall back to /chat/completions.
 func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
+	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		if err != nil {
+			return nil, err
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
 
-	response := chatResponse.ToBifrostResponsesResponse()
-
-	return response, nil
+	return openai.HandleOpenAIResponsesRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		schemas.Perplexity,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
 // ResponsesStream performs a streaming responses request to the Perplexity API.
+// Models available on Perplexity's /v1/responses endpoint are streamed from there via the
+// OpenAI-compatible handler; sonar-* models not supported on responses fall back to /chat/completions.
 func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.ChatCompletionStream(
+	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.ChatCompletionStream(
+			ctx,
+			postHookRunner,
+			postHookSpanFinalizer,
+			key,
+			request.ToChatRequest(),
+		)
+	}
+
+	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		schemas.Perplexity,
 		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
 		postHookSpanFinalizer,
-		key,
-		request.ToChatRequest(),
 	)
 }
 
