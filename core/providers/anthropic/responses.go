@@ -165,6 +165,17 @@ type anthropicToResponsesStreamState struct {
 	nextBlockIndex   int
 	blockIndexByItem map[string]int
 
+	// blockIndexMisses records non-empty item keys for which blockIndexFor was
+	// asked for an index that allocBlockIndex never assigned — i.e. a
+	// content_block_stop/_delta referencing a block whose content_block_start was
+	// never registered at output_item.added. This must not happen: every
+	// output_item.added allocates its block index (~L2053), and the Anthropic
+	// passthrough path routes every output_item.added through this converter so the
+	// allocator always runs (see mustConvertInPassthrough in the transport). A miss
+	// therefore signals a stream-bookkeeping desync; it is recorded so tests fail
+	// loudly instead of the stream silently mis-numbering blocks.
+	blockIndexMisses []string
+
 	// codeExecToolNameByItem remembers each code_interpreter_call's Anthropic
 	// sub-tool name (captured at output_item.added) so the code block's input can be
 	// reconstructed and closed on code.done — emitted before the nested web_search
@@ -196,13 +207,19 @@ func (s *anthropicToResponsesStreamState) allocBlockIndex(key string) *int {
 	return &idx
 }
 
-// blockIndexFor returns the index previously allocated for key, allocating a fresh
-// one if the block's start was never seen (defensive — keeps start/stop paired).
+// blockIndexFor returns the index previously allocated for key. A non-empty key
+// that was never registered by allocBlockIndex means a stop/delta references a
+// block whose start we never emitted — a bookkeeping desync — so it is recorded
+// in blockIndexMisses before falling back to a fresh allocation (defensive — keeps
+// start/stop paired rather than crashing the stream).
 func (s *anthropicToResponsesStreamState) blockIndexFor(key string) *int {
 	if key != "" && s.blockIndexByItem != nil {
 		if idx, ok := s.blockIndexByItem[key]; ok {
 			return &idx
 		}
+	}
+	if key != "" {
+		s.blockIndexMisses = append(s.blockIndexMisses, key)
 	}
 	return s.allocBlockIndex(key)
 }
