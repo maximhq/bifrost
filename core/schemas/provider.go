@@ -315,13 +315,20 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 // A nil *AllowedRequests means "all operations allowed."
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
-	ListModels            bool `json:"list_models"`
-	TextCompletion        bool `json:"text_completion"`
-	TextCompletionStream  bool `json:"text_completion_stream"`
-	ChatCompletion        bool `json:"chat_completion"`
-	ChatCompletionStream  bool `json:"chat_completion_stream"`
-	Responses             bool `json:"responses"`
-	ResponsesStream       bool `json:"responses_stream"`
+	ListModels           bool `json:"list_models"`
+	TextCompletion       bool `json:"text_completion"`
+	TextCompletionStream bool `json:"text_completion_stream"`
+	ChatCompletion       bool `json:"chat_completion"`
+	ChatCompletionStream bool `json:"chat_completion_stream"`
+	Responses            bool `json:"responses"`
+	ResponsesStream      bool `json:"responses_stream"`
+	// ResponsesRetrieve/Delete/Cancel/InputItems gate Responses API lifecycle verbs
+	// separately from create (Responses). If none of the four are set, lifecycle
+	// follows `responses` (legacy). If any is set, each verb requires its own flag.
+	ResponsesRetrieve     bool `json:"responses_retrieve"`
+	ResponsesDelete       bool `json:"responses_delete"`
+	ResponsesCancel       bool `json:"responses_cancel"`
+	ResponsesInputItems   bool `json:"responses_input_items"`
 	CountTokens           bool `json:"count_tokens"`
 	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
@@ -373,6 +380,13 @@ type AllowedRequests struct {
 	CachedContentDelete   bool `json:"cached_content_delete"`
 }
 
+// granularResponsesLifecycleUsed is true when any per-verb Responses lifecycle flag
+// is set. In that mode, each verb requires its own flag; unset verbs are denied even
+// if `responses` (create) is true.
+func (ar *AllowedRequests) granularResponsesLifecycleUsed() bool {
+	return ar.ResponsesRetrieve || ar.ResponsesDelete || ar.ResponsesCancel || ar.ResponsesInputItems
+}
+
 // IsOperationAllowed checks if a specific operation is allowed
 func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	if ar == nil {
@@ -394,6 +408,38 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
+	case ResponsesRetrieveRequest:
+		if ar.ResponsesRetrieve {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
+		return ar.Responses
+	case ResponsesDeleteRequest:
+		if ar.ResponsesDelete {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
+		return ar.Responses
+	case ResponsesCancelRequest:
+		if ar.ResponsesCancel {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
+		return ar.Responses
+	case ResponsesInputItemsRequest:
+		if ar.ResponsesInputItems {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
+		return ar.Responses
 	case CountTokensRequest:
 		return ar.CountTokens
 	case CompactionRequest:
@@ -704,6 +750,16 @@ type Provider interface {
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
 	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+}
+
+// ResponsesLifecycleProvider is an optional interface for OpenAI-style Responses API
+// secondary verbs (retrieve, delete, cancel, list input items). Checked via type assertion
+// in core dispatch; providers that do not implement it return unsupported_operation.
+type ResponsesLifecycleProvider interface {
+	ResponsesRetrieve(ctx *BifrostContext, key Key, req *BifrostResponsesRetrieveRequest) (*BifrostResponsesResponse, *BifrostError)
+	ResponsesDelete(ctx *BifrostContext, key Key, req *BifrostResponsesDeleteRequest) (*BifrostResponsesDeleteResponse, *BifrostError)
+	ResponsesCancel(ctx *BifrostContext, key Key, req *BifrostResponsesCancelRequest) (*BifrostResponsesResponse, *BifrostError)
+	ResponsesInputItems(ctx *BifrostContext, key Key, req *BifrostResponsesInputItemsRequest) (*BifrostResponsesInputItemsResponse, *BifrostError)
 }
 
 // WebSocketCapableProvider is an optional interface that providers can implement
