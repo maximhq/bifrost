@@ -1,3 +1,4 @@
+[fix]: zero pooled ChannelMessage references on release to avoid pinning request bodies [@citrocat](https://github.com/citrocat)
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
