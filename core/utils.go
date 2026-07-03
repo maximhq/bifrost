@@ -131,8 +131,12 @@ func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
-func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.BedrockMantle && providerKey != schemas.Vertex
+// isKeySkippingAllowed takes the resolved base provider type, not the (possibly
+// custom) provider instance key - Azure/Bedrock/BedrockMantle/Vertex always need
+// their per-key config (VertexKeyConfig etc.) regardless of what a custom
+// instance happens to be named.
+func isKeySkippingAllowed(baseProviderType schemas.ModelProvider) bool {
+	return baseProviderType != schemas.Azure && baseProviderType != schemas.Bedrock && baseProviderType != schemas.BedrockMantle && baseProviderType != schemas.Vertex
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.

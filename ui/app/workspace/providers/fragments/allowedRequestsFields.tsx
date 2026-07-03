@@ -133,7 +133,7 @@ export function AllowedRequestsFields({
 		});
 	}, [providerType, namePrefix, setValue, getValues]);
 
-	const isPathOverrideDisabled = useMemo(() => providerType === "gemini" || providerType === "bedrock", [providerType]);
+	const isPathOverrideDisabled = useMemo(() => providerType === "gemini" || providerType === "bedrock" || providerType === "vertex", [providerType]);
 
 	const renderRequestField = (requestType: { key: RequestType; label: string }) => {
 		const isDisabled = isRequestTypeDisabled(providerType, requestType.key);
