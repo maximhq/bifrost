@@ -771,6 +771,11 @@
                 "description": "Whether the virtual key is active",
                 "default": true
               },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",

@@ -221,6 +221,7 @@ type TableVirtualKey struct {
 	Description     string                          `gorm:"type:text" json:"description,omitempty"`
 	Value           schemas.SecretVar               `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
 	IsActive        *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
+	ExpiresAt       *time.Time                      `gorm:"type:timestamp;null" json:"expires_at,omitempty"`                             // Optional expiry; nil means never expires
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
@@ -284,6 +285,15 @@ func (vk TableVirtualKey) MarshalJSON() ([]byte, error) {
 		Alias: Alias(vk),
 		Value: vk.Value.GetValue(),
 	})
+}
+
+// IsExpiredAt reports whether the virtual key has passed its expiry.
+// now == expires_at is treated as expired; nil ExpiresAt means never expires.
+func (vk *TableVirtualKey) IsExpiredAt(now time.Time) bool {
+	if vk == nil || vk.ExpiresAt == nil {
+		return false
+	}
+	return !now.UTC().Before(vk.ExpiresAt.UTC())
 }
 
 // BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
