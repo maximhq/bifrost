@@ -1,0 +1,85 @@
+---
+title: "Eden AI"
+description: "Eden AI integration guide - a European, OpenAI-compatible gateway to 100+ models with a single key."
+icon: "globe"
+---
+
+## Overview
+
+[Eden AI](https://www.edenai.co/) is a **European, OpenAI-compatible** gateway that provides access to 100+ models from many providers (Mistral, OpenAI, Anthropic, Google, Cohere, DeepSeek, and more) through a single unified API and one key. Bifrost delegates to the OpenAI implementation, pointing at Eden's endpoint (`https://api.edenai.run/v3`). Key points:
+
+- **One key, many providers** — route to models from many vendors through a single `EDENAI_API_KEY`.
+- **EU-based gateway** — requests are served through an Europe-based gateway with GDPR-aligned data handling, useful for data-residency requirements.
+- **OpenAI-compatible** — chat completions, streaming (SSE), tool calling, and `reasoning_effort` are handled through the OpenAI-compatible surface.
+- **Model naming** — models keep the underlying `provider/model` form, e.g. `mistral/mistral-small-latest`, `openai/gpt-4o-mini`, `anthropic/claude-sonnet-4-5`.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | (delegated to Chat Completions) |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+
+<Note>
+Eden AI exposes its API under the `/v3` base path (`https://api.edenai.run/v3`), so the chat completions endpoint is `https://api.edenai.run/v3/chat/completions`. Errors are returned in the standard OpenAI error envelope.
+</Note>
+
+## Setup & Configuration
+
+Configure Eden AI as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. If **Eden AI** is not listed under **Configured Providers**, click **Add New Provider** and select **Eden AI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.EDENAI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or a specific allowlist.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "edenai": {
+      "keys": [
+        {
+          "name": "edenai-key-1",
+          "value": "env.EDENAI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+The default base URL is `https://api.edenai.run/v3`. You can override it via the provider's `network_config.base_url` if needed.
+
+</Tab>
+</Tabs>
+
+## Usage
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "edenai/mistral/mistral-small-latest",
+    "messages": [{"role": "user", "content": "Hello from a sovereign EU stack!"}]
+  }'
+```
+
+Get an API key from your [Eden AI account](https://www.edenai.co/) and see the [Eden AI documentation](https://docs.edenai.co/) for the full list of available models.

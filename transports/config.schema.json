@@ -335,6 +335,9 @@
         "openrouter": {
           "$ref": "#/$defs/provider"
         },
+        "edenai": {
+          "$ref": "#/$defs/provider"
+        },
         "sgl": {
           "$ref": "#/$defs/provider_with_sgl_config"
         },
@@ -5459,7 +5462,8 @@
             "vllm",
             "runway",
             "runware",
-            "fireworks"
+            "fireworks",
+            "edenai"
           ],
           "description": "Base provider type to extend"
         },
