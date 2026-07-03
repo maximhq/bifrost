@@ -386,11 +386,10 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
 		entry.Status = logStatusForError(streamResponse.Data.ErrorDetails)
-		entry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
-		// Serialize error details immediately to avoid use-after-free with pooled errors
-		if data, err := sonic.Marshal(streamResponse.Data.ErrorDetails); err == nil {
-			entry.ErrorDetails = string(data)
-		}
+		// Serializes immediately to avoid use-after-free with pooled errors, and
+		// stores the sanitized copy in both fields (SerializeFields re-serializes
+		// ErrorDetailsParsed on write, so it must not hold raw payloads).
+		applyErrorDetailsToEntry(entry, streamResponse.Data.ErrorDetails, contentLoggingEnabled, shouldStoreRaw)
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
 	} else {
