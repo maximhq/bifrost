@@ -325,14 +325,19 @@ func TestAnthropicPassthrough_ReproducesBugWithoutFix(t *testing.T) {
 	}
 }
 
-// TestAdvisorStream_ReverseConverterNoBlockIndexMiss verifies the reverse converter
-// never desyncs when it drives every frame (the non-passthrough path and, after the
-// fix, the passthrough path too): blockIndexFor must always resolve to an index that
-// allocBlockIndex assigned, so the blockIndexMisses guard stays empty.
-func TestAdvisorStream_ReverseConverterNoBlockIndexMiss(t *testing.T) {
+// TestAnthropicConverterOnlyStream_WellFormed covers the all-frames-through-the-
+// converter path — i.e. non-Claude-Code clients (plain curl / OpenAI-format), which
+// never take the verbatim-passthrough route. It asserts two things over a rich
+// server-tool stream: (1) the emitted Anthropic SSE satisfies the content_block
+// open/close invariant (every stop/delta references an opened start; nothing left
+// open), and (2) blockIndexFor never misses (blockIndexMisses stays empty), i.e. the
+// reverse converter's allocator stays in lockstep with itself when it drives every
+// frame.
+func TestAnthropicConverterOnlyStream_WellFormed(t *testing.T) {
 	stream := ptConcat([]string{ptMsgStart()}, ptThinking(0), ptAdvisor(1, "srv_A"), ptWebSearch(3, "srv_W"), ptWebFetch(5, "srv_F"), ptText(7), ptMsgEnd())
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	state := newAdvisorStreamState()
+	var frames []ptFrame
 	seq := 0
 	for _, raw := range stream {
 		var chunk AnthropicStreamEvent
@@ -345,8 +350,17 @@ func TestAdvisorStream_ReverseConverterNoBlockIndexMiss(t *testing.T) {
 		}
 		for _, r := range responses {
 			seq++
-			ToAnthropicResponsesStreamResponse(ctx, r)
+			for _, e := range ToAnthropicResponsesStreamResponse(ctx, r) {
+				idx := -1
+				if e.Index != nil {
+					idx = *e.Index
+				}
+				frames = append(frames, ptFrame{typ: string(e.Type), idx: idx, via: "conv"})
+			}
 		}
+	}
+	if problems := blockFramingProblems(t, frames, false); len(problems) > 0 {
+		t.Errorf("converter-only stream is not well-formed: %v", problems)
 	}
 	rs := getOrCreateAnthropicToResponsesStreamState(ctx)
 	if len(rs.blockIndexMisses) > 0 {
