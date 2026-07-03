@@ -26,8 +26,8 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash, Info } from "lucide-react";
-import { parseAsSafeString } from "@/lib/queryParamsParser";
-import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
+import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export default function LogsPage() {
@@ -72,20 +72,20 @@ export default function LogsPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			parent_request_id: parseAsString.withDefault(""),
-			providers: parseAsArrayOf(parseAsString).withDefault([]),
-			models: parseAsArrayOf(parseAsString).withDefault([]),
-			aliases: parseAsArrayOf(parseAsString).withDefault([]),
-			status: parseAsArrayOf(parseAsString).withDefault([]),
-			stop_reasons: parseAsArrayOf(parseAsString).withDefault([]),
-			objects: parseAsArrayOf(parseAsString).withDefault([]),
-			selected_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
-			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
-			routing_rule_ids: parseAsArrayOf(parseAsString).withDefault([]),
-			routing_engine_used: parseAsArrayOf(parseAsString).withDefault([]),
-			user_ids: parseAsArrayOf(parseAsString).withDefault([]),
-			team_ids: parseAsArrayOf(parseAsString).withDefault([]),
-			customer_ids: parseAsArrayOf(parseAsString).withDefault([]),
-			business_unit_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			providers: parseAsSafeArrayOf.withDefault([]),
+			models: parseAsSafeArrayOf.withDefault([]),
+			aliases: parseAsSafeArrayOf.withDefault([]),
+			status: parseAsSafeArrayOf.withDefault([]),
+			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			objects: parseAsSafeArrayOf.withDefault([]),
+			selected_key_ids: parseAsSafeArrayOf.withDefault([]),
+			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
+			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
+			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
+			user_ids: parseAsSafeArrayOf.withDefault([]),
+			team_ids: parseAsSafeArrayOf.withDefault([]),
+			customer_ids: parseAsSafeArrayOf.withDefault([]),
+			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
@@ -96,7 +96,7 @@ export default function LogsPage() {
 			polling: parseAsBoolean.withDefault(true).withOptions({ clearOnDefault: false }),
 			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
 			missing_cost_only: parseAsBoolean.withDefault(false),
-			cache_hit_types: parseAsArrayOf(parseAsString).withDefault([]),
+			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			metadata_filters: parseAsString.withDefault(""),
 			selected_log: parseAsString.withDefault(""),
 		},

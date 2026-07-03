@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,6 +165,7 @@ type CreateVirtualKeyRequest struct {
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`       // Optional expiry; nil means never expires
 }
 
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
@@ -192,6 +194,7 @@ type UpdateVirtualKeyRequest struct {
 	IsActive         *bool                        `json:"is_active,omitempty"`
 	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
 	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
+	ExpiresAt        *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
@@ -1051,7 +1054,7 @@ func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.Request
 	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
@@ -1270,6 +1273,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			seenDurations[b.ResetDuration] = true
 		}
 	}
+	// Validate expires_at: must be in the future if provided
+	if req.ExpiresAt != nil {
+		now := time.Now().UTC()
+		if !req.ExpiresAt.After(now) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
+		}
+	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
@@ -1290,12 +1301,13 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
-			Value:           governance.GenerateVirtualKey(),
+			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
+			ExpiresAt:       req.ExpiresAt,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1494,6 +1506,20 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
+	// Parse expires_at when provided: a timestamp must be in the future, "" clears the expiry.
+	var newExpiresAt *time.Time
+	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
+		parsed, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			SendError(ctx, 400, "expires_at must be an RFC3339 timestamp")
+			return
+		}
+		if !parsed.After(time.Now().UTC()) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
+		}
+		newExpiresAt = &parsed
+	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1549,6 +1575,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.IsActive != nil {
 			vk.IsActive = req.IsActive
+		}
+		if req.ExpiresAt != nil {
+			vk.ExpiresAt = newExpiresAt
 		}
 		if req.CalendarAligned != nil {
 			vk.CalendarAligned = *req.CalendarAligned
@@ -1903,9 +1932,9 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, err
 	}
-	oldValue := vk.Value
-	vk.Value = governance.GenerateVirtualKey()
-	if vk.Value == oldValue {
+	oldValue := vk.Value.GetValue()
+	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
@@ -3514,7 +3543,11 @@ func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 // updateProviderGovernance handles PUT /api/governance/providers/{provider_name} - Update provider governance
 func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	var req UpdateProviderGovernanceRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
@@ -3756,7 +3789,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 // deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - removes
 // provider-level governance by deleting the all-models model config for that provider.
 func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
 	if err != nil {
 		if err == configstore.ErrNotFound {

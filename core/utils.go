@@ -83,8 +83,10 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
 	schemas.Bedrock,
+	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
 	schemas.Groq,
@@ -122,11 +124,11 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex
+	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.BedrockMantle && providerKey != schemas.Vertex
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -170,6 +172,11 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		// BedrockKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
 		if key.BedrockKeyConfig == nil {
 			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		}
+	case schemas.BedrockMantle:
+		// BedrockMantleKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.BedrockMantleKeyConfig == nil {
+			key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{}
 		}
 	case schemas.Vertex:
 		if key.VertexKeyConfig == nil {
@@ -413,6 +420,16 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 // isPassthroughRequestType returns true if the given request type is a passthrough request.
 func isPassthroughRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
+}
+
+// isResponsesLifecycleRequestType returns true for OpenAI Responses API lifecycle HTTP verbs.
+func isResponsesLifecycleRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.

@@ -391,6 +391,62 @@ func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
 	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
 }
 
+func TestGeminiChatCompletionRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
+func TestGeminiResponsesRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: schemas.Ptr("gs://my-bucket/xxx.png"),
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
 func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
 	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
 	callID := "call_1_ts_" + thoughtSig
@@ -4258,4 +4314,102 @@ func TestImagenImageSizeCasing(t *testing.T) {
 			assert.Equal(t, tt.wantImageSize, *imagenReq.Parameters.SampleImageSize, "Imagen imageSize must be uppercase")
 		})
 	}
+}
+
+// TestGeminiImageGenerationAspectRatio verifies the explicit aspect_ratio branch on the
+// Gemini :generateContent path: aspect_ratio alone sets the ratio with no imageSize, and
+// aspect_ratio overrides the ratio derived from size.
+func TestGeminiImageGenerationAspectRatio(t *testing.T) {
+	t.Run("aspect_ratio_only", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")},
+		}
+		outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+		require.NotNil(t, outReq)
+		require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set from aspect_ratio alone")
+		assert.Equal(t, "16:9", outReq.GenerationConfig.ImageConfig.AspectRatio)
+		assert.Equal(t, "", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be empty when only aspect_ratio is set")
+	})
+
+	t.Run("aspect_ratio_overrides_size", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params: &schemas.ImageGenerationParameters{
+				Size:        schemas.Ptr("1024x1024"),
+				AspectRatio: schemas.Ptr("16:9"),
+			},
+		}
+		outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+		require.NotNil(t, outReq)
+		require.NotNil(t, outReq.GenerationConfig.ImageConfig)
+		assert.Equal(t, "16:9", outReq.GenerationConfig.ImageConfig.AspectRatio, "explicit aspect_ratio must override size-derived ratio")
+		assert.Equal(t, "1K", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize stays derived from size")
+	})
+}
+
+// TestImagenImageGenerationAspectRatio verifies the explicit aspect_ratio branch on the
+// Imagen :predict path.
+func TestImagenImageGenerationAspectRatio(t *testing.T) {
+	t.Run("aspect_ratio_only", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "imagen-4.0-generate-preview-05-20",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")},
+		}
+		imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+		require.NotNil(t, imagenReq)
+		require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be set from aspect_ratio alone")
+		assert.Equal(t, "16:9", *imagenReq.Parameters.AspectRatio)
+		assert.Nil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be nil when only aspect_ratio is set")
+	})
+
+	t.Run("aspect_ratio_overrides_size", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "imagen-4.0-generate-preview-05-20",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params: &schemas.ImageGenerationParameters{
+				Size:        schemas.Ptr("1024x1024"),
+				AspectRatio: schemas.Ptr("16:9"),
+			},
+		}
+		imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+		require.NotNil(t, imagenReq)
+		require.NotNil(t, imagenReq.Parameters.AspectRatio)
+		assert.Equal(t, "16:9", *imagenReq.Parameters.AspectRatio, "explicit aspect_ratio must override size-derived ratio")
+		require.NotNil(t, imagenReq.Parameters.SampleImageSize)
+		assert.Equal(t, "1K", *imagenReq.Parameters.SampleImageSize, "SampleImageSize stays derived from size")
+	})
+}
+
+// TestImagenImageEditSizeRoundtrip mirrors TestImagenImageSizeCasing for the Imagen edit path:
+// a Size on the edit request derives both SampleImageSize and AspectRatio.
+func TestImagenImageEditSizeRoundtrip(t *testing.T) {
+	// minimal 1x1 PNG for inline image data
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+
+	bifrostReq := &schemas.BifrostImageEditRequest{
+		Provider: schemas.Gemini,
+		Model:    "imagen-3.0-capability-001",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it pop",
+			Images: []schemas.ImageInput{{Image: pngPixel}},
+		},
+		Params: &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048")},
+	}
+
+	imagenReq := gemini.ToImagenImageEditRequest(bifrostReq)
+	require.NotNil(t, imagenReq)
+	require.NotNil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be derived from Size on edit path")
+	assert.Equal(t, "2K", *imagenReq.Parameters.SampleImageSize)
+	require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be derived from Size on edit path")
+	assert.Equal(t, "1:1", *imagenReq.Parameters.AspectRatio)
 }

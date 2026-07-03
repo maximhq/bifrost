@@ -229,6 +229,44 @@ func TestEnrichError_OverwritesWithProvidedResponse(t *testing.T) {
 	t.Log("✓ EnrichError sets RawRequest and RawResponse from provided bodies")
 }
 
+func TestEnrichError_SetsLatency(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: "provider failed",
+		},
+	}
+
+	enrichedErr := EnrichError(ctx, bifrostErr, nil, nil, false, false, 42*time.Millisecond)
+
+	if enrichedErr == nil {
+		t.Fatal("EnrichError() returned nil")
+	}
+	if enrichedErr.ExtraFields.Latency != 42 {
+		t.Fatalf("latency = %d, want 42", enrichedErr.ExtraFields.Latency)
+	}
+}
+
+func TestEnrichError_DoesNotSetLatencyWithoutExplicitValue(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: "provider failed",
+		},
+	}
+
+	enrichedErr := EnrichError(ctx, bifrostErr, nil, nil, false, false)
+
+	if enrichedErr == nil {
+		t.Fatal("EnrichError() returned nil")
+	}
+	if enrichedErr.ExtraFields.Latency != 0 {
+		t.Fatalf("latency = %d, want 0", bifrostErr.ExtraFields.Latency)
+	}
+}
+
 // TestEnrichError_RespectsFlags verifies that EnrichError respects
 // sendBackRawRequest and sendBackRawResponse flags
 func TestEnrichError_RespectsFlags(t *testing.T) {
@@ -1876,5 +1914,26 @@ func TestExtractPassthroughProviderResponseHeaders(t *testing.T) {
 	// benign header must pass through.
 	if v, ok := lookup("x-request-id"); !ok || v != "req-456" {
 		t.Fatalf("benign header x-request-id was dropped: %v", headers)
+	}
+}
+
+func TestStripThoughtSignature(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no separator", "call_abc123", "call_abc123"},
+		{"gemini embedded signature", "search_ts_QUJDREVG", "search"},
+		{"base id is also a gemini id", "fc_123_ts_QUJD", "fc_123"},
+		{"separator only", "_ts_QUJD", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StripThoughtSignature(tc.in); got != tc.want {
+				t.Errorf("StripThoughtSignature(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

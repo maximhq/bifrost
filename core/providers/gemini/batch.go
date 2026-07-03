@@ -39,7 +39,10 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 		if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
 			return geminiReq, fmt.Errorf("failed to unmarshal messages: %w", err)
 		}
-		contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
+		contents, systemInstruction, err := convertBifrostMessagesToGemini(chatMessages)
+		if err != nil {
+			return geminiReq, fmt.Errorf("failed to convert messages: %w", err)
+		}
 		geminiReq.Contents = contents
 		geminiReq.SystemInstruction = systemInstruction
 	}
@@ -301,7 +304,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	}
 
 	// Make request
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, bifrostErr
@@ -309,7 +312,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, nil, parseGeminiError(resp)
+		return nil, nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)

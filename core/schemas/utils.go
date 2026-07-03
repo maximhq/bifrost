@@ -174,10 +174,28 @@ type URLTypeInfo struct {
 	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
-// SanitizeImageURL sanitizes and validates an image URL.
-// It handles both data URLs and regular HTTP/HTTPS URLs.
-// It also detects raw base64 image data and adds proper data URL headers.
+// defaultImageURLSchemes is the historical allowlist enforced by SanitizeImageURL.
+// Provider-specific code paths that need to accept additional schemes (e.g. Vertex's
+// gs://) must use SanitizeImageURLWithAllowedSchemes with an explicit list.
+var defaultImageURLSchemes = []string{"http", "https"}
+
+// SanitizeImageURL sanitizes and normalizes an image URL.
+// It handles both data URLs and regular URLs, accepting only http/https for non-data
+// URLs. Callers that need to accept provider-specific schemes (e.g. gs://) must use
+// SanitizeImageURLWithAllowedSchemes.
 func SanitizeImageURL(rawURL string) (string, error) {
+	return sanitizeImageURL(rawURL, defaultImageURLSchemes)
+}
+
+// SanitizeImageURLWithAllowedSchemes sanitizes and normalizes an image URL, then
+// validates regular URL schemes against the target provider's allowlist. Passing an
+// empty list is treated as "no non-data URL is acceptable" — call SanitizeImageURL
+// if you want the default http/https policy.
+func SanitizeImageURLWithAllowedSchemes(rawURL string, allowedSchemes ...string) (string, error) {
+	return sanitizeImageURL(rawURL, allowedSchemes)
+}
+
+func sanitizeImageURL(rawURL string, allowedSchemes []string) (string, error) {
 	if rawURL == "" {
 		return rawURL, fmt.Errorf("URL cannot be empty")
 	}
@@ -212,9 +230,22 @@ func SanitizeImageURL(rawURL string) (string, error) {
 		return rawURL, fmt.Errorf("invalid URL format: %w", err)
 	}
 
-	// Validate scheme
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return rawURL, fmt.Errorf("URL must use http or https scheme")
+	if parsedURL.Scheme == "" {
+		return rawURL, fmt.Errorf("URL must have a valid scheme")
+	}
+
+	if len(allowedSchemes) == 0 {
+		return rawURL, fmt.Errorf("URL scheme %q is not allowed: no schemes permitted", parsedURL.Scheme)
+	}
+	allowed := false
+	for _, scheme := range allowedSchemes {
+		if strings.EqualFold(parsedURL.Scheme, scheme) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return rawURL, fmt.Errorf("URL scheme %q is not allowed; expected one of: %s", parsedURL.Scheme, strings.Join(allowedSchemes, ", "))
 	}
 
 	// Validate host
@@ -1576,6 +1607,33 @@ func IsGLMModel(model string) bool {
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
+}
+
+// IsOpenAIModel checks if the model is an OpenAI model.
+func IsOpenAIModel(model string) bool {
+	if strings.Contains(model, "gpt-") || strings.Contains(model, "text-embedding-") {
+		return true
+	}
+	// OpenAI reasoning families (o1, o3, o4, ...). Match the bare id or a
+	// version-suffixed variant (e.g. "o3", "o4-mini", "o1-preview") while
+	// avoiding false matches on substrings like "co1" or "model-o3x".
+	return isOpenAIReasoningModel(model)
+}
+
+// isOpenAIReasoningModel reports whether model names an OpenAI o-series
+// reasoning model. It strips any provider prefix (e.g. "openai/o3") and matches
+// an "o" followed by a single digit, where the next character is either end of
+// string or a "-" separator, so "o3" and "o4-mini" match but "co1" and "o3x"
+// do not.
+func isOpenAIReasoningModel(model string) bool {
+	name := model
+	if idx := strings.LastIndexAny(name, "/:"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if len(name) < 2 || name[0] != 'o' || name[1] < '0' || name[1] > '9' {
+		return false
+	}
+	return len(name) == 2 || name[2] == '-'
 }
 
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports

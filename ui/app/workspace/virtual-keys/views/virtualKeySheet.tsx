@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
+import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -49,6 +50,7 @@ import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, Virtu
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
+import { formatDistanceToNow } from "date-fns";
 import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -113,6 +115,7 @@ const formSchema = z
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
 		isActive: z.boolean(),
+		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
 		// Budget
 		budgetCalendarAligned: z.boolean(),
 		budgets: z
@@ -163,6 +166,78 @@ type VirtualKeyType = {
 	description: string;
 	provider: string;
 };
+
+const pad2 = (n: number) => n.toString().padStart(2, "0");
+
+const toDatetimeLocal = (d: Date) =>
+	`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+const presetFromNow = (offsetMs: number) => toDatetimeLocal(new Date(Date.now() + offsetMs));
+
+const EXPIRY_PRESETS = [
+	{ label: "30 min", ms: 30 * 60_000 },
+	{ label: "1 hour", ms: 60 * 60_000 },
+	{ label: "24 hours", ms: 24 * 60 * 60_000 },
+	{ label: "7 days", ms: 7 * 24 * 60 * 60_000 },
+] as const;
+
+interface ExpiryFieldProps {
+	value: string | null | undefined;
+	onChange: (v: string | null) => void;
+}
+
+function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
+	// Preset timestamps are computed from Date.now() at click time, so the picked
+	// preset can't be derived back from the value; track it for highlighting.
+	const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
+
+	return (
+		<FormItem>
+			<FormLabel>Expiry</FormLabel>
+			<p className="text-muted-foreground text-xs">
+				{value ? `This key expires ${formatDistanceToNow(new Date(value), { addSuffix: true })}.` : "This key never expires."}
+			</p>
+			<div className="flex flex-wrap gap-1.5">
+				<Button
+					type="button"
+					variant={!value ? "default" : "outline"}
+					size="sm"
+					onClick={() => {
+						setSelectedPreset(null);
+						onChange(null);
+					}}
+				>
+					Never
+				</Button>
+				{EXPIRY_PRESETS.map(({ label, ms }) => (
+					<Button
+						key={label}
+						type="button"
+						variant={value && selectedPreset === label ? "default" : "outline"}
+						size="sm"
+						onClick={() => {
+							setSelectedPreset(label);
+							onChange(presetFromNow(ms));
+						}}
+					>
+						{label}
+					</Button>
+				))}
+				<DateTimePicker
+					buttonClassName="h-8 text-sm px-3"
+					buttonVariant={value && !selectedPreset ? "default" : "outline"}
+					dateTime={value ? new Date(value) : undefined}
+					disabledBefore={new Date()}
+					onDateTimeUpdate={(dt) => {
+						setSelectedPreset(null);
+						onChange(toDatetimeLocal(dt));
+					}}
+				/>
+			</div>
+			<FormMessage />
+		</FormItem>
+	);
+}
 
 export default function VirtualKeySheet({ virtualKey, teams, customers, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
@@ -241,6 +316,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 			teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
 			customerId: virtualKey?.customer_id || "",
 			isActive: virtualKey?.is_active ?? true,
+			expiresAt: virtualKey?.expires_at
+				? (() => {
+						const d = new Date(virtualKey.expires_at);
+						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+					})()
+				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
@@ -646,6 +727,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 				: [];
 			if (isEditing && virtualKey) {
 				// Update existing virtual key
+				// Only include expires_at when the user actually changed the expiry field
+				// (a timestamp sets it, "" clears it). Pre-filled defaultValues are not dirty,
+				// so an unchanged expired key won't resend its old expired timestamp and
+				// cause the backend to reject the edit.
+				const expiryChanged = !!form.formState.dirtyFields.expiresAt;
+				const expiryPayload = expiryChanged
+					? data.expiresAt
+						? { expires_at: new Date(data.expiresAt).toISOString() }
+						: virtualKey?.expires_at
+							? { expires_at: "" }
+							: {}
+					: {};
+
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
 					description: data.description,
@@ -670,6 +764,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					is_active: data.isActive,
 					calendar_aligned: data.budgetCalendarAligned,
 					reset_budget_usage: resetBudgetUsage,
+					...expiryPayload,
 				};
 
 				// Add budgets if enabled
@@ -716,6 +811,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					is_active: data.isActive,
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
+					// Optional expiry: send as UTC ISO string, or omit for no expiry
+					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
 				};
 
 				// Add budgets if enabled
@@ -869,6 +966,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 												<Toggle label="Is this key active?" val={field.value} setVal={field.onChange} data-testid="vk-is-active-toggle" />
 											</FormItem>
 										)}
+									/>
+									<FormField
+										control={form.control}
+										name="expiresAt"
+										render={({ field }) => <ExpiryPickerField value={field.value} onChange={field.onChange} />}
 									/>
 								</div>
 								{/* Provider Configurations */}

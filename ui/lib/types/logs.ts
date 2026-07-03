@@ -529,8 +529,10 @@ export interface LogEntry {
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;
+	virtual_key_name?: string;
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
+	routing_rule_name?: string;
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -782,6 +784,15 @@ export interface RecalculateCostResponse {
 	updated: number;
 	skipped: number;
 	remaining: number;
+}
+
+export interface RecalculateCostProgress {
+	total_matched: number;
+	processed: number;
+	updated: number;
+	skipped: number;
+	remaining?: number;
+	done: boolean;
 }
 
 // Responses API types (for responses_output field)

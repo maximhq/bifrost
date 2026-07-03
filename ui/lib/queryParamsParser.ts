@@ -1,4 +1,4 @@
-import { createParser } from "nuqs";
+import { createParser, parseAsArrayOf } from "nuqs";
 
 // nuqs's encodeQueryValue skips characters like "/" that TanStack Router's
 // navigate({ to }) interprets as path/query delimiters. Full URI-encoding
@@ -19,3 +19,7 @@ export const parseAsSafeString = createParser({
 		}
 	},
 });
+
+// Comma-separated filter values (models, providers, etc.) with the same
+// encoding guarantees as parseAsSafeString.
+export const parseAsSafeArrayOf = parseAsArrayOf(parseAsSafeString);

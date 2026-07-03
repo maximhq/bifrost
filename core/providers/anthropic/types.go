@@ -201,13 +201,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		CodeExecNova:  true, // nova_code_interpreter — Responses path only
 		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
-		// StructuredOutputs: kept true to match pre-existing behavior and the
-		// provider_feature_support_test.go assertion, but NEITHER B-header
-		// NOR B-platform upstream docs document strict tool validation /
-		// output_format on Bedrock. Needs live verification. If Bedrock's
-		// Converse API actually rejects `strict: true`, flip this to false
-		// and update the corresponding test assertion.
-		StructuredOutputs:      true,
+		StructuredOutputs:      true, // documented on Bedrock per A overview matrix
 		Compaction:             true, // compact-2026-01-12 per B-header
 		ContextEditing:         true, // context-management-2025-06-27 per B-header (bundles memory)
 		ContextManagementField: true, // Bedrock accepts context_management body field
@@ -219,6 +213,32 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
 		ServiceTier: true, // Bedrock handles service_tier via its own typed conversion
+	},
+	// Bedrock Mantle — same AWS-hosted Claude models as Bedrock, reached through
+	// the native Anthropic Messages surface (/anthropic/v1/messages) instead of
+	// Converse. Feature support is a property of the model+cloud, so this mirrors
+	// schemas.Bedrock — with one deliberate exception: the *Nova flags below.
+	//
+	// WebSearchNova / CodeExecNova are intentionally OFF here. They exist only to
+	// keep web_search / code_interpreter tools so the Bedrock Converse/Responses
+	// converter can rewrite them into nova_grounding / nova_code_interpreter.
+	// Mantle uses the native Anthropic body builder, which never runs that
+	// conversion, so leaving them on would forward an un-rewritten web_search /
+	// code_interpreter tool that the endpoint rejects. Mantle's native surface
+	// does not support the Anthropic web_search / code_execution server tools
+	// either, so both stay false (no WebSearch / CodeExecution).
+	schemas.BedrockMantle: {
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		ContainerBasic:         true,
+		StructuredOutputs:      true,
+		Compaction:             true,
+		ContextEditing:         true,
+		ContextManagementField: true,
+		InterleavedThinking:    true,
+		Context1M:              true,
+		EagerInputStreaming:    true,
+		InputExamples:          true,
+		ServiceTier:            true,
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
@@ -916,6 +936,19 @@ const (
 	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
 	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
 	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
+
+	// code_execution inner result-content discriminators (the "content" object on
+	// a *_code_execution_tool_result block; ContentObj.Type carries these).
+	AnthropicContentBlockTypeCodeExecutionResult                AnthropicContentBlockType = "code_execution_result"                  // legacy Python (code_execution)
+	AnthropicContentBlockTypeEncryptedCodeExecutionResult       AnthropicContentBlockType = "encrypted_code_execution_result"        // code_execution with encrypted stdout
+	AnthropicContentBlockTypeBashCodeExecutionResult            AnthropicContentBlockType = "bash_code_execution_result"             // bash_code_execution
+	AnthropicContentBlockTypeTextEditorCodeExecutionResult      AnthropicContentBlockType = "text_editor_code_execution_result"      // text_editor_code_execution
+	AnthropicContentBlockTypeCodeExecutionToolResultError       AnthropicContentBlockType = "code_execution_tool_result_error"       // legacy Python error
+	AnthropicContentBlockTypeBashCodeExecutionToolResultError   AnthropicContentBlockType = "bash_code_execution_tool_result_error"  // bash error
+	AnthropicContentBlockTypeTextEditorCodeExecutionResultError AnthropicContentBlockType = "text_editor_code_execution_tool_result_error"
+	// code_execution file-output blocks (inside a result's "content" array; carry file_id).
+	AnthropicContentBlockTypeCodeExecutionOutput     AnthropicContentBlockType = "code_execution_output"      // legacy Python output file
+	AnthropicContentBlockTypeBashCodeExecutionOutput AnthropicContentBlockType = "bash_code_execution_output" // bash output file
 )
 
 // AnthropicToolCallerType identifies which agentic caller produced a tool
@@ -1213,6 +1246,7 @@ const (
 	AnthropicToolTypeCodeExecution20250522 AnthropicToolType = "code_execution_20250522" // Legacy Python-only
 	AnthropicToolTypeCodeExecution         AnthropicToolType = "code_execution_20250825"
 	AnthropicToolTypeCodeExecution20260120 AnthropicToolType = "code_execution_20260120" // Programmatic tool calling
+	AnthropicToolTypeCodeExecution20260521 AnthropicToolType = "code_execution_20260521" // _20260120 runtime + disclosed per-cell time limit
 
 	// Web search
 	AnthropicToolTypeWebSearch20250305 AnthropicToolType = "web_search_20250305"
@@ -1250,7 +1284,11 @@ const (
 	// and text_editor_20250429. Newer text_editor_20250728+ use AnthropicToolNameTextEditor.
 	AnthropicToolNameTextEditorLegacy AnthropicToolName = "str_replace_editor"
 	AnthropicToolNameCodeExecution    AnthropicToolName = "code_execution"
-	AnthropicToolNameMemory           AnthropicToolName = "memory"
+	// Sub-tools surfaced by code_execution_20250825+: bash command execution and
+	// file view/create/edit. They share the code_execution tool definition.
+	AnthropicToolNameBashCodeExecution       AnthropicToolName = "bash_code_execution"
+	AnthropicToolNameTextEditorCodeExecution AnthropicToolName = "text_editor_code_execution"
+	AnthropicToolNameMemory                  AnthropicToolName = "memory"
 	AnthropicToolNameToolSearchBM25   AnthropicToolName = "tool_search_tool_bm25"
 	AnthropicToolNameToolSearchRegex  AnthropicToolName = "tool_search_tool_regex"
 	AnthropicToolNameAdvisor          AnthropicToolName = "advisor"
@@ -1526,6 +1564,15 @@ const (
 	AnthropicStopReasonCompaction                 AnthropicStopReason = "compaction"
 )
 
+// AnthropicResponseContainer is the "container" object returned on responses
+// that used the code execution tool. The id can be passed back as the request
+// "container" to reuse the sandbox across turns.
+// Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
+type AnthropicResponseContainer struct {
+	ID        string  `json:"id"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
 // AnthropicMessageResponse represents an Anthropic messages API response
 type AnthropicMessageResponse struct {
 	ID           string                  `json:"id"`
@@ -1536,6 +1583,10 @@ type AnthropicMessageResponse struct {
 	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
+	// Container is the code-execution sandbox container, present on responses that
+	// used the code execution tool. Distinct from the request-side AnthropicContainer
+	// union: the response form is always an object with id + expires_at.
+	Container *AnthropicResponseContainer `json:"container,omitempty"`
 	// Diagnostics is the cache-diagnosis response payload (cache-diagnosis-2026-04-07).
 	// omitempty when absent; a present-but-null value (no divergence) is conveyed by a
 	// non-nil pointer with a nil CacheMissReason — see schemas.CacheDiagnostics.
@@ -1629,6 +1680,9 @@ type AnthropicStreamDelta struct {
 	Citation     *AnthropicTextCitation   `json:"citation,omitempty"`    // For citations_delta
 	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
 	StopSequence *string                  `json:"stop_sequence"`
+	// Container is the code-execution sandbox container, surfaced on the final
+	// message_delta of a response that used the code execution tool.
+	Container *AnthropicResponseContainer `json:"container,omitempty"`
 }
 
 // ==================== MODEL TYPES ====================

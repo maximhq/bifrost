@@ -77,6 +77,12 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 }
 
 func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
+	return ToGeminiResponsesRequestWithImageURLSchemes(ctx, bifrostReq, defaultGeminiImageURLSchemes...)
+}
+
+// ToGeminiResponsesRequestWithImageURLSchemes converts a Bifrost Responses request
+// to Gemini format using the provider-specific allowlist for non-data image URLs.
+func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest, allowedImageURLSchemes ...string) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -119,7 +125,7 @@ func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider)
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
 		if err != nil {
 			return nil, err
 		}
@@ -3049,7 +3055,11 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 // responses, where a tool returns images/files nested in functionResponse.parts). provider
 // distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
 // function responses must be referenced (see the FunctionCallOutput handling below).
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider) ([]Content, *Content, error) {
+func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
+	if len(allowedImageURLSchemes) == 0 {
+		allowedImageURLSchemes = defaultGeminiImageURLSchemes
+	}
+
 	isVertex := provider == schemas.Vertex
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
@@ -3062,7 +3072,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			}
 			if messages[0].Content.ContentBlocks != nil {
 				for _, block := range messages[0].Content.ContentBlocks {
-					part, err := convertContentBlockToGeminiPart(block)
+					part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 					if err != nil {
 						return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 					}
@@ -3119,7 +3129,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				}
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 						}
@@ -3223,6 +3233,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					}
 
+					if part.ThoughtSignature == nil {
+						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+					}
+
 					content.Parts = append(content.Parts, part)
 				}
 
@@ -3271,7 +3285,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							if !supportsMultimodalToolOutput {
 								continue // older models can't accept media in a function response
 							}
-							mediaPart, err := convertContentBlockToGeminiPart(block)
+							mediaPart, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 							if err != nil {
 								return nil, nil, fmt.Errorf("failed to convert function output content block: %w", err)
 							}
@@ -3361,7 +3375,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert message content block: %w", err)
 						}
@@ -3382,7 +3396,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 }
 
 // convertContentBlockToGeminiPart converts a content block to Gemini part
-func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock) (*Part, error) {
+func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
+	if len(allowedImageURLSchemes) == 0 {
+		allowedImageURLSchemes = defaultGeminiImageURLSchemes
+	}
+
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText,
 		schemas.ResponsesOutputMessageContentTypeText:
@@ -3428,7 +3446,7 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 			imageURL := *block.ResponsesInputMessageContentBlockImage.ImageURL
 
 			// Use existing utility functions to handle URL parsing
-			sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
+			sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(imageURL, allowedImageURLSchemes...)
 			if err != nil {
 				return nil, fmt.Errorf("failed to sanitize image URL: %w", err)
 			}

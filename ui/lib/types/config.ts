@@ -133,6 +133,28 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
 
+// BedrockMantleKeyConfig matching Go's schemas.BedrockMantleKeyConfig
+export interface BedrockMantleKeyConfig {
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	role_arn?: SecretVar;
+	external_id?: SecretVar;
+	session_name?: SecretVar;
+}
+
+// Default BedrockMantleKeyConfig
+export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	role_arn: undefined as unknown as SecretVar,
+	external_id: undefined as unknown as SecretVar,
+	session_name: undefined as unknown as SecretVar,
+} as const satisfies Required<BedrockMantleKeyConfig>;
+
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
 	url: SecretVar;
@@ -189,6 +211,7 @@ export interface ModelProviderKey {
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	bedrock_mantle_key_config?: BedrockMantleKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
@@ -257,6 +280,10 @@ export type RequestType =
 	| "chat_completion_stream"
 	| "responses"
 	| "responses_stream"
+	| "responses_retrieve"
+	| "responses_delete"
+	| "responses_cancel"
+	| "responses_input_items"
 	| "embedding"
 	| "rerank"
 	| "speech"
@@ -308,6 +335,10 @@ export interface AllowedRequests {
 	chat_completion_stream: boolean;
 	responses: boolean;
 	responses_stream: boolean;
+	responses_retrieve?: boolean;
+	responses_delete?: boolean;
+	responses_cancel?: boolean;
+	responses_input_items?: boolean;
 	embedding: boolean;
 	speech: boolean;
 	speech_stream: boolean;
@@ -398,9 +429,9 @@ export interface UpdateProviderRequest {
 	openai_config?: OpenAIConfig;
 }
 
-export interface CreateProviderKeyRequest extends ModelProviderKey {}
+export interface CreateProviderKeyRequest extends ModelProviderKey { }
 
-export interface UpdateProviderKeyRequest extends ModelProviderKey {}
+export interface UpdateProviderKeyRequest extends ModelProviderKey { }
 
 export interface ListProviderKeysResponse {
 	keys: ModelProviderKey[];
@@ -558,6 +589,13 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	mcp_server_auth_mode?: "headers" | "both" | "oauth";
+	oauth2_server_config?: {
+		issuer_url?: SecretVar;
+		auth_code_ttl?: number;
+		access_token_ttl?: number;
+		disable_vk_identity?: boolean;
+	};
 }
 
 export const DefaultCoreConfig: CoreConfig = {

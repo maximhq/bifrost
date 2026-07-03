@@ -469,3 +469,93 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 		t.Fatalf("expected encoded message to contain phase, got %s", encoded)
 	}
 }
+
+// TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
+// normalized provider-format converters, e.g. openai/v1/responses) drops the
+// Anthropic-only code-execution fidelity carry while keeping the neutral
+// code_interpreter_call view — and does not mutate the source response (the raw
+// Bifrost superset path keeps the carry).
+func TestWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
+	code := "print(1)"
+	resp := &BifrostResponsesResponse{
+		ID: Ptr("resp_1"),
+		Output: []ResponsesMessage{
+			{
+				Type: Ptr(ResponsesMessageTypeCodeInterpreterCall),
+				ID:   Ptr("ci_1"),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:                           Ptr("ci_1"),
+					ResponsesCodeInterpreterToolCall: &ResponsesCodeInterpreterToolCall{Code: &code, ContainerID: "cntr_1"},
+					ResponsesCodeExecutionCall:       &ResponsesCodeExecutionCall{ToolName: "bash_code_execution", Stdout: Ptr("hi\n")},
+				},
+			},
+		},
+	}
+
+	normalized := resp.WithDefaults()
+
+	// Normalized output: carry gone, neutral view intact.
+	tm := normalized.Output[0].ResponsesToolMessage
+	if tm.ResponsesCodeExecutionCall != nil {
+		t.Error("WithDefaults leaked the code-execution carry into normalized output")
+	}
+	if tm.ResponsesCodeInterpreterToolCall == nil || tm.ResponsesCodeInterpreterToolCall.ContainerID != "cntr_1" {
+		t.Error("WithDefaults dropped the neutral code_interpreter_call view")
+	}
+
+	// Source response (raw superset) must be untouched.
+	if resp.Output[0].ResponsesToolMessage.ResponsesCodeExecutionCall == nil {
+		t.Error("WithDefaults mutated the source response — superset lost the carry")
+	}
+
+	encoded, err := Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "code_execution_") {
+		t.Errorf("normalized JSON still contains code_execution_* fields:\n%s", encoded)
+	}
+}
+
+// TestStreamWithDefaultsStripsCodeExecutionCarry verifies the streaming converter
+// drops the code-execution carry from output_item.added / output_item.done items
+// (the streaming analog of the non-streaming Output strip).
+func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
+	mkItem := func() *ResponsesMessage {
+		return &ResponsesMessage{
+			Type: Ptr(ResponsesMessageTypeCodeInterpreterCall),
+			ID:   Ptr("ci_1"),
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID:                           Ptr("ci_1"),
+				ResponsesCodeInterpreterToolCall: &ResponsesCodeInterpreterToolCall{ContainerID: "cntr_1"},
+				ResponsesCodeExecutionCall:       &ResponsesCodeExecutionCall{ToolName: "bash_code_execution"},
+			},
+		}
+	}
+
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeOutputItemDone,
+	} {
+		src := &BifrostResponsesStreamResponse{Type: typ, Item: mkItem()}
+		out := src.WithDefaults()
+
+		if out.Item.ResponsesToolMessage.ResponsesCodeExecutionCall != nil {
+			t.Errorf("%s: leaked code-execution carry on streamed item", typ)
+		}
+		if out.Item.ResponsesToolMessage.ResponsesCodeInterpreterToolCall == nil {
+			t.Errorf("%s: dropped neutral code_interpreter_call view", typ)
+		}
+		if src.Item.ResponsesToolMessage.ResponsesCodeExecutionCall == nil {
+			t.Errorf("%s: mutated source item — superset stream lost the carry", typ)
+		}
+
+		encoded, err := Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(encoded), "code_execution_") {
+			t.Errorf("%s: normalized stream JSON still has code_execution_*:\n%s", typ, encoded)
+		}
+	}
+}
