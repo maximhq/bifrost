@@ -114,8 +114,11 @@ func Ptr[T any](v T) *T {
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
 func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
-	// Keyless custom providers are not allowed for Bedrock.
-	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
+	// Keyless custom providers are not allowed for Bedrock or Vertex: both require a
+	// Key/{Bedrock,Vertex}KeyConfig object to exist (for credentials/project/region
+	// resolution) even when using ambient auth (IAM role, ADC) — there is no mode where
+	// Bifrost can skip requiring a Key object entirely for these providers.
+	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock && customConfig.BaseProviderType != schemas.Vertex {
 		return false
 	}
 	return true
