@@ -221,7 +221,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExpired(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reset expired rate limits (simulating ticker behavior)
-	expiredRateLimits := store.ResetExpiredRateLimitsInMemory(context.Background())
+	expiredRateLimits := store.ResetExpiredRateLimitsInMemory(context.Background(), true)
 	err = store.ResetExpiredRateLimits(context.Background(), expiredRateLimits)
 	require.NoError(t, err)
 
