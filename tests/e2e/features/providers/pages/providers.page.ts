@@ -379,6 +379,7 @@ export class ProvidersPage extends BasePage {
       gemini: 'Gemini',
       cohere: 'Cohere',
       bedrock: 'AWS Bedrock',
+      vertex: 'Vertex AI',
     }
     return labels[type] || type
   }

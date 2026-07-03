@@ -128,7 +128,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 	};
 
 	const baseFormat = form.watch("baseFormat") as BaseProvider;
-	const isKeyLessDisabled = baseFormat === "bedrock";
+	const isKeyLessDisabled = baseFormat === "bedrock" || baseFormat === "vertex";
 
 	return (
 		<>
@@ -172,6 +172,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 													<SelectItem value="gemini">Gemini</SelectItem>
 													<SelectItem value="cohere">Cohere</SelectItem>
 													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
+													<SelectItem value="vertex">Vertex AI</SelectItem>
 													<SelectItem value="replicate">Replicate</SelectItem>
 												</SelectContent>
 											</Select>
