@@ -3044,3 +3044,39 @@ func TestCalculateCostForUsage_NilUsageIsZero(t *testing.T) {
 	})
 	assert.Equal(t, 0.0, s.CalculateCostForUsage(nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil))
 }
+
+func TestCalculateCostForUsage_BatchResultsUsesBatchRates(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): {
+			Model:                     "gpt-4o-mini",
+			Provider:                  "openai",
+			Mode:                      "chat",
+			InputCostPerToken:         bifrost.Ptr(0.000010),
+			OutputCostPerToken:        bifrost.Ptr(0.000020),
+			InputCostPerTokenBatches:  bifrost.Ptr(0.000005),
+			OutputCostPerTokenBatches: bifrost.Ptr(0.000010),
+		},
+	})
+
+	cost := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+
+	assert.InDelta(t, 0.0007, cost, 1e-12)
+}
+
+func TestCalculateCostForUsage_BatchResultsDoesNotFallbackToRegularRates(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): chatPricing(0.000010, 0.000020),
+	})
+
+	cost := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+
+	assert.Equal(t, 0.0, cost)
+}

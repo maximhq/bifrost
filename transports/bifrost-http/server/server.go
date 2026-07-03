@@ -1741,6 +1741,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
+	s.WireBatchAccountingSweeper()
 	// Initialize routes
 	s.Router = router.New()
 	// Initialize CORS middleware

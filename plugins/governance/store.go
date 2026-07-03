@@ -114,12 +114,14 @@ type GovernanceStore interface {
 	// use it for every config publish (fresh load or admin edit) so a concurrent
 	// BumpBudgetUsage increment is never clobbered.
 	LoadBudget(ctx context.Context, budgetID string) *configstoreTables.TableBudget
+	BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error
 	UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget)
 	DeleteBudget(ctx context.Context, budgetID string)
 	// Rate limit crud. UpsertRateLimitConfig carries in-memory counter state
 	// (token + request CurrentUsage/LastReset) forward across replacements —
 	// same rationale as UpsertBudgetConfig.
 	LoadRateLimit(ctx context.Context, rateLimitID string) *configstoreTables.TableRateLimit
+	BumpRateLimitUsageBy(ctx context.Context, rateLimitID string, tokenDelta, requestDelta int64) error
 	UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit)
 	DeleteRateLimit(ctx context.Context, rateLimitID string)
 	// Provider-level governance checks
