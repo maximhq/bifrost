@@ -72,8 +72,11 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
-	const isOpenAI = provider.name === "openai";
-	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
+	// Tab gating keys off the base provider type for custom providers, so a custom
+	// Vertex/Anthropic/OpenAI-based provider gets the same tabs as its standard counterpart.
+	const effectiveProvider = (provider.custom_provider_config?.base_provider_type ?? provider.name).toLowerCase();
+	const isOpenAI = effectiveProvider === "openai";
+	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(effectiveProvider);
 
 	const tabs = useMemo(() => {
 		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
