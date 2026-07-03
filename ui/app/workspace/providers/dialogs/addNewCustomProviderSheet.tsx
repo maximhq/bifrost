@@ -17,15 +17,30 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { AllowedRequestsFields } from "../fragments/allowedRequestsFields";
 
-const formSchema = z.object({
-	name: z.string().min(1),
-	baseFormat: z.string().min(1),
-	base_url: z.string().min(1, "Base URL is required").url("Must be a valid URL"),
-	allowed_requests: allowedRequestsSchema,
-	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
-	is_key_less: z.boolean().optional(),
-	allow_private_network: z.boolean().optional(),
-});
+// Base provider types whose provider implementation never reads NetworkConfig.BaseURL
+// (host/routing is derived from per-key config instead) - Base URL is not a meaningful
+// input for these and is hidden/optional in the form.
+const BASE_URL_NOT_USED = ["vertex"];
+
+const formSchema = z
+	.object({
+		name: z.string().min(1),
+		baseFormat: z.string().min(1),
+		base_url: z.string().url("Must be a valid URL").optional().or(z.literal("")),
+		allowed_requests: allowedRequestsSchema,
+		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
+		is_key_less: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
+	})
+	.superRefine((data, ctx) => {
+		if (!BASE_URL_NOT_USED.includes(data.baseFormat) && !data.base_url) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Base URL is required",
+				path: ["base_url"],
+			});
+		}
+	});
 
 type FormData = z.infer<typeof formSchema>;
 
@@ -123,7 +138,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				is_key_less: data.is_key_less ?? false,
 			},
 			network_config: {
-				base_url: data.base_url,
+				base_url: BASE_URL_NOT_USED.includes(data.baseFormat) ? undefined : data.base_url,
 				allow_private_network: data.allow_private_network ?? false,
 				default_request_timeout_in_seconds: DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: 0,
@@ -200,27 +215,29 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 								</FormItem>
 							)}
 						/>
-						<FormField
-							control={form.control}
-							name="base_url"
-							render={({ field }) => (
-								<FormItem className="flex flex-col gap-3">
-									<FormLabel>Base URL</FormLabel>
-									<div>
-										<FormControl>
-											<Input
-												placeholder={"https://api.your-provider.com"}
-												data-testid="base-url-input"
-												disabled={!hasProviderCreateAccess}
-												{...field}
-												value={field.value || ""}
-											/>
-										</FormControl>
-										<FormMessage />
-									</div>
-								</FormItem>
-							)}
-						/>
+						{!BASE_URL_NOT_USED.includes(baseFormat) && (
+							<FormField
+								control={form.control}
+								name="base_url"
+								render={({ field }) => (
+									<FormItem className="flex flex-col gap-3">
+										<FormLabel>Base URL</FormLabel>
+										<div>
+											<FormControl>
+												<Input
+													placeholder={"https://api.your-provider.com"}
+													data-testid="base-url-input"
+													disabled={!hasProviderCreateAccess}
+													{...field}
+													value={field.value || ""}
+												/>
+											</FormControl>
+											<FormMessage />
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
 						<FormField
 							control={form.control}
 							name="allow_private_network"
