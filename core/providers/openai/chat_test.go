@@ -682,70 +682,83 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	}
 }
 
-func TestToOpenAIChatRequest_CerebrasStripsAssistantReasoningContent(t *testing.T) {
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
-	defer cancel()
+func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProviders(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
+		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
+	}
 
-	reasoning := "step by step"
-	assistantContent := "The weather in Paris is mild today."
-	userContent := "What is the weather in Paris?"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
 
-	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Cerebras,
-		Model:    "gpt-oss-120b",
-		Input: []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
-			},
-			{
-				Role: schemas.ChatMessageRoleAssistant,
-				Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
-				ChatAssistantMessage: &schemas.ChatAssistantMessage{
-					Reasoning: &reasoning,
+			reasoning := "step by step"
+			assistantContent := "The weather in Paris is mild today."
+			userContent := "What is the weather in Paris?"
+
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{
+					{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+					},
+					{
+						Role:    schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							Reasoning: &reasoning,
+						},
+					},
 				},
-			},
-		},
-	}
+			}
 
-	result := ToOpenAIChatRequest(ctx, bifrostReq)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
-		t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
-	}
-	if result.Messages[1].OpenAIChatAssistantMessage.Reasoning != nil {
-		t.Fatalf("expected assistant reasoning_content to be stripped for cerebras, got %#v", result.Messages[1].OpenAIChatAssistantMessage.Reasoning)
-	}
+			result := ToOpenAIChatRequest(ctx, bifrostReq)
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
+				t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
+			}
+			if result.Messages[1].OpenAIChatAssistantMessage.Reasoning != nil {
+				t.Fatalf("expected assistant reasoning_content to be stripped for %s, got %#v", tt.provider, result.Messages[1].OpenAIChatAssistantMessage.Reasoning)
+			}
 
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIChatRequest(ctx, bifrostReq), nil
-		},
-	)
-	if bifrostErr != nil {
-		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
-	}
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+				ctx,
+				bifrostReq,
+				func() (providerUtils.RequestBodyWithExtraParams, error) {
+					return ToOpenAIChatRequest(ctx, bifrostReq), nil
+				},
+			)
+			if bifrostErr != nil {
+				t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+			}
 
-	var jsonMap map[string]interface{}
-	if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
-		t.Fatalf("failed to parse marshaled request body: %v", err)
-	}
+			var jsonMap map[string]any
+			if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
+				t.Fatalf("failed to parse marshaled request body: %v", err)
+			}
 
-	messages, ok := jsonMap["messages"].([]interface{})
-	if !ok || len(messages) != 2 {
-		t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
-	}
-	assistantMessage, ok := messages[1].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected assistant message object, got %#v", messages[1])
-	}
-	if _, ok := assistantMessage["reasoning_content"]; ok {
-		t.Fatalf("expected reasoning_content to be absent from cerebras assistant payload, got %#v", assistantMessage["reasoning_content"])
+			messages, ok := jsonMap["messages"].([]any)
+			if !ok || len(messages) != 2 {
+				t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
+			}
+			assistantMessage, ok := messages[1].(map[string]any)
+			if !ok {
+				t.Fatalf("expected assistant message object, got %#v", messages[1])
+			}
+			if _, ok := assistantMessage["reasoning_content"]; ok {
+				t.Fatalf("expected reasoning_content to be absent from %s assistant payload, got %#v", tt.provider, assistantMessage["reasoning_content"])
+			}
+		})
 	}
 }
 
