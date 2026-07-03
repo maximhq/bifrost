@@ -2896,11 +2896,15 @@ func extractSuccessfulListModelsResponses(results chan schemas.ListModelsByKeyRe
 			continue
 		}
 
-		keyStatuses = append(keyStatuses, schemas.KeyStatus{
-			KeyID:    result.KeyID,
-			Provider: provider,
-			Status:   schemas.KeyStatusSuccess,
-		})
+		if result.Response != nil && len(result.Response.KeyStatuses) > 0 {
+			keyStatuses = append(keyStatuses, result.Response.KeyStatuses...)
+		} else {
+			keyStatuses = append(keyStatuses, schemas.KeyStatus{
+				KeyID:    result.KeyID,
+				Provider: provider,
+				Status:   schemas.KeyStatusSuccess,
+			})
+		}
 		successfulResponses = append(successfulResponses, result.Response)
 	}
 
@@ -2943,8 +2947,10 @@ func HandleKeylessListModelsRequest(
 
 	// Success case
 	if resp != nil {
-		keyStatus.Status = schemas.KeyStatusSuccess
-		resp.KeyStatuses = []schemas.KeyStatus{keyStatus}
+		if len(resp.KeyStatuses) == 0 {
+			keyStatus.Status = schemas.KeyStatusSuccess
+			resp.KeyStatuses = []schemas.KeyStatus{keyStatus}
+		}
 		return resp, nil
 	}
 

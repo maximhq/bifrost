@@ -3,7 +3,10 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -731,6 +734,12 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	}
 }
 
+func (ma *MockAccount) SetProviderConfig(provider schemas.ModelProvider, config *schemas.ProviderConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	ma.configs[provider] = config
+}
+
 func (ma *MockAccount) UpdateProviderConfig(provider schemas.ModelProvider, concurrency int, bufferSize int) {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
@@ -875,6 +884,158 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 
 	if tracer.flushed.Load() != 1 {
 		t.Fatalf("expected trace flush count 1, got %d", tracer.flushed.Load())
+	}
+}
+
+func TestListAllModels_ReturnsFastProviderWhenAnotherProviderIsSlow(t *testing.T) {
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"fast-model","object":"model","owned_by":"test"}]}`))
+	}))
+	defer fastServer.Close()
+
+	releaseSlowProvider := make(chan struct{})
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-releaseSlowProvider:
+		case <-time.After(5 * time.Second):
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"slow-model","object":"model","owned_by":"test"}]}`))
+	}))
+	defer slowServer.Close()
+
+	account := NewMockAccount()
+	fastProvider := schemas.ModelProvider("fast-custom")
+	slowProvider := schemas.ModelProvider("slow-custom")
+	account.SetProviderConfig(fastProvider, &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        fastServer.URL,
+			DefaultRequestTimeoutInSeconds: 5,
+		},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		},
+	})
+	account.SetProviderConfig(slowProvider, &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        slowServer.URL,
+			DefaultRequestTimeoutInSeconds: 1,
+		},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		},
+	})
+	account.SetKeysForProvider(fastProvider, []schemas.Key{
+		{
+			ID:     "fast-key",
+			Value:  *schemas.NewEnvVar("sk-fast"),
+			Models: schemas.WhiteList{"*"},
+			Weight: 100,
+		},
+	})
+	account.SetKeysForProvider(slowProvider, []schemas.Key{
+		{
+			ID:     "slow-key",
+			Value:  *schemas.NewEnvVar("sk-slow"),
+			Models: schemas.WhiteList{"*"},
+			Weight: 100,
+		},
+	})
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer bifrost.Shutdown()
+	configuredProviders, err := bifrost.GetConfiguredProviders()
+	if err != nil {
+		t.Fatalf("GetConfiguredProviders failed: %v", err)
+	}
+	if len(configuredProviders) != 2 {
+		t.Fatalf("expected two configured providers, got %#v", configuredProviders)
+	}
+	if !slices.Contains(configuredProviders, fastProvider) || !slices.Contains(configuredProviders, slowProvider) {
+		t.Fatalf("expected fast and slow providers, got %#v", configuredProviders)
+	}
+
+	start := time.Now()
+	response, bifrostErr := bifrost.ListAllModels(nil, &schemas.BifrostListModelsRequest{})
+	elapsed := time.Since(start)
+	close(releaseSlowProvider)
+
+	if bifrostErr != nil {
+		t.Fatalf("ListAllModels returned error: %v", bifrostErr)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("ListAllModels waited too long for slow provider: %s", elapsed)
+	}
+	if response == nil || len(response.Data) != 1 || response.Data[0].ID != string(fastProvider)+"/fast-model" {
+		t.Fatalf("expected only fast provider model, got %#v", response)
+	}
+}
+
+func TestListAllModels_AllowsEmptyProviderInventory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	provider := schemas.ModelProvider("empty-custom")
+	account.SetProviderConfig(provider, &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 5,
+		},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		},
+	})
+	account.SetKeysForProvider(provider, []schemas.Key{
+		{
+			ID:     "empty-key",
+			Value:  *schemas.NewEnvVar("sk-empty"),
+			Models: schemas.WhiteList{"*"},
+			Weight: 100,
+		},
+	})
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer bifrost.Shutdown()
+
+	response, bifrostErr := bifrost.ListAllModels(nil, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("ListAllModels returned error for empty inventory: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected empty response, got nil")
+	}
+	if len(response.Data) != 0 {
+		t.Fatalf("expected no models, got %#v", response.Data)
+	}
+	if len(response.KeyStatuses) != 1 || response.KeyStatuses[0].Status != schemas.KeyStatusSuccess {
+		t.Fatalf("expected one successful key status, got %#v", response.KeyStatuses)
 	}
 }
 

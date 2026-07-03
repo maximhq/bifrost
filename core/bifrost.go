@@ -51,6 +51,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const listModelsWatchdogGracePeriod = 100 * time.Millisecond
+
 // ChannelMessage represents a message passed through the request channel.
 // It contains the request, response and error channels, and the request type.
 type ChannelMessage struct {
@@ -474,8 +476,9 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		err         *schemas.BifrostError
 	}
 
-	results := make(chan providerResult, len(providerKeys))
-	var wg sync.WaitGroup
+	results := make(chan providerResult, len(providerKeys)*2)
+	launchedProviders := 0
+	launchedProviderKeys := make([]schemas.ModelProvider, 0, len(providerKeys))
 
 	// Launch concurrent requests for all providers
 	for _, providerKey := range providerKeys {
@@ -483,11 +486,20 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			continue
 		}
 
-		wg.Add(1)
-		go func(providerKey schemas.ModelProvider) {
-			defer wg.Done()
+		providerTimeout := bifrost.listModelsTimeoutForProvider(providerKey)
+		launchedProviders++
+		launchedProviderKeys = append(launchedProviderKeys, providerKey)
+		providerDone := make(chan struct{})
 
-			providerCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		go func(providerKey schemas.ModelProvider, providerTimeout time.Duration, done chan<- struct{}) {
+			doneClosed := false
+			defer func() {
+				if !doneClosed {
+					close(done)
+				}
+			}()
+			providerCtx, cancelProviderCtx := schemas.NewBifrostContextWithTimeout(ctx, providerTimeout)
+			defer cancelProviderCtx()
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 
 			providerModels := make([]schemas.Model, 0)
@@ -543,15 +555,29 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 					break
 				}
 
-				if response == nil || len(response.Data) == 0 {
+				if response != nil && len(response.KeyStatuses) > 0 {
+					providerKeyStatuses = append(providerKeyStatuses, response.KeyStatuses...)
+				}
+
+				if response == nil {
+					if providerCtx.Err() != nil {
+						providerErr = listModelsContextError(providerKey, providerCtx.Err(), providerTimeout)
+					} else {
+						providerErr = listModelsNilResponseError(providerKey)
+					}
+					providerKeyStatuses = append(providerKeyStatuses, schemas.KeyStatus{
+						Provider: providerKey,
+						Status:   schemas.KeyStatusListModelsFailed,
+						Error:    providerErr,
+					})
+					break
+				}
+
+				if len(response.Data) == 0 {
 					break
 				}
 
 				providerModels = append(providerModels, response.Data...)
-
-				if len(response.KeyStatuses) > 0 {
-					providerKeyStatuses = append(providerKeyStatuses, response.KeyStatuses...)
-				}
 
 				// Check if there are more pages
 				if response.NextPageToken == "" {
@@ -562,25 +588,87 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 				providerRequest.PageToken = response.NextPageToken
 			}
 
+			close(done)
+			doneClosed = true
 			results <- providerResult{
 				provider:    providerKey,
 				models:      providerModels,
 				keyStatuses: providerKeyStatuses,
 				err:         providerErr,
 			}
-		}(providerKey)
-	}
+		}(providerKey, providerTimeout, providerDone)
 
-	// Wait for all goroutines to complete
-	wg.Wait()
-	close(results)
+		go func(providerKey schemas.ModelProvider, timeout time.Duration, done <-chan struct{}) {
+			timer := time.NewTimer(timeout + listModelsWatchdogGracePeriod)
+			defer func() {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}()
+
+			select {
+			case <-timer.C:
+				select {
+				case <-done:
+					return
+				default:
+				}
+				timeoutErr := listModelsProviderTimeoutError(providerKey, timeout)
+				results <- providerResult{
+					provider: providerKey,
+					keyStatuses: []schemas.KeyStatus{{
+						Provider: providerKey,
+						Status:   schemas.KeyStatusListModelsFailed,
+						Error:    timeoutErr,
+					}},
+					err: timeoutErr,
+				}
+			case <-done:
+			case <-ctx.Done():
+			}
+		}(providerKey, providerTimeout, providerDone)
+	}
 
 	// Accumulate all models and key statuses from all providers
 	allModels := make([]schemas.Model, 0)
 	allKeyStatuses := make([]schemas.KeyStatus, 0)
 	var firstError *schemas.BifrostError
 
-	for result := range results {
+	seenProviders := make(map[schemas.ModelProvider]struct{}, launchedProviders)
+collectResults:
+	for len(seenProviders) < launchedProviders {
+		var result providerResult
+		select {
+		case result = <-results:
+		case <-ctx.Done():
+			if ctx.Err() != nil && firstError == nil {
+				statusCode := fasthttp.StatusGatewayTimeout
+				if errors.Is(ctx.Err(), context.Canceled) {
+					statusCode = 499
+				}
+				firstError = &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     &statusCode,
+					Error: &schemas.ErrorField{
+						Message: ctx.Err().Error(),
+						Error:   ctx.Err(),
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						RequestType: schemas.ListModelsRequest,
+					},
+				}
+			}
+			break collectResults
+		}
+
+		if _, seen := seenProviders[result.provider]; seen {
+			continue
+		}
+		seenProviders[result.provider] = struct{}{}
+
 		if len(result.models) > 0 {
 			allModels = append(allModels, result.models...)
 		}
@@ -589,6 +677,25 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		}
 		if result.err != nil && firstError == nil {
 			firstError = result.err
+		}
+	}
+
+	for _, providerKey := range launchedProviderKeys {
+		if _, seen := seenProviders[providerKey]; seen {
+			continue
+		}
+		providerTimeout := bifrost.listModelsTimeoutForProvider(providerKey)
+		providerErr := listModelsProviderTimeoutError(providerKey, providerTimeout)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			providerErr = listModelsContextError(providerKey, ctx.Err(), providerTimeout)
+		}
+		allKeyStatuses = append(allKeyStatuses, schemas.KeyStatus{
+			Provider: providerKey,
+			Status:   schemas.KeyStatusListModelsFailed,
+			Error:    providerErr,
+		})
+		if firstError == nil {
+			firstError = providerErr
 		}
 	}
 
@@ -617,6 +724,71 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
+}
+
+func listModelsProviderTimeoutError(providerKey schemas.ModelProvider, timeout time.Duration) *schemas.BifrostError {
+	statusCode := fasthttp.StatusGatewayTimeout
+	errorType := schemas.RequestTimedOut
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Type:    &errorType,
+			Message: fmt.Sprintf("list models timed out for provider %s after %s", providerKey, timeout),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    providerKey,
+		},
+	}
+}
+
+func listModelsContextError(providerKey schemas.ModelProvider, err error, timeout time.Duration) *schemas.BifrostError {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return listModelsProviderTimeoutError(providerKey, timeout)
+	}
+
+	statusCode := 499
+	errorType := schemas.RequestCancelled
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Type:    &errorType,
+			Message: fmt.Sprintf("list models cancelled for provider %s: %v", providerKey, err),
+			Error:   err,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    providerKey,
+		},
+	}
+}
+
+func listModelsNilResponseError(providerKey schemas.ModelProvider) *schemas.BifrostError {
+	statusCode := fasthttp.StatusBadGateway
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("list models returned no response for provider %s", providerKey),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    providerKey,
+		},
+	}
+}
+
+func (bifrost *Bifrost) listModelsTimeoutForProvider(providerKey schemas.ModelProvider) time.Duration {
+	timeoutSeconds := schemas.DefaultRequestTimeoutInSeconds
+	if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil {
+		timeoutSeconds = config.NetworkConfig.DefaultRequestTimeoutInSeconds
+	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = schemas.DefaultRequestTimeoutInSeconds
+	}
+	return time.Duration(timeoutSeconds) * time.Second
 }
 
 func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {
