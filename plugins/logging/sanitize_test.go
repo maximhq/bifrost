@@ -78,3 +78,31 @@ func TestApplyErrorDetailsToEntry_NilError(t *testing.T) {
 		t.Error("nil error should leave ErrorDetails empty")
 	}
 }
+
+// MCPToolLog counterpart: same sanitization semantics, and ErrorDetails is
+// serialized immediately rather than deferred to the BeforeCreate hook.
+func TestApplyErrorDetailsToMCPEntry_SanitizedAndSerializedImmediately(t *testing.T) {
+	entry := &logstore.MCPToolLog{ID: "mcp-1"}
+	applyErrorDetailsToMCPEntry(entry, errorWithRawPayloads(), false, false)
+
+	if entry.ErrorDetailsParsed == nil {
+		t.Fatal("ErrorDetailsParsed should be set")
+	}
+	if entry.ErrorDetailsParsed.ExtraFields.RawRequest != nil ||
+		entry.ErrorDetailsParsed.ExtraFields.RawResponse != nil {
+		t.Error("ErrorDetailsParsed should not retain raw payloads when content logging is disabled")
+	}
+	if entry.ErrorDetails == "" {
+		t.Error("ErrorDetails should be serialized immediately, not deferred to BeforeCreate")
+	}
+	if strings.Contains(entry.ErrorDetails, "RAW_REQUEST_MARKER") {
+		t.Error("serialized ErrorDetails must not contain raw payloads when content logging is disabled")
+	}
+
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error: %v", err)
+	}
+	if strings.Contains(entry.ErrorDetails, "RAW_REQUEST_MARKER") {
+		t.Error("serialized ErrorDetails must not contain raw payloads after SerializeFields")
+	}
+}

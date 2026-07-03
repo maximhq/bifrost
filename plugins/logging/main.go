@@ -126,6 +126,20 @@ func applyErrorDetailsToEntry(entry *logstore.Log, bifrostErr *schemas.BifrostEr
 	entry.ErrorDetailsParsed = sanitizedErr
 }
 
+// applyErrorDetailsToMCPEntry is the MCPToolLog counterpart of
+// applyErrorDetailsToEntry: same sanitize-once, serialize-immediately,
+// store-sanitized-copy-in-both-fields semantics.
+func applyErrorDetailsToMCPEntry(entry *logstore.MCPToolLog, bifrostErr *schemas.BifrostError, contentLoggingEnabled, shouldStoreRaw bool) {
+	if bifrostErr == nil {
+		return
+	}
+	sanitizedErr := sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
+	if data, err := sonic.Marshal(sanitizedErr); err == nil {
+		entry.ErrorDetails = string(data)
+	}
+	entry.ErrorDetailsParsed = sanitizedErr
+}
+
 // sanitizeErrorForLogging returns a shallow copy of err with ExtraFields.RawRequest and
 // RawResponse cleared when raw-byte persistence is disabled, preventing raw bytes from
 // leaking into entry.ErrorDetails via JSON serialization.
@@ -1596,7 +1610,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if bifrostErr != nil {
 		entry.Status = "error"
 		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
-		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, p.contentLoggingEnabled(ctx), shouldStoreRaw)
+		applyErrorDetailsToMCPEntry(entry, bifrostErr, p.contentLoggingEnabled(ctx), shouldStoreRaw)
 	} else if resp != nil {
 		entry.Status = "success"
 		if p.contentLoggingEnabled(ctx) {
