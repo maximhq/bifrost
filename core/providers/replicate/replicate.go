@@ -333,7 +333,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 		providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
 		// Make request
-		_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 
 		// Release resources
 		wait()
@@ -346,7 +346,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			errorResponse := parseReplicateError(resp.Body(), resp.StatusCode())
+			errorResponse := providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 			fasthttp.ReleaseResponse(resp)
 			return nil, errorResponse
 		}
@@ -2721,9 +2721,9 @@ func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.NewBifrostOperationError(
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-			nil)
+			nil), latency)
 	}
 
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)

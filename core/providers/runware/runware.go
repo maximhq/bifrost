@@ -277,14 +277,14 @@ func (provider *RunwareProvider) sendTaskArray(ctx *schemas.BifrostContext, key 
 	lat, bErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bErr != nil {
-		return reqBody, nil, 0, bErr
+		return reqBody, nil, lat, bErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return reqBody, nil, 0, providerUtils.SetErrorLatency(parseRunwareError(resp), lat)
+		return reqBody, nil, lat, providerUtils.SetErrorLatency(parseRunwareError(resp), lat)
 	}
 	decoded, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return reqBody, nil, 0, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return reqBody, nil, lat, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), lat)
 	}
 	// Copy out: the fasthttp response buffer is released when this function returns.
 	return reqBody, append([]byte(nil), decoded...), lat, nil
@@ -405,7 +405,7 @@ func (provider *RunwareProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil), latency)
 	}
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {

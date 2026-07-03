@@ -209,10 +209,10 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 			// Retry the request
 			responseBody, latency, providerResponseHeaders, err = provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest, isHFInferenceImageRequest)
 			if err != nil {
-				return nil, 0, nil, err
+				return nil, latency, nil, err
 			}
 		} else {
-			return nil, 0, nil, err
+			return nil, latency, nil, err
 		}
 	}
 

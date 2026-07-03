@@ -2443,10 +2443,10 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		if resp.StatusCode() != fasthttp.StatusOK {
 			// log full error
 			provider.logger.Error("failed to download video: " + string(resp.Body()))
-			return nil, providerUtils.NewBifrostOperationError(
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil,
-			)
+			), latency)
 		}
 		body, err := providerUtils.CheckAndDecodeBody(resp)
 		if err != nil {
