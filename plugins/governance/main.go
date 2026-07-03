@@ -1204,7 +1204,7 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	if virtualKeyValue != "" {
 		var ok bool
 		virtualKey, ok = p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() {
+		if !ok || virtualKey == nil || virtualKey.IsExpiredAt(time.Now().UTC()) {
 			return nil
 		}
 	}
@@ -1440,7 +1440,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
 	if virtualKeyValue != "" {
 		vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || vk == nil || !vk.IsActiveValue() {
+		if !ok || vk == nil {
 			// VK became invalid after initial check - fail closed for security
 			ctx.SetValue(governanceRejectedContextKey, true)
 			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
@@ -1448,6 +1448,26 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 				StatusCode: bifrost.Ptr(403),
 				Error: &schemas.ErrorField{
 					Message: "Virtual key not found",
+				},
+			}}, nil
+		}
+		if !vk.IsActiveValue() {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key is inactive",
+				},
+			}}, nil
+		}
+		if vk.IsExpiredAt(time.Now().UTC()) {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key has expired",
 				},
 			}}, nil
 		}
