@@ -49,12 +49,15 @@ func TestElevenlabsProvider_CustomAliasListModelsReportsAliasMetadata(t *testing
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	request := &schemas.BifrostListModelsRequest{
-		Provider: customElevenlabsProviderName,
+		Provider:   customElevenlabsProviderName,
+		Unfiltered: true,
 	}
 
 	response, bifrostErr := provider.ListModels(ctx, []schemas.Key{{}}, request)
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, response)
+	require.Len(t, response.Data, 1)
+	assert.Equal(t, "custom-elevenlabs/eleven_multilingual_v2", response.Data[0].ID)
 }
 
 func TestElevenlabsProvider_CustomAliasHonorsAllowedRequests(t *testing.T) {
