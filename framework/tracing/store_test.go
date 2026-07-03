@@ -307,4 +307,7 @@ func TestCleanupOldTraces_RemovesOrphanedDeferredSpans(t *testing.T) {
 	if store.GetDeferredSpan(freshTraceID) == nil {
 		t.Error("fresh deferred span should survive TTL cleanup")
 	}
+	if store.GetTrace(freshTraceID) == nil {
+		t.Error("fresh trace should survive TTL cleanup")
+	}
 }
