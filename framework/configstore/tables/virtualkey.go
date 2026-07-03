@@ -150,6 +150,16 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockRoleSessionName = nil
 			key.BedrockKeyConfig = nil
 
+			// Clear all Bedrock Mantle-related sensitive fields
+			key.BedrockMantleAccessKey = nil
+			key.BedrockMantleSecretKey = nil
+			key.BedrockMantleSessionToken = nil
+			key.BedrockMantleRegion = nil
+			key.BedrockMantleRoleARN = nil
+			key.BedrockMantleExternalID = nil
+			key.BedrockMantleRoleSessionName = nil
+			key.BedrockMantleKeyConfig = nil
+
 			pc.Keys[i] = *key
 		}
 	}
